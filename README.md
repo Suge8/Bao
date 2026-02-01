@@ -18,11 +18,11 @@
 
 ## Key Features of nanobot:
 
-⚡️ **Ultra-Lightweight**: At just ~4,000 lines of code, nanobot is 99% smaller than comparable AI assistants while delivering full functionality.
+⚡️ **Ultra-Lightweight**: Just ~4,000 lines of code — 99% smaller than Clawdbot - core functionality.
 
-🔬 **Research-Ready**: Clean, readable architecture makes it perfect for researchers and developers who need to understand, modify, or extend the codebase.
+🔬 **Research-Ready**: Clean, readable code that's easy to understand, modify, and extend for research and development.
 
-⚡️ **Lightning Fast**: Minimal footprint means faster startup, lower resource usage, and quicker iteration cycles.
+⚡️ **Lightning Fast**: Minimal footprint means faster startup, lower resource usage, and quicker iterations.
 
 ## 🏗️ Architecture
 
