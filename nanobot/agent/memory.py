@@ -11,7 +11,6 @@ class MemoryStore:
     Memory system for the agent.
     
     Supports daily notes (memory/YYYY-MM-DD.md) and long-term memory (MEMORY.md).
-    Compatible with clawbot memory format.
     """
     
     def __init__(self, workspace: Path):

@@ -53,7 +53,7 @@ class SkillsLoader:
         
         # Filter by requirements
         if filter_unavailable:
-            return [s for s in skills if self._check_requirements(self._get_ocmeta(s["name"]))]
+            return [s for s in skills if self._check_requirements(self._get_skill_meta(s["name"]))]
         return skills
     
     def load_skill(self, name: str) -> str | None:
@@ -120,8 +120,8 @@ class SkillsLoader:
             name = escape_xml(s["name"])
             path = s["path"]
             desc = escape_xml(self._get_skill_description(s["name"]))
-            ocmeta = self._get_ocmeta(s["name"])
-            available = self._check_requirements(ocmeta)
+            skill_meta = self._get_skill_meta(s["name"])
+            available = self._check_requirements(skill_meta)
             
             lines.append(f"  <skill available=\"{str(available).lower()}\">")
             lines.append(f"    <name>{name}</name>")
@@ -130,7 +130,7 @@ class SkillsLoader:
             
             # Show missing requirements for unavailable skills
             if not available:
-                missing = self._get_missing_requirements(ocmeta)
+                missing = self._get_missing_requirements(skill_meta)
                 if missing:
                     lines.append(f"    <requires>{escape_xml(missing)}</requires>")
             
@@ -139,10 +139,10 @@ class SkillsLoader:
         
         return "\n".join(lines)
     
-    def _get_missing_requirements(self, ocmeta: dict) -> str:
+    def _get_missing_requirements(self, skill_meta: dict) -> str:
         """Get a description of missing requirements."""
         missing = []
-        requires = ocmeta.get("requires", {})
+        requires = skill_meta.get("requires", {})
         for b in requires.get("bins", []):
             if not shutil.which(b):
                 missing.append(f"CLI: {b}")
@@ -166,17 +166,17 @@ class SkillsLoader:
                 return content[match.end():].strip()
         return content
     
-    def _parse_openclaw_metadata(self, raw: str) -> dict:
-        """Parse openclaw metadata JSON from frontmatter."""
+    def _parse_nanobot_metadata(self, raw: str) -> dict:
+        """Parse nanobot metadata JSON from frontmatter."""
         try:
             data = json.loads(raw)
-            return data.get("openclaw", {}) if isinstance(data, dict) else {}
+            return data.get("nanobot", {}) if isinstance(data, dict) else {}
         except (json.JSONDecodeError, TypeError):
             return {}
     
-    def _check_requirements(self, ocmeta: dict) -> bool:
+    def _check_requirements(self, skill_meta: dict) -> bool:
         """Check if skill requirements are met (bins, env vars)."""
-        requires = ocmeta.get("requires", {})
+        requires = skill_meta.get("requires", {})
         for b in requires.get("bins", []):
             if not shutil.which(b):
                 return False
@@ -185,18 +185,18 @@ class SkillsLoader:
                 return False
         return True
     
-    def _get_ocmeta(self, name: str) -> dict:
-        """Get openclaw metadata for a skill (cached in frontmatter)."""
+    def _get_skill_meta(self, name: str) -> dict:
+        """Get nanobot metadata for a skill (cached in frontmatter)."""
         meta = self.get_skill_metadata(name) or {}
-        return self._parse_openclaw_metadata(meta.get("metadata", ""))
+        return self._parse_nanobot_metadata(meta.get("metadata", ""))
     
     def get_always_skills(self) -> list[str]:
         """Get skills marked as always=true that meet requirements."""
         result = []
         for s in self.list_skills(filter_unavailable=True):
             meta = self.get_skill_metadata(s["name"]) or {}
-            ocmeta = self._parse_openclaw_metadata(meta.get("metadata", ""))
-            if ocmeta.get("always") or meta.get("always"):
+            skill_meta = self._parse_nanobot_metadata(meta.get("metadata", ""))
+            if skill_meta.get("always") or meta.get("always"):
                 result.append(s["name"])
         return result
     

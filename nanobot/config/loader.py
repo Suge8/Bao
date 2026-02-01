@@ -53,7 +53,7 @@ def save_config(config: Config, config_path: Path | None = None) -> None:
     path = config_path or get_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     
-    # Convert to clawbot-compatible format (camelCase)
+    # Convert to camelCase format
     data = config.model_dump()
     data = convert_to_camel(data)
     
@@ -71,7 +71,7 @@ def convert_keys(data: Any) -> Any:
 
 
 def convert_to_camel(data: Any) -> Any:
-    """Convert snake_case keys to camelCase for clawbot compatibility."""
+    """Convert snake_case keys to camelCase."""
     if isinstance(data, dict):
         return {snake_to_camel(k): convert_to_camel(v) for k, v in data.items()}
     if isinstance(data, list):
