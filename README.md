@@ -88,9 +88,14 @@ nanobot onboard
     "openrouter": {
       "apiKey": "sk-or-v1-xxx"
     }
+  },
+  "webSearch": {
+    "apiKey": "BSA-xxx"
   }
 }
 ```
+
+> Get API keys: [OpenRouter](https://openrouter.ai/keys) (LLM) · [Brave Search](https://brave.com/search/api/) (optional, for web search)
 
 **3. Chat**
 
@@ -216,10 +221,6 @@ nanobot gateway
 ```
 
 </details>
-
-**API Keys:**
-- **OpenRouter**: https://openrouter.ai/keys
-- **Brave Search** (optional): https://brave.com/search/api/
 
 ## CLI Reference
 
