@@ -21,7 +21,7 @@ class LiteLLMProvider(LLMProvider):
         self, 
         api_key: str | None = None, 
         api_base: str | None = None,
-        default_model: str = "anthropic/claude-opus-4-5"
+        default_model: str = "glm-4.7-flash"
     ):
         super().__init__(api_key, api_base)
         self.default_model = default_model
@@ -41,6 +41,8 @@ class LiteLLMProvider(LLMProvider):
                 os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
             elif "openai" in default_model or "gpt" in default_model:
                 os.environ.setdefault("OPENAI_API_KEY", api_key)
+            elif "zhipu" in default_model or "glm" in default_model or "zai" in default_model:
+                os.environ.setdefault("ZHIPUAI_API_KEY", api_key)
         
         if api_base:
             litellm.api_base = api_base
@@ -74,6 +76,15 @@ class LiteLLMProvider(LLMProvider):
         # For OpenRouter, prefix model name if not already prefixed
         if self.is_openrouter and not model.startswith("openrouter/"):
             model = f"openrouter/{model}"
+        
+        # For Zhipu/Z.ai, ensure prefix is present
+        # Handle cases like "glm-4.7-flash" -> "zhipu/glm-4.7-flash"
+        if ("glm" in model.lower() or "zhipu" in model.lower()) and not (
+            model.startswith("zhipu/") or 
+            model.startswith("zai/") or 
+            model.startswith("openrouter/")
+        ):
+            model = f"zhipu/{model}"
         
         kwargs: dict[str, Any] = {
             "model": model,
