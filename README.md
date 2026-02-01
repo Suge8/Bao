@@ -91,11 +91,18 @@ nanobot onboard
       "apiKey": "sk-or-v1-xxx"
     }
   },
+  "agents": {
+    "defaults": {
+      "model": "anthropic/claude-opus-4-5"
+    }
+  },
   "webSearch": {
     "apiKey": "BSA-xxx"
   }
 }
 ```
+
+> **Tip**: You can also change the model to `minimax/minimax-m2` for lower cost.
 
 > Get API keys: [OpenRouter](https://openrouter.ai/keys) (LLM) · [Brave Search](https://brave.com/search/api/) (optional, for web search)
 
