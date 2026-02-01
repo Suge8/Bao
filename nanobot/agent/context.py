@@ -80,6 +80,7 @@ You are nanobot, a helpful AI assistant. You have access to tools that allow you
 - Execute shell commands
 - Search the web and fetch web pages
 - Send messages to users on chat channels
+- Spawn subagents for complex background tasks
 
 ## Current Time
 {now}
@@ -184,10 +185,7 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
         Returns:
             Updated message list.
         """
-        msg: dict[str, Any] = {"role": "assistant"}
-        
-        if content:
-            msg["content"] = content
+        msg: dict[str, Any] = {"role": "assistant", "content": content or ""}
         
         if tool_calls:
             msg["tool_calls"] = tool_calls
