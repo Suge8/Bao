@@ -13,7 +13,7 @@ class LiteLLMProvider(LLMProvider):
     """
     LLM provider using LiteLLM for multi-provider support.
     
-    Supports OpenRouter, Anthropic, OpenAI, and many other providers through
+    Supports OpenRouter, Anthropic, OpenAI, Gemini, and many other providers through
     a unified interface.
     """
     
@@ -47,6 +47,8 @@ class LiteLLMProvider(LLMProvider):
                 os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
             elif "openai" in default_model or "gpt" in default_model:
                 os.environ.setdefault("OPENAI_API_KEY", api_key)
+            elif "gemini" in default_model.lower():
+                os.environ.setdefault("GEMINI_API_KEY", api_key)
         
         if api_base:
             litellm.api_base = api_base
@@ -85,6 +87,10 @@ class LiteLLMProvider(LLMProvider):
         # Convert openai/ prefix to hosted_vllm/ if user specified it
         if self.is_vllm:
             model = f"hosted_vllm/{model}"
+        
+        # For Gemini, ensure gemini/ prefix if not already present
+        if "gemini" in model.lower() and not model.startswith("gemini/"):
+            model = f"gemini/{model}"
         
         kwargs: dict[str, Any] = {
             "model": model,

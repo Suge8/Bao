@@ -51,6 +51,7 @@ class ProvidersConfig(BaseModel):
     openai: ProviderConfig = Field(default_factory=ProviderConfig)
     openrouter: ProviderConfig = Field(default_factory=ProviderConfig)
     vllm: ProviderConfig = Field(default_factory=ProviderConfig)
+    gemini: ProviderConfig = Field(default_factory=ProviderConfig)
 
 
 class GatewayConfig(BaseModel):
@@ -89,11 +90,12 @@ class Config(BaseSettings):
         return Path(self.agents.defaults.workspace).expanduser()
     
     def get_api_key(self) -> str | None:
-        """Get API key in priority order: OpenRouter > Anthropic > OpenAI > vLLM."""
+        """Get API key in priority order: OpenRouter > Anthropic > OpenAI > Gemini > vLLM."""
         return (
             self.providers.openrouter.api_key or
             self.providers.anthropic.api_key or
             self.providers.openai.api_key or
+            self.providers.gemini.api_key or
             self.providers.vllm.api_key or
             None
         )
