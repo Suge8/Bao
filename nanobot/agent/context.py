@@ -5,8 +5,6 @@ import mimetypes
 from pathlib import Path
 from typing import Any
 
-from loguru import logger
-
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
 
@@ -148,50 +146,23 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
 
         return messages
 
-    def _build_user_content(
-        self, text: str, media: list[str] | None
-    ) -> str | list[dict[str, Any]]:
-        """
-        Build user message content, optionally with images.
-
-        Returns a plain string if no media, or a multimodal content list
-        with base64-encoded images.
-        """
+    def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
+        """Build user message content with optional base64-encoded images."""
         if not media:
             return text
-
-        content: list[dict[str, Any]] = []
-
+        
+        images = []
         for path in media:
-            encoded = self._encode_image(path)
-            if encoded:
-                content.append(encoded)
-
-        if not content:
+            p = Path(path)
+            mime, _ = mimetypes.guess_type(path)
+            if not p.is_file() or not mime or not mime.startswith("image/"):
+                continue
+            b64 = base64.b64encode(p.read_bytes()).decode()
+            images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+        
+        if not images:
             return text
-
-        content.append({"type": "text", "text": text})
-        return content
-
-    @staticmethod
-    def _encode_image(file_path: str) -> dict[str, Any] | None:
-        """Encode a local image file to a base64 data URL for the LLM."""
-        path = Path(file_path)
-        if not path.is_file():
-            logger.warning(f"Media file not found: {file_path}")
-            return None
-
-        mime, _ = mimetypes.guess_type(file_path)
-        if not mime or not mime.startswith("image/"):
-            logger.warning(f"Unsupported media type for {file_path}: {mime}")
-            return None
-
-        data = path.read_bytes()
-        b64 = base64.b64encode(data).decode("utf-8")
-        return {
-            "type": "image_url",
-            "image_url": {"url": f"data:{mime};base64,{b64}"},
-        }
+        return images + [{"type": "text", "text": text}]
     
     def add_tool_result(
         self,
