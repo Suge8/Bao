@@ -51,8 +51,14 @@ class Tool(ABC):
         Unknown params are ignored.
         """
         schema = self.parameters or {}
-        if schema.get("type") != "object":
-            return []
+
+        # Default to an object schema if type is missing, and fail fast on unsupported top-level types.
+        if "type" not in schema:
+            schema = {"type": "object", **schema}
+        elif schema.get("type") != "object":
+            raise ValueError(
+                f"Tool parameter schemas must have top-level type 'object'; got {schema.get('type')!r}"
+            )
 
         return self._validate_schema(params, schema, path="")
 
