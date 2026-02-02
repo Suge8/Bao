@@ -74,6 +74,14 @@ cd nanobot
 pip install -e .
 ```
 
+**Install with uv**
+
+```bash
+uv venv
+source .venv/bin/activate
+uv pip install nanobot-ai
+```
+
 ## 🚀 Quick Start
 
 > [!TIP]
