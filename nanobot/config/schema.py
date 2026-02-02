@@ -55,7 +55,7 @@ class ProvidersConfig(BaseModel):
 class GatewayConfig(BaseModel):
     """Gateway/server configuration."""
     host: str = "0.0.0.0"
-    port: int = 18789
+    port: int = 18790
 
 
 class WebSearchConfig(BaseModel):
