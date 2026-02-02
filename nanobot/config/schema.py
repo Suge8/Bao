@@ -50,6 +50,7 @@ class ProvidersConfig(BaseModel):
     anthropic: ProviderConfig = Field(default_factory=ProviderConfig)
     openai: ProviderConfig = Field(default_factory=ProviderConfig)
     openrouter: ProviderConfig = Field(default_factory=ProviderConfig)
+    groq: ProviderConfig = Field(default_factory=ProviderConfig)
     vllm: ProviderConfig = Field(default_factory=ProviderConfig)
 
 
@@ -89,11 +90,12 @@ class Config(BaseSettings):
         return Path(self.agents.defaults.workspace).expanduser()
     
     def get_api_key(self) -> str | None:
-        """Get API key in priority order: OpenRouter > Anthropic > OpenAI > vLLM."""
+        """Get API key in priority order: OpenRouter > Anthropic > OpenAI > Groq > vLLM."""
         return (
             self.providers.openrouter.api_key or
             self.providers.anthropic.api_key or
             self.providers.openai.api_key or
+            self.providers.groq.api_key or
             self.providers.vllm.api_key or
             None
         )

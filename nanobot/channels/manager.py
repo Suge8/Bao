@@ -36,6 +36,8 @@ class ChannelManager:
         if self.config.channels.telegram.enabled:
             try:
                 from nanobot.channels.telegram import TelegramChannel
+                # Inject parent config for access to providers
+                self.config.channels.telegram.parent = self.config
                 self.channels["telegram"] = TelegramChannel(
                     self.config.channels.telegram, self.bus
                 )
@@ -47,6 +49,8 @@ class ChannelManager:
         if self.config.channels.whatsapp.enabled:
             try:
                 from nanobot.channels.whatsapp import WhatsAppChannel
+                # Inject parent config for access to providers
+                self.config.channels.whatsapp.parent = self.config
                 self.channels["whatsapp"] = WhatsAppChannel(
                     self.config.channels.whatsapp, self.bus
                 )

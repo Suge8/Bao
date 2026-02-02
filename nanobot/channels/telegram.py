@@ -247,7 +247,25 @@ class TelegramChannel(BaseChannel):
                 await file.download_to_drive(str(file_path))
                 
                 media_paths.append(str(file_path))
-                content_parts.append(f"[{media_type}: {file_path}]")
+                
+                # Handle voice transcription
+                if media_type == "voice" or media_type == "audio":
+                    from nanobot.providers.transcription import GroqTranscriptionProvider
+                    # Try to get Groq API key from config
+                    groq_key = None
+                    if hasattr(self.config, 'parent') and hasattr(self.config.parent, 'providers'):
+                        groq_key = self.config.parent.providers.groq.api_key
+                    
+                    transcriber = GroqTranscriptionProvider(api_key=groq_key)
+                    transcription = await transcriber.transcribe(file_path)
+                    if transcription:
+                        logger.info(f"Transcribed {media_type}: {transcription[:50]}...")
+                        content_parts.append(f"[transcription: {transcription}]")
+                    else:
+                        content_parts.append(f"[{media_type}: {file_path}]")
+                else:
+                    content_parts.append(f"[{media_type}: {file_path}]")
+                    
                 logger.debug(f"Downloaded {media_type} to {file_path}")
             except Exception as e:
                 logger.error(f"Failed to download media: {e}")

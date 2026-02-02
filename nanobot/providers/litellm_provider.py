@@ -47,6 +47,8 @@ class LiteLLMProvider(LLMProvider):
                 os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
             elif "openai" in default_model or "gpt" in default_model:
                 os.environ.setdefault("OPENAI_API_KEY", api_key)
+            elif "groq" in default_model:
+                os.environ.setdefault("GROQ_API_KEY", api_key)
         
         if api_base:
             litellm.api_base = api_base
