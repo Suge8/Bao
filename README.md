@@ -331,6 +331,24 @@ nanobot/
 
 **Want to help?** Pick an item and [open a PR](https://github.com/HKUDS/nanobot/pulls)!
 
+---
+
+## ⭐ Star History
+
+*Community Growth Trajectory*
+
+<div align="center">
+  <a href="https://star-history.com/#HKUDS/nanobot&Date">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=HKUDS/nanobot&type=Date&theme=dark" />
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=HKUDS/nanobot&type=Date" />
+      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=HKUDS/nanobot&type=Date" style="border-radius: 15px; box-shadow: 0 0 30px rgba(0, 217, 255, 0.3);" />
+    </picture>
+  </a>
+</div>
+
+---
+
 ## 🤝 Contribute
 
 PRs welcome! The codebase is intentionally small and readable. 🤗
