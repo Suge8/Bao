@@ -348,21 +348,31 @@ app.add_typer(channels_app, name="channels")
 def channels_status():
     """Show channel status."""
     from nanobot.config.loader import load_config
-    
+
     config = load_config()
-    
+
     table = Table(title="Channel Status")
     table.add_column("Channel", style="cyan")
     table.add_column("Enabled", style="green")
-    table.add_column("Bridge URL", style="yellow")
-    
+    table.add_column("Configuration", style="yellow")
+
+    # WhatsApp
     wa = config.channels.whatsapp
     table.add_row(
         "WhatsApp",
         "✓" if wa.enabled else "✗",
         wa.bridge_url
     )
-    
+
+    # Telegram
+    tg = config.channels.telegram
+    tg_config = f"token: {tg.token[:10]}..." if tg.token else "[dim]not configured[/dim]"
+    table.add_row(
+        "Telegram",
+        "✓" if tg.enabled else "✗",
+        tg_config
+    )
+
     console.print(table)
 
 
