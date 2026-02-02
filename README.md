@@ -116,6 +116,16 @@ nanobot agent -m "What is 2+2?"
 
 That's it! You have a working AI assistant in 2 minutes.
 
+## 🐳 Docker
+
+```bash
+docker build -t nanobot .
+docker run --rm nanobot onboard
+docker run -v ~/.nanobot:/root/.nanobot -p 18790:18790 nanobot
+```
+
+Mount `~/.nanobot` so your config and workspace persist across runs. Edit `~/.nanobot/config.json` on the host to add API keys, then restart the container.
+
 ## 🖥️ Local Models (vLLM)
 
 Run nanobot with your own local models using vLLM or any OpenAI-compatible server.
