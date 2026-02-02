@@ -152,7 +152,8 @@ class AgentLoop:
         # Build initial messages (use get_history for LLM-formatted messages)
         messages = self.context.build_messages(
             history=session.get_history(),
-            current_message=msg.content
+            current_message=msg.content,
+            media=msg.media if msg.media else None,
         )
         
         # Agent loop
