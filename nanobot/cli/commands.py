@@ -154,7 +154,7 @@ This file stores important information that should persist across sessions.
 
 @app.command()
 def gateway(
-    port: int = typer.Option(18789, "--port", "-p", help="Gateway port"),
+    port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
     """Start the nanobot gateway."""
@@ -328,296 +328,61 @@ def agent(
                     
                     response = await agent_loop.process_direct(user_input, session_id)
                     console.print(f"\n{__logo__} {response}\n")
-                except KeyboardInterrupt:
-                    console.print("\nGoodbye!")
+                except (KeyboardInterrupt, EOFError):
+                    console.print("\nExiting...")
                     break
         
         asyncio.run(run_interactive())
 
 
 # ============================================================================
-# Channel Commands
-# ============================================================================
-
-
-channels_app = typer.Typer(help="Manage channels")
-app.add_typer(channels_app, name="channels")
-
-
-@channels_app.command("status")
-def channels_status():
-    """Show channel status."""
-    from nanobot.config.loader import load_config
-    
-    config = load_config()
-    
-    table = Table(title="Channel Status")
-    table.add_column("Channel", style="cyan")
-    table.add_column("Enabled", style="green")
-    table.add_column("Bridge URL", style="yellow")
-    
-    wa = config.channels.whatsapp
-    table.add_row(
-        "WhatsApp",
-        "✓" if wa.enabled else "✗",
-        wa.bridge_url
-    )
-    
-    console.print(table)
-
-
-def _get_bridge_dir() -> Path:
-    """Get the bridge directory, setting it up if needed."""
-    import shutil
-    import subprocess
-    
-    # User's bridge location
-    user_bridge = Path.home() / ".nanobot" / "bridge"
-    
-    # Check if already built
-    if (user_bridge / "dist" / "index.js").exists():
-        return user_bridge
-    
-    # Check for npm
-    if not shutil.which("npm"):
-        console.print("[red]npm not found. Please install Node.js >= 18.[/red]")
-        raise typer.Exit(1)
-    
-    # Find source bridge: first check package data, then source dir
-    pkg_bridge = Path(__file__).parent / "bridge"  # nanobot/bridge (installed)
-    src_bridge = Path(__file__).parent.parent.parent / "bridge"  # repo root/bridge (dev)
-    
-    source = None
-    if (pkg_bridge / "package.json").exists():
-        source = pkg_bridge
-    elif (src_bridge / "package.json").exists():
-        source = src_bridge
-    
-    if not source:
-        console.print("[red]Bridge source not found.[/red]")
-        console.print("Try reinstalling: pip install --force-reinstall nanobot")
-        raise typer.Exit(1)
-    
-    console.print(f"{__logo__} Setting up bridge...")
-    
-    # Copy to user directory
-    user_bridge.parent.mkdir(parents=True, exist_ok=True)
-    if user_bridge.exists():
-        shutil.rmtree(user_bridge)
-    shutil.copytree(source, user_bridge, ignore=shutil.ignore_patterns("node_modules", "dist"))
-    
-    # Install and build
-    try:
-        console.print("  Installing dependencies...")
-        subprocess.run(["npm", "install"], cwd=user_bridge, check=True, capture_output=True)
-        
-        console.print("  Building...")
-        subprocess.run(["npm", "run", "build"], cwd=user_bridge, check=True, capture_output=True)
-        
-        console.print("[green]✓[/green] Bridge ready\n")
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]Build failed: {e}[/red]")
-        if e.stderr:
-            console.print(f"[dim]{e.stderr.decode()[:500]}[/dim]")
-        raise typer.Exit(1)
-    
-    return user_bridge
-
-
-@channels_app.command("login")
-def channels_login():
-    """Link device via QR code."""
-    import subprocess
-    
-    bridge_dir = _get_bridge_dir()
-    
-    console.print(f"{__logo__} Starting bridge...")
-    console.print("Scan the QR code to connect.\n")
-    
-    try:
-        subprocess.run(["npm", "start"], cwd=bridge_dir, check=True)
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]Bridge failed: {e}[/red]")
-    except FileNotFoundError:
-        console.print("[red]npm not found. Please install Node.js.[/red]")
-
-
-# ============================================================================
-# Cron Commands
-# ============================================================================
-
-cron_app = typer.Typer(help="Manage scheduled tasks")
-app.add_typer(cron_app, name="cron")
-
-
-@cron_app.command("list")
-def cron_list(
-    all: bool = typer.Option(False, "--all", "-a", help="Include disabled jobs"),
-):
-    """List scheduled jobs."""
-    from nanobot.config.loader import get_data_dir
-    from nanobot.cron.service import CronService
-    
-    store_path = get_data_dir() / "cron" / "jobs.json"
-    service = CronService(store_path)
-    
-    jobs = service.list_jobs(include_disabled=all)
-    
-    if not jobs:
-        console.print("No scheduled jobs.")
-        return
-    
-    table = Table(title="Scheduled Jobs")
-    table.add_column("ID", style="cyan")
-    table.add_column("Name")
-    table.add_column("Schedule")
-    table.add_column("Status")
-    table.add_column("Next Run")
-    
-    import time
-    for job in jobs:
-        # Format schedule
-        if job.schedule.kind == "every":
-            sched = f"every {(job.schedule.every_ms or 0) // 1000}s"
-        elif job.schedule.kind == "cron":
-            sched = job.schedule.expr or ""
-        else:
-            sched = "one-time"
-        
-        # Format next run
-        next_run = ""
-        if job.state.next_run_at_ms:
-            next_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(job.state.next_run_at_ms / 1000))
-            next_run = next_time
-        
-        status = "[green]enabled[/green]" if job.enabled else "[dim]disabled[/dim]"
-        
-        table.add_row(job.id, job.name, sched, status, next_run)
-    
-    console.print(table)
-
-
-@cron_app.command("add")
-def cron_add(
-    name: str = typer.Option(..., "--name", "-n", help="Job name"),
-    message: str = typer.Option(..., "--message", "-m", help="Message for agent"),
-    every: int = typer.Option(None, "--every", "-e", help="Run every N seconds"),
-    cron_expr: str = typer.Option(None, "--cron", "-c", help="Cron expression (e.g. '0 9 * * *')"),
-    at: str = typer.Option(None, "--at", help="Run once at time (ISO format)"),
-    deliver: bool = typer.Option(False, "--deliver", "-d", help="Deliver response to channel"),
-    to: str = typer.Option(None, "--to", help="Recipient for delivery"),
-):
-    """Add a scheduled job."""
-    from nanobot.config.loader import get_data_dir
-    from nanobot.cron.service import CronService
-    from nanobot.cron.types import CronSchedule
-    
-    # Determine schedule type
-    if every:
-        schedule = CronSchedule(kind="every", every_ms=every * 1000)
-    elif cron_expr:
-        schedule = CronSchedule(kind="cron", expr=cron_expr)
-    elif at:
-        import datetime
-        dt = datetime.datetime.fromisoformat(at)
-        schedule = CronSchedule(kind="at", at_ms=int(dt.timestamp() * 1000))
-    else:
-        console.print("[red]Error: Must specify --every, --cron, or --at[/red]")
-        raise typer.Exit(1)
-    
-    store_path = get_data_dir() / "cron" / "jobs.json"
-    service = CronService(store_path)
-    
-    job = service.add_job(
-        name=name,
-        schedule=schedule,
-        message=message,
-        deliver=deliver,
-        to=to,
-    )
-    
-    console.print(f"[green]✓[/green] Added job '{job.name}' ({job.id})")
-
-
-@cron_app.command("remove")
-def cron_remove(
-    job_id: str = typer.Argument(..., help="Job ID to remove"),
-):
-    """Remove a scheduled job."""
-    from nanobot.config.loader import get_data_dir
-    from nanobot.cron.service import CronService
-    
-    store_path = get_data_dir() / "cron" / "jobs.json"
-    service = CronService(store_path)
-    
-    if service.remove_job(job_id):
-        console.print(f"[green]✓[/green] Removed job {job_id}")
-    else:
-        console.print(f"[red]Job {job_id} not found[/red]")
-
-
-@cron_app.command("enable")
-def cron_enable(
-    job_id: str = typer.Argument(..., help="Job ID"),
-    disable: bool = typer.Option(False, "--disable", help="Disable instead of enable"),
-):
-    """Enable or disable a job."""
-    from nanobot.config.loader import get_data_dir
-    from nanobot.cron.service import CronService
-    
-    store_path = get_data_dir() / "cron" / "jobs.json"
-    service = CronService(store_path)
-    
-    job = service.enable_job(job_id, enabled=not disable)
-    if job:
-        status = "disabled" if disable else "enabled"
-        console.print(f"[green]✓[/green] Job '{job.name}' {status}")
-    else:
-        console.print(f"[red]Job {job_id} not found[/red]")
-
-
-@cron_app.command("run")
-def cron_run(
-    job_id: str = typer.Argument(..., help="Job ID to run"),
-    force: bool = typer.Option(False, "--force", "-f", help="Run even if disabled"),
-):
-    """Manually run a job."""
-    from nanobot.config.loader import get_data_dir
-    from nanobot.cron.service import CronService
-    
-    store_path = get_data_dir() / "cron" / "jobs.json"
-    service = CronService(store_path)
-    
-    async def run():
-        return await service.run_job(job_id, force=force)
-    
-    if asyncio.run(run()):
-        console.print(f"[green]✓[/green] Job executed")
-    else:
-        console.print(f"[red]Failed to run job {job_id}[/red]")
-
-
-# ============================================================================
-# Status Commands
+# System Commands
 # ============================================================================
 
 
 @app.command()
 def status():
-    """Show nanobot status."""
+    """Check nanobot status and configuration."""
     from nanobot.config.loader import load_config, get_config_path
-    from nanobot.utils.helpers import get_workspace_path
     
     config_path = get_config_path()
-    workspace = get_workspace_path()
+    if not config_path.exists():
+        console.print("[red]Error: nanobot is not initialized.[/red]")
+        console.print("Run [cyan]nanobot onboard[/cyan] first.")
+        raise typer.Exit(1)
     
-    console.print(f"{__logo__} nanobot Status\n")
+    config = load_config()
     
-    console.print(f"Config: {config_path} {'[green]✓[/green]' if config_path.exists() else '[red]✗[/red]'}")
-    console.print(f"Workspace: {workspace} {'[green]✓[/green]' if workspace.exists() else '[red]✗[/red]'}")
+    console.print(f"{__logo__} [bold]nanobot status[/bold]")
+    console.print(f"Version: {__version__}")
+    console.print(f"Config: {config_path}")
+    console.print(f"Workspace: {config.workspace_path}")
     
-    if config_path.exists():
-        config = load_config()
+    table = Table(title="Configuration Summary")
+    table.add_column("Category", style="cyan")
+    table.add_column("Status", style="green")
+    
+    # Channels
+    enabled_channels = []
+    if config.channels.whatsapp.enabled:
+        enabled_channels.append("WhatsApp")
+    if config.channels.telegram.enabled:
+        enabled_channels.append("Telegram")
+    
+    table.add_row("Channels", ", ".join(enabled_channels) if enabled_channels else "[dim]none[/dim]")
+    
+    # Agent
+    table.add_row("Default Model", config.agents.defaults.model)
+    
+    # Tools
+    has_brave = bool(config.tools.web.search.api_key)
+    table.add_row("Web Search", "[green]enabled[/green]" if has_brave else "[dim]disabled[/dim]")
+    
+    console.print(table)
+    
+    # Detailed API check
+    with console.status("[bold blue]Checking API providers..."):
+        console.print(f"\n[bold]API Providers:[/bold]")
         console.print(f"Model: {config.agents.defaults.model}")
         
         # Check API keys
@@ -625,11 +390,14 @@ def status():
         has_anthropic = bool(config.providers.anthropic.api_key)
         has_openai = bool(config.providers.openai.api_key)
         has_zhipu = bool(config.providers.zhipu.api_key)
+        has_vllm = bool(config.providers.vllm.api_base)
         
         console.print(f"OpenRouter API: {'[green]✓[/green]' if has_openrouter else '[dim]not set[/dim]'}")
         console.print(f"Anthropic API: {'[green]✓[/green]' if has_anthropic else '[dim]not set[/dim]'}")
         console.print(f"OpenAI API: {'[green]✓[/green]' if has_openai else '[dim]not set[/dim]'}")
         console.print(f"Zhipu AI API: {'[green]✓[/green]' if has_zhipu else '[dim]not set[/dim]'}")
+        vllm_status = f"[green]✓ {config.providers.vllm.api_base}[/green]" if has_vllm else "[dim]not set[/dim]"
+        console.print(f"vLLM/Local: {vllm_status}")
 
 
 if __name__ == "__main__":

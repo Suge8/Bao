@@ -51,12 +51,13 @@ class ProvidersConfig(BaseModel):
     openai: ProviderConfig = Field(default_factory=ProviderConfig)
     openrouter: ProviderConfig = Field(default_factory=ProviderConfig)
     zhipu: ProviderConfig = Field(default_factory=ProviderConfig)
+    vllm: ProviderConfig = Field(default_factory=ProviderConfig)
 
 
 class GatewayConfig(BaseModel):
     """Gateway/server configuration."""
     host: str = "0.0.0.0"
-    port: int = 18789
+    port: int = 18790
 
 
 class WebSearchConfig(BaseModel):
@@ -89,21 +90,24 @@ class Config(BaseSettings):
         return Path(self.agents.defaults.workspace).expanduser()
     
     def get_api_key(self) -> str | None:
-        """Get API key in priority order: OpenRouter > Anthropic > OpenAI > Zhipu."""
+        """Get API key in priority order: OpenRouter > Anthropic > OpenAI > Zhipu > vLLM."""
         return (
             self.providers.openrouter.api_key or
             self.providers.anthropic.api_key or
             self.providers.openai.api_key or
             self.providers.zhipu.api_key or
+            self.providers.vllm.api_key or
             None
         )
     
     def get_api_base(self) -> str | None:
-        """Get API base URL if using OpenRouter or Zhipu."""
+        """Get API base URL if using OpenRouter, Zhipu or vLLM."""
         if self.providers.openrouter.api_key:
             return self.providers.openrouter.api_base or "https://openrouter.ai/api/v1"
         if self.providers.zhipu.api_key:
             return self.providers.zhipu.api_base
+        if self.providers.vllm.api_base:
+            return self.providers.vllm.api_base
         return None
     
     class Config:
