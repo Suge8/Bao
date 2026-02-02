@@ -53,6 +53,17 @@ class ChannelManager:
                 logger.info("WhatsApp channel enabled")
             except ImportError as e:
                 logger.warning(f"WhatsApp channel not available: {e}")
+
+        # Discord channel
+        if self.config.channels.discord.enabled:
+            try:
+                from nanobot.channels.discord import DiscordChannel
+                self.channels["discord"] = DiscordChannel(
+                    self.config.channels.discord, self.bus
+                )
+                logger.info("Discord channel enabled")
+            except ImportError as e:
+                logger.warning(f"Discord channel not available: {e}")
     
     async def start_all(self) -> None:
         """Start WhatsApp channel and the outbound dispatcher."""
