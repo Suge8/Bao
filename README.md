@@ -17,7 +17,7 @@
 
 ## 📢 News
 
-- **2025-02-01** 🎉 nanobot launched! Welcome to try 🐈 nanobot!
+- **2026-02-01** 🎉 nanobot launched! Welcome to try 🐈 nanobot!
 
 ## Key Features of nanobot:
 
