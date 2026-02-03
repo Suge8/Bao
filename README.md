@@ -60,19 +60,7 @@
 
 ## 📦 Install
 
-**Install with [uv](https://github.com/astral-sh/uv)** (recommended for speed)
-
-```bash
-uv tool install nanobot-ai
-```
-
-**Install from PyPi**
-
-```bash
-pip install nanobot-ai
-```
-
-**Install from source** (recommended for development)
+**Install from source** (latest features, recommended for development)
 
 ```bash
 git clone https://github.com/HKUDS/nanobot.git
@@ -80,12 +68,16 @@ cd nanobot
 pip install -e .
 ```
 
-**Install with uv**
+**Install with [uv](https://github.com/astral-sh/uv)** (stable, fast)
 
 ```bash
-uv venv
-source .venv/bin/activate
-uv pip install nanobot-ai
+uv tool install nanobot-ai
+```
+
+**Install from PyPI** (stable)
+
+```bash
+pip install nanobot-ai
 ```
 
 ## 🚀 Quick Start
