@@ -60,6 +60,12 @@
 
 ## 📦 Install
 
+**Install with [uv](https://github.com/astral-sh/uv)** (recommended for speed)
+
+```bash
+uv tool install nanobot-ai
+```
+
 **Install from PyPi**
 
 ```bash
@@ -72,6 +78,14 @@ pip install nanobot-ai
 git clone https://github.com/HKUDS/nanobot.git
 cd nanobot
 pip install -e .
+```
+
+**Install with uv**
+
+```bash
+uv venv
+source .venv/bin/activate
+uv pip install nanobot-ai
 ```
 
 ## 🚀 Quick Start
@@ -331,21 +345,28 @@ nanobot/
 └── cli/            # 🖥️ Commands
 ```
 
-## 🗺️ Roadmap
+## 🤝 Contribute & Roadmap
 
+PRs welcome! The codebase is intentionally small and readable. 🤗
+
+**Roadmap** — Pick an item and [open a PR](https://github.com/HKUDS/nanobot/pulls)!
+
+- [x] **Voice Transcription** — Support for Groq Whisper (Issue #13)
 - [ ] **Multi-modal** — See and hear (images, voice, video)
 - [ ] **Long-term memory** — Never forget important context
 - [ ] **Better reasoning** — Multi-step planning and reflection
 - [ ] **More integrations** — Discord, Slack, email, calendar
 - [ ] **Self-improvement** — Learn from feedback and mistakes
 
-**Want to help?** Pick an item and [open a PR](https://github.com/HKUDS/nanobot/pulls)!
+### Contributors
+
+<a href="https://github.com/HKUDS/nanobot/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=HKUDS/nanobot" />
+</a>
 
 ---
 
 ## ⭐ Star History
-
-*Community Growth Trajectory*
 
 <div align="center">
   <a href="https://star-history.com/#HKUDS/nanobot&Date">
@@ -356,12 +377,6 @@ nanobot/
     </picture>
   </a>
 </div>
-
----
-
-## 🤝 Contribute
-
-PRs welcome! The codebase is intentionally small and readable. 🤗
 
 <p align="center">
   <em> Thanks for visiting ✨ nanobot!</em><br><br>
