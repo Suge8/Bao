@@ -60,6 +60,12 @@
 
 ## 📦 Install
 
+**Install with [uv](https://github.com/astral-sh/uv)** (recommended for speed)
+
+```bash
+uv tool install nanobot-ai
+```
+
 **Install from PyPi**
 
 ```bash
@@ -335,6 +341,7 @@ PRs welcome! The codebase is intentionally small and readable. 🤗
 
 **Roadmap** — Pick an item and [open a PR](https://github.com/HKUDS/nanobot/pulls)!
 
+- [x] **Voice Transcription** — Support for Groq Whisper (Issue #13)
 - [ ] **Multi-modal** — See and hear (images, voice, video)
 - [ ] **Long-term memory** — Never forget important context
 - [ ] **Better reasoning** — Multi-step planning and reflection
