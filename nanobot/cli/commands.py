@@ -178,11 +178,13 @@ def gateway(
     # Create components
     bus = MessageBus()
     
-    # Create provider (supports OpenRouter, Anthropic, OpenAI)
+    # Create provider (supports OpenRouter, Anthropic, OpenAI, Bedrock)
     api_key = config.get_api_key()
     api_base = config.get_api_base()
-    
-    if not api_key:
+    model = config.agents.defaults.model
+    is_bedrock = model.startswith("bedrock/")
+
+    if not api_key and not is_bedrock:
         console.print("[red]Error: No API key configured.[/red]")
         console.print("Set one in ~/.nanobot/config.json under providers.openrouter.apiKey")
         raise typer.Exit(1)
@@ -289,11 +291,13 @@ def agent(
     
     api_key = config.get_api_key()
     api_base = config.get_api_base()
-    
-    if not api_key:
+    model = config.agents.defaults.model
+    is_bedrock = model.startswith("bedrock/")
+
+    if not api_key and not is_bedrock:
         console.print("[red]Error: No API key configured.[/red]")
         raise typer.Exit(1)
-    
+
     bus = MessageBus()
     provider = LiteLLMProvider(
         api_key=api_key,
