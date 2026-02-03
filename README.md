@@ -391,7 +391,6 @@ PRs welcome! The codebase is intentionally small and readable. 🤗
   <img src="https://contrib.rocks/image?repo=HKUDS/nanobot" />
 </a>
 
----
 
 ## ⭐ Star History
 
@@ -410,7 +409,6 @@ PRs welcome! The codebase is intentionally small and readable. 🤗
   <img src="https://visitor-badge.laobi.icu/badge?page_id=HKUDS.nanobot&style=for-the-badge&color=00d4ff" alt="Views">
 </p>
 
----
 
 <p align="center">
   <sub>nanobot is for educational, research, and technical exchange purposes only</sub>
