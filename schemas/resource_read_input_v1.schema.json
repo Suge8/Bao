@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.resource.read.input/v1",
+  "type": "object",
+  "required": ["namespace", "path"],
+  "properties": {
+    "namespace": { "type": "string", "minLength": 1 },
+    "path": { "type": "string", "minLength": 1 }
+  }
+}

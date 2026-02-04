@@ -1,0 +1,41 @@
+{
+  "apiVersion": "bao.dimsum/v1",
+  "id": "bao.bundled.router",
+  "name": "Bao Bundled Router",
+  "version": "0.0.0",
+  "types": ["pipeline"],
+  "runtime": {
+    "kind": "wasm",
+    "wasm": {
+      "entry": "router.wasm",
+      "performanceTier": "highFrequency",
+      "limits": {
+        "maxLinearMemoryBytes": 16777216,
+        "fuelPerCall": 100000,
+        "timeoutMs": 30
+      }
+    }
+  },
+  "compat": {
+    "baoCore": ">=0.0.0",
+    "os": ["macos", "windows", "linux"],
+    "arch": ["arm64", "x64"]
+  },
+  "permissionsRequested": [],
+  "distribution": {
+    "channel": "bundled",
+    "integrity": { "sha256": "0000000000000000000000000000000000000000000000000000000000000000" }
+  },
+  "pipelineHooks": [
+    {
+      "hook": "router.route",
+      "version": "bao.router.output/v1",
+      "timeoutMs": 30,
+      "inputSchemaRef": "bao.router.input/v1",
+      "outputSchemaRef": "bao.router.output/v1"
+    }
+  ],
+  "tests": {
+    "goldenPrompts": "tests/golden_prompts.json"
+  }
+}

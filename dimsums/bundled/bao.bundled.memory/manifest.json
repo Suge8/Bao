@@ -1,0 +1,78 @@
+{
+  "apiVersion": "bao.dimsum/v1",
+  "id": "bao.bundled.memory",
+  "name": "Bao Bundled Memory",
+  "version": "0.0.0",
+  "types": ["pipeline", "tool"],
+  "runtime": {
+    "kind": "wasm",
+    "wasm": {
+      "entry": "memory.wasm",
+      "performanceTier": "highFrequency",
+      "limits": {
+        "maxLinearMemoryBytes": 33554432,
+        "fuelPerCall": 200000,
+        "timeoutMs": 80
+      }
+    }
+  },
+  "compat": {
+    "baoCore": ">=0.0.0",
+    "os": ["macos", "windows", "linux"],
+    "arch": ["arm64", "x64"]
+  },
+  "permissionsRequested": [
+    { "cap": "memory.read", "reason": "Retrieve memory hits/items for injection" },
+    { "cap": "memory.write", "reason": "Submit memory mutation plan for core execution" }
+  ],
+  "distribution": {
+    "channel": "bundled",
+    "integrity": { "sha256": "0000000000000000000000000000000000000000000000000000000000000000" }
+  },
+  "pipelineHooks": [
+    {
+      "hook": "memory.retrieve",
+      "version": "bao.memory.hit/v1",
+      "timeoutMs": 80,
+      "inputSchemaRef": "bao.memory.query/v1",
+      "outputSchemaRef": "bao.memory.hit_list/v1"
+    },
+    {
+      "hook": "memory.inject",
+      "version": "bao.memory.inject/v1",
+      "timeoutMs": 80,
+      "inputSchemaRef": "bao.memory.inject_input/v1",
+      "outputSchemaRef": "bao.memory.inject_output/v1"
+    },
+    {
+      "hook": "memory.extract",
+      "version": "bao.memory.mutation_plan/v1",
+      "timeoutMs": 1000,
+      "inputSchemaRef": "bao.memory.extract_input/v1",
+      "outputSchemaRef": "bao.memory.mutation_plan/v1"
+    }
+  ],
+  "tools": [
+    {
+      "name": "memory.search_index",
+      "description": "Progressive disclosure: search memory index (hits only)",
+      "timeoutMs": 80,
+      "permissions": ["memory.read"],
+      "inputSchemaRef": "bao.memory.query/v1",
+      "outputSchemaRef": "bao.memory.hit_list/v1",
+      "cacheTtlMs": 0
+    },
+    {
+      "name": "memory.apply_mutation_plan",
+      "description": "Submit mutation plan (core executes, writes versions/audit)",
+      "timeoutMs": 1000,
+      "permissions": ["memory.write"],
+      "inputSchemaRef": "bao.memory.mutation_plan/v1",
+      "outputSchemaRef": "bao.memory.apply_result/v1",
+      "cacheTtlMs": 0
+    }
+  ],
+  "tests": {
+    "goldenPrompts": "tests/golden_prompts.json"
+  }
+}

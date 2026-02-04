@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.resource.read.output/v1",
+  "type": "object",
+  "required": ["path", "mime", "kind"],
+  "properties": {
+    "path": { "type": "string", "minLength": 1 },
+    "mime": { "type": "string", "minLength": 1 },
+    "kind": { "type": "string", "enum": ["text", "binary"] },
+    "sha256": { "type": "string", "minLength": 64, "maxLength": 64 },
+    "text": { "type": "string" },
+    "base64": { "type": "string" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "text" } } },
+      "then": { "required": ["text"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "binary" } } },
+      "then": { "required": ["base64"] }
+    }
+  ]
+}
