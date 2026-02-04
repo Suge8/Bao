@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.jsonrpc.envelope/v1",
+  "type": "object",
+  "required": ["jsonrpc"],
+  "properties": {
+    "jsonrpc": { "type": "string", "const": "2.0" },
+    "id": { "type": ["string", "integer", "null"] },
+    "method": { "type": "string" },
+    "params": { "type": ["object", "array", "null"] },
+    "result": { "type": ["object", "array", "string", "number", "boolean", "null"] },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "integer" },
+        "message": { "type": "string" },
+        "data": { "type": ["object", "array", "string", "number", "boolean", "null"] }
+      }
+    }
+  }
+}

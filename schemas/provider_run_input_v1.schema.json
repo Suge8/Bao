@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.provider.run.input/v1",
+  "type": "object",
+  "required": ["sessionId", "messages"],
+  "properties": {
+    "sessionId": { "type": "string", "minLength": 1 },
+    "messages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["role", "content"],
+        "properties": {
+          "role": { "type": "string", "enum": ["system", "user", "assistant", "tool"] },
+          "content": { "type": "string" },
+          "name": { "type": "string" }
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "description", "inputSchema"],
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "inputSchema": { "type": "object" }
+        }
+      }
+    }
+  }
+}

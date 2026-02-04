@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.provider.run.output/v1",
+  "type": "object",
+  "required": ["kind"],
+  "properties": {
+    "kind": { "type": "string", "enum": ["message", "tool_call"] },
+    "message": { "type": "string" },
+    "toolCall": { "$ref": "bao.toolcall.ir/v1" }
+  },
+  "allOf": [
+    { "if": { "properties": { "kind": { "const": "message" } } }, "then": { "required": ["message"] } },
+    { "if": { "properties": { "kind": { "const": "tool_call" } } }, "then": { "required": ["toolCall"] } }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.gateway.welcome/v1",
+  "type": "object",
+  "required": ["session", "assignedDeviceId", "replayFromEventId"],
+  "properties": {
+    "session": { "type": "string", "minLength": 1 },
+    "assignedDeviceId": { "type": "string", "minLength": 1 },
+    "replayFromEventId": { "type": ["integer", "null"], "minimum": 1 }
+  }
+}

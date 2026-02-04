@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.gateway.frame/v1",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": [
+        "hello",
+        "welcome",
+        "event",
+        "replay_request",
+        "error"
+      ]
+    },
+    "payload": { "type": "object" }
+  }
+}
