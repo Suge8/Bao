@@ -622,18 +622,17 @@ def cron_run(
 def status():
     """Show nanobot status."""
     from nanobot.config.loader import load_config, get_config_path
-    from nanobot.utils.helpers import get_workspace_path
-    
+
     config_path = get_config_path()
-    workspace = get_workspace_path()
-    
+    config = load_config()
+    workspace = config.workspace_path
+
     console.print(f"{__logo__} nanobot Status\n")
-    
+
     console.print(f"Config: {config_path} {'[green]✓[/green]' if config_path.exists() else '[red]✗[/red]'}")
     console.print(f"Workspace: {workspace} {'[green]✓[/green]' if workspace.exists() else '[red]✗[/red]'}")
-    
+
     if config_path.exists():
-        config = load_config()
         console.print(f"Model: {config.agents.defaults.model}")
         
         # Check API keys
