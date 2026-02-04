@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+/dist/
+/build/
+/out/
+
+# Tauri
+/apps/desktop/src-tauri/target/
+/apps/desktop/src-tauri/gen/
+
+# Vite/Turbo caches
+.turbo/
+.vite/
+
+# Env
+.env
+.env.*
+
+# OS
+.DS_Store
+
+# Tooling
+.ace-tool/
