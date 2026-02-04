@@ -15,5 +15,27 @@
       ]
     },
     "payload": { "type": "object" }
-  }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "hello" } } },
+      "then": { "properties": { "payload": { "$ref": "bao.gateway.hello/v1" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "welcome" } } },
+      "then": { "properties": { "payload": { "$ref": "bao.gateway.welcome/v1" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "event" } } },
+      "then": { "properties": { "payload": { "$ref": "bao.event/v1" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "replay_request" } } },
+      "then": { "properties": { "payload": { "$ref": "bao.gateway.replay_request/v1" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "error" } } },
+      "then": { "properties": { "payload": { "$ref": "bao.gateway.error/v1" } } }
+    }
+  ]
 }

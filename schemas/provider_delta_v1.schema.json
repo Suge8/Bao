@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.provider.delta/v1",
+  "type": "object",
+  "required": ["kind"],
+  "properties": {
+    "kind": { "type": "string", "enum": ["text", "tool_call", "done"] },
+    "text": { "type": "string" },
+    "toolCall": { "$ref": "bao.toolcall.ir/v1" }
+  },
+  "allOf": [
+    { "if": { "properties": { "kind": { "const": "text" } } }, "then": { "required": ["text"] } },
+    { "if": { "properties": { "kind": { "const": "tool_call" } } }, "then": { "required": ["toolCall"] } }
+  ]
+}
