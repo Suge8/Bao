@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/bao-api",
+  "crates/bao-storage",
+  "crates/bao-plugin-host",
+  "crates/bao-engine",
+  "crates/bao-gateway",
+  "apps/desktop/src-tauri"
+]

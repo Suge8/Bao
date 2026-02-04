@@ -1,0 +1,193 @@
+{
+"$schema": "https://json-schema.org/draft/2020-12/schema",
+"$id": "bao.dimsum.manifest/v1",
+"type": "object",
+"required": ["apiVersion", "id", "name", "version", "types", "runtime", "compat", "permissionsRequested"],
+"properties": {
+"apiVersion": { "type": "string", "const": "bao.dimsum/v1" },
+"id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$" },
+"name": { "type": "string", "minLength": 1 },
+"version": { "type": "string", "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-[0-9A-Za-z-.]+)?$" },
+"description": { "type": "string" },
+
+"types": {
+  "type": "array",
+  "minItems": 1,
+  "items": {
+    "type": "string",
+    "enum": ["tool", "pipeline", "provider", "promptpack", "resourcepack", "localepack", "bridge"]
+  }
+},
+
+"compat": {
+  "type": "object",
+  "required": ["baoCore", "os", "arch"],
+  "properties": {
+    "baoCore": { "type": "string", "minLength": 1 },
+    "os": { "type": "array", "items": { "type": "string", "enum": ["macos", "windows", "linux"] }, "minItems": 1 },
+    "arch": { "type": "array", "items": { "type": "string", "enum": ["x64", "arm64"] }, "minItems": 1 }
+  }
+},
+
+"distribution": {
+  "type": "object",
+  "required": ["channel", "integrity"],
+  "properties": {
+    "channel": { "type": "string", "enum": ["bundled", "community", "local"] },
+    "integrity": {
+      "type": "object",
+      "required": ["sha256"],
+      "properties": {
+        "sha256": { "type": "string", "minLength": 64, "maxLength": 64 },
+        "signature": { "type": "string" },
+        "signedBy": { "type": "string" }
+      }
+    }
+  }
+},
+
+"runtime": {
+  "type": "object",
+  "required": ["kind"],
+  "properties": {
+    "kind": { "type": "string", "enum": ["wasm", "process"] },
+
+    "wasm": {
+      "type": "object",
+      "required": ["entry", "performanceTier", "limits"],
+      "properties": {
+        "entry": { "type": "string", "minLength": 1 },
+        "performanceTier": { "type": "string", "enum": ["highFrequency", "lowFrequency"] },
+        "limits": {
+          "type": "object",
+          "required": ["maxLinearMemoryBytes", "fuelPerCall", "timeoutMs"],
+          "properties": {
+            "maxLinearMemoryBytes": { "type": "integer", "minimum": 1048576 },
+            "fuelPerCall": { "type": "integer", "minimum": 1000 },
+            "timeoutMs": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+
+    "process": {
+      "type": "object",
+      "required": ["command", "args", "protocol"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "cwd": { "type": "string" },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } },
+        "protocol": { "type": "string", "enum": ["bao-jsonrpc/v1"] }
+      }
+    }
+  },
+  "allOf": [
+    { "if": { "properties": { "kind": { "const": "wasm" } } }, "then": { "required": ["wasm"] } },
+    { "if": { "properties": { "kind": { "const": "process" } } }, "then": { "required": ["process"] } }
+  ]
+},
+
+"permissionsRequested": {
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["cap", "reason"],
+    "properties": {
+      "cap": { "type": "string", "minLength": 1 },
+      "reason": { "type": "string", "minLength": 1 }
+    }
+  }
+},
+
+"tools": {
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["name", "description", "timeoutMs", "permissions", "inputSchemaRef", "outputSchemaRef"],
+    "properties": {
+      "name": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]{1,127}$" },
+      "description": { "type": "string", "minLength": 1 },
+      "timeoutMs": { "type": "integer", "minimum": 1 },
+      "permissions": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+      "inputSchemaRef": { "type": "string", "minLength": 1 },
+      "outputSchemaRef": { "type": "string", "minLength": 1 },
+      "cacheTtlMs": { "type": "integer", "minimum": 0 },
+      "idempotencyKeyFields": { "type": "array", "items": { "type": "string" } }
+    }
+  }
+},
+
+"pipelineHooks": {
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["hook", "version", "timeoutMs", "inputSchemaRef", "outputSchemaRef"],
+    "properties": {
+      "hook": {
+        "type": "string",
+        "enum": [
+          "router.route",
+          "memory.extract",
+          "memory.retrieve",
+          "memory.inject",
+          "corrector.validate_tool_args",
+          "corrector.validate_tool_result",
+          "corrector.decide_retry"
+        ]
+      },
+      "version": { "type": "string", "minLength": 1 },
+      "timeoutMs": { "type": "integer", "minimum": 1 },
+      "inputSchemaRef": { "type": "string", "minLength": 1 },
+      "outputSchemaRef": { "type": "string", "minLength": 1 }
+    }
+  }
+},
+
+"prompts": {
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["id", "path", "role"],
+    "properties": {
+      "id": { "type": "string", "minLength": 1 },
+      "path": { "type": "string", "minLength": 1 },
+      "role": { "type": "string", "enum": ["system_fragment", "developer_fragment"] }
+    }
+  }
+},
+
+"locales": {
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["locale", "path"],
+    "properties": {
+      "locale": { "type": "string", "minLength": 2 },
+      "path": { "type": "string", "minLength": 1 }
+    }
+  }
+},
+
+"resources": {
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["path", "mime", "kind"],
+    "properties": {
+      "path": { "type": "string", "minLength": 1 },
+      "mime": { "type": "string", "minLength": 1 },
+      "kind": { "type": "string", "enum": ["text", "binary"] }
+    }
+  }
+},
+
+"tests": {
+  "type": "object",
+  "required": ["goldenPrompts"],
+  "properties": {
+    "goldenPrompts": { "type": "string", "minLength": 1 }
+  }
+}
+}
+}

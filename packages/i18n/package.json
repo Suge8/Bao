@@ -1,0 +1,17 @@
+{
+  "name": "@bao/i18n",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./locales/en": "./src/locales/en.json",
+    "./locales/zh": "./src/locales/zh.json"
+  },
+  "scripts": {
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.2"
+  }
+}

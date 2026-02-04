@@ -1,0 +1,15 @@
+{
+"$schema": "https://json-schema.org/draft/2020-12/schema",
+"$id": "bao.event/v1",
+"type": "object",
+"required": ["eventId", "ts", "type", "payload"],
+"properties": {
+"eventId": { "type": "integer", "minimum": 1 },
+"ts": { "type": "integer", "minimum": 1 },
+"type": { "type": "string", "minLength": 1 },
+"sessionId": { "type": "string" },
+"messageId": { "type": "string" },
+"deviceId": { "type": "string" },
+"payload": { "type": "object" }
+}
+}

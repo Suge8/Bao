@@ -1,0 +1,31 @@
+{
+"$schema": "https://json-schema.org/draft/2020-12/schema",
+"$id": "bao.router.output/v1",
+"type": "object",
+"required": ["matched", "confidence", "reasonCodes", "needsMemory"],
+"properties": {
+"matched": { "type": "boolean" },
+"confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+"reasonCodes": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+"needsMemory": { "type": "boolean" },
+"memoryQuery": { "type": "string" },
+
+"toolName": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]{1,127}$" },
+"toolArgs": { "type": "object" },
+"quote": { "type": "string", "minLength": 1 },
+
+"policy": {
+  "type": "object",
+  "required": ["mustTrigger"],
+  "properties": {
+    "mustTrigger": { "type": "boolean" }
+  }
+}
+},
+"allOf": [
+{
+"if": { "properties": { "matched": { "const": true } } },
+"then": { "required": ["toolName", "toolArgs", "quote", "policy"] }
+}
+]
+}

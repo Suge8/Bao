@@ -1,0 +1,17 @@
+{
+  "name": "@bao/schema-tests",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "fast-glob": "^3.3.2",
+    "@types/node": "^22.13.0",
+    "typescript": "~5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

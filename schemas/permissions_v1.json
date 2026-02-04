@@ -1,0 +1,22 @@
+{
+"version": "permissions/v1",
+"capabilities": [
+"net.access",
+"fs.read",
+"fs.write",
+"cmd.exec",
+"desktop.observe",
+"desktop.control",
+"browser.control",
+"task.read",
+"task.write",
+"memory.read",
+"memory.write",
+"settings.read",
+"settings.write",
+"plugin.install",
+"plugin.update",
+"plugin.enable",
+"plugin.disable"
+]
+}

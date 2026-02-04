@@ -1,0 +1,73 @@
+{
+"$schema": "https://json-schema.org/draft/2020-12/schema",
+"$id": "bao.memory.mutation_plan/v1",
+"type": "object",
+"required": ["planId", "mutations"],
+"properties": {
+"planId": { "type": "string", "minLength": 1 },
+"mutations": {
+"type": "array",
+"minItems": 1,
+"items": {
+"type": "object",
+"required": ["op", "idempotencyKey"],
+"properties": {
+"op": { "type": "string", "enum": ["UPSERT", "SUPERSEDE", "DELETE", "LINK"] },
+"idempotencyKey": { "type": "string", "minLength": 1 },
+"reason": { "type": "string" },
+
+      "memory": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "namespace": { "type": "string", "minLength": 1 },
+          "kind": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "content": { "type": "string" },
+          "json": { "type": "object" },
+          "score": { "type": "number", "minimum": 0 },
+          "status": { "type": "string", "enum": ["active", "conflicted", "superseded", "deleted"] },
+          "sourceHash": { "type": "string" }
+        }
+      },
+
+      "supersede": {
+        "type": "object",
+        "properties": {
+          "oldId": { "type": "string", "minLength": 1 },
+          "newId": { "type": "string", "minLength": 1 }
+        }
+      },
+
+      "delete": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "minLength": 1 }
+        }
+      },
+
+      "link": {
+        "type": "object",
+        "properties": {
+          "memoryId": { "type": "string", "minLength": 1 },
+          "evidence": { "$ref": "bao.memory.evidence/v1" }
+        }
+      }
+    },
+    "allOf": [
+      { "if": { "properties": { "op": { "const": "UPSERT" } } }, "then": { "required": ["memory"] } },
+      { "if": { "properties": { "op": { "const": "SUPERSEDE" } } }, "then": { "required": ["supersede"] } },
+      { "if": { "properties": { "op": { "const": "DELETE" } } }, "then": { "required": ["delete"] } },
+      { "if": { "properties": { "op": { "const": "LINK" } } }, "then": { "required": ["link"] } }
+    ]
+  }
+},
+"dangerous": {
+  "type": "object",
+  "properties": {
+    "needsUserConfirmation": { "type": "boolean" },
+    "reasons": { "type": "array", "items": { "type": "string" } }
+  }
+}
+}
+}

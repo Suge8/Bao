@@ -1,18 +1,24 @@
-import { Globe } from "@/components/ui/globe";
+import { createBrowserRouter, RouterProvider } from "react-router-dom";
+import { AppShell } from "@/components/layout/app-shell";
+import ChatPage from "@/pages/chat";
+import TasksPage from "@/pages/tasks";
+import DimsumsPage from "@/pages/dimsums";
+import MemoryPage from "@/pages/memory";
+import SettingsPage from "@/pages/settings";
+
+const router = createBrowserRouter([
+  {
+    element: <AppShell />,
+    children: [
+      { path: "/", element: <ChatPage /> },
+      { path: "/tasks", element: <TasksPage /> },
+      { path: "/dimsums", element: <DimsumsPage /> },
+      { path: "/memory", element: <MemoryPage /> },
+      { path: "/settings", element: <SettingsPage /> },
+    ],
+  },
+]);
 
 export default function App() {
-  return (
-    <div className="min-h-screen bg-background text-foreground">
-      <div className="mx-auto max-w-5xl p-6">
-        <h1 className="text-2xl font-semibold">Bao Desktop</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Tailwind v4 + shadcn + Magic UI (Globe) smoke test
-        </p>
-
-        <div className="mt-6 rounded-xl border p-4">
-          <Globe />
-        </div>
-      </div>
-    </div>
-  );
+  return <RouterProvider router={router} />;
 }

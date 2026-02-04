@@ -1,0 +1,19 @@
+{
+"$schema": "https://json-schema.org/draft/2020-12/schema",
+"$id": "bao.memory.evidence/v1",
+"type": "object",
+"required": ["kind", "weight"],
+"properties": {
+"kind": { "type": "string", "enum": ["message", "event", "artifact"] },
+"messageId": { "type": "string" },
+"eventId": { "type": "integer", "minimum": 1 },
+"artifactSha256": { "type": "string", "minLength": 64, "maxLength": 64 },
+"weight": { "type": "number", "minimum": 0, "maximum": 1 },
+"note": { "type": "string" }
+},
+"allOf": [
+{ "if": { "properties": { "kind": { "const": "message" } } }, "then": { "required": ["messageId"] } },
+{ "if": { "properties": { "kind": { "const": "event" } } }, "then": { "required": ["eventId"] } },
+{ "if": { "properties": { "kind": { "const": "artifact" } } }, "then": { "required": ["artifactSha256"] } }
+]
+}

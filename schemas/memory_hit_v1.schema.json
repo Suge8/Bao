@@ -1,0 +1,18 @@
+{
+"$schema": "https://json-schema.org/draft/2020-12/schema",
+"$id": "bao.memory.hit/v1",
+"type": "object",
+"required": ["id", "namespace", "kind", "title", "snippet", "score"],
+"properties": {
+"id": { "type": "string", "minLength": 1 },
+"namespace": { "type": "string", "minLength": 1 },
+"kind": { "type": "string", "minLength": 1 },
+"title": { "type": "string", "minLength": 1 },
+"snippet": { "type": "string" },
+"tags": { "type": "array", "items": { "type": "string" } },
+"score": { "type": "number", "minimum": 0 },
+"status": { "type": "string", "enum": ["active", "conflicted", "superseded", "deleted"] },
+"updatedAt": { "type": "integer", "minimum": 1 },
+"evidenceCount": { "type": "integer", "minimum": 0 }
+}
+}
