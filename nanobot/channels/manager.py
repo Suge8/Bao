@@ -37,7 +37,9 @@ class ChannelManager:
             try:
                 from nanobot.channels.telegram import TelegramChannel
                 self.channels["telegram"] = TelegramChannel(
-                    self.config.channels.telegram, self.bus
+                    self.config.channels.telegram,
+                    self.bus,
+                    groq_api_key=self.config.providers.groq.api_key,
                 )
                 logger.info("Telegram channel enabled")
             except ImportError as e:
@@ -53,6 +55,17 @@ class ChannelManager:
                 logger.info("WhatsApp channel enabled")
             except ImportError as e:
                 logger.warning(f"WhatsApp channel not available: {e}")
+        
+        # Feishu channel
+        if self.config.channels.feishu.enabled:
+            try:
+                from nanobot.channels.feishu import FeishuChannel
+                self.channels["feishu"] = FeishuChannel(
+                    self.config.channels.feishu, self.bus
+                )
+                logger.info("Feishu channel enabled")
+            except ImportError as e:
+                logger.warning(f"Feishu channel not available: {e}")
     
     async def start_all(self) -> None:
         """Start WhatsApp channel and the outbound dispatcher."""
