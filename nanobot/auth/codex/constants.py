@@ -9,7 +9,6 @@ JWT_CLAIM_PATH = "https://api.openai.com/auth"
 
 DEFAULT_ORIGINATOR = "nanobot"
 TOKEN_FILENAME = "codex.json"
-MANUAL_PROMPT_DELAY_SEC = 3
 SUCCESS_HTML = (
     "<!doctype html>"
     "<html lang=\"en\">"

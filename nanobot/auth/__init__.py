@@ -1,13 +1,8 @@
 """Authentication modules."""
 
-from nanobot.auth.codex import (
-    ensure_codex_token_available,
-    get_codex_token,
-    login_codex_oauth_interactive,
-)
+from nanobot.auth.codex import get_codex_token, login_codex_oauth_interactive
 
 __all__ = [
-    "ensure_codex_token_available",
     "get_codex_token",
     "login_codex_oauth_interactive",
 ]

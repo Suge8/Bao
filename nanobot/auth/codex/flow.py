@@ -8,7 +8,7 @@ import threading
 import time
 import urllib.parse
 import webbrowser
-from typing import Any, Callable
+from typing import Callable
 
 import httpx
 
@@ -16,7 +16,6 @@ from nanobot.auth.codex.constants import (
     AUTHORIZE_URL,
     CLIENT_ID,
     DEFAULT_ORIGINATOR,
-    MANUAL_PROMPT_DELAY_SEC,
     REDIRECT_URI,
     SCOPE,
     TOKEN_URL,
@@ -37,31 +36,6 @@ from nanobot.auth.codex.storage import (
     _save_token_file,
     _try_import_codex_cli_token,
 )
-
-
-def _exchange_code_for_token(code: str, verifier: str) -> CodexToken:
-    data = {
-        "grant_type": "authorization_code",
-        "client_id": CLIENT_ID,
-        "code": code,
-        "code_verifier": verifier,
-        "redirect_uri": REDIRECT_URI,
-    }
-    with httpx.Client(timeout=30.0) as client:
-        response = client.post(TOKEN_URL, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
-    if response.status_code != 200:
-        raise RuntimeError(f"Token exchange failed: {response.status_code} {response.text}")
-
-    payload = response.json()
-    access, refresh, expires_in = _parse_token_payload(payload, "Token response missing fields")
-    print("Received access token:", access)
-    account_id = _decode_account_id(access)
-    return CodexToken(
-        access=access,
-        refresh=refresh,
-        expires=int(time.time() * 1000 + expires_in * 1000),
-        account_id=account_id,
-    )
 
 
 async def _exchange_code_for_token_async(code: str, verifier: str) -> CodexToken:
@@ -146,11 +120,6 @@ def get_codex_token() -> CodexToken:
             raise
 
 
-def ensure_codex_token_available() -> None:
-    """Ensure a valid token is available; raise if not."""
-    _ = get_codex_token()
-
-
 async def _read_stdin_line() -> str:
     loop = asyncio.get_running_loop()
     if hasattr(loop, "add_reader") and sys.stdin:
@@ -177,20 +146,14 @@ async def _read_stdin_line() -> str:
     return await loop.run_in_executor(None, sys.stdin.readline)
 
 
-async def _await_manual_input(
-    on_manual_code_input: Callable[[str], None],
-) -> str:
-    await asyncio.sleep(MANUAL_PROMPT_DELAY_SEC)
-    on_manual_code_input("Paste the authorization code (or full redirect URL), or wait for the browser callback:")
+async def _await_manual_input(print_fn: Callable[[str], None]) -> str:
+    print_fn("[cyan]Paste the authorization code (or full redirect URL), or wait for the browser callback:[/cyan]")
     return await _read_stdin_line()
 
 
 def login_codex_oauth_interactive(
-    on_auth: Callable[[str], None] | None = None,
-    on_prompt: Callable[[str], str] | None = None,
-    on_status: Callable[[str], None] | None = None,
-    on_progress: Callable[[str], None] | None = None,
-    on_manual_code_input: Callable[[str], None] = None,
+    print_fn: Callable[[str], None],
+    prompt_fn: Callable[[str], str],
     originator: str = DEFAULT_ORIGINATOR,
 ) -> CodexToken:
     """Interactive login flow."""
@@ -222,27 +185,30 @@ def login_codex_oauth_interactive(
             loop.call_soon_threadsafe(code_future.set_result, code_value)
 
         server, server_error = _start_local_server(state, on_code=_notify)
-        if on_auth:
-            on_auth(url)
-        else:
+        print_fn("[cyan]A browser window will open for login. If it doesn't, open this URL manually:[/cyan]")
+        print_fn(url)
+        try:
             webbrowser.open(url)
+        except Exception:
+            pass
 
-        if not server and server_error and on_status:
-            on_status(
+        if not server and server_error:
+            print_fn(
+                "[yellow]"
                 f"Local callback server could not start ({server_error}). "
                 "You will need to paste the callback URL or authorization code."
+                "[/yellow]"
             )
 
         code: str | None = None
         try:
             if server:
-                if on_progress and not on_manual_code_input:
-                    on_progress("Waiting for browser callback...")
+                print_fn("[dim]Waiting for browser callback...[/dim]")
 
-                tasks: list[asyncio.Task[Any]] = []
+                tasks: list[asyncio.Task[object]] = []
                 callback_task = asyncio.create_task(asyncio.wait_for(code_future, timeout=120))
                 tasks.append(callback_task)
-                manual_task = asyncio.create_task(_await_manual_input(on_manual_code_input))
+                manual_task = asyncio.create_task(_await_manual_input(print_fn))
                 tasks.append(manual_task)
 
                 done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -268,10 +234,7 @@ def login_codex_oauth_interactive(
 
             if not code:
                 prompt = "Please paste the callback URL or authorization code:"
-                if on_prompt:
-                    raw = await loop.run_in_executor(None, on_prompt, prompt)
-                else:
-                    raw = await loop.run_in_executor(None, input, prompt)
+                raw = await loop.run_in_executor(None, prompt_fn, prompt)
                 parsed_code, parsed_state = _parse_authorization_input(raw)
                 if parsed_state and parsed_state != state:
                     raise RuntimeError("State validation failed.")
@@ -280,8 +243,7 @@ def login_codex_oauth_interactive(
             if not code:
                 raise RuntimeError("Authorization code not found.")
 
-            if on_progress:
-                on_progress("Exchanging authorization code for tokens...")
+            print_fn("[dim]Exchanging authorization code for tokens...[/dim]")
             token = await _exchange_code_for_token_async(code, verifier)
             _save_token_file(token)
             return token

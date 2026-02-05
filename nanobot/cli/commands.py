@@ -84,37 +84,12 @@ def login(
 
     from nanobot.auth.codex import login_codex_oauth_interactive
 
-    def on_auth(url: str) -> None:
-        console.print("[cyan]A browser window will open for login. If it doesn't, open this URL manually:[/cyan]")
-        console.print(url)
-        try:
-            import webbrowser
-            webbrowser.open(url)
-        except Exception:
-            pass
-
-    def on_status(message: str) -> None:
-        console.print(f"[yellow]{message}[/yellow]")
-
-    def on_progress(message: str) -> None:
-        console.print(f"[dim]{message}[/dim]")
-
-    def on_prompt(message: str) -> str:
-        return typer.prompt(message)
-
-    def on_manual_code_input(message: str) -> None:
-        console.print(f"[cyan]{message}[/cyan]")
-
     console.print("[green]Starting OpenAI Codex OAuth login...[/green]")
     login_codex_oauth_interactive(
-        on_auth=on_auth,
-        on_prompt=on_prompt,
-        on_status=on_status,
-        on_progress=on_progress,
-        on_manual_code_input=on_manual_code_input,
+        print_fn=console.print,
+        prompt_fn=typer.prompt,
     )
-    console.print("[green]✓ Login successful. Credentials saved.[/green]")
-
+    console.print("[green]Login successful. Credentials saved.[/green]")
 
 
 
@@ -205,7 +180,7 @@ def gateway(
     from nanobot.bus.queue import MessageBus
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
-    from nanobot.auth.codex import ensure_codex_token_available
+    from nanobot.auth.codex import get_codex_token
     from nanobot.agent.loop import AgentLoop
     from nanobot.channels.manager import ChannelManager
     from nanobot.cron.service import CronService
@@ -232,7 +207,7 @@ def gateway(
 
     if is_codex:
         try:
-            ensure_codex_token_available()
+            _ = get_codex_token()
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
             console.print("Please run: [cyan]nanobot login --provider openai-codex[/cyan]")
@@ -341,7 +316,7 @@ def agent(
     from nanobot.bus.queue import MessageBus
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
-    from nanobot.auth.codex import ensure_codex_token_available
+    from nanobot.auth.codex import get_codex_token
     from nanobot.agent.loop import AgentLoop
     
     config = load_config()
@@ -354,7 +329,7 @@ def agent(
 
     if is_codex:
         try:
-            ensure_codex_token_available()
+            _ = get_codex_token()
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
             console.print("Please run: [cyan]nanobot login --provider openai-codex[/cyan]")
@@ -716,9 +691,10 @@ def status():
         console.print(f"Anthropic API: {'[green]✓[/green]' if has_anthropic else '[dim]not set[/dim]'}")
         console.print(f"OpenAI API: {'[green]✓[/green]' if has_openai else '[dim]not set[/dim]'}")
         console.print(f"Gemini API: {'[green]✓[/green]' if has_gemini else '[dim]not set[/dim]'}")
-        vllm_status = f"[green]✓ {config.providers.vllm.api_base}[/green]" if has_vllm else "[dim]not set[/dim]"
+        vllm_status = f"[green]�?{config.providers.vllm.api_base}[/green]" if has_vllm else "[dim]not set[/dim]"
         console.print(f"vLLM/Local: {vllm_status}")
 
 
 if __name__ == "__main__":
     app()
+
