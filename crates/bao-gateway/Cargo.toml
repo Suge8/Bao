@@ -4,3 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+base64 = "0.22.1"
+rand = "0.8.5"
+rusqlite = { version = "0.31.0", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10.6"
+thiserror = "1.0.61"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util" ] }
+bao-api = { path = "../bao-api" }
+
+[dev-dependencies]
+tempfile = "3.10.1"

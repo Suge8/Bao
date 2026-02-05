@@ -17,6 +17,20 @@
 
 事件规范：统一使用 `BaoEvent (bao.event/v1)` schema；桌面 Rust 侧 emit 的 payload 必须可序列化且受权限/审计约束。
 
+### 2.1 桌面端命令面（Tauri commands，目标契约）
+
+桌面端必须提供（命名建议与 UI 对齐，camelCase）：
+
+- `sendMessage(sessionId, text)`
+- `listSessions` / `listTasks` / `listDimsums` / `listMemories`
+- `getSettings` / `updateSettings`
+- gateway: `gatewayStart` / `gatewayStop` / `generatePairingToken`
+
+如 UI 已提供入口，则必须接通：
+
+- tasks: `createTask` / `updateTask` / `enableTask` / `disableTask` / `runTaskNow`
+- memory: `searchIndex` / `getItems` / `getTimeline` / `applyMutationPlan` / `rollbackVersion`
+
 ## 3. 点心（Dimsum）
 
 - 点心必须热拔插，运行时只允许：`wasm` 与 `process`。
@@ -54,3 +68,9 @@
 - 到期任务只执行“显式计划”：指定 `dimsumId + toolName + args`。
 - 所有任务执行必须：权限门禁、审计 hash chain、回归（golden prompts/tasks），失败回滚。
 - Kill Switch：可终止正在运行的任务/工具。
+
+### 7.1 现状（阶段1落地）
+
+- 桌面端启动 scheduler tick（默认 1s），从 SQLite 拉取 due tasks 并触发 tool 执行（当前 runner 为 mock）。
+- Kill Switch 已接入：能终止正在执行的任务组，并停止 scheduler/gateway 任务。
+- 事件流通过 `events` 表回放为 `bao:event`，移动端可实时收到。

@@ -4,4 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+chrono = { version = "0.4", features = ["clock"] }
+chrono-tz = "0.10"
+cron = "0.12"
+rusqlite = { version = "0.31.0", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1.0.61"
+
+[dev-dependencies]
+tempfile = "3.10.1"
 bao-api = { path = "../bao-api" }

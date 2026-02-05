@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 bao-api = { path = "../bao-api" }
+bao-storage = { path = "../bao-storage" }
+bao-plugin-host = { path = "../bao-plugin-host" }

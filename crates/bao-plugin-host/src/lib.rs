@@ -56,6 +56,17 @@ pub trait PluginHost {
     fn runtime_kind(&self) -> RuntimeKind;
 }
 
+#[derive(Debug, Clone)]
+pub struct ToolRunResult {
+    pub ok: bool,
+    pub output: serde_json::Value,
+}
+
+pub trait ToolRunner {
+    fn run_tool(&self, dimsum_id: &str, tool_name: &str, args: &serde_json::Value) -> Result<ToolRunResult, PluginHostError>;
+    fn kill_group(&self, group: &str);
+}
+
 pub trait WasmModuleCache {
     fn get(&self, key: &ModuleCacheKey) -> Option<Vec<u8>>;
     fn put(&self, key: ModuleCacheKey, serialized_module: Vec<u8>);
@@ -76,3 +87,5 @@ pub trait WasmLimitsEnforcer {
     fn configure_memory_limit(&mut self, max_linear_memory_bytes: u64);
     fn configure_timeout_ms(&mut self, timeout_ms: u64);
 }
+
+pub mod mock_runner;

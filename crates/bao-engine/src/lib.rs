@@ -1,4 +1,8 @@
 use bao_api::{RouterOutputV1, TaskSpecV1, ToolCallIrV1};
+use std::sync::Arc;
+
+pub mod scheduler;
+pub mod storage;
 
 // -----------------------------
 // Pipeline hooks (phase0: stubs)
@@ -41,5 +45,12 @@ pub struct Engine;
 impl Engine {
     pub fn new() -> Self {
         Self
+    }
+
+    pub fn scheduler(
+        storage: Arc<dyn storage::StorageFacade>,
+        runner: Arc<dyn bao_plugin_host::ToolRunner + Send + Sync>,
+    ) -> scheduler::SchedulerService {
+        scheduler::SchedulerService::new(storage, runner)
     }
 }

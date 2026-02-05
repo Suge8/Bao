@@ -1,0 +1,80 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Bao Gateway API",
+    "version": "v1",
+    "description": "Minimal HTTP helper endpoints for Bao Gateway. All primary interactions MUST use WebSocket (no SSE)."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:3901"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health check",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok"],
+                  "properties": {
+                    "ok": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/device/info": {
+      "get": {
+        "summary": "Basic device info",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["deviceId", "platform", "baoCore"],
+                  "properties": {
+                    "deviceId": { "type": "string" },
+                    "platform": { "type": "string" },
+                    "baoCore": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pair/status": {
+      "get": {
+        "summary": "Pairing status",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["paired"],
+                  "properties": {
+                    "paired": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
