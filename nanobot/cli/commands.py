@@ -82,7 +82,7 @@ def login(
         console.print(f"[red]Unsupported provider: {provider}[/red]")
         raise typer.Exit(1)
 
-    from nanobot.auth.codex_oauth import login_codex_oauth_interactive
+    from nanobot.auth.codex import login_codex_oauth_interactive
 
     def on_auth(url: str) -> None:
         console.print("[cyan]A browser window will open for login. If it doesn't, open this URL manually:[/cyan]")
@@ -205,7 +205,7 @@ def gateway(
     from nanobot.bus.queue import MessageBus
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
-    from nanobot.auth.codex_oauth import ensure_codex_token_available
+    from nanobot.auth.codex import ensure_codex_token_available
     from nanobot.agent.loop import AgentLoop
     from nanobot.channels.manager import ChannelManager
     from nanobot.cron.service import CronService
@@ -341,7 +341,7 @@ def agent(
     from nanobot.bus.queue import MessageBus
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
-    from nanobot.auth.codex_oauth import ensure_codex_token_available
+    from nanobot.auth.codex import ensure_codex_token_available
     from nanobot.agent.loop import AgentLoop
     
     config = load_config()

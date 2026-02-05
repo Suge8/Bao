@@ -1,4 +1,4 @@
-"""OpenAI Codex Responses Provider。"""
+"""OpenAI Codex Responses Provider."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any, AsyncGenerator
 
 import httpx
 
-from nanobot.auth.codex_oauth import get_codex_token
+from nanobot.auth.codex import get_codex_token
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api"
@@ -17,7 +17,7 @@ DEFAULT_ORIGINATOR = "nanobot"
 
 
 class OpenAICodexProvider(LLMProvider):
-    """使用 Codex OAuth 调用 Responses 接口。"""
+    """Use Codex OAuth to call the Responses API."""
 
     def __init__(self, default_model: str = "openai-codex/gpt-5.1-codex"):
         super().__init__(api_key=None, api_base=None)
@@ -56,37 +56,18 @@ class OpenAICodexProvider(LLMProvider):
         url = _resolve_codex_url(DEFAULT_CODEX_BASE_URL)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                try:
-                    async with client.stream("POST", url, headers=headers, json=body) as response:
-                        if response.status_code != 200:
-                            text = await response.aread()
-                            raise RuntimeError(
-                                _friendly_error(response.status_code, text.decode("utf-8", "ignore"))
-                            )
-                        content, tool_calls, finish_reason = await _consume_sse(response)
-                        return LLMResponse(
-                            content=content,
-                            tool_calls=tool_calls,
-                            finish_reason=finish_reason,
-                        )
-                except Exception as e:
-                    # 证书校验失败时降级关闭校验（存在安全风险）
-                    if "CERTIFICATE_VERIFY_FAILED" not in str(e):
-                        raise
-            async with httpx.AsyncClient(timeout=60.0, verify=False) as insecure_client:
-                async with insecure_client.stream("POST", url, headers=headers, json=body) as response:
-                    if response.status_code != 200:
-                        text = await response.aread()
-                        raise RuntimeError(
-                            _friendly_error(response.status_code, text.decode("utf-8", "ignore"))
-                        )
-                    content, tool_calls, finish_reason = await _consume_sse(response)
-                    return LLMResponse(
-                        content=content,
-                        tool_calls=tool_calls,
-                        finish_reason=finish_reason,
-                    )
+            try:
+                content, tool_calls, finish_reason = await _request_codex(url, headers, body, verify=True)
+            except Exception as e:
+                # Certificate verification failed, downgrade to disable verification (security risk)
+                if "CERTIFICATE_VERIFY_FAILED" not in str(e):
+                    raise
+                content, tool_calls, finish_reason = await _request_codex(url, headers, body, verify=False)
+            return LLMResponse(
+                content=content,
+                tool_calls=tool_calls,
+                finish_reason=finish_reason,
+            )
         except Exception as e:
             return LLMResponse(
                 content=f"Error calling Codex: {str(e)}",
@@ -124,17 +105,31 @@ def _build_headers(account_id: str, token: str) -> dict[str, str]:
     }
 
 
+async def _request_codex(
+    url: str,
+    headers: dict[str, str],
+    body: dict[str, Any],
+    verify: bool,
+) -> tuple[str, list[ToolCallRequest], str]:
+    async with httpx.AsyncClient(timeout=60.0, verify=verify) as client:
+        async with client.stream("POST", url, headers=headers, json=body) as response:
+            if response.status_code != 200:
+                text = await response.aread()
+                raise RuntimeError(_friendly_error(response.status_code, text.decode("utf-8", "ignore")))
+            return await _consume_sse(response)
+
+
 def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    # nanobot 工具定义已是 OpenAI function schema
+    # Nanobot tool definitions already use the OpenAI function schema.
     converted: list[dict[str, Any]] = []
     for tool in tools:
         name = tool.get("name")
         if not isinstance(name, str) or not name:
-            # 忽略无效工具，避免被 Codex 拒绝
+            # Skip invalid tools to avoid Codex rejection.
             continue
         params = tool.get("parameters") or {}
         if not isinstance(params, dict):
-            # 参数必须是 JSON Schema 对象
+            # Parameters must be a JSON Schema object.
             params = {}
         converted.append(
             {
@@ -164,7 +159,7 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[st
             continue
 
         if role == "assistant":
-            # 先处理文本
+            # Handle text first.
             if isinstance(content, str) and content:
                 input_items.append(
                     {
@@ -175,7 +170,7 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[st
                         "id": f"msg_{idx}",
                     }
                 )
-            # 再处理工具调用
+            # Then handle tool calls.
             for tool_call in msg.get("tool_calls", []) or []:
                 fn = tool_call.get("function") or {}
                 call_id = tool_call.get("id") or f"call_{idx}"
@@ -329,5 +324,5 @@ def _map_finish_reason(status: str | None) -> str:
 
 def _friendly_error(status_code: int, raw: str) -> str:
     if status_code == 429:
-        return "ChatGPT 使用额度已达上限或触发限流，请稍后再试。"
+        return "ChatGPT usage quota exceeded or rate limit triggered. Please try again later."
     return f"HTTP {status_code}: {raw}"
