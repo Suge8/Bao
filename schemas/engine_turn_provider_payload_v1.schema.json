@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.engine.turn_provider_payload/v1",
+  "type": "object",
+  "required": [
+    "sessionId",
+    "output",
+    "matched",
+    "needsMemory",
+    "toolTriggered",
+    "toolOk",
+    "toolValidationOk",
+    "toolAttempts",
+    "providerUsed",
+    "memoryMutationCount"
+  ],
+  "properties": {
+    "sessionId": { "type": "string", "minLength": 1 },
+    "output": { "type": "string" },
+    "matched": { "type": "boolean" },
+    "needsMemory": { "type": "boolean" },
+    "toolName": { "type": ["string", "null"] },
+    "toolTriggered": { "type": "boolean", "const": false },
+    "toolOk": { "type": "null" },
+    "toolValidationOk": { "type": "null" },
+    "toolValidationError": { "type": ["string", "null"] },
+    "toolRetryReason": { "type": ["string", "null"] },
+    "toolAttempts": { "type": "integer", "const": 0 },
+    "providerUsed": { "type": ["string", "null"] },
+    "memoryPlanId": { "type": ["string", "null"] },
+    "memoryMutationCount": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": true
+}

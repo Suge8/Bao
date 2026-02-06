@@ -3,27 +3,53 @@
   "id": "bao.bundled.mcp-bridge",
   "name": "Bao Bundled MCP Bridge",
   "version": "0.0.0",
-  "types": ["tool", "bridge"],
+  "types": [
+    "tool",
+    "bridge"
+  ],
   "runtime": {
     "kind": "process",
     "process": {
-      "command": "bao-mcp-bridge",
-      "args": [],
+      "command": "cargo",
+      "args": [
+        "run",
+        "-q",
+        "-p",
+        "bao-dimsum-process",
+        "--bin",
+        "bao-mcp-bridge",
+        "--"
+      ],
       "protocol": "bao-jsonrpc/v1"
     }
   },
   "compat": {
     "baoCore": ">=0.0.0",
-    "os": ["macos", "windows", "linux"],
-    "arch": ["arm64", "x64"]
+    "os": [
+      "macos",
+      "windows",
+      "linux"
+    ],
+    "arch": [
+      "arm64",
+      "x64"
+    ]
   },
   "permissionsRequested": [
-    { "cap": "net.access", "reason": "Connect to MCP servers (http/sse) when configured" },
-    { "cap": "cmd.exec", "reason": "Spawn MCP servers over stdio when configured" }
+    {
+      "cap": "net.access",
+      "reason": "Connect to MCP servers (http/sse) when configured"
+    },
+    {
+      "cap": "cmd.exec",
+      "reason": "Spawn MCP servers over stdio when configured"
+    }
   ],
   "distribution": {
     "channel": "bundled",
-    "integrity": { "sha256": "0000000000000000000000000000000000000000000000000000000000000000" }
+    "integrity": {
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
   },
   "tests": {
     "goldenPrompts": "tests/golden_prompts.json"

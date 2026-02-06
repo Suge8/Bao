@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.toolcall.result/v1",
+  "type": "object",
+  "required": ["ok"],
+  "properties": {
+    "ok": { "type": "boolean" },
+    "output": {},
+    "error": { "type": "string" },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "toolName": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]{1,127}$" }
+  }
+}

@@ -2,9 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "bao.gateway.hello/v1",
   "type": "object",
-  "required": ["baoCore", "device", "lastEventId"],
+  "required": ["baoCore", "device", "lastEventId", "token"],
   "properties": {
     "baoCore": { "type": "string", "minLength": 1 },
+    "token": { "type": "string", "minLength": 1 },
     "device": {
       "type": "object",
       "required": ["deviceId", "platform"],
@@ -14,7 +15,6 @@
         "name": { "type": "string" }
       }
     },
-    "pairingToken": { "type": "string" },
     "lastEventId": { "type": ["integer", "null"], "minimum": 1 }
   }
 }

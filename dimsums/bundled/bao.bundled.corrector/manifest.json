@@ -5,15 +5,19 @@
   "version": "0.0.0",
   "types": ["pipeline"],
   "runtime": {
-    "kind": "wasm",
-    "wasm": {
-      "entry": "corrector.wasm",
-      "performanceTier": "highFrequency",
-      "limits": {
-        "maxLinearMemoryBytes": 16777216,
-        "fuelPerCall": 100000,
-        "timeoutMs": 30
-      }
+    "kind": "process",
+    "process": {
+      "command": "cargo",
+      "args": [
+        "run",
+        "-q",
+        "-p",
+        "bao-dimsum-process",
+        "--bin",
+        "bao-corrector-hook",
+        "--"
+      ],
+      "protocol": "bao-jsonrpc/v1"
     }
   },
   "compat": {

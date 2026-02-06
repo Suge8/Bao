@@ -1,0 +1,57 @@
+[package]
+name = "bao-dimsum-process"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "bao_dimsum_process"
+path = "src/lib.rs"
+
+[dependencies]
+base64 = "0.22"
+bao-api = { path = "../bao-api" }
+bao-engine = { path = "../bao-engine" }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+walkdir = "2"
+
+[[bin]]
+name = "bao-provider-openai"
+path = "src/bin/bao-provider-openai.rs"
+
+[[bin]]
+name = "bao-provider-anthropic"
+path = "src/bin/bao-provider-anthropic.rs"
+
+[[bin]]
+name = "bao-provider-gemini"
+path = "src/bin/bao-provider-gemini.rs"
+
+[[bin]]
+name = "bao-provider-xai"
+path = "src/bin/bao-provider-xai.rs"
+
+[[bin]]
+name = "bao-skills-adapter"
+path = "src/bin/bao-skills-adapter.rs"
+
+[[bin]]
+name = "bao-mcp-bridge"
+path = "src/bin/bao-mcp-bridge.rs"
+
+[[bin]]
+name = "bao-router-hook"
+path = "src/bin/bao-router-hook.rs"
+
+[[bin]]
+name = "bao-memory-hook"
+path = "src/bin/bao-memory-hook.rs"
+
+[[bin]]
+name = "bao-corrector-hook"
+path = "src/bin/bao-corrector-hook.rs"
+
+[dev-dependencies]
+tempfile = "3"

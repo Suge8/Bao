@@ -6,3 +6,5 @@ edition = "2021"
 [dependencies]
 bao-api = { path = "../bao-api" }
 serde_json = "1"
+thiserror = "1.0.61"
+libc = "0.2"

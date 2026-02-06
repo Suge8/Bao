@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.corrector.validate_tool_result_error/v1",
+  "type": "object",
+  "required": ["source", "stage", "sessionId", "code", "error", "toolName", "attempt"],
+  "properties": {
+    "source": { "type": "string", "minLength": 1 },
+    "stage": { "type": "string", "const": "corrector.validate_tool_result" },
+    "sessionId": { "type": "string", "minLength": 1 },
+    "code": { "type": "string", "const": "ERR_CORRECTOR_VALIDATE_TOOL_RESULT" },
+    "error": { "type": "string", "minLength": 1 },
+    "toolName": { "type": "string", "minLength": 1 },
+    "attempt": { "type": "integer", "minimum": 1 }
+  },
+  "additionalProperties": true
+}

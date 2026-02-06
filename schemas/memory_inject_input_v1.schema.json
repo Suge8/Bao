@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.memory.inject_input/v1",
+  "type": "object",
+  "required": ["userInput"],
+  "properties": {
+    "userInput": { "type": "string" },
+    "memoryQuery": { "type": "string" }
+  }
+}

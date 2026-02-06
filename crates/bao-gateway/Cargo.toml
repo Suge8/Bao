@@ -10,9 +10,16 @@ rusqlite = { version = "0.31.0", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10.6"
+hex = "0.4"
 thiserror = "1.0.61"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util" ] }
 bao-api = { path = "../bao-api" }
+bao-storage = { path = "../bao-storage" }
+bao-engine = { path = "../bao-engine" }
+bao-plugin-host = { path = "../bao-plugin-host" }
+time = "0.3"
+chrono-tz = "0.8"
+cron = "0.12"
 
 [dev-dependencies]
 tempfile = "3.10.1"

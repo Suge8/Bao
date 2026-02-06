@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.memory.inject_output/v1",
+  "type": "object",
+  "required": ["injected"],
+  "properties": {
+    "injected": { "type": "string" }
+  }
+}

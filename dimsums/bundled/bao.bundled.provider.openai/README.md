@@ -1,5 +1,15 @@
 # bao.bundled.provider.openai
 
-内置 Provider 点心：OpenAI 适配。
+内置 OpenAI Provider 点心（`types: ["provider"]`，`runtime: process`）。
 
-阶段1：仅提供 manifest stub（不实现网络与鉴权逻辑）。
+当前阶段（Stage1）已提供可执行 JSON-RPC 服务：
+- `provider.methods`
+- `provider.run`
+- `provider.cancel`
+
+开发环境运行命令：
+- `cargo run -q -p bao-dimsum-process --bin bao-provider-openai --`
+
+鉴权支持：
+- 优先 `config.apiKey`
+- 回退 `OPENAI_API_KEY` / `BAO_PROVIDER_API_KEY`

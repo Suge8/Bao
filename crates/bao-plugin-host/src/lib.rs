@@ -1,4 +1,4 @@
-// Phase0: stubs for WASM/Process plugin host.
+// Minimal plugin host contracts for WASM/Process runtimes.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeKind {
@@ -63,7 +63,12 @@ pub struct ToolRunResult {
 }
 
 pub trait ToolRunner {
-    fn run_tool(&self, dimsum_id: &str, tool_name: &str, args: &serde_json::Value) -> Result<ToolRunResult, PluginHostError>;
+    fn run_tool(
+        &self,
+        dimsum_id: &str,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Result<ToolRunResult, PluginHostError>;
     fn kill_group(&self, group: &str);
 }
 
@@ -88,4 +93,4 @@ pub trait WasmLimitsEnforcer {
     fn configure_timeout_ms(&mut self, timeout_ms: u64);
 }
 
-pub mod mock_runner;
+pub mod process_runner;

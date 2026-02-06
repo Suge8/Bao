@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.memory.inject_error/v1",
+  "type": "object",
+  "required": ["source", "stage", "sessionId", "code", "error"],
+  "properties": {
+    "source": { "type": "string", "minLength": 1 },
+    "stage": {
+      "type": "string",
+      "enum": ["memory.inject.search", "memory.inject.pipeline"]
+    },
+    "sessionId": { "type": "string", "minLength": 1 },
+    "code": {
+      "type": "string",
+      "enum": ["ERR_MEMORY_INJECT_SEARCH", "ERR_MEMORY_INJECT_PIPELINE"]
+    },
+    "error": { "type": "string", "minLength": 1 },
+    "memoryQuery": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

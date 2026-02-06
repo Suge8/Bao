@@ -9,11 +9,12 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["method", "paramsSchemaRef", "resultSchemaRef"],
+        "required": ["method", "paramsSchemaRef", "resultSchemaRef", "notification"],
         "properties": {
-          "method": { "type": "string", "minLength": 1 },
+          "method": { "type": "string", "pattern": "^provider\\." },
           "paramsSchemaRef": { "type": "string", "minLength": 1 },
-          "resultSchemaRef": { "type": "string", "minLength": 1 }
+          "resultSchemaRef": { "type": "string", "minLength": 1 },
+          "notification": { "type": "boolean" }
         }
       }
     }

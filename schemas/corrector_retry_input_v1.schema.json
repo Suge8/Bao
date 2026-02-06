@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.corrector.retry_input/v1",
+  "type": "object",
+  "required": ["attempt", "maxAttempts", "toolOk"],
+  "properties": {
+    "attempt": { "type": "integer", "minimum": 1 },
+    "maxAttempts": { "type": "integer", "minimum": 1 },
+    "toolOk": { "type": "boolean" },
+    "validationOk": { "type": "boolean" }
+  }
+}

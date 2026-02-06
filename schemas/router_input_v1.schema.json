@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.router.input/v1",
+  "type": "object",
+  "required": ["userInput"],
+  "properties": {
+    "userInput": { "type": "string", "minLength": 1 }
+  }
+}

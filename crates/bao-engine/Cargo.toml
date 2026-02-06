@@ -7,3 +7,8 @@ edition = "2021"
 bao-api = { path = "../bao-api" }
 bao-storage = { path = "../bao-storage" }
 bao-plugin-host = { path = "../bao-plugin-host" }
+serde_json = "1"
+
+[dev-dependencies]
+rusqlite = { version = "0.31.0", features = ["bundled"] }
+tempfile = "3.10.1"

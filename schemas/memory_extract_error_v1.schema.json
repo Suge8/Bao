@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.memory.extract_error/v1",
+  "type": "object",
+  "required": ["source", "stage", "sessionId", "code", "error"],
+  "properties": {
+    "source": { "type": "string", "minLength": 1 },
+    "stage": {
+      "type": "string",
+      "enum": ["memory.extract.plan", "memory.extract.apply_plan"]
+    },
+    "sessionId": { "type": "string", "minLength": 1 },
+    "code": {
+      "type": "string",
+      "enum": ["ERR_MEMORY_EXTRACT_PLAN", "ERR_MEMORY_EXTRACT_APPLY_PLAN"]
+    },
+    "error": { "type": "string", "minLength": 1 },
+    "planId": { "type": ["string", "null"] },
+    "mutationCount": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": true
+}

@@ -1,7 +1,15 @@
 # bao.bundled.skills-adapter
 
-skills 适配点心（promptpack + resourcepack + tools）。
+内置 skills 资源适配点心（`types: ["promptpack", "resourcepack", "tool"]`，`runtime: process`）。
 
-规则：`SKILL.md` 作为 prompt/metadata；其他文件全部作为资源（只读，不自动执行）。
+当前阶段（Stage1）已提供可执行 JSON-RPC 服务：
+- `resource.methods`
+- `resource.list`
+- `resource.read`
 
-阶段1：只提供 manifest 占位与工具声明。
+开发环境运行命令：
+- `cargo run -q -p bao-dimsum-process --bin bao-skills-adapter --`
+
+命名空间：
+- `skills`：默认 `BAO_SKILLS_ROOT`，回退 `~/.agents/skills`
+- `dir:<abs_path>`：显式目录（仅开发）

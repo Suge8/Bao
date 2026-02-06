@@ -1,15 +1,49 @@
 {
-"$schema": "https://json-schema.org/draft/2020-12/schema",
-"$id": "bao.event/v1",
-"type": "object",
-"required": ["eventId", "ts", "type", "payload"],
-"properties": {
-"eventId": { "type": "integer", "minimum": 1 },
-"ts": { "type": "integer", "minimum": 1 },
-"type": { "type": "string", "minLength": 1 },
-"sessionId": { "type": "string" },
-"messageId": { "type": "string" },
-"deviceId": { "type": "string" },
-"payload": { "type": "object" }
-}
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.event/v1",
+  "type": "object",
+  "required": ["eventId", "ts", "type", "payload"],
+  "properties": {
+    "eventId": { "type": "integer", "minimum": 1 },
+    "ts": { "type": "integer", "minimum": 1 },
+    "type": { "type": "string", "minLength": 1 },
+    "sessionId": { "type": "string" },
+    "messageId": { "type": "string" },
+    "deviceId": { "type": "string" },
+    "payload": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "provider.call.error" } } },
+      "then": { "properties": { "payload": { "$ref": "bao.provider.call_error/v1" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "engine.turn" } } },
+      "then": { "properties": { "payload": { "$ref": "bao.engine.turn_payload/v1" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "memory.inject.error" } } },
+      "then": { "properties": { "payload": { "$ref": "bao.memory.inject_error/v1" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "memory.extract.error" } } },
+      "then": { "properties": { "payload": { "$ref": "bao.memory.extract_error/v1" } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "corrector.validate_tool_result.error" }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": { "$ref": "bao.corrector.validate_tool_result_error/v1" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "corrector.decide_retry.error" } } },
+      "then": { "properties": { "payload": { "$ref": "bao.corrector.decide_retry_error/v1" } } }
+    }
+  ]
 }

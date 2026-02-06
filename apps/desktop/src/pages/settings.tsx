@@ -11,18 +11,48 @@ export default function SettingsPage() {
   const [pairingToken, setPairingToken] = useState<string | null>(null);
   const [gatewayRunning, setGatewayRunning] = useState<boolean | null>(null);
 
+  const [providerActive, setProviderActive] = useState("openai");
+  const [providerModel, setProviderModel] = useState("gpt-4.1-mini");
+  const [providerBaseUrl, setProviderBaseUrl] = useState("https://api.openai.com/v1");
+  const [providerApiKey, setProviderApiKey] = useState("");
+  const [providerSaving, setProviderSaving] = useState(false);
+
   useEffect(() => {
     let mounted = true;
     client
       .getSettings()
       .then((res) => {
         if (!mounted) return;
-        const entries = new Map(
-          res.settings.map((s) => [s.key, s.value] as const),
-        );
+        const entries = new Map(res.settings.map((s) => [s.key, s.value] as const));
+
         const allowLanValue = entries.get("gateway.allowLan");
         if (typeof allowLanValue === "boolean") {
           setAllowLan(allowLanValue);
+        }
+
+        const runningValue = entries.get("gateway.running");
+        if (typeof runningValue === "boolean") {
+          setGatewayRunning(runningValue);
+        }
+
+        const active = entries.get("provider.active");
+        if (typeof active === "string" && active.trim()) {
+          setProviderActive(active.trim());
+        }
+
+        const model = entries.get("provider.model");
+        if (typeof model === "string" && model.trim()) {
+          setProviderModel(model.trim());
+        }
+
+        const baseUrl = entries.get("provider.baseUrl");
+        if (typeof baseUrl === "string" && baseUrl.trim()) {
+          setProviderBaseUrl(baseUrl.trim());
+        }
+
+        const apiKey = entries.get("provider.apiKey");
+        if (typeof apiKey === "string") {
+          setProviderApiKey(apiKey);
         }
       })
       .catch(() => {
@@ -34,16 +64,12 @@ export default function SettingsPage() {
   }, [client]);
 
   useEffect(() => {
-    let mounted = true;
-    if (!mounted) return () => {
-      mounted = false;
-    };
     void client.updateSettings("gateway.allowLan", allowLan).catch(() => {
       // ignore in non-tauri contexts
     });
-    return () => {
-      mounted = false;
-    };
+    void client.gatewaySetAllowLan(allowLan).catch(() => {
+      // ignore in non-tauri contexts
+    });
   }, [allowLan, client]);
 
   const gatewayStatusLabel = useMemo(() => {
@@ -54,12 +80,39 @@ export default function SettingsPage() {
   const allowLanLabel = useMemo(() => {
     return allowLan ? "LAN" : "Local";
   }, [allowLan]);
+
+  const providerHint = useMemo(() => {
+    return `${providerActive}/${providerModel}`;
+  }, [providerActive, providerModel]);
+
+  const saveProviderSettings = async () => {
+    const active = providerActive.trim();
+    const model = providerModel.trim();
+    const baseUrl = providerBaseUrl.trim();
+
+    if (!active || !model || !baseUrl) {
+      return;
+    }
+
+    setProviderSaving(true);
+    try {
+      await Promise.all([
+        client.updateSettings("provider.active", active),
+        client.updateSettings("provider.model", model),
+        client.updateSettings("provider.baseUrl", baseUrl),
+        client.updateSettings("provider.apiKey", providerApiKey.trim()),
+      ]);
+    } finally {
+      setProviderSaving(false);
+    }
+  };
+
   return (
     <div className="space-y-6" data-testid="page-settings">
-      <Page title={t("page.settings.title")} description="设置页面骨架（权限/审计/网络等占位）。" />
+      <Page title={t("page.settings.title")} description="网关、配对、语言与运行状态设置。" />
 
-      <div className="mx-auto w-full max-w-5xl">
-        <div className="mb-4 rounded-2xl bg-foreground/5 p-4">
+      <div className="mx-auto w-full max-w-5xl space-y-4">
+        <div className="rounded-2xl bg-foreground/5 p-4">
           <div className="text-sm font-medium">网络与远程访问</div>
           <div className="mt-2 text-sm text-foreground/70">
             默认仅本机（127.0.0.1）。如需远程访问，请使用 Tailscale 或受控 tunnel；不要将服务裸露到公网。
@@ -88,9 +141,7 @@ export default function SettingsPage() {
             >
               仅本机
             </button>
-            <div className="text-xs text-foreground/60">
-              切换后下次启动生效（绑定 0.0.0.0 或 127.0.0.1）
-            </div>
+            <div className="text-xs text-foreground/60">可即时切换 Gateway 绑定模式</div>
           </div>
           <div className="mt-3 flex items-center gap-3 text-sm">
             <button
@@ -137,9 +188,45 @@ export default function SettingsPage() {
             >
               生成配对 Token
             </button>
-            <div className="text-xs text-foreground/60">
-              {pairingToken ? pairingToken : "未生成"}
-            </div>
+            <div className="text-xs text-foreground/60">{pairingToken ? pairingToken : "未生成"}</div>
+          </div>
+        </div>
+
+        <div className="rounded-2xl bg-foreground/5 p-4">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-medium">Provider 配置</div>
+            <div className="text-xs text-muted-foreground">当前：{providerHint}</div>
+          </div>
+
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <InputField label="provider.active" value={providerActive} onChange={setProviderActive} />
+            <InputField label="provider.model" value={providerModel} onChange={setProviderModel} />
+            <InputField label="provider.baseUrl" value={providerBaseUrl} onChange={setProviderBaseUrl} />
+            <InputField
+              label="provider.apiKey"
+              value={providerApiKey}
+              onChange={setProviderApiKey}
+              type="password"
+            />
+          </div>
+
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => {
+                void saveProviderSettings();
+              }}
+              disabled={providerSaving}
+              className={cn(
+                "rounded-xl px-3 py-2 text-sm transition",
+                providerSaving
+                  ? "cursor-not-allowed bg-foreground/10 text-muted-foreground"
+                  : "bg-foreground text-background hover:opacity-90",
+              )}
+              data-testid="settings-provider-save"
+            >
+              {providerSaving ? "保存中" : "保存 Provider"}
+            </button>
           </div>
         </div>
 
@@ -170,5 +257,29 @@ export default function SettingsPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function InputField({
+  label,
+  value,
+  onChange,
+  type = "text",
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  type?: string;
+}) {
+  return (
+    <label className="rounded-xl bg-background p-3">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="mt-2 h-10 w-full rounded-xl bg-foreground/5 px-3 text-sm outline-none"
+      />
+    </label>
   );
 }

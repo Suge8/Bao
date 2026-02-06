@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.engine.turn_payload/v1",
+  "oneOf": [
+    { "$ref": "bao.engine.turn_tool_payload/v1" },
+    { "$ref": "bao.engine.turn_provider_payload/v1" }
+  ]
+}

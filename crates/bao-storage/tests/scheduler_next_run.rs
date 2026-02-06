@@ -22,7 +22,9 @@ fn mark_task_run_disables_once_task_and_clears_next_run() {
     .expect("insert task");
 
     let storage = Storage::open(sqlite_path).expect("open storage");
-    storage.mark_task_run("t_once", "success", None, 10).expect("mark run");
+    storage
+        .mark_task_run("t_once", "success", None, 10)
+        .expect("mark run");
 
     let (enabled, next_run_at): (i64, Option<i64>) = conn
         .query_row(

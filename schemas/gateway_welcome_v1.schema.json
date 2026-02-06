@@ -2,10 +2,18 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "bao.gateway.welcome/v1",
   "type": "object",
-  "required": ["session", "assignedDeviceId", "replayFromEventId"],
+  "required": ["session", "assignedDeviceId", "replayFromEventId", "pairing"],
   "properties": {
     "session": { "type": "string", "minLength": 1 },
     "assignedDeviceId": { "type": "string", "minLength": 1 },
-    "replayFromEventId": { "type": ["integer", "null"], "minimum": 1 }
+    "replayFromEventId": { "type": ["integer", "null"], "minimum": 1 },
+    "pairing": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": { "type": "string", "enum": ["paired", "rejected", "existing"] },
+        "deviceToken": { "type": "string" }
+      }
+    }
   }
 }

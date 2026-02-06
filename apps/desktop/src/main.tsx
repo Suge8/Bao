@@ -6,7 +6,7 @@ import { I18nProvider } from "./i18n/i18n";
 import { ClientProvider } from "./data/use-client";
 import { subscribeBaoEvents } from "@/lib/bao-events";
 
-// Phase1 minimal: log events; UI pages are still skeleton.
+// Runtime event log hook.
 subscribeBaoEvents((evt) => {
   // eslint-disable-next-line no-console
   console.log("[bao:event]", evt.type, evt);

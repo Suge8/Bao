@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.engine.error_code/v1",
+  "type": "string",
+  "enum": [
+    "ERR_ENGINE_TURN",
+    "ERR_CORRECTOR_VALIDATE_TOOL_RESULT",
+    "ERR_CORRECTOR_DECIDE_RETRY",
+    "ERR_MEMORY_INJECT_SEARCH",
+    "ERR_MEMORY_INJECT_PIPELINE",
+    "ERR_PROVIDER_CALL",
+    "ERR_MEMORY_EXTRACT_APPLY_PLAN",
+    "ERR_MEMORY_EXTRACT_PLAN"
+  ]
+}

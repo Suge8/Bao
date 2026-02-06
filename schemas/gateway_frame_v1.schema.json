@@ -9,6 +9,7 @@
       "enum": [
         "hello",
         "welcome",
+        "pairing_token",
         "event",
         "replay_request",
         "error"
@@ -24,6 +25,10 @@
     {
       "if": { "properties": { "type": { "const": "welcome" } } },
       "then": { "properties": { "payload": { "$ref": "bao.gateway.welcome/v1" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "pairing_token" } } },
+      "then": { "properties": { "payload": { "$ref": "bao.gateway.pairing_token/v1" } } }
     },
     {
       "if": { "properties": { "type": { "const": "event" } } },

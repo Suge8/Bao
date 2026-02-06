@@ -6,6 +6,7 @@ import { useClient } from "@/data/use-client";
 export function Topbar({ title }: { title: string }) {
   const client = useClient();
   const [gatewayAllowLan, setGatewayAllowLan] = useState<boolean | null>(null);
+  const [gatewayRunning, setGatewayRunning] = useState<boolean | null>(null);
   const [providerModel, setProviderModel] = useState<string>("Unknown");
 
   useEffect(() => {
@@ -14,12 +15,14 @@ export function Topbar({ title }: { title: string }) {
       .getSettings()
       .then((res) => {
         if (!mounted) return;
-        const entries = new Map(
-          res.settings.map((s) => [s.key, s.value] as const),
-        );
+        const entries = new Map(res.settings.map((s) => [s.key, s.value] as const));
         const allowLan = entries.get("gateway.allowLan");
         if (typeof allowLan === "boolean") {
           setGatewayAllowLan(allowLan);
+        }
+        const runningValue = entries.get("gateway.running");
+        if (typeof runningValue === "boolean") {
+          setGatewayRunning(runningValue);
         }
         const provider = entries.get("provider.active");
         const model = entries.get("provider.model");
@@ -32,6 +35,7 @@ export function Topbar({ title }: { title: string }) {
       .catch(() => {
         if (mounted) {
           setGatewayAllowLan(null);
+          setGatewayRunning(null);
           setProviderModel("Unavailable");
         }
       });
@@ -41,9 +45,10 @@ export function Topbar({ title }: { title: string }) {
   }, [client]);
 
   const gatewayLabel = useMemo(() => {
-    if (gatewayAllowLan === null) return "Gateway: Unknown";
-    return gatewayAllowLan ? "Gateway: LAN" : "Gateway: Local";
-  }, [gatewayAllowLan]);
+    if (gatewayRunning === null || gatewayAllowLan === null) return "Gateway: Unknown";
+    const mode = gatewayAllowLan ? "LAN" : "Local";
+    return gatewayRunning ? `Gateway: ${mode}` : "Gateway: Stopped";
+  }, [gatewayAllowLan, gatewayRunning]);
 
   return (
     <div className="sticky top-0 z-20">
@@ -60,13 +65,32 @@ export function Topbar({ title }: { title: string }) {
         </div>
 
         <div className="flex items-center gap-2">
-          <TopbarIconButton label="New" testId="topbar-new">
+          <TopbarIconButton
+            label="New"
+            testId="topbar-new"
+            onClick={() => {
+              const sessionId = `s-${Date.now()}`;
+              void client.createSession(sessionId, `Session ${new Date().toLocaleTimeString()}`);
+            }}
+          >
             <Plus className="h-4 w-4" />
           </TopbarIconButton>
-          <TopbarIconButton label="Pause" testId="topbar-pause">
+          <TopbarIconButton
+            label="Pause"
+            testId="topbar-pause"
+            onClick={() => {
+              void client.gatewayStop();
+            }}
+          >
             <Pause className="h-4 w-4" />
           </TopbarIconButton>
-          <TopbarIconButton label="Kill" testId="topbar-kill">
+          <TopbarIconButton
+            label="Kill"
+            testId="topbar-kill"
+            onClick={() => {
+              void client.killSwitchStopAll();
+            }}
+          >
             <Square className="h-4 w-4" />
           </TopbarIconButton>
         </div>
@@ -79,10 +103,12 @@ function TopbarIconButton({
   children,
   label,
   testId,
+  onClick,
 }: {
   children: React.ReactNode;
   label: string;
   testId: string;
+  onClick: () => void;
 }) {
   return (
     <motion.button
@@ -91,6 +117,7 @@ function TopbarIconButton({
       data-testid={testId}
       whileTap={{ scale: 0.96 }}
       className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-foreground/5 text-foreground transition hover:bg-foreground/10"
+      onClick={onClick}
     >
       {children}
     </motion.button>

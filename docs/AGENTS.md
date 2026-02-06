@@ -1,76 +1,69 @@
-# Bao — Stage 0 (骨架)
+# Bao — Stage 1（集成可运行）
 
-本文件定义 **Bao 阶段0** 的确定性工程契约。阶段0只做：目录契约、公共 API/traits/stubs、schema 落盘、DB migration 落盘、最小测试框架落地。阶段0不实现完整业务。
+本文件定义 **Bao 阶段1** 的工程契约：在保留 Stage0 目录与协议稳定性的前提下，把桌面端核心链路（对话/任务/记忆/点心/网关）接线为可运行实现，并保持可审计、可回放、可回归。
 
 ## 1. 仓库形态（不可变）
 
 - Monorepo：pnpm + turborepo。
-- 桌面端：Tauri + React + Vite + shadcn/ui + framer-motion（依赖已存在）。
-- 移动端：apps/mobile（Expo）保留；阶段0仅保持脚手架与目录契约。
-- Rust：作为 Core/插件系统核心语言；Rust workspace 可编译。
+- 桌面端：Tauri + React + Vite + shadcn/ui + framer-motion。
+- 移动端：apps/mobile（Expo）保留。
+- Rust：Core/网关/存储/插件系统主语言。
 - 禁止：任何 admin-web / 浏览器面板；桌面端 IPC 禁止 HTTP/SSE。
 
 ## 2. 通信与事件（确定性）
 
-- Desktop 内部：只允许 Tauri invoke（请求-响应）与 Tauri event（发布-订阅）。
-- Mobile：通过 WebSocket Gateway 连接桌面运行的 gateway；移动端不直接访问桌面 IPC。
+- Desktop 内部：仅 Tauri invoke（请求-响应）与 Tauri event（发布-订阅）。
+- Mobile：通过 WebSocket Gateway 连接桌面运行的 gateway。
+- 事件统一：`BaoEvent (bao.event/v1)`，并写入 `events` 表用于回放。
 
-事件规范：统一使用 `BaoEvent (bao.event/v1)` schema；桌面 Rust 侧 emit 的 payload 必须可序列化且受权限/审计约束。
+### 2.1 桌面端命令面（Stage1 实际提供）
 
-### 2.1 桌面端命令面（Tauri commands，目标契约）
-
-桌面端必须提供（命名建议与 UI 对齐，camelCase）：
-
-- `sendMessage(sessionId, text)`
-- `listSessions` / `listTasks` / `listDimsums` / `listMemories`
-- `getSettings` / `updateSettings`
-- gateway: `gatewayStart` / `gatewayStop` / `generatePairingToken`
-
-如 UI 已提供入口，则必须接通：
-
-- tasks: `createTask` / `updateTask` / `enableTask` / `disableTask` / `runTaskNow`
-- memory: `searchIndex` / `getItems` / `getTimeline` / `applyMutationPlan` / `rollbackVersion`
+- 会话/对话：`sendMessage` / `createSession` / `listSessions` / `runEngineTurn`
+- 任务：`listTasks` / `createTask` / `updateTask` / `enableTask` / `disableTask` / `runTaskNow`
+- 点心：`listDimsums` / `enableDimsum` / `disableDimsum`
+- 记忆：`listMemories` / `searchIndex` / `getItems` / `getTimeline` / `listMemoryVersions` / `applyMutationPlan` / `rollbackVersion`
+- 设置：`getSettings` / `updateSettings`
+- 网关：`gatewayStart` / `gatewayStop` / `gatewaySetAllowLan` / `generatePairingToken`
+- MCP Bridge：`mcpListTools` / `mcpCallTool`
+- Skills 资源：`resourceList` / `resourceRead`
+- 全局停止：`killSwitchStopAll`
 
 ## 3. 点心（Dimsum）
 
-- 点心必须热拔插，运行时只允许：`wasm` 与 `process`。
-- Router / Memory / Corrector / Provider 全部点心化，并以 **Bundled Dimsums** 随安装分发，语义上不可卸载。
+- 运行时仅允许：`wasm` 与 `process`。
+- Router / Memory / Corrector / Provider 保持点心化边界。
+- Stage1 执行器使用 `ProcessToolRunner`（替代 mock runner），支持超时与 kill group。
 
-### 3.1 性能与资源限制（WASM，强制）
+## 4. skills 仓库处理（确定性）
 
-- 模块缓存：按 wasm bytes 的 sha256 key 复用编译后的 module。
-- 实例池：仅 `highFrequency` 点心保留 warm 实例，数量固定 2。
-- `lowFrequency`：按需创建实例，用完销毁。
-- 限制：`maxLinearMemoryBytes`、`fuelPerCall`、`timeoutMs` 必须生效。
+- `SKILL.md` 作为 promptpack 入口。
+- 其余文件归类为 resourcepack，只读、可检索、不可自动执行。
+- 任何执行必须通过显式工具并受权限与审计控制。
 
-## 4. MCP 接入（确定性）
+## 5. Memory Native（强约束）
 
-- MCP 不进入 Core。
-- MCP 通过 `mcp-bridge` 点心接入：同一点心包 `types` 同时包含 `tool` 与 `bridge`。
-- `mcp-bridge` 必须是 `process` runtime（spawn/连接 MCP transport）。
+- 真相源：SQLite（结构化）+ Blob（大对象）。
+- 点心只提交 `MemoryMutationPlan`，由 core/gateway 执行并写 `audit_events`。
+- Progressive Disclosure：`searchIndex -> getTimeline -> getItems`。
 
-## 5. skills 仓库处理（确定性）
+## 6. Scheduler/Heartbeat（强约束）
 
-- `SKILL.md`：唯一作为 promptpack 的入口（metadata + prompt）。
-- 其他任意文件（py/ts/js/csv/json/image 等）：一律归类为资源（resourcepack），只允许被显式工具读取；默认只读。
-- 任何资源文件的执行必须通过显式 Tool（如 PTY/CLI 或脚本执行点心）并受 permissions + audit 约束；禁止自动执行。
+- Scheduler 以 tick 扫描到期任务。
+- 到期任务仅执行显式 `dimsumId + toolName + args`。
+- 所有执行写 `events` 与 `audit_events`，支持 kill switch。
 
-## 6. Memory Native（强约束）
+### 6.1 现状（Stage1）
 
-- Single Source of Truth：事实只落 SQLite（结构化）+ Blob（artifacts）。
-- 点心不得直接写库：点心只能提交 `MemoryMutationPlan (bao.memory.mutation_plan/v1)`；Core 执行并写审计。
-- Progressive Disclosure：检索默认返回 `MemoryHit (bao.memory.hit/v1)`；需要时再拉全文与证据链。
-- Evolution Pipeline：Extract→Normalize→Dedup→Conflict/Merge→Versioned Mutations。
-
-## 7. Scheduler/Heartbeat（强约束）
-
-- Scheduler 是一等能力：tick 驱动扫描到期任务。
-- 到期任务只执行“显式计划”：指定 `dimsumId + toolName + args`。
-- 所有任务执行必须：权限门禁、审计 hash chain、回归（golden prompts/tasks），失败回滚。
-- Kill Switch：可终止正在运行的任务/工具。
-
-### 7.1 现状（阶段1落地）
-
-- 桌面端启动 scheduler tick（默认 1s），从 SQLite 拉取 due tasks 并触发 tool 执行（当前 runner 为 mock）。
-- Kill Switch 已接入：能终止正在执行的任务组，并停止 scheduler/gateway 任务。
-- 事件流通过 `events` 表回放为 `bao:event`，移动端可实时收到。
+- 桌面端启动 scheduler tick（默认 1s），从 SQLite 拉取 due tasks 并触发 `ProcessToolRunner`。
+- Kill Switch 已接入：可终止正在执行任务组并停止 scheduler/gateway。
+- 事件流通过 `events` 表回放为 `bao:event`，桌面与移动端可实时收到。
+- 任务执行写入 `events` 与 `audit_events`；run-now 可立即触发执行。
+- 记忆 mutation/rollback 已落库并写入 `audit_events`，并支持按版本列表选择回滚目标。
+- Chat 已接通 `runEngineTurn`：输入会触发默认 Router/Memory/Corrector/Provider 流程并回写事件。
+- `runEngineTurn` 在非 must-trigger 场景会按 settings 调用 provider dimsum process(JSON-RPC)（OpenAI/Anthropic/Gemini/xAI）。
+- Settings 可直接维护 `provider.active/model/baseUrl/apiKey`，与运行时调用一致。
+- 新增 `bao-dimsum-process`：bundled provider/skills-adapter/mcp-bridge 具备可执行 JSON-RPC 进程实现。
+- `runEngineTurn` 非工具分支优先走 provider dimsum process(JSON-RPC)执行，保持点心边界一致。
+- `runEngineTurn` 在 `needsMemory=true` 时会真实调用 `searchIndex/getItems` 组装记忆上下文，不再使用本地占位注入。
+- `bao.bundled.mcp-bridge` 已提供 `bridge.list_tools/bridge.call_tool`，支持 stdio/http MCP server 桥接。
+- 新增 `resourceList/resourceRead` 桌面命令，已接通 `bao.bundled.skills-adapter` process JSON-RPC。

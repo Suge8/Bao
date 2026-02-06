@@ -18,5 +18,19 @@
         "data": { "type": ["object", "array", "string", "number", "boolean", "null"] }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": { "required": ["method"] },
+      "then": { "not": { "required": ["result", "error"] } }
+    },
+    {
+      "if": { "required": ["result"] },
+      "then": { "required": ["id"] }
+    },
+    {
+      "if": { "required": ["error"] },
+      "then": { "required": ["id"] }
+    }
+  ]
 }

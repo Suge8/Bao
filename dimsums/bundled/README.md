@@ -1,9 +1,13 @@
-# Bundled Dimsums
+# bundled dimsums
 
-本目录包含 **随安装包分发、不可卸载** 的内置点心（Bundled Dimsums）。
+本目录存放 Bao 内置点心（随桌面应用分发）。
 
-阶段0/1 仅提供目录契约与 manifest stubs，用于并行开发隔离：
+现状（Stage1）：
+- provider（openai/anthropic/gemini/xai）已提供可执行 process JSON-RPC 实现。
+- skills-adapter 已提供可执行 `resource.list` / `resource.read`。
+- mcp-bridge 已提供可执行桥接方法（`bridge.list_tools` / `bridge.call_tool`，支持 stdio/http）。
+- router/memory/corrector 仍以 manifest + hook 契约为主，后续继续补齐 wasm 运行实现。
 
-- 每个点心在独立子目录内自包含（manifest + 资源）。
-- Core 以 `schemas/dimsum_manifest_v1.schema.json` 校验 manifest。
-- Router/Memory/Corrector/Provider 均以点心形式存在（不可把策略写进 core）。
+统一约束：
+- 所有 process 点心使用 `bao-jsonrpc/v1`。
+- 所有执行均受 Bao 权限与审计链约束。
