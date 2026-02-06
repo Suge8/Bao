@@ -56,6 +56,8 @@
 - bao-dimsum-process：pipeline hooks 补齐 `corrector.validate_tool_result`、`corrector.decide_retry`、`memory.extract`，并提供最小确定性策略与单测。
 - runEngineTurn：工具路径补齐「执行结果校验→重试决策（最多 1 次重试）」并写入 `corrector.*.error` 可观测事件。
 - runEngineTurn：回合收尾新增 `memory.extract -> applyMutationPlan`，失败写入 `memory.extract.error`，记忆链路形成闭环。
+- desktop：补齐 `@bao/i18n` workspace 依赖，修复 desktop tsc lint 解析失败。
+- toolchain：根目录启用 pnpm `onlyBuiltDependencies`（`esbuild`/`unrs-resolver`），避免安装后 build scripts 被忽略导致构建异常。
 
 - schema：新增 `router_input/memory_inject_input/memory_inject_output/memory_extract_input/toolcall_result/corrector_validation/corrector_retry_input/corrector_retry_output` 契约文件，补齐 pipeline hooks schema 断点。
 - schema-tests：新增 pipeline hooks 示例 payload 校验（正反例），确保 contract 可编译且实例可验证。
@@ -172,6 +174,8 @@
 - [DOC] 2026-02-06 更新 bundled router/memory/corrector README，移除“manifest 占位”过期描述
 - [FEAT] 2026-02-06 mobile 新增跨页联动事件筛选 + settings 错误聚合（type/code/stage/count/latestEventId）
 - [FEAT] 2026-02-06 mobile 错误聚合支持 provider/session 维度钻取 + warn/critical 阈值告警 + 最近错误事件视图
+- [FIX] 2026-02-06 desktop 补齐 `@bao/i18n` workspace 依赖，修复 tsc lint 解析失败
+- [FIX] 2026-02-06 pnpm 启用 `onlyBuiltDependencies`，允许 esbuild/unrs-resolver build scripts 正常执行
 
 # 未来发展（优先级）
 
@@ -187,3 +191,4 @@ P2
 
 - desktop e2e 真后端链路补齐（减少对 Tauri mock 的依赖，补充真实 IPC/事件流回放场景）。
 - 构建告警治理（Tauri API dynamic import chunk 警告收敛）。
+- 开发文档补齐 pnpm build scripts allowlist 与 Playwright 浏览器安装指引，减少新环境启动阻塞。
