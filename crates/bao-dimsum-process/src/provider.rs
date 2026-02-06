@@ -109,6 +109,10 @@ fn run_provider(kind: ProviderKind, params: &Value) -> Result<Value, RpcError> {
     let prompt = build_prompt(&parsed.messages)
         .ok_or_else(|| RpcError::invalid_params("messages content cannot be empty"))?;
 
+    if let Some(simulated) = maybe_simulate_tool_call_output(&prompt) {
+        return Ok(simulated);
+    }
+
     let config = parsed.config.unwrap_or(ProviderConfig {
         model: None,
         base_url: None,
@@ -129,6 +133,56 @@ fn run_provider(kind: ProviderKind, params: &Value) -> Result<Value, RpcError> {
       "kind": "message",
       "message": answer,
     }))
+}
+
+fn maybe_simulate_tool_call_output(prompt: &str) -> Option<Value> {
+    let has_tool_feedback = prompt.contains("tool: {") && prompt.contains("\"ok\"");
+
+    if prompt.contains("__provider_tool_calls__") {
+        if has_tool_feedback {
+            return Some(json!({
+                "kind": "message",
+                "message": "provider tool calls completed"
+            }));
+        }
+        return Some(json!({
+            "kind": "tool_calls",
+            "toolCalls": [
+                {
+                    "id": "tc_batch_1",
+                    "name": "resource.list",
+                    "args": {"namespace": "skills"},
+                    "source": {"provider": "bao.bundled.provider.openai", "model": "gpt-4.1-mini"}
+                },
+                {
+                    "id": "tc_batch_2",
+                    "name": "resource.list",
+                    "args": {"namespace": "skills", "prefix": "docs"},
+                    "source": {"provider": "bao.bundled.provider.openai", "model": "gpt-4.1-mini"}
+                }
+            ]
+        }));
+    }
+
+    if prompt.contains("__provider_tool_call__") {
+        if has_tool_feedback {
+            return Some(json!({
+                "kind": "message",
+                "message": "provider tool call completed"
+            }));
+        }
+        return Some(json!({
+            "kind": "tool_call",
+            "toolCall": {
+                "id": "tc_single_1",
+                "name": "resource.list",
+                "args": {"namespace": "skills"},
+                "source": {"provider": "bao.bundled.provider.openai", "model": "gpt-4.1-mini"}
+            }
+        }));
+    }
+
+    None
 }
 
 fn build_prompt(messages: &[ProviderMessage]) -> Option<String> {
@@ -474,5 +528,72 @@ mod tests {
         .expect("prompt");
         assert!(prompt.contains("user: hello"));
         assert!(!prompt.contains("assistant:"));
+    }
+
+    #[test]
+    fn provider_run_should_return_single_tool_call_fixture_then_message() {
+        let first = handle_provider_method(
+            ProviderKind::OpenAI,
+            "provider.run",
+            &serde_json::json!({
+                "sessionId": "s1",
+                "messages": [
+                    {"role": "user", "content": "__provider_tool_call__"}
+                ]
+            }),
+        )
+        .expect("provider run fixture single tool call");
+        assert_eq!(first.get("kind"), Some(&serde_json::json!("tool_call")));
+
+        let second = handle_provider_method(
+            ProviderKind::OpenAI,
+            "provider.run",
+            &serde_json::json!({
+                "sessionId": "s1",
+                "messages": [
+                    {"role": "user", "content": "__provider_tool_call__"},
+                    {"role": "tool", "content": "{\"ok\":true,\"output\":{}}"}
+                ]
+            }),
+        )
+        .expect("provider run fixture message after tool");
+        assert_eq!(second.get("kind"), Some(&serde_json::json!("message")));
+    }
+
+    #[test]
+    fn provider_run_should_return_parallel_tool_calls_fixture_then_message() {
+        let first = handle_provider_method(
+            ProviderKind::OpenAI,
+            "provider.run",
+            &serde_json::json!({
+                "sessionId": "s1",
+                "messages": [
+                    {"role": "user", "content": "__provider_tool_calls__"}
+                ]
+            }),
+        )
+        .expect("provider run fixture parallel tool calls");
+        assert_eq!(first.get("kind"), Some(&serde_json::json!("tool_calls")));
+        assert_eq!(
+            first
+                .get("toolCalls")
+                .and_then(serde_json::Value::as_array)
+                .map(|v| v.len()),
+            Some(2)
+        );
+
+        let second = handle_provider_method(
+            ProviderKind::OpenAI,
+            "provider.run",
+            &serde_json::json!({
+                "sessionId": "s1",
+                "messages": [
+                    {"role": "user", "content": "__provider_tool_calls__"},
+                    {"role": "tool", "content": "{\"ok\":true,\"output\":{}}"}
+                ]
+            }),
+        )
+        .expect("provider run fixture message after parallel tool calls");
+        assert_eq!(second.get("kind"), Some(&serde_json::json!("message")));
     }
 }

@@ -221,6 +221,21 @@ describe("schemas", () => {
       },
     });
 
+    assertValid("bao.provider.run.output/v1", {
+      kind: "tool_calls",
+      toolCalls: [
+        {
+          id: "tc_batch_1",
+          name: "shell.exec",
+          args: { command: "echo", args: ["batch"] },
+          source: {
+            provider: "bao.bundled.provider.openai",
+            model: "gpt-4.1-mini",
+          },
+        },
+      ],
+    });
+
     assertValid("bao.provider.delta/v1", {
       kind: "text",
       text: "partial",
@@ -237,6 +252,21 @@ describe("schemas", () => {
           model: "gpt-4.1-mini",
         },
       },
+    });
+
+    assertValid("bao.provider.delta/v1", {
+      kind: "tool_calls",
+      toolCalls: [
+        {
+          id: "tc_delta_batch_1",
+          name: "resource.list",
+          args: { namespace: "skills" },
+          source: {
+            provider: "bao.bundled.provider.openai",
+            model: "gpt-4.1-mini",
+          },
+        },
+      ],
     });
 
     assertValid("bao.provider.delta/v1", {
@@ -419,12 +449,22 @@ describe("schemas", () => {
         kind: "tool_call",
       }),
     ).toBe(false);
+    expect(
+      providerRunOutputValidate!({
+        kind: "tool_calls",
+      }),
+    ).toBe(false);
 
     const providerDeltaValidate = ajv.getSchema(schemaId("bao.provider.delta/v1"));
     expect(providerDeltaValidate).toBeTypeOf("function");
     expect(
       providerDeltaValidate!({
         kind: "text",
+      }),
+    ).toBe(false);
+    expect(
+      providerDeltaValidate!({
+        kind: "tool_calls",
       }),
     ).toBe(false);
 

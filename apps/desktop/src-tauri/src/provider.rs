@@ -17,9 +17,31 @@ struct ProviderConfig {
 #[derive(Debug, Clone)]
 pub struct ProviderCallResult {
     pub provider: String,
-    pub output: String,
+    pub output: ProviderOutput,
 }
 
+#[derive(Debug, Clone)]
+pub struct ProviderInputMessage {
+    pub role: String,
+    pub content: String,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderToolCall {
+    pub id: String,
+    pub name: String,
+    pub args: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProviderOutput {
+    Message(String),
+    ToolCall(ProviderToolCall),
+    ToolCalls(Vec<ProviderToolCall>),
+}
+
+#[allow(dead_code)]
 pub async fn call_provider_via_runner(
     handle: &GatewayHandle,
     runner: &(dyn ToolRunner + Send + Sync),
@@ -31,6 +53,29 @@ pub async fn call_provider_via_runner(
         return Err("provider input cannot be empty".to_string());
     }
 
+    call_provider_via_runner_with_messages(
+        handle,
+        runner,
+        session_id,
+        &[ProviderInputMessage {
+            role: "user".to_string(),
+            content: content.to_string(),
+            name: None,
+        }],
+    )
+    .await
+}
+
+pub async fn call_provider_via_runner_with_messages(
+    handle: &GatewayHandle,
+    runner: &(dyn ToolRunner + Send + Sync),
+    session_id: &str,
+    messages: &[ProviderInputMessage],
+) -> Result<ProviderCallResult, String> {
+    if messages.is_empty() {
+        return Err("provider messages cannot be empty".to_string());
+    }
+
     let cfg = load_provider_config(handle).await?;
     let runtime = load_provider_runtime(handle, &cfg.active).await?;
 
@@ -40,7 +85,7 @@ pub async fn call_provider_via_runner(
         runner,
         &runtime,
         "provider.run",
-        build_provider_params(session_id, content, &cfg),
+        build_provider_params_with_messages(session_id, messages, &cfg),
         30_000,
     )?;
 
@@ -191,7 +236,11 @@ fn default_runtime_for(dimsum_id: &str) -> ProcessRuntime {
     }
 }
 
-fn build_provider_params(session_id: &str, input: &str, cfg: &ProviderConfig) -> Value {
+fn build_provider_params_with_messages(
+    session_id: &str,
+    messages: &[ProviderInputMessage],
+    cfg: &ProviderConfig,
+) -> Value {
     let mut config = Map::new();
     config.insert("model".to_string(), Value::String(cfg.model.clone()));
 
@@ -210,41 +259,78 @@ fn build_provider_params(session_id: &str, input: &str, cfg: &ProviderConfig) ->
 
     json!({
       "sessionId": session_id,
-      "messages": [
-        {
-          "role": "user",
-          "content": input,
-        }
-      ],
+      "messages": messages
+          .iter()
+          .map(|m| {
+              let mut row = Map::new();
+              row.insert("role".to_string(), Value::String(m.role.clone()));
+              row.insert("content".to_string(), Value::String(m.content.clone()));
+              if let Some(name) = m.name.clone() {
+                  row.insert("name".to_string(), Value::String(name));
+              }
+              Value::Object(row)
+          })
+          .collect::<Vec<_>>(),
       "config": Value::Object(config),
     })
 }
 
-fn parse_provider_result(result: &Value) -> Result<String, String> {
+fn parse_provider_result(result: &Value) -> Result<ProviderOutput, String> {
     if result.get("kind").and_then(Value::as_str) == Some("tool_call") {
-        if let Some(tool_call) = result.get("toolCall").and_then(Value::as_object) {
-            let name = tool_call
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown_tool");
-            let args = tool_call
-                .get("args")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({}));
-            let pretty_args = serde_json::to_string_pretty(&args).unwrap_or_else(|_| args.to_string());
-            return Ok(format!("provider 请求工具调用：{}\n{}", name, pretty_args));
+        let tool_call = result
+            .get("toolCall")
+            .ok_or_else(|| "provider response kind=tool_call but toolCall missing".to_string())?;
+        return Ok(ProviderOutput::ToolCall(parse_provider_tool_call(tool_call)?));
+    }
+
+    if result.get("kind").and_then(Value::as_str) == Some("tool_calls") {
+        let calls = result
+            .get("toolCalls")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "provider response kind=tool_calls but toolCalls missing".to_string())?;
+        if calls.is_empty() {
+            return Err("provider response toolCalls cannot be empty".to_string());
         }
-        return Err("provider response kind=tool_call but toolCall missing".to_string());
+        let mut parsed = Vec::with_capacity(calls.len());
+        for call in calls {
+            parsed.push(parse_provider_tool_call(call)?);
+        }
+        return Ok(ProviderOutput::ToolCalls(parsed));
     }
 
     if let Some(message) = result.get("message").and_then(Value::as_str) {
         let text = message.trim();
         if !text.is_empty() {
-            return Ok(text.to_string());
+            return Ok(ProviderOutput::Message(text.to_string()));
         }
     }
 
     Err("provider response missing message".to_string())
+}
+
+fn parse_provider_tool_call(raw: &Value) -> Result<ProviderToolCall, String> {
+    let name = raw
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "provider toolCall.name is required".to_string())?
+        .to_string();
+
+    let args = raw
+        .get("args")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let id = raw
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("tc_{}", time::OffsetDateTime::now_utc().unix_timestamp_nanos()));
+
+    Ok(ProviderToolCall { id, name, args })
 }
 
 fn probe_provider_methods(
@@ -280,7 +366,7 @@ fn method_is_supported(methods_result: &Value, method: &str) -> bool {
 mod tests {
     use super::{
         method_is_supported, normalize_provider_to_dimsum_id, parse_provider_result,
-        resolve_provider_identity,
+        resolve_provider_identity, ProviderOutput,
     };
 
     #[test]
@@ -306,7 +392,7 @@ mod tests {
     #[test]
     fn parse_provider_result_should_extract_message() {
         let out = parse_provider_result(&serde_json::json!({"message": "hello"})).expect("parse");
-        assert_eq!(out, "hello");
+        assert_eq!(out, ProviderOutput::Message("hello".to_string()));
     }
 
     #[test]
@@ -321,8 +407,44 @@ mod tests {
             }
         }))
         .expect("parse tool_call");
-        assert!(out.contains("provider 请求工具调用：shell.exec"));
-        assert!(out.contains("\"command\": \"echo\""));
+        match out {
+            ProviderOutput::ToolCall(call) => {
+                assert_eq!(call.name, "shell.exec");
+                assert_eq!(call.id, "tc_1");
+                assert_eq!(call.args.get("command"), Some(&serde_json::json!("echo")));
+            }
+            other => panic!("expected tool call output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_provider_result_should_extract_tool_calls_batch() {
+        let out = parse_provider_result(&serde_json::json!({
+            "kind": "tool_calls",
+            "toolCalls": [
+                {
+                    "id": "tc_1",
+                    "name": "shell.exec",
+                    "args": {"command": "echo", "args": ["hi"]},
+                    "source": {"provider": "openai", "model": "gpt-4.1-mini"}
+                },
+                {
+                    "id": "tc_2",
+                    "name": "resource.list",
+                    "args": {"namespace": "skills"},
+                    "source": {"provider": "openai", "model": "gpt-4.1-mini"}
+                }
+            ]
+        }))
+        .expect("parse tool_calls");
+        match out {
+            ProviderOutput::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 2);
+                assert_eq!(calls[0].name, "shell.exec");
+                assert_eq!(calls[1].name, "resource.list");
+            }
+            other => panic!("expected tool calls output, got {other:?}"),
+        }
     }
 
     #[test]
@@ -426,7 +548,7 @@ mod tests {
             .expect("call provider");
 
         assert_eq!(out.provider, "bao.bundled.provider.openai");
-        assert_eq!(out.output, "provider-ok");
+        assert_eq!(out.output, ProviderOutput::Message("provider-ok".to_string()));
 
         let _ = std::fs::remove_file(sqlite_path);
     }

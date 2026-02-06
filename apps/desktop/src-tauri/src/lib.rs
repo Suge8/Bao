@@ -407,6 +407,109 @@ fn build_engine_error_payload(
     payload
 }
 
+async fn execute_provider_tool_calls(
+    state: &Arc<AppState>,
+    calls: Vec<provider::ProviderToolCall>,
+) -> Result<(Vec<provider::ProviderInputMessage>, String), String> {
+    if calls.is_empty() {
+        return Err("provider tool call batch cannot be empty".to_string());
+    }
+
+    for call in &calls {
+        match resolve_tool_access_decision(&state.gateway_handle, &call.name).await {
+            ToolAccessDecision::Allowed => {}
+            ToolAccessDecision::ToolNotFound => {
+                return Err(format!("provider tool '{}' not found", call.name));
+            }
+            ToolAccessDecision::CapabilityDenied {
+                required_caps,
+                denied_caps,
+            } => {
+                return Err(format!(
+                    "provider tool '{}' capability denied (required={:?}, denied={:?})",
+                    call.name, required_caps, denied_caps
+                ));
+            }
+            ToolAccessDecision::ResolveFailed(reason) => {
+                return Err(format!(
+                    "provider tool '{}' capability resolve failed: {}",
+                    call.name, reason
+                ));
+            }
+        }
+    }
+
+    let mut jobs = Vec::with_capacity(calls.len());
+    for call in &calls {
+        let runner = state.plugin_runner.clone();
+        let tool_name = call.name.clone();
+        let tool_args = call.args.clone();
+        jobs.push(tokio::task::spawn_blocking(move || {
+            runner.run_tool("bao.engine.default", &tool_name, &tool_args)
+        }));
+    }
+
+    let mut messages = Vec::with_capacity(calls.len() * 2);
+    let mut summary_lines = Vec::with_capacity(calls.len());
+    for (index, job) in jobs.into_iter().enumerate() {
+        let call = &calls[index];
+        let run = job
+            .await
+            .map_err(|e| format!("provider tool task join failed: {e}"))?;
+
+        let result_payload = match run {
+            Ok(out) => {
+                summary_lines.push(format!(
+                    "{}#{} => {}",
+                    call.name,
+                    call.id,
+                    if out.ok { "ok" } else { "failed" }
+                ));
+                serde_json::json!({
+                    "id": call.id,
+                    "name": call.name,
+                    "ok": out.ok,
+                    "output": out.output,
+                })
+            }
+            Err(err) => {
+                summary_lines.push(format!("{}#{} => failed", call.name, call.id));
+                serde_json::json!({
+                    "id": call.id,
+                    "name": call.name,
+                    "ok": false,
+                    "error": err.message,
+                })
+            }
+        };
+
+        messages.push(provider::ProviderInputMessage {
+            role: "assistant".to_string(),
+            content: format!(
+                "tool_call {} {}",
+                call.name,
+                serde_json::to_string(&call.args).unwrap_or_else(|_| "{}".to_string())
+            ),
+            name: None,
+        });
+        messages.push(provider::ProviderInputMessage {
+            role: "tool".to_string(),
+            content: serde_json::to_string(&result_payload)
+                .unwrap_or_else(|_| "{\"ok\":false}".to_string()),
+            name: Some(call.name.clone()),
+        });
+    }
+
+    Ok((
+        messages,
+        format!(
+            "provider 工具调用完成（{} 个）\n{}",
+            calls.len(),
+            summary_lines.join("\n")
+        ),
+    ))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ToolAccessDecision {
     Allowed,
@@ -708,6 +811,8 @@ async fn run_engine_turn_inner(
     let mut tool_retry_reason: Option<String> = None;
     let mut tool_attempts = 0i64;
     let mut provider_used: Option<String> = None;
+    let mut provider_tool_calls = 0i64;
+    let mut provider_tool_parallel_max = 0i64;
     let mut memory_plan_id: Option<String> = None;
     let mut memory_mutation_count = 0i64;
     let tool_name = router.toolName.clone();
@@ -975,42 +1080,148 @@ async fn run_engine_turn_inner(
         let provider_identity = provider::resolve_provider_identity(&state.gateway_handle)
             .await
             .ok();
-        let provider_attempt = 1i64;
+        let mut provider_messages = vec![provider::ProviderInputMessage {
+            role: "user".to_string(),
+            content: provider_input,
+            name: None,
+        }];
 
-        match provider::call_provider_via_runner(
-            &state.gateway_handle,
-            state.plugin_runner.as_ref(),
-            &session_id,
-            &provider_input,
-        )
-        .await
-        {
-            Ok(call) => {
-                provider_used = Some(call.provider);
-                output = Some(call.output);
-            }
-            Err(err) => {
-                let (provider_name, model_name) = provider_identity.unwrap_or_else(|| {
-                    ("unknown".to_string(), "unknown".to_string())
-                });
-                let _ = state
-                    .gateway_handle
-                    .emit_event(
-                        "provider.call.error".to_string(),
-                        Some(session_id.clone()),
-                        build_engine_error_payload(
-                            &session_id,
-                            "provider.call",
-                            err.clone(),
-                            serde_json::json!({
-                                "provider": provider_name,
-                                "model": model_name,
-                                "attempt": provider_attempt,
-                            }),
-                        ),
-                    )
-                    .await;
-                output = Some(format!("provider 调用失败：{}", err));
+        const MAX_PROVIDER_TOOL_STEPS: i64 = 4;
+        let mut provider_attempt = 0i64;
+        loop {
+            provider_attempt += 1;
+            let provider_result = provider::call_provider_via_runner_with_messages(
+                &state.gateway_handle,
+                state.plugin_runner.as_ref(),
+                &session_id,
+                &provider_messages,
+            )
+            .await;
+
+            match provider_result {
+                Ok(call) => {
+                    provider_used = Some(call.provider.clone());
+                    match call.output {
+                        provider::ProviderOutput::Message(message) => {
+                            output = Some(message);
+                            break;
+                        }
+                        provider::ProviderOutput::ToolCall(tool_call) => {
+                            provider_tool_calls += 1;
+                            provider_tool_parallel_max = provider_tool_parallel_max.max(1);
+                            let tool_name_for_error = tool_call.name.clone();
+                            match execute_provider_tool_calls(state, vec![tool_call]).await {
+                                Ok((tool_messages, summary)) => {
+                                    provider_messages.extend(tool_messages);
+                                    if provider_attempt >= MAX_PROVIDER_TOOL_STEPS {
+                                        output = Some(format!(
+                                            "{}\nprovider 工具调用轮次超限（{}）",
+                                            summary, MAX_PROVIDER_TOOL_STEPS
+                                        ));
+                                        break;
+                                    }
+                                }
+                                Err(err) => {
+                                    let (provider_name, model_name) = provider_identity
+                                        .clone()
+                                        .unwrap_or_else(|| {
+                                            ("unknown".to_string(), "unknown".to_string())
+                                        });
+                                    let _ = state
+                                        .gateway_handle
+                                        .emit_event(
+                                            "provider.call.error".to_string(),
+                                            Some(session_id.clone()),
+                                            build_engine_error_payload(
+                                                &session_id,
+                                                "provider.call",
+                                                err.clone(),
+                                                serde_json::json!({
+                                                    "provider": provider_name,
+                                                    "model": model_name,
+                                                    "attempt": provider_attempt,
+                                                    "toolName": tool_name_for_error,
+                                                    "subStage": "provider.tool_call",
+                                                }),
+                                            ),
+                                        )
+                                        .await;
+                                    output = Some(format!("provider 工具调用失败：{}", err));
+                                    break;
+                                }
+                            }
+                        }
+                        provider::ProviderOutput::ToolCalls(tool_calls) => {
+                            provider_tool_calls += tool_calls.len() as i64;
+                            provider_tool_parallel_max =
+                                provider_tool_parallel_max.max(tool_calls.len() as i64);
+                            match execute_provider_tool_calls(state, tool_calls).await {
+                                Ok((tool_messages, summary)) => {
+                                    provider_messages.extend(tool_messages);
+                                    if provider_attempt >= MAX_PROVIDER_TOOL_STEPS {
+                                        output = Some(format!(
+                                            "{}\nprovider 工具调用轮次超限（{}）",
+                                            summary, MAX_PROVIDER_TOOL_STEPS
+                                        ));
+                                        break;
+                                    }
+                                }
+                                Err(err) => {
+                                    let (provider_name, model_name) = provider_identity
+                                        .clone()
+                                        .unwrap_or_else(|| {
+                                            ("unknown".to_string(), "unknown".to_string())
+                                        });
+                                    let _ = state
+                                        .gateway_handle
+                                        .emit_event(
+                                            "provider.call.error".to_string(),
+                                            Some(session_id.clone()),
+                                            build_engine_error_payload(
+                                                &session_id,
+                                                "provider.call",
+                                                err.clone(),
+                                                serde_json::json!({
+                                                    "provider": provider_name,
+                                                    "model": model_name,
+                                                    "attempt": provider_attempt,
+                                                    "batchSize": provider_tool_parallel_max,
+                                                    "subStage": "provider.tool_call",
+                                                }),
+                                            ),
+                                        )
+                                        .await;
+                                    output = Some(format!("provider 并发工具调用失败：{}", err));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    let (provider_name, model_name) = provider_identity.clone().unwrap_or_else(|| {
+                        ("unknown".to_string(), "unknown".to_string())
+                    });
+                    let _ = state
+                        .gateway_handle
+                        .emit_event(
+                            "provider.call.error".to_string(),
+                            Some(session_id.clone()),
+                            build_engine_error_payload(
+                                &session_id,
+                                "provider.call",
+                                err.clone(),
+                                serde_json::json!({
+                                    "provider": provider_name,
+                                    "model": model_name,
+                                    "attempt": provider_attempt,
+                                }),
+                            ),
+                        )
+                        .await;
+                    output = Some(format!("provider 调用失败：{}", err));
+                    break;
+                }
             }
         }
     }
@@ -1090,6 +1301,8 @@ async fn run_engine_turn_inner(
         "toolRetryReason": tool_retry_reason,
         "toolAttempts": tool_attempts,
         "providerUsed": provider_used,
+        "providerToolCalls": provider_tool_calls,
+        "providerToolParallelMax": provider_tool_parallel_max,
         "memoryPlanId": memory_plan_id,
         "memoryMutationCount": memory_mutation_count,
     });
@@ -1723,6 +1936,99 @@ mod tests {
             .expect("events since");
         assert!(events.iter().any(|evt| evt.r#type == "provider.call.error"));
         assert!(events.iter().any(|evt| evt.r#type == "engine.turn"));
+    }
+
+    #[tokio::test]
+    async fn run_engine_turn_inner_should_execute_provider_single_tool_call() {
+        let state = open_test_state("bao_desktop_provider_single_tool_call");
+        let output = run_engine_turn_inner(
+            &state,
+            EngineTurnInput {
+                session_id: "s_provider_tool_single".to_string(),
+                text: "__provider_tool_call__".to_string(),
+            },
+        )
+        .await
+        .expect("run provider single tool call turn");
+
+        assert!(output.output.contains("provider tool call completed"));
+        assert!(!output.tool_triggered);
+
+        let events = state
+            .gateway_handle
+            .events_since(None, 300)
+            .await
+            .expect("events since");
+        let engine_turn = events
+            .iter()
+            .rev()
+            .find(|evt| evt.r#type == "engine.turn")
+            .expect("engine.turn event");
+        assert_eq!(
+            engine_turn
+                .payload
+                .get("providerToolCalls")
+                .and_then(serde_json::Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            engine_turn
+                .payload
+                .get("providerToolParallelMax")
+                .and_then(serde_json::Value::as_i64),
+            Some(1)
+        );
+        assert!(
+            engine_turn
+                .payload
+                .get("providerUsed")
+                .and_then(serde_json::Value::as_str)
+                .map(|v| !v.is_empty())
+                .unwrap_or(false),
+            "providerUsed should be non-empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_engine_turn_inner_should_execute_provider_parallel_tool_calls() {
+        let state = open_test_state("bao_desktop_provider_parallel_tool_calls");
+        let output = run_engine_turn_inner(
+            &state,
+            EngineTurnInput {
+                session_id: "s_provider_tool_batch".to_string(),
+                text: "__provider_tool_calls__".to_string(),
+            },
+        )
+        .await
+        .expect("run provider parallel tool calls turn");
+
+        assert!(output.output.contains("provider tool calls completed"));
+        assert!(!output.tool_triggered);
+
+        let events = state
+            .gateway_handle
+            .events_since(None, 400)
+            .await
+            .expect("events since");
+        let engine_turn = events
+            .iter()
+            .rev()
+            .find(|evt| evt.r#type == "engine.turn")
+            .expect("engine.turn event");
+        assert_eq!(
+            engine_turn
+                .payload
+                .get("providerToolCalls")
+                .and_then(serde_json::Value::as_i64),
+            Some(2)
+        );
+        assert_eq!(
+            engine_turn
+                .payload
+                .get("providerToolParallelMax")
+                .and_then(serde_json::Value::as_i64),
+            Some(2)
+        );
     }
 }
 
