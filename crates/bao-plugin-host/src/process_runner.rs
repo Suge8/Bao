@@ -34,6 +34,7 @@ struct CommandSpec {
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 256 * 1024;
 const MAX_OUTPUT_BYTES_FLOOR: usize = 256;
 const MAX_OUTPUT_BYTES_CEIL: usize = 16 * 1024 * 1024;
+const PROCESS_TREE_SAMPLE_INTERVAL_MS: u64 = 100;
 
 #[derive(Debug, Clone)]
 struct OutputLimitBreach {
@@ -289,6 +290,9 @@ impl ToolRunner for ProcessToolRunner {
         let child_pid = child.id();
         self.register_running_pid(&spec.group, child_pid);
 
+        let mut process_tree_sample = sample_process_tree(child_pid, started_at_ms);
+        let mut last_process_tree_sample_at = Instant::now();
+
         if let Some(stdin_text) = spec.stdin_text {
             if let Some(mut stdin) = child.stdin.take() {
                 use std::io::Write;
@@ -314,7 +318,15 @@ impl ToolRunner for ProcessToolRunner {
         }
 
         loop {
+            if last_process_tree_sample_at.elapsed()
+                >= Duration::from_millis(PROCESS_TREE_SAMPLE_INTERVAL_MS)
+            {
+                process_tree_sample = sample_process_tree(child_pid, now_unix_ms());
+                last_process_tree_sample_at = Instant::now();
+            }
+
             if self.is_group_killed(&spec.group) {
+                process_tree_sample = sample_process_tree(child_pid, now_unix_ms());
                 Self::kill_pid_group(child_pid);
                 let _ = child.kill();
                 let _ = child.wait();
@@ -331,11 +343,13 @@ impl ToolRunner for ProcessToolRunner {
                         "pid": child_pid,
                         "startedAtMs": started_at_ms,
                         "elapsedMs": started_at.elapsed().as_millis() as u64,
+                        "processTree": process_tree_sample,
                     })),
                 ));
             }
 
             if let Some(breach) = take_output_limit_breach(&output_limit_breach) {
+                process_tree_sample = sample_process_tree(child_pid, now_unix_ms());
                 Self::kill_pid_group(child_pid);
                 let _ = child.kill();
                 let _ = child.wait();
@@ -360,12 +374,14 @@ impl ToolRunner for ProcessToolRunner {
                         "pid": child_pid,
                         "startedAtMs": started_at_ms,
                         "elapsedMs": started_at.elapsed().as_millis() as u64,
+                        "processTree": process_tree_sample,
                     })),
                 ));
             }
 
             if started_at.elapsed() > Duration::from_millis(spec.timeout_ms) {
                 let elapsed_ms = started_at.elapsed().as_millis() as u64;
+                process_tree_sample = sample_process_tree(child_pid, now_unix_ms());
                 Self::kill_pid_group(child_pid);
                 let _ = child.kill();
                 let _ = child.wait();
@@ -383,6 +399,7 @@ impl ToolRunner for ProcessToolRunner {
                         "group": spec.group,
                         "pid": child_pid,
                         "startedAtMs": started_at_ms,
+                        "processTree": process_tree_sample,
                     })),
                 ));
             }
@@ -413,6 +430,7 @@ impl ToolRunner for ProcessToolRunner {
                             "durationMs": elapsed_ms,
                             "stdout": stdout,
                             "stderr": stderr,
+                            "processTree": process_tree_sample,
                             "limits": {
                                 "timeoutMs": spec.timeout_ms,
                                 "maxOutputBytes": spec.max_output_bytes,
@@ -442,6 +460,117 @@ fn now_unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(unix)]
+fn sample_process_tree(root_pid: u32, sampled_at_ms: u64) -> Value {
+    let out = Command::new("ps")
+        .args(["-axo", "pid=,ppid=,rss=,%cpu="])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+
+    let Ok(output) = out else {
+        return minimal_process_tree_sample(root_pid, sampled_at_ms, None, None);
+    };
+    if !output.status.success() {
+        return minimal_process_tree_sample(root_pid, sampled_at_ms, None, None);
+    }
+
+    let mut metrics_by_pid: HashMap<u32, (u32, u64, f64)> = HashMap::new();
+    let mut children_by_pid: HashMap<u32, Vec<u32>> = HashMap::new();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let cols = line.split_whitespace().collect::<Vec<_>>();
+        if cols.len() < 4 {
+            continue;
+        }
+        let Ok(pid) = cols[0].parse::<u32>() else {
+            continue;
+        };
+        let Ok(ppid) = cols[1].parse::<u32>() else {
+            continue;
+        };
+        let Ok(rss_kb) = cols[2].parse::<u64>() else {
+            continue;
+        };
+        let cpu_percent = cols[3].replace(',', ".").parse::<f64>().unwrap_or(0.0);
+
+        metrics_by_pid.insert(pid, (ppid, rss_kb, cpu_percent));
+        children_by_pid.entry(ppid).or_default().push(pid);
+    }
+
+    if !metrics_by_pid.contains_key(&root_pid) {
+        return minimal_process_tree_sample(root_pid, sampled_at_ms, None, None);
+    }
+
+    let mut stack = vec![root_pid];
+    let mut visited = HashSet::new();
+    let mut pids = Vec::new();
+    let mut total_rss_kb = 0_u64;
+    let mut total_cpu_percent = 0.0_f64;
+
+    while let Some(pid) = stack.pop() {
+        if !visited.insert(pid) {
+            continue;
+        }
+        pids.push(pid);
+        if let Some((_, rss_kb, cpu_percent)) = metrics_by_pid.get(&pid) {
+            total_rss_kb = total_rss_kb.saturating_add(*rss_kb);
+            total_cpu_percent += *cpu_percent;
+        }
+
+        if let Some(children) = children_by_pid.get(&pid) {
+            for child in children {
+                stack.push(*child);
+            }
+        }
+    }
+
+    pids.sort_unstable();
+    minimal_process_tree_sample(
+        root_pid,
+        sampled_at_ms,
+        Some(total_rss_kb),
+        Some((total_cpu_percent * 100.0).round() / 100.0),
+    )
+    .as_object()
+    .map(|obj| {
+        let mut out = obj.clone();
+        out.insert("processCount".to_string(), Value::from(pids.len() as u64));
+        out.insert(
+            "descendantCount".to_string(),
+            Value::from(pids.len().saturating_sub(1) as u64),
+        );
+        out.insert(
+            "pids".to_string(),
+            Value::Array(pids.into_iter().map(Value::from).collect()),
+        );
+        Value::Object(out)
+    })
+    .unwrap_or_else(|| minimal_process_tree_sample(root_pid, sampled_at_ms, None, None))
+}
+
+#[cfg(not(unix))]
+fn sample_process_tree(root_pid: u32, sampled_at_ms: u64) -> Value {
+    minimal_process_tree_sample(root_pid, sampled_at_ms, None, None)
+}
+
+fn minimal_process_tree_sample(
+    root_pid: u32,
+    sampled_at_ms: u64,
+    total_rss_kb: Option<u64>,
+    total_cpu_percent: Option<f64>,
+) -> Value {
+    serde_json::json!({
+        "sampleAtMs": sampled_at_ms,
+        "rootPid": root_pid,
+        "processCount": 1,
+        "descendantCount": 0,
+        "pids": [root_pid],
+        "totalRssKb": total_rss_kb,
+        "totalCpuPercent": total_cpu_percent,
+    })
 }
 
 fn spawn_pipe_reader(

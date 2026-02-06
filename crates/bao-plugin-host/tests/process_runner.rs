@@ -42,6 +42,18 @@ fn run_tool_captures_stdout_and_stderr() {
         .and_then(serde_json::Value::as_u64)
         .expect("finishedAtMs missing");
     assert!(finished >= started, "finishedAtMs should be >= startedAtMs");
+    let process_tree = out
+        .output
+        .get("processTree")
+        .and_then(serde_json::Value::as_object)
+        .expect("processTree missing");
+    assert!(
+        process_tree
+            .get("rootPid")
+            .and_then(serde_json::Value::as_u64)
+            .is_some(),
+        "processTree.rootPid missing: {process_tree:?}"
+    );
 }
 
 #[test]
@@ -86,6 +98,17 @@ fn run_tool_times_out() {
             .and_then(serde_json::Value::as_u64)
             .is_some(),
         "timeout metadata should include startedAtMs: {metadata:?}"
+    );
+    let process_tree = metadata
+        .get("processTree")
+        .and_then(serde_json::Value::as_object)
+        .expect("timeout metadata should include processTree");
+    assert!(
+        process_tree
+            .get("rootPid")
+            .and_then(serde_json::Value::as_u64)
+            .is_some(),
+        "timeout processTree.rootPid missing: {process_tree:?}"
     );
 }
 
