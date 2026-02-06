@@ -195,35 +195,40 @@ def gateway(
         default_model=config.agents.defaults.model
     )
     
-    # Create agent
+    # Create cron service first (callback set after agent creation)
+    cron_store_path = get_data_dir() / "cron" / "jobs.json"
+    cron = CronService(cron_store_path)
+    
+    # Create agent with cron service
     agent = AgentLoop(
         bus=bus,
         provider=provider,
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
         max_iterations=config.agents.defaults.max_tool_iterations,
-        brave_api_key=config.tools.web.search.api_key or None
+        brave_api_key=config.tools.web.search.api_key or None,
+        exec_config=config.tools.exec,
+        cron_service=cron,
     )
     
-    # Create cron service
+    # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
         response = await agent.process_direct(
             job.payload.message,
-            session_key=f"cron:{job.id}"
+            session_key=f"cron:{job.id}",
+            channel=job.payload.channel or "cli",
+            chat_id=job.payload.to or "direct",
         )
-        # Optionally deliver to channel
         if job.payload.deliver and job.payload.to:
             from nanobot.bus.events import OutboundMessage
             await bus.publish_outbound(OutboundMessage(
-                channel=job.payload.channel or "whatsapp",
+                channel=job.payload.channel or "cli",
                 chat_id=job.payload.to,
                 content=response or ""
             ))
         return response
-    
-    cron_store_path = get_data_dir() / "cron" / "jobs.json"
-    cron = CronService(cron_store_path, on_job=on_cron_job)
+    cron.on_job = on_cron_job
     
     # Create heartbeat service
     async def on_heartbeat(prompt: str) -> str:
@@ -309,7 +314,8 @@ def agent(
         bus=bus,
         provider=provider,
         workspace=config.workspace_path,
-        brave_api_key=config.tools.web.search.api_key or None
+        brave_api_key=config.tools.web.search.api_key or None,
+        exec_config=config.tools.exec,
     )
     
     if message:
@@ -405,7 +411,7 @@ def _get_bridge_dir() -> Path:
         raise typer.Exit(1)
     
     # Find source bridge: first check package data, then source dir
-    pkg_bridge = Path(__file__).parent / "bridge"  # nanobot/bridge (installed)
+    pkg_bridge = Path(__file__).parent.parent / "bridge"  # nanobot/bridge (installed)
     src_bridge = Path(__file__).parent.parent.parent / "bridge"  # repo root/bridge (dev)
     
     source = None
@@ -629,18 +635,17 @@ def cron_run(
 def status():
     """Show nanobot status."""
     from nanobot.config.loader import load_config, get_config_path
-    from nanobot.utils.helpers import get_workspace_path
-    
+
     config_path = get_config_path()
-    workspace = get_workspace_path()
-    
+    config = load_config()
+    workspace = config.workspace_path
+
     console.print(f"{__logo__} nanobot Status\n")
-    
+
     console.print(f"Config: {config_path} {'[green]✓[/green]' if config_path.exists() else '[red]✗[/red]'}")
     console.print(f"Workspace: {workspace} {'[green]✓[/green]' if workspace.exists() else '[red]✗[/red]'}")
-    
+
     if config_path.exists():
-        config = load_config()
         console.print(f"Model: {config.agents.defaults.model}")
         
         # Check API keys

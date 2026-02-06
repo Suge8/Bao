@@ -18,7 +18,10 @@
 
 ## 📢 News
 
-- **2026-02-01** 🎉 nanobot launched! Welcome to try 🐈 nanobot!
+- **2026-02-05** ✨ Added Feishu channel, DeepSeek provider, and enhanced scheduled tasks support!
+- **2026-02-04** 🚀 Released v0.1.3.post4 with multi-provider & Docker support! Check [release notes](https://github.com/HKUDS/nanobot/releases/tag/v0.1.3.post4) for details.
+- **2026-02-03** ⚡ Integrated vLLM for local LLM support and improved natural language task scheduling!
+- **2026-02-02** 🎉 nanobot officially launched! Welcome to try 🐈 nanobot!
 
 ## Key Features of nanobot:
 
@@ -28,7 +31,7 @@
 
 ⚡️ **Lightning Fast**: Minimal footprint means faster startup, lower resource usage, and quicker iterations.
 
-💎 **Easy-to-Use**: One-click to depoly and you're ready to go.
+💎 **Easy-to-Use**: One-click to deploy and you're ready to go.
 
 ## 🏗️ Architecture
 
@@ -108,8 +111,12 @@ nanobot onboard
       "model": "anthropic/claude-opus-4-5"
     }
   },
-  "webSearch": {
-    "apiKey": "BSA-xxx"
+  "tools": {
+    "web": {
+      "search": {
+        "apiKey": "BSA-xxx"
+      }
+    }
   }
 }
 ```
@@ -162,13 +169,14 @@ nanobot agent -m "Hello from my local LLM!"
 
 ## 💬 Chat Apps
 
-Talk to your nanobot through Telegram, Discord, or WhatsApp — anytime, anywhere.
+Talk to your nanobot through Telegram, Discord, WhatsApp, or Feishu — anytime, anywhere.
 
 | Channel | Setup |
 |---------|-------|
 | **Telegram** | Easy (just a token) |
 | **Discord** | Easy (bot token + intents) |
 | **WhatsApp** | Medium (scan QR) |
+| **Feishu** | Medium (app credentials) |
 
 <details>
 <summary><b>Telegram</b> (Recommended)</summary>
@@ -283,6 +291,55 @@ nanobot gateway
 
 </details>
 
+<details>
+<summary><b>Feishu (飞书)</b></summary>
+
+Uses **WebSocket** long connection — no public IP required.
+
+```bash
+pip install nanobot-ai[feishu]
+```
+
+**1. Create a Feishu bot**
+- Visit [Feishu Open Platform](https://open.feishu.cn/app)
+- Create a new app → Enable **Bot** capability
+- **Permissions**: Add `im:message` (send messages)
+- **Events**: Add `im.message.receive_v1` (receive messages)
+  - Select **Long Connection** mode (requires running nanobot first to establish connection)
+- Get **App ID** and **App Secret** from "Credentials & Basic Info"
+- Publish the app
+
+**2. Configure**
+
+```json
+{
+  "channels": {
+    "feishu": {
+      "enabled": true,
+      "appId": "cli_xxx",
+      "appSecret": "xxx",
+      "encryptKey": "",
+      "verificationToken": "",
+      "allowFrom": []
+    }
+  }
+}
+```
+
+> `encryptKey` and `verificationToken` are optional for Long Connection mode.
+> `allowFrom`: Leave empty to allow all users, or add `["ou_xxx"]` to restrict access.
+
+**3. Run**
+
+```bash
+nanobot gateway
+```
+
+> [!TIP]
+> Feishu uses WebSocket to receive messages — no webhook or public IP needed!
+
+</details>
+
 ## ⚙️ Configuration
 
 Config file: `~/.nanobot/config.json`
@@ -297,6 +354,7 @@ Config file: `~/.nanobot/config.json`
 | `openrouter` | LLM (recommended, access to all models) | [openrouter.ai](https://openrouter.ai) |
 | `anthropic` | LLM (Claude direct) | [console.anthropic.com](https://console.anthropic.com) |
 | `openai` | LLM (GPT direct) | [platform.openai.com](https://platform.openai.com) |
+| `deepseek` | LLM (DeepSeek direct) | [platform.deepseek.com](https://platform.deepseek.com) |
 | `groq` | LLM + **Voice transcription** (Whisper) | [console.groq.com](https://console.groq.com) |
 | `gemini` | LLM (Gemini direct) | [aistudio.google.com](https://aistudio.google.com) |
 
@@ -332,6 +390,14 @@ Config file: `~/.nanobot/config.json`
     },
     "whatsapp": {
       "enabled": false
+    },
+    "feishu": {
+      "enabled": false,
+      "appId": "cli_xxx",
+      "appSecret": "xxx",
+      "encryptKey": "",
+      "verificationToken": "",
+      "allowFrom": []
     }
   },
   "tools": {
@@ -438,7 +504,7 @@ PRs welcome! The codebase is intentionally small and readable. 🤗
 ### Contributors
 
 <a href="https://github.com/HKUDS/nanobot/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=HKUDS/nanobot" />
+  <img src="https://contrib.rocks/image?repo=HKUDS/nanobot&max=100&columns=12" />
 </a>
 
 
