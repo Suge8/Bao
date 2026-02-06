@@ -4,9 +4,82 @@
 - provider JSON-RPC 契约补齐：delta/cancel/methods 索引 schemas 已落盘。
 - desktop-tauri：已最小接线 gateway + 事件桥接（bao:event）+ 基础 commands（sendMessage/list*/getSettings/updateSettings）。
 - desktop-tauri：新增 tasks/memory IPC（create/enable/disable/runNow + search/getItems/getTimeline/apply/rollback），并补全前端 client 封装与页面联动。
-- scheduler：桌面启动 tick 拉取 due tasks 并执行 tool（mock runner），Kill Switch 可终止任务组。
+- scheduler：桌面启动 tick 拉取 due tasks 并执行 tool（process runner），Kill Switch 可终止任务组。
 - scheduler：任务执行后更新 next_run_at，once 任务执行后禁用；新增调度时间计算测试。
 - desktop-ui：前端 client 不再使用 mock-client，改为仅通过 Tauri IPC 读取 SQLite 数据。
+- desktop-tauri：gateway start/stop 会写入 settings（gateway.running）以供 UI 展示状态。
+- scheduler：tick 可执行 due tasks，写入 events/audit，run-now 可立即触发执行。
+- memory：applyMutationPlan/rollbackVersion 已落 SQLite + audit_events（最小可用）。
+- gateway：pairing token 生成/撤销写入 audit_events；新增 pairing token schema。
+- provider：JSON-RPC methods schema 明确 notification 与命名空间规则。
+- gateway：启动时自动注册 bundled dimsums（读取 `dimsums/bundled/*/manifest.json`），Dimsums 页面不再依赖硬编码假数据。
+- gateway/message：发送消息前自动确保 session 存在，消除外键失败与假会话依赖。
+- bao-api：`validate_json_schema` 改为真实 JSON Schema 校验实现（`jsonschema`）。
+- desktop-ui：Chat 页面移除 `StreamingMock`，改为基于实时 `message.send` 事件渲染可运行消息流。
+- baseui：`toast` 从占位类型升级为可运行 `ToastProvider/useToast`。
+- desktop-ui：Chat 接通真实 `sendMessage` 输入发送链路，会话自动刷新并渲染回放。
+- desktop-ui：Tasks 页面接通真实 create/update/enable/disable/runNow，表单与错误态可运行。
+- desktop-ui：Memory 页面接通真实 getItems/getTimeline/applyMutationPlan/rollbackVersion（按 versionId）。
+- desktop-ui：Topbar New/Pause/Kill 接通 createSession/gatewayStop/killSwitchStopAll。
+- desktop-ui：Dimsums 页面接通 enableDimsum/disableDimsum；Settings 页面接通 gatewaySetAllowLan。
+- desktop-tauri/gateway：新增 createSession 与 dimsum enable/disable 命令链路，去除按钮壳逻辑。
+- bao-engine：补齐默认 Router/Memory/Corrector/Provider 可运行实现，支持最小 turn 执行流（`run_turn_with_defaults`）。
+- bao-engine：新增默认 hooks 行为测试（显式工具路由、记忆注入、参数校验、turn 执行）。
+- desktop-tauri/desktop-ui：新增 `runEngineTurn` 命令链路，Chat 输入可直连 engine 默认 pipeline 并返回真实回答。
+- runEngineTurn：命中 must-trigger 时可执行 process tool，并写入 `engine.turn` 事件用于回放。
+- memory：新增 `listMemoryVersions`（gateway + tauri + client + UI），Memory 页面支持按真实 versionId 选择回滚目标。
+- memory rollback：从“按 sourceHash 临时回滚”升级为“按 memory_versions 恢复”，并校验版本存在与 memory_id 匹配。
+- runEngineTurn：补齐 must-trigger 约束（matched + quote 命中 + mustTrigger + toolName）与 tool args corrector 校验。
+- chat：修复 assistant 消息事件 id，避免重复 key 导致消息渲染覆盖。
+- plugin-host：`ProcessToolRunner` 输出由“仅退出码”升级为“stdout/stderr + exitCode + duration”，并支持 kill-group 主动中断运行中进程。
+- tasks-ui：默认工具参数改为真实 `shell.exec` 命令模板，并强校验 `args.command`，移除隐式占位执行。
+- memory-ui：移除“新增示例记忆”硬编码写入入口，改为纯真实检索/版本回滚/刷新操作。
+- 文档同步：`docs/AGENTS.md` 与 `docs/PRD.md` 已从 Stage0 更新为 Stage1 集成现状。
+- runEngineTurn：非 must-trigger 场景已从桌面直连 provider HTTP 演进为 provider dimsum process(JSON-RPC) 调用（OpenAI/Anthropic/Gemini/xAI），不再返回 echo 占位输出。
+- bao-engine：移除 `EchoProvider` 占位调用，`run_turn_with_defaults` 仅负责 router/memory 输入整形。
+- gateway：初始化时写入 provider/gateway 默认 settings（`provider.active/model/baseUrl`、`gateway.allowLan/running`），首启即有可运行基线。
+- settings-ui：新增 provider.active/model/baseUrl/apiKey 可编辑保存，形成“配置→调用”闭环。
+- dimsums/bundled：provider + skills-adapter + mcp-bridge 已补齐可执行 process JSON-RPC（不再是 manifest-only）。
+- desktop-tauri：`runEngineTurn` 非工具路径改为通过 provider dimsum process(JSON-RPC)执行，桌面不再直连 provider HTTP。
+- gateway-tests：新增 bundled manifest schema + 可执行命令检查，防止 process 点心回退为占位命令。
+- runEngineTurn：`needsMemory=true` 路径改为真实 `searchIndex/getItems` 检索注入，不再使用本地字符串占位。
+- provider：stdout 解析支持跳过非 JSON 日志行，按 JSON-RPC 行提取 result/error，增强进程输出容错。
+- mcp-bridge：从 `ping/echo` 升级为 `bridge.list_tools/bridge.call_tool`，支持 stdio/http MCP server。
+- desktop-tauri：新增 `mcpListTools/mcpCallTool`，通过 `bao.bundled.mcp-bridge` process JSON-RPC 调用真实 MCP 工具。
+- desktop-tauri：新增通用 process JSON-RPC 调用层（runtime 发现 + stdout 解析），provider/mcp 共享，减少占位分支。
+- desktop-tauri：新增 `resourceList/resourceRead`，通过 `bao.bundled.skills-adapter` process JSON-RPC 读取 skills 资源。
+- gateway/tasks：`createTask/updateTask/enableTask` 已补齐 `next_run_at` 计算（once/interval/cron），周期任务创建后可被 scheduler 正常触发。
+- mobile/gateway：连接同一 URL+token 时保留 `lastEventId` 并请求回放，断线重连后可继续事件流。
+- mobile/ui：新增连接状态卡与常用远程拉取入口（sessions/tasks/dimsums/memories），从 demo 壳升级为可操作最小闭环。
+- engine pipeline：`runEngineTurn` 已改为通过 `bao.bundled.router/memory/corrector` process JSON-RPC 动态装配调用，不再依赖桌面内置 default hooks。
+- dimsums/bundled：router/memory/corrector 运行时从 manifest wasm 占位切换为可执行 process（`bao-dimsum-process` hook bins）。
+- bao-dimsum-process：pipeline hooks 补齐 `corrector.validate_tool_result`、`corrector.decide_retry`、`memory.extract`，并提供最小确定性策略与单测。
+- runEngineTurn：工具路径补齐「执行结果校验→重试决策（最多 1 次重试）」并写入 `corrector.*.error` 可观测事件。
+- runEngineTurn：回合收尾新增 `memory.extract -> applyMutationPlan`，失败写入 `memory.extract.error`，记忆链路形成闭环。
+
+- schema：新增 `router_input/memory_inject_input/memory_inject_output/memory_extract_input/toolcall_result/corrector_validation/corrector_retry_input/corrector_retry_output` 契约文件，补齐 pipeline hooks schema 断点。
+- schema-tests：新增 pipeline hooks 示例 payload 校验（正反例），确保 contract 可编译且实例可验证。
+- bao-dimsum-process/tests：新增 process 级 hooks e2e 测试（真实 bin JSON-RPC 调用 + schema 校验）。
+- desktop-e2e：新增浏览器侧 Tauri mock 的 Chat Inspector 断言，校验 `toolAttempts/toolRetryReason/memoryPlanId` 可观测字段。
+- desktop-e2e：补充异常分支断言，Inspector 覆盖 `corrector.validate_tool_result.error` 与 `memory.extract.error` 事件可观测性。
+- desktop-tauri：统一 `runEngineTurn` 错误事件 payload 结构（`source/stage/sessionId/error` + 扩展字段），提升审计与排障可观测性。
+- desktop-e2e：新增 provider 异常 + 重试终止组合场景（`provider.call.error` + `engine.turn.toolAttempts=2` + `providerUsed=null`）断言。
+- provider/observability：`runEngineTurn` 在 provider 调用失败时改为发射 `provider.call.error`（统一错误 payload），并继续产出 `engine.turn` 回合结果，避免前端链路因异常中断。
+- schema+tests：新增 `provider_call_error_v1` 契约与 schema-tests 正反例，`bao-gateway` 增加 replay 一致性测试覆盖。
+- schema/type-binding：`bao.event/v1` 新增 `provider.call.error` 与 `engine.turn` 的 payload 绑定校验（按 `type` 映射具体 payload schema），事件消费契约更稳定。
+- schema/type-binding：继续扩展到 `memory.extract.error` 与 `corrector.validate_tool_result.error/corrector.decide_retry.error`，并统一引入 error code 枚举约束。
+- schema/type-binding：`engine.turn` payload 已拆分为 tool-path/provider-path 子 schema，降低 nullable 字段歧义并提升消费端判定确定性。
+- schema/type-binding：`memory.inject.error` 已纳入 `bao.event/v1`，runEngineTurn 错误链路（provider/memory/corrector）全部完成事件级 schema 绑定。
+- gateway/tasks：`createTask/updateTask` 增加 schema + 业务双重校验（interval/cron/timezone/tool 字段），非法任务在入库前阻断。
+- desktop-e2e：provider 异常矩阵扩展到 `timeout/unauthorized/rate_limit`，并验证重试终止链路可观测。
+- provider-jsonrpc-tests：新增 methods.notification 语义与 `provider.cancel` 行为测试，补齐方法契约覆盖。
+- memory-rollback：新增 SUPERSEDE/DELETE 快照回滚，回滚后可恢复旧记忆或已删除记忆。
+- schema-tests：补齐 dimsums manifests 校验，`dimsums/*/*/manifest.json` 必须通过 `bao.dimsum.manifest/v1`。
+- mobile：新增事件分类统计（message/task/memory/audit/other）与 replay 状态提示，提升远程排障可观测性。
+- docs：修复 bundled router/memory/corrector README 的“占位”过期描述，更新为可执行 JSON-RPC 说明。
+- mobile：新增跨页联动事件筛选（connect/sessions/chat/settings 共享 category），并在 settings 增加错误事件聚合面板（按 type/code/stage 聚合统计）。
+- mobile：错误聚合继续深化，支持按 `provider/session` 维度钻取、最近错误事件列表与阈值告警（warn/critical）。
+- 质量现状：workspace 当前存在较多并行改动（未提交），本条目仅描述“已验证可用”与“阶段缺口”，不代表发布冻结状态。
 
 # 改动记录（最近）
 
@@ -17,16 +90,100 @@
 - [FEAT] 2026-02-05 最小 scheduler tick + kill switch 接通（tool runner mock）
 - [FIX] 2026-02-06 任务执行后推进 next_run_at（once 禁用）；补充调度测试
 - [FIX] 2026-02-06 前端 client 移除 mock-client，改为纯 Tauri IPC 数据链路
+- [FEAT] 2026-02-06 gateway 运行状态写入 settings，Topbar/Settings 展示真实状态
+- [FEAT] 2026-02-06 scheduler tick + run-now 执行链路写入 events/audit（最小实现）
+- [FEAT] 2026-02-06 memory mutation/rollback 落库并写 audit_events
+- [FEAT] 2026-02-06 pairing token schema + audit_events 记录
+- [FEAT] 2026-02-06 provider JSON-RPC methods 规则收紧（notification + method 命名空间）
+- [REFACTOR] 2026-02-06 以 process runner 替换 mock runner（scheduler/gateway/desktop-tauri）
+- [FEAT] 2026-02-06 Gateway 启动自动落库 bundled dimsums + 默认会话
+- [FIX] 2026-02-06 sendMessage 前确保 session 存在，避免 SQLite 外键失败
+- [FEAT] 2026-02-06 bao-api 接入真实 JSON Schema 校验（jsonschema）
+- [REFACTOR] 2026-02-06 Chat/Dimsums 页面移除硬编码 mock 数据，改为真实 IPC 数据链路
+- [FEAT] 2026-02-06 baseui toast 提供可运行 Provider/Hook 实现
+- [FEAT] 2026-02-06 DesktopClient 补齐真实接口：sendMessage/createSession/updateTask/enableDimsum/disableDimsum/gatewaySetAllowLan/killSwitchStopAll
+- [FEAT] 2026-02-06 Chat 输入发送闭环：发送消息、会话刷新、事件流渲染与错误处理
+- [FEAT] 2026-02-06 Tasks 页面离开骨架：新建/编辑/启停/立即运行 + 调度字段展示
+- [FEAT] 2026-02-06 Memory 页面离开骨架：详情按需加载、timeline 展示、mutation/rollback 操作
+- [FEAT] 2026-02-06 Topbar/Dimsums/Settings 接通真实后端动作（新建会话、kill switch、点心启停、网关 LAN 切换）
+- [FIX] 2026-02-06 修复 e2e 选择器冲突（chat testid 重复、语言按钮匹配歧义）
+- [FEAT] 2026-02-06 bao-engine 默认 hooks 去骨架化：DefaultRouterHook/DefaultMemoryHook/DefaultCorrectorHook + run_turn_with_defaults
+- [FEAT] 2026-02-06 新增 `crates/bao-engine/tests/default_hooks.rs`，覆盖默认 hooks 与 turn 执行
+- [FEAT] 2026-02-06 新增 `runEngineTurn`（Tauri IPC + client + Chat UI）实现桌面对话直连 engine 默认 pipeline
+- [FEAT] 2026-02-06 `runEngineTurn` 支持 must-trigger tool 执行与 `engine.turn` 事件回放
+- [DOC] 2026-02-06 `docs/AGENTS.md` 与 `docs/PRD.md` 升级为 Stage1 集成说明
+- [FEAT] 2026-02-06 新增 `listMemoryVersions` 端到端链路（gateway/tauri/client/memory page）
+- [FIX] 2026-02-06 memory rollback 改为基于 `memory_versions` 真实回滚，不再依赖 sourceHash 伪 versionId
+- [FIX] 2026-02-06 `runEngineTurn` 增加 must-trigger 条件与 corrector 校验，确保工具触发确定性
+- [FIX] 2026-02-06 Chat `engine.turn` assistant 消息使用事件 id 作为稳定 key
+- [REFACTOR] 2026-02-06 `ProcessToolRunner` 增强 stdout/stderr 回传与 kill-group 运行中中断能力
+- [FEAT] 2026-02-06 新增 `crates/bao-plugin-host/tests/process_runner.rs` 覆盖输出/超时/kill/参数校验
+- [FIX] 2026-02-06 Tasks 默认 tool args 改为真实命令模板并校验 `command`
+- [REFACTOR] 2026-02-06 Memory 页面删除硬编码“示例写入”入口，保留真实数据操作
+- [FEAT] 2026-02-06 runEngineTurn 接入真实 provider HTTP 调用（OpenAI/Anthropic/Gemini/xAI），替换 echo 占位输出
+- [REFACTOR] 2026-02-06 bao-engine 移除 EchoProvider 占位调用，turn 默认输出改为 pipeline 输入
+- [FEAT] 2026-02-06 Gateway 初始化补齐 provider/gateway 默认 settings，提升首启可运行性
+- [FEAT] 2026-02-06 Settings 页面新增 Provider 配置表单（active/model/baseUrl/apiKey）并持久化
+- [FEAT] 2026-02-06 新增 `crates/bao-dimsum-process`，提供 `bao-provider-*` / `bao-skills-adapter` / `bao-mcp-bridge` 可执行 JSON-RPC 进程
+- [REFACTOR] 2026-02-06 bundled process manifests 改为 `cargo run -p bao-dimsum-process --bin ...` 可直接运行
+- [FEAT] 2026-02-06 新增 `crates/bao-gateway/tests/bundled_manifest_schema.rs`，校验内置 manifest 合法且 process command 非占位
+- [REFACTOR] 2026-02-06 runEngineTurn provider 路径改为走 process runner + provider dimsum JSON-RPC，去除桌面侧 HTTP 直连
+- [REFACTOR] 2026-02-06 runEngineTurn `needsMemory` 注入改为真实 `searchIndex/getItems` 检索链路
+- [FIX] 2026-02-06 provider JSON-RPC stdout 解析支持跳过日志噪声，避免首行非 JSON 导致失败
+- [FEAT] 2026-02-06 `bao-mcp-bridge` 新增 `bridge.list_tools/bridge.call_tool`（stdio/http）替换 echo 占位实现
+- [FEAT] 2026-02-06 新增 `mcpListTools/mcpCallTool`（desktop-tauri + tauri-client），接通 mcp-bridge 真调用
+- [REFACTOR] 2026-02-06 抽离 `dimsum_process` 通用 JSON-RPC 调用层，provider/mcp 统一 runtime 发现与输出解析
+- [FIX] 2026-02-06 provider 调用前增加 `provider.methods` 探测，缺少 `provider.run` 时快速失败
+- [FEAT] 2026-02-06 新增 `resourceList/resourceRead`（desktop-tauri + tauri-client），接通 skills-adapter 真读取链路
+- [FIX] 2026-02-06 修复 tasks 调度创建骨架：create/update/enable 时统一计算 `next_run_at`，interval/cron 任务不再停留为不可触发状态
+- [FEAT] 2026-02-06 新增 `crates/bao-gateway/tests/tasks_and_memory_ipc.rs::task_next_run_should_be_computed_for_interval_and_cron`，覆盖任务调度可触发性
+- [FEAT] 2026-02-06 新增 `crates/bao-storage/tests/task_next_run_compute.rs`，覆盖 once/interval/cron 的 next_run 计算
+- [FEAT] 2026-02-06 移动端 Gateway 状态增强：支持基于 `lastEventId` 的同 token 重连回放与状态可视化
+- [FEAT] 2026-02-06 移动端页面补齐常用管理动作入口：sessions/tasks/dimsums/memories 拉取
+- [REFACTOR] 2026-02-06 `runEngineTurn` 路由/记忆注入/参数校验改为 pipeline dimsum 动态装配（router/memory/corrector）
+- [FEAT] 2026-02-06 新增 `crates/bao-dimsum-process` pipeline hook bins：`bao-router-hook` / `bao-memory-hook` / `bao-corrector-hook`
+- [REFACTOR] 2026-02-06 bundled `bao.bundled.router|memory|corrector` manifest runtime 切换为 process JSON-RPC 可执行配置
+- [FEAT] 2026-02-06 新增 `apps/desktop/src-tauri/src/pipeline.rs` 及单测，覆盖 pipeline hooks 的 route/inject/validate 链路
+- [FEAT] 2026-02-06 `bao-dimsum-process` 补齐 `corrector.validate_tool_result` / `corrector.decide_retry` / `memory.extract` JSON-RPC 方法与单测
+- [REFACTOR] 2026-02-06 `runEngineTurn` 工具链路补齐「结果校验→重试决策（最多 1 次重试）→事件可观测」
+- [FEAT] 2026-02-06 `runEngineTurn` 收尾接入 `memory.extract -> applyMutationPlan`，形成记忆演化闭环
+
+- [FEAT] 2026-02-06 新增 pipeline hooks 相关 schemas：`router_input` / `memory_*` / `toolcall_result` / `corrector_*`
+- [FEAT] 2026-02-06 `packages/schema-tests` 增加 pipeline hooks contract 示例校验（正反例）
+- [FEAT] 2026-02-06 新增 `crates/bao-dimsum-process/tests/pipeline_hooks_e2e.rs`，覆盖 hooks bin JSON-RPC e2e + schema 校验
+- [FEAT] 2026-02-06 `apps/desktop/tests/e2e/basic.spec.ts` 新增 Inspector 可观测字段断言（toolAttempts/toolRetryReason/memoryPlanId）
+- [FEAT] 2026-02-06 `apps/desktop/tests/e2e/basic.spec.ts` 增加异常事件断言（`corrector.validate_tool_result.error` / `memory.extract.error`）
+- [FEAT] 2026-02-06 新增 `crates/bao-gateway/tests/error_event_payload.rs`，直接断言 `emit_event` 错误 payload 字段完整性
+- [REFACTOR] 2026-02-06 `runEngineTurn` 错误事件 payload 统一为 `source/stage/sessionId/error` 基础结构并补充扩展字段
+- [FEAT] 2026-02-06 `apps/desktop/tests/e2e/basic.spec.ts` 新增 provider 异常 + 重试终止组合场景断言
+- [FIX] 2026-02-06 `runEngineTurn` provider 分支失败时发射 `provider.call.error` 并降级输出，保证回合链路可观测且不中断
+- [FEAT] 2026-02-06 新增 `schemas/provider_call_error_v1.schema.json` 与对应 schema-tests/bao-gateway 错误 payload 回放测试
+- [FEAT] 2026-02-06 新增 `schemas/engine_turn_payload_v1.schema.json`，并将 `schemas/bao_event_v1.schema.json` 升级为按 `type` 绑定 `payload` 子 schema
+- [FEAT] 2026-02-06 `packages/schema-tests` 增加 `bao.event/v1` 对 `provider.call.error/engine.turn` 的正反例校验
+- [FEAT] 2026-02-06 新增 `engine_error_code` / `corrector_*_error` / `memory_extract_error` schemas，并扩展 `bao.event/v1` 的错误事件 payload 绑定
+- [FIX] 2026-02-06 `runEngineTurn` 错误 payload 统一补充 `code` 字段（含 provider/memory/corrector）并更新 gateway/e2e/schema 测试样例
+- [FEAT] 2026-02-06 新增 `engine_turn_tool_payload` / `engine_turn_provider_payload` / `memory_inject_error` schemas，`bao.event/v1` 完成 runEngineTurn 全错误链路 type 绑定
+- [FIX] 2026-02-06 `GatewayHandle::create_task/update_task` 增加 schema + 业务双重校验（cron 解析、timezone 解析、interval 下限）并补充无效输入测试
+- [FEAT] 2026-02-06 desktop e2e 扩展 provider 异常矩阵（timeout/unauthorized/rate_limit）与重试终止断言
+- [FEAT] 2026-02-06 `bao-dimsum-process` provider 增加 JSON-RPC 方法语义测试（notification=false、provider.cancel invalid_request）
+- [FIX] 2026-02-06 memory rollback 深化：SUPERSEDE/DELETE 写入快照 diff，回滚可恢复 old/deleted memory（新增冲突恢复测试）
+- [FEAT] 2026-02-06 `packages/schema-tests` 新增 dimsums manifests 扫描校验（`dimsums/*/*/manifest.json` 对齐 `bao.dimsum.manifest/v1`）
+- [FEAT] 2026-02-06 mobile 新增 events 分类统计与 replay 状态提示（message/task/memory/audit/other）
+- [DOC] 2026-02-06 更新 bundled router/memory/corrector README，移除“manifest 占位”过期描述
+- [FEAT] 2026-02-06 mobile 新增跨页联动事件筛选 + settings 错误聚合（type/code/stage/count/latestEventId）
+- [FEAT] 2026-02-06 mobile 错误聚合支持 provider/session 维度钻取 + warn/critical 阈值告警 + 最近错误事件视图
 
 # 未来发展（优先级）
 
 P0
 
-- 为 gateway 加入 pairing/鉴权的最小 schema（token 生成/撤销）并写入 audit_events。
-- 补齐 scheduler/task/memory/tool 的真实实现（当前 engine/storage/plugin-host 仍为 stub）。
-- 完善 cron/interval 计算与时区覆盖（当前为最小实现）。
-- provider JSON-RPC：明确 method 命名空间与通知（notification）规则（例如 provider.delta 仅通知、无 id）。
+- ✅ 已完成（2026-02-06）：本批 P0（schema 绑定、任务校验、provider 矩阵、JSON-RPC 契约测试、process runner、memory rollback、pipeline 化）已全部收口。
 
 P1
 
-- 将 schema-tests 扩展为：校验 dimsums/*/manifest.json 也必须符合 dimsum manifest schema。
+- ✅ 已完成（2026-02-06）：mobile 远程排障 P1（跨页筛选联动、异常链路聚合、provider/session 维度钻取、阈值告警）已收口。
+
+P2
+
+- desktop e2e 真后端链路补齐（减少对 Tauri mock 的依赖，补充真实 IPC/事件流回放场景）。
+- 构建告警治理（Tauri API dynamic import chunk 警告收敛）。

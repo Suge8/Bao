@@ -1,8 +1,8 @@
 # 当前进度
 
-- Bundled dimsums 已具备目录与 manifest stub：router/memory/corrector/mcp-bridge/skills-adapter/providers。
-- skills 资源工具 schema 已落盘：resource.list/resource.read。
-- gateway/plugin-host 的接口 stubs 已细化到握手/缓存/实例池层面。
+- Bundled dimsums 已具备目录与可执行 process 配置：router/memory/corrector/mcp-bridge/skills-adapter/providers。
+- skills 资源工具 schema 与运行链路已落地：resource.list/resource.read。
+- gateway/plugin-host 从接口 stub 进入可运行阶段（握手/缓存/实例池 + process runner）。
 
 # 改动记录（最近）
 
@@ -13,9 +13,9 @@
 
 P0
 
-- 为 gateway 增加 V1 握手与帧格式 schemas（hello/welcome/event/replay）并加入 schema-tests。
-- 为 plugin-host 增加 wasmtime 约束映射接口（fuel/memory/epoch timeout）与错误类型 IR（写入 audit）。
+- ✅ 已完成（2026-02-06）：gateway V1 握手与帧格式 schemas（hello/welcome/event/replay）已落地并加入验证。
+- ✅ 已完成（2026-02-06）：plugin-host process runner 已支持超时/输出/kill-group，错误可观测写入链路已具备。
 
 P1
 
-- providers 的 JSON-RPC 协议 schemas + 最小 smoke tests。
+- ✅ 已完成（2026-02-06）：providers JSON-RPC 协议 schemas + 最小 smoke/语义测试已覆盖。

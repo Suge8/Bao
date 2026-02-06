@@ -1,7 +1,7 @@
 # 当前进度
 
 - 阶段0骨架已完成：monorepo/turbo、Rust workspace stubs、schemas、SQLite migration、desktop UI 壳。
-- 阶段1补齐：bundled dimsums 目录契约与 manifest stubs；skills 资源工具 schemas。
+- 阶段1补齐：bundled dimsums 已从 manifest stubs 进化为可执行 process；skills 资源工具 schemas 与运行链路已接通。
 
 # 改动记录（最近）
 
@@ -12,13 +12,13 @@
 
 P0
 
-- 定稿 Bao 工具/事件/任务/记忆 schemas 的 $id/$ref 策略（URL vs 非 URL），并统一校验工具链。
-- 定义 dimsum 安装/启用/不可卸载（bundled）策略的核心 API（bao-engine + storage）。
+- ✅ 已完成（2026-02-06）：Bao 工具/事件/任务/记忆 schemas 的 $id/$ref 策略与统一校验链路已落地。
+- ✅ 已完成（2026-02-06）：dimsum 安装/启用/不可卸载（bundled）核心 API 与落库链路已具备。
 
 P1
 
-- gateway（WebSocket）接口与最小握手协议 schema。
-- skills-adapter/mcp-bridge 的最小可运行 process 实现（受权限+审计）。
+- ✅ 已完成（2026-02-06）：gateway（WebSocket）接口与最小握手协议 schema 已落地并纳入验证。
+- ✅ 已完成（2026-02-06）：skills-adapter/mcp-bridge 最小可运行 process 实现已接通（受权限+审计）。
 
 Done/Archive
 
