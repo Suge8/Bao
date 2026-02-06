@@ -33,6 +33,12 @@ pub trait StorageFacade: Send + Sync {
         payload: &Value,
     ) -> Result<(), StorageError>;
     fn get_task_by_id(&self, task_id: &str) -> Result<Option<TaskRecord>, StorageError>;
+    fn get_setting_json(&self, key: &str) -> Result<Option<Value>, StorageError>;
+    fn get_tool_permissions(
+        &self,
+        dimsum_id: &str,
+        tool_name: &str,
+    ) -> Result<Vec<String>, StorageError>;
     fn upsert_memory_item(&self, item: &MemoryItemRecord) -> Result<(), StorageError>;
     fn delete_memory_item(&self, memory_id: &str) -> Result<(), StorageError>;
     fn get_memory_item(&self, memory_id: &str) -> Result<Option<MemoryItemRecord>, StorageError>;
@@ -100,6 +106,18 @@ impl StorageFacade for SqliteStorage {
 
     fn get_task_by_id(&self, task_id: &str) -> Result<Option<TaskRecord>, StorageError> {
         self.inner.get_task_by_id(task_id)
+    }
+
+    fn get_setting_json(&self, key: &str) -> Result<Option<Value>, StorageError> {
+        self.inner.get_setting_json(key)
+    }
+
+    fn get_tool_permissions(
+        &self,
+        dimsum_id: &str,
+        tool_name: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        self.inner.get_tool_permissions(dimsum_id, tool_name)
     }
 
     fn upsert_memory_item(&self, item: &MemoryItemRecord) -> Result<(), StorageError> {

@@ -47,12 +47,18 @@ struct ProviderConfig {
 }
 
 pub fn run_provider_server(kind: ProviderKind) -> Result<(), String> {
-    run_server(|method, params| handle_provider_method(kind, method, params)).map_err(|e| e.to_string())
+    run_server(|method, params| handle_provider_method(kind, method, params))
+        .map_err(|e| e.to_string())
 }
 
-fn handle_provider_method(kind: ProviderKind, method: &str, params: &Value) -> Result<Value, RpcError> {
+fn handle_provider_method(
+    kind: ProviderKind,
+    method: &str,
+    params: &Value,
+) -> Result<Value, RpcError> {
     match method {
         "provider.methods" => Ok(provider_methods()),
+        "provider.delta" => provider_delta(params),
         "provider.cancel" => Err(RpcError::invalid_request(
             "provider.cancel is not supported in blocking mode; use kill-group cancellation",
         )),
@@ -77,6 +83,12 @@ fn provider_methods() -> Value {
           "notification": false
         },
         {
+          "method": "provider.delta",
+          "paramsSchemaRef": "bao.provider.delta/v1",
+          "resultSchemaRef": "bao.provider.delta/v1",
+          "notification": false
+        },
+        {
           "method": "provider.cancel",
           "paramsSchemaRef": "bao.provider.cancel.input/v1",
           "resultSchemaRef": "bao.provider.cancel.output/v1",
@@ -84,6 +96,10 @@ fn provider_methods() -> Value {
         }
       ]
     })
+}
+
+fn provider_delta(_params: &Value) -> Result<Value, RpcError> {
+    Ok(json!({ "kind": "done" }))
 }
 
 fn run_provider(kind: ProviderKind, params: &Value) -> Result<Value, RpcError> {
@@ -383,7 +399,9 @@ fn call_gemini(cfg: &ProviderConfig, prompt: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_prompt, handle_provider_method, provider_methods, ProviderKind, ProviderMessage};
+    use super::{
+        build_prompt, handle_provider_method, provider_methods, ProviderKind, ProviderMessage,
+    };
 
     #[test]
     fn provider_methods_should_expose_required_methods() {
@@ -397,9 +415,11 @@ mod tests {
             .any(|m| m.get("method") == Some(&serde_json::json!("provider.run"))));
         assert!(arr
             .iter()
+            .any(|m| m.get("method") == Some(&serde_json::json!("provider.delta"))));
+        assert!(arr
+            .iter()
             .any(|m| m.get("method") == Some(&serde_json::json!("provider.cancel"))));
     }
-
 
     #[test]
     fn provider_methods_should_mark_all_methods_non_notification() {
@@ -418,10 +438,25 @@ mod tests {
 
     #[test]
     fn provider_cancel_should_return_invalid_request_error() {
-        let err = handle_provider_method(ProviderKind::OpenAI, "provider.cancel", &serde_json::json!({}))
-            .expect_err("provider.cancel should fail in blocking mode");
+        let err = handle_provider_method(
+            ProviderKind::OpenAI,
+            "provider.cancel",
+            &serde_json::json!({}),
+        )
+        .expect_err("provider.cancel should fail in blocking mode");
         assert_eq!(err.code, -32600);
         assert!(err.message.contains("provider.cancel is not supported"));
+    }
+
+    #[test]
+    fn provider_delta_should_return_done_chunk_in_blocking_mode() {
+        let out = handle_provider_method(
+            ProviderKind::OpenAI,
+            "provider.delta",
+            &serde_json::json!({}),
+        )
+        .expect("provider.delta should return done");
+        assert_eq!(out.get("kind"), Some(&serde_json::json!("done")));
     }
 
     #[test]

@@ -203,6 +203,46 @@ describe("schemas", () => {
       attempt: 1,
     });
 
+    assertValid("bao.provider.run.output/v1", {
+      kind: "message",
+      message: "hello",
+    });
+
+    assertValid("bao.provider.run.output/v1", {
+      kind: "tool_call",
+      toolCall: {
+        id: "tc_1",
+        name: "shell.exec",
+        args: { command: "echo", args: ["ok"] },
+        source: {
+          provider: "bao.bundled.provider.openai",
+          model: "gpt-4.1-mini",
+        },
+      },
+    });
+
+    assertValid("bao.provider.delta/v1", {
+      kind: "text",
+      text: "partial",
+    });
+
+    assertValid("bao.provider.delta/v1", {
+      kind: "tool_call",
+      toolCall: {
+        id: "tc_delta_1",
+        name: "shell.exec",
+        args: { command: "echo", args: ["delta"] },
+        source: {
+          provider: "bao.bundled.provider.openai",
+          model: "gpt-4.1-mini",
+        },
+      },
+    });
+
+    assertValid("bao.provider.delta/v1", {
+      kind: "done",
+    });
+
     assertValid("bao.corrector.validate_tool_result_error/v1", {
       source: "runEngineTurn",
       stage: "corrector.validate_tool_result",
@@ -369,6 +409,22 @@ describe("schemas", () => {
         provider: "bao.bundled.provider.openai",
         model: "gpt-4.1-mini",
         attempt: 0,
+      }),
+    ).toBe(false);
+
+    const providerRunOutputValidate = ajv.getSchema(schemaId("bao.provider.run.output/v1"));
+    expect(providerRunOutputValidate).toBeTypeOf("function");
+    expect(
+      providerRunOutputValidate!({
+        kind: "tool_call",
+      }),
+    ).toBe(false);
+
+    const providerDeltaValidate = ajv.getSchema(schemaId("bao.provider.delta/v1"));
+    expect(providerDeltaValidate).toBeTypeOf("function");
+    expect(
+      providerDeltaValidate!({
+        kind: "text",
       }),
     ).toBe(false);
 

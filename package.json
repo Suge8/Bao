@@ -14,6 +14,7 @@
     "lint": "turbo run lint",
     "test": "turbo run test",
     "test:e2e": "pnpm -C apps/desktop test:e2e",
+    "gate:summary": "node scripts/release-gates-summary.mjs",
     "format": "turbo run format"
   },
   "devDependencies": {

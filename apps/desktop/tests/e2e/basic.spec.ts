@@ -237,13 +237,13 @@ test("chat should keep history per session when switching", async ({ page }) => 
     await tauri.invoke("runEngineTurn", { sessionId: "s2", text: "hello s2" });
   });
 
-  await expect(page.getByText("hello default")).toBeVisible();
+  await expect(page.locator('[data-testid^="chat-line-"]').getByText("hello default")).toBeVisible();
 
   await page.getByTestId("session-s2").click();
-  await expect(page.getByText("hello s2")).toBeVisible();
+  await expect(page.locator('[data-testid^="chat-line-"]').getByText("hello s2")).toBeVisible();
 
   await page.getByTestId("session-default").click();
-  await expect(page.getByText("hello default")).toBeVisible();
+  await expect(page.locator('[data-testid^="chat-line-"]').getByText("hello default")).toBeVisible();
 });
 
 test("chat inspector should show retry and memory extraction fields", async ({ page }) => {

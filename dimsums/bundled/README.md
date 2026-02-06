@@ -6,7 +6,7 @@
 - provider（openai/anthropic/gemini/xai）已提供可执行 process JSON-RPC 实现。
 - skills-adapter 已提供可执行 `resource.list` / `resource.read`。
 - mcp-bridge 已提供可执行桥接方法（`bridge.list_tools` / `bridge.call_tool`，支持 stdio/http）。
-- router/memory/corrector 仍以 manifest + hook 契约为主，后续继续补齐 wasm 运行实现。
+- router/memory/corrector 已提供可执行 process hook（JSON-RPC）；WASM 运行时仍为后续阶段目标。
 
 统一约束：
 - 所有 process 点心使用 `bao-jsonrpc/v1`。

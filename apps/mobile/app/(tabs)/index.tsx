@@ -33,7 +33,7 @@ export default function HomeScreen() {
           autoCorrect={false}
           value={url}
           onChangeText={setUrl}
-          placeholder="ws://127.0.0.1:3901/ws"
+          placeholder={t('connect.urlPlaceholder')}
         />
       </View>
 
@@ -45,7 +45,7 @@ export default function HomeScreen() {
           autoCorrect={false}
           value={token}
           onChangeText={setToken}
-          placeholder="..."
+          placeholder={t('connect.tokenPlaceholder')}
         />
       </View>
 

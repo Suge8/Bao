@@ -46,6 +46,11 @@
 - 对话 provider 路径已改为 process dimsum JSON-RPC 执行，桌面端不直接耦合各 provider HTTP 协议。
 - `runEngineTurn` 在 `needsMemory=true` 场景改为真实调用 `searchIndex/getItems` 注入记忆上下文，不再使用字符串占位注入。
 - `bao.bundled.mcp-bridge` 已支持 `bridge.list_tools/bridge.call_tool`，可桥接 stdio/http MCP server。
+- desktop-tauri 新增真实后端回归测试：`runEngineTurn` 的工具成功链路与 provider 失败链路均在 Rust 侧直接验证 `provider.call.error`/`engine.turn` 可观测性。
+- provider 协议覆盖深化：`provider.delta` 方法在 blocking 模式下返回 `done` 终止块；桌面端可解析 `kind=tool_call` 输出并生成可读回显。
+- ProcessToolRunner 观测字段增强：输出新增 `pid/startedAtMs/finishedAtMs`，并在 timeout/killed/resource_exceeded 元数据中补充 `pid + startedAtMs + elapsedMs`。
+- memory 演化新增大样本压力回归：`crates/bao-gateway/tests/memory_stress_evolution.rs` 覆盖 1200 条 mutation 批量写入、检索、SUPERSEDE/DELETE 与回滚恢复。
+- desktop 前端 tauri-client 改为静态导入 `@tauri-apps/api`，通过 `__TAURI_INTERNALS__` 检测守卫调用，减少 Tauri API dynamic import 构建告警。
 
 ## 桌面页面（Stage1）
 
@@ -63,8 +68,8 @@
 
 ## Stage 1 -> Stage 2 主要缺口
 
-- provider/tool calling 协议覆盖度继续提升（复杂 tool-calling 与流式细节）。
-- process runner 已支持 stdout/stderr 回传与 kill-group 中断；后续补齐更细粒度进程树观测。
-- memory rollback 已支持版本列表查询与冲突场景恢复；后续补强大规模数据下的演化策略与评测。
-- desktop e2e 目前主要为 Tauri mock 驱动；Stage2 需补齐“真后端链路”端到端测试矩阵。
-- 构建层仍存在 Tauri API dynamic import 警告；Stage2 需收敛 chunk 策略，降低构建噪音。
+- provider/tool calling 已补到 `provider.delta + tool_call 解析`，仍需继续完善“流式中途工具调用/并发 tool calls”细节。
+- process runner 观测已补 `pid + started/finished` 与失败元数据，仍需继续补齐子进程树级别采样。
+- memory rollback 已具备冲突恢复 + 1200 条压力回归，仍需继续补充更复杂演化策略评测（语义冲突与长期漂移）。
+- desktop e2e 仍是「Tauri mock + 真后端链路」混合模式；虽已新增 Rust 侧真后端回归，但浏览器侧真后端矩阵仍需提升。
+- 构建层 dynamic import 告警已明显收敛，仍需持续跟进剩余 chunk 噪音。

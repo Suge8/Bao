@@ -78,7 +78,7 @@ export default function SettingsPage() {
   }, [gatewayRunning]);
 
   const allowLanLabel = useMemo(() => {
-    return allowLan ? "LAN" : "Local";
+    return allowLan ? "LAN/Tailscale" : "Local";
   }, [allowLan]);
 
   const providerHint = useMemo(() => {
@@ -129,7 +129,7 @@ export default function SettingsPage() {
               )}
               onClick={() => setAllowLan(true)}
             >
-              允许局域网
+              允许 LAN/Tailscale
             </button>
             <button
               type="button"

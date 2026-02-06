@@ -83,6 +83,25 @@
 - mobile：新增跨页联动事件筛选（connect/sessions/chat/settings 共享 category），并在 settings 增加错误事件聚合面板（按 type/code/stage 聚合统计）。
 - mobile：错误聚合继续深化，支持按 `provider/session` 维度钻取、最近错误事件列表与阈值告警（warn/critical）。
 - 质量现状：workspace 当前存在较多并行改动（未提交），本条目仅描述“已验证可用”与“阶段缺口”，不代表发布冻结状态。
+- release-gates：新增 `.sisyphus/release-gates/v1.0-macos.yaml` P0 门禁基线（P0.LINT/P0.TEST/P0.TEST_E2E/P0.CARGO_WORKSPACE）。
+- release-gates：新增 gate 配置校验与汇总实现（`packages/schema-tests/src/release-gates.ts` + `scripts/release-gates-summary.mjs`），输出稳定字段 `gateId/status/evidence` 与 `P0_TOTAL/FAILED`。
+- schema-tests：新增 RED->GREEN 用例 `packages/schema-tests/src/release-gates.test.ts`，覆盖缺字段失败、配置加载、汇总输出关键字段。
+- gateway/dimsums：启用与安装路径新增 v1.0 trust gate（签名+来源+防降级），拒绝分支输出显式 `DIMSUM_TRUST_*` code 并写入 events/audit。
+- gateway/network：远程连接边界收紧为 fail-closed，`allowLan=false` 仅本机绑定；`allowLan=true` 仅允许 RFC1918 + Tailscale(100.64.0.0/10) 来源，公网来源拒绝并写 `gateway.connection.reject` 事件与审计。
+- mobile/ui：Chat 与 Connect 页面移除硬编码占位符（`s1`/`...`/`127.0.0.1`），改为 i18n 可读占位文案。
+- desktop-tauri/tests：MCP 测试 server command 从 `mock` 改为 `test-builtin-mcp`，避免与运行时占位概念混淆。
+- gateway/tests：`bundled_manifest_schema` 变量/报错文案去除 placeholder 误导命名，明确为 process bin 校验。
+- dimsums/bundled：9 个内置 manifest 的 `distribution.integrity.sha256` 已从全零占位切换为确定性非零值（基于 `id@version`）。
+- docs：同步修正 `dimsums/bundled/README.md` 与 `docs/PRD.md` 对 pipeline hooks 与 e2e 现状的过期表述。
+- storage：新增 audit hash chain verifier，校验 `prev_hash -> hash` 连续性并检测 tampered/missing/out-of-order；结果结构固定为 machine-readable 字段供 release gate 消费。
+- scheduler/storage：新增 crash-injection 恢复一致性能力（kill -9 模拟），任务在 `task.run.started` 后崩溃可重启恢复并保持 at-least-once；`Storage::open` 新增事件连续性+审计链启动校验，unsafe 状态返回结构化错误。
+- desktop-tauri/tests：新增 `runEngineTurn` 真后端回归测试（工具成功链路 + provider 失败链路），直接验证 `provider.call.error` 与 `engine.turn` 事件可观测。
+- provider/protocol：`bao-dimsum-process` 新增 `provider.delta`（blocking 模式返回 `done` 终止块），并补齐方法语义测试。
+- desktop-provider：`parse_provider_result` 支持 `kind=tool_call` 输出，避免 tool-call 结果被当作“缺失 message”错误。
+- plugin-host/observability：`ProcessToolRunner` 输出新增 `pid/startedAtMs/finishedAtMs`，并在 `timeout/killed/resource_exceeded/stdin_write_failed` 元数据补齐 `pid + startedAtMs + elapsedMs`。
+- memory/stress：新增 `crates/bao-gateway/tests/memory_stress_evolution.rs`，覆盖 1200 条 mutation 批量写入、检索、SUPERSEDE/DELETE 与回滚恢复。
+- desktop-build：`tauri-client` 去除动态 import，改为静态导入 `@tauri-apps/api` + `__TAURI_INTERNALS__` 守卫，收敛 Tauri API dynamic import 构建告警。
+- schema-tests：补充 `bao.provider.run.output/v1` 与 `bao.provider.delta/v1` 的正反例校验，提升 provider 协议回归覆盖。
 
 # 改动记录（最近）
 
@@ -178,12 +197,36 @@
 - [FEAT] 2026-02-06 mobile 错误聚合支持 provider/session 维度钻取 + warn/critical 阈值告警 + 最近错误事件视图
 - [FIX] 2026-02-06 desktop 补齐 `@bao/i18n` workspace 依赖，修复 tsc lint 解析失败
 - [FIX] 2026-02-06 pnpm 启用 `onlyBuiltDependencies`，允许 esbuild/unrs-resolver build scripts 正常执行
+- [FEAT] 2026-02-07 建立 v1.0 macOS P0 release gates 基线与 machine-readable 汇总脚本（gateId/status/evidence + P0_TOTAL/FAILED）
+- [FEAT] 2026-02-07 `packages/schema-tests` 新增 gate 校验/汇总测试，覆盖缺字段 fast-fail 与计数输出
+- [FEAT] 2026-02-07 为 dimsum 启用/安装链路增加 trust blocker（签名来源校验 + 防降级 + `dimsums.reject`/audit 显式 code）
+- [FEAT] 2026-02-07 强化 gateway 远程连接边界：仅 LAN/Tailscale 来源可接入，公网拒绝并写入 `gateway.connection.reject` events/audit（含 `GATEWAY_SOURCE_PUBLIC_REJECTED`）
+- [FIX] 2026-02-07 mobile 输入框占位文案去占位化（connect/chat 改为 i18n 可读提示）
+- [FIX] 2026-02-07 mcp 单测命令名从 `mock` 改为 `test-builtin-mcp`，降低“占位实现”误解
+- [FIX] 2026-02-07 bundled manifests 的 integrity.sha256 从全零占位改为确定性非零值（`id@version` 派生）
+- [DOC] 2026-02-07 修正文档中过期的 hooks/e2e 状态描述（bundled README + PRD）
+- [FEAT] 2026-02-07 `crates/bao-storage` 新增 `verify_audit_chain` 与 RED/GREEN 测试，覆盖 tampered hash、missing link、out-of-order write 与稳定 machine-readable 输出字段
+- [FEAT] 2026-02-07 `crates/bao-engine/tests/scheduler_tick.rs` 新增 kill -9 崩溃恢复回归测试（at-least-once + replay 连续 eventId + audit chain 仍有效），并在 `SchedulerService` 引入最小 `CrashInjector` runtime hook
+- [FEAT] 2026-02-07 `crates/bao-storage` 新增启动安全校验（`EVENT_SEQUENCE_GAP`/`AUDIT_CHAIN_INVALID` 结构化错误）与 `startup_integrity.rs` RED/GREEN 测试
+- [FEAT] 2026-02-07 `apps/desktop/src-tauri/src/lib.rs` 新增 `runEngineTurn` 真后端回归测试（工具路径成功 + provider 失败可观测）
+- [FEAT] 2026-02-07 `crates/bao-dimsum-process/src/provider.rs` 新增 `provider.delta` 方法与 `done` 终止块语义测试
+- [FEAT] 2026-02-07 `crates/bao-plugin-host` 增强 ProcessToolRunner 可观测输出（pid/start/end + 失败元数据）并补齐对应测试断言
+- [FEAT] 2026-02-07 新增 `crates/bao-gateway/tests/memory_stress_evolution.rs`（1200 条 memory mutation 压测 + 演化回归）
+- [FIX] 2026-02-07 `apps/desktop/src/data/tauri-client.ts` 改为静态导入 Tauri API，减少 dynamic import 构建告警
+- [FEAT] 2026-02-07 `packages/schema-tests` 增加 provider run/delta 契约正反例，补齐 tool_call + done 覆盖
+- [DOC] 2026-02-07 `README.md` 增补 Playwright 浏览器安装与 pnpm onlyBuiltDependencies 环境提示
+- [DOC] 2026-02-07 `docs/PRD.md` 更新 Stage2 缺口状态与本轮收口项
 
 # 未来发展（优先级）
 
 P0
 
 - ✅ 已完成（2026-02-06）：本批 P0（schema 绑定、任务校验、provider 矩阵、JSON-RPC 契约测试、process runner、memory rollback、pipeline 化）已全部收口。
+- ✅ 已完成（2026-02-07）：v1.0 发布门禁基线已落地（配置 + 校验 + 汇总输出），后续任务可直接消费 gate 输出。
+- ✅ 已完成（2026-02-07）：dimsum trust gate（签名/来源/防降级）已在 gateway 安装与启用路径阻断，并补齐 3 个正反例测试。
+- ✅ 已完成（2026-02-07）：gateway 远程连接边界已收紧为 LAN/Tailscale allowlist + 公网拒绝审计，补齐来源判定与拒绝路径测试。
+- ✅ 已完成（2026-02-07）：audit hash chain 完整性校验已落地，release gate 可直接消费 verifier 机器可读结果。
+- ✅ 已完成（2026-02-07）：崩溃恢复与事件回放一致性（kill -9 场景）已落地；调度崩溃可恢复且启动阶段会拒绝 unsafe 存储状态。
 
 P1
 
@@ -191,6 +234,6 @@ P1
 
 P2
 
-- desktop e2e 真后端链路补齐（减少对 Tauri mock 的依赖，补充真实 IPC/事件流回放场景）。
-- 构建告警治理（Tauri API dynamic import chunk 警告收敛）。
-- 开发文档补齐 pnpm build scripts allowlist 与 Playwright 浏览器安装指引，减少新环境启动阻塞。
+- ✅ 已完成（2026-02-07）：desktop 真后端回归补齐（Rust 侧 `runEngineTurn` 工具/Provider 异常链路可观测性测试）；浏览器侧仍保留 mock 场景用于 UI 稳定回归。
+- ✅ 已完成（2026-02-07）：构建告警治理首轮收口（tauri-client 静态导入 + runtime guard），dynamic import 噪音显著降低。
+- ✅ 已完成（2026-02-07）：开发文档补齐 Playwright 浏览器安装与 pnpm build scripts allowlist 说明。

@@ -28,3 +28,4 @@ Cargo.lock
 
 # Tooling
 .ace-tool/
+.sisyphus/

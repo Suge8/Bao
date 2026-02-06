@@ -46,7 +46,7 @@ export function Topbar({ title }: { title: string }) {
 
   const gatewayLabel = useMemo(() => {
     if (gatewayRunning === null || gatewayAllowLan === null) return "Gateway: Unknown";
-    const mode = gatewayAllowLan ? "LAN" : "Local";
+    const mode = gatewayAllowLan ? "LAN/Tailscale" : "Local";
     return gatewayRunning ? `Gateway: ${mode}` : "Gateway: Stopped";
   }, [gatewayAllowLan, gatewayRunning]);
 

@@ -24,3 +24,8 @@ Bao 是一个本地优先（desktop-first）的 Agent 框架与应用：
 - `pnpm test`
 - `pnpm test:e2e`
 - `cargo test --workspace`
+
+## 开发环境补充
+
+- 首次运行 e2e 前安装浏览器：`pnpm -C apps/desktop exec playwright install`
+- CI/新环境如遇 pnpm build scripts 被跳过，请确认根目录 `package.json` 的 `onlyBuiltDependencies` 未被覆盖（当前允许 `esbuild`、`unrs-resolver`）

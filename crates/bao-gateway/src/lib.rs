@@ -17,7 +17,7 @@ use cron::Schedule;
 use base64::{engine::general_purpose, Engine as _};
 use hex;
 use rand::{rngs::OsRng, RngCore};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::Value;
 use sha1::{Digest as _, Sha1};
@@ -27,6 +27,40 @@ use tokio::{
     net::{TcpListener, TcpStream},
     time,
 };
+
+const TRUSTED_SIGNER_BUNDLED: &str = "bao.bundled.release";
+const TRUSTED_SIGNER_COMMUNITY: &str = "bao.community.release";
+
+const DIMSUM_TRUST_UNTRUSTED_SOURCE: &str = "DIMSUM_TRUST_UNTRUSTED_SOURCE";
+const DIMSUM_TRUST_INVALID_SIGNATURE: &str = "DIMSUM_TRUST_INVALID_SIGNATURE";
+const DIMSUM_TRUST_TAMPERED_MANIFEST: &str = "DIMSUM_TRUST_TAMPERED_MANIFEST";
+const DIMSUM_TRUST_DOWNGRADE_BLOCKED: &str = "DIMSUM_TRUST_DOWNGRADE_BLOCKED";
+const DIMSUM_UPGRADE_FAILED_ROLLBACK_APPLIED: &str = "DIMSUM_UPGRADE_FAILED_ROLLBACK_APPLIED";
+
+const GATEWAY_SOURCE_PUBLIC_REJECTED: &str = "GATEWAY_SOURCE_PUBLIC_REJECTED";
+
+#[derive(Debug, Clone)]
+struct DimsumTrustError {
+    code: &'static str,
+    reason: String,
+}
+
+impl DimsumTrustError {
+    fn protocol_message(&self) -> String {
+        format!("{}: {}", self.code, self.reason)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BundledUpgradeFailure {
+    code: &'static str,
+    reason: String,
+    dimsum_id: String,
+    channel: Option<String>,
+    manifest_path: Option<String>,
+    installed_version: Option<String>,
+    incoming_version: Option<String>,
+}
 
 // -----------------------------
 // Public config + handle
@@ -778,6 +812,65 @@ impl GatewayHandle {
             ));
         }
 
+        if enabled {
+            let trust_payload = tokio::task::spawn_blocking({
+                let sqlite_path = self.state.sqlite_path.clone();
+                let dimsum_id = dimsum_id.clone();
+                move || {
+                    let conn = Connection::open(sqlite_path)?;
+                    conn.pragma_update(None, "foreign_keys", "ON")?;
+                    let row: Option<(String, String, String)> = conn
+                        .query_row(
+                            "SELECT version, channel, manifest_json FROM dimsums WHERE dimsum_id=?1",
+                            params![dimsum_id],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                        )
+                        .optional()?;
+                    Ok::<_, GatewayError>(row)
+                }
+            })
+            .await
+            .map_err(|e| GatewayError::Protocol(format!("join: {e}")))??;
+
+            if let Some((version, channel, manifest_json)) = trust_payload {
+                let manifest: Value = serde_json::from_str(&manifest_json).map_err(|e| {
+                    GatewayError::Protocol(format!(
+                        "{}: manifest json parse failed for {}: {e}",
+                        DIMSUM_TRUST_TAMPERED_MANIFEST, dimsum_id
+                    ))
+                })?;
+
+                if let Err(err) = validate_dimsum_manifest_trust(&manifest, &dimsum_id, &channel, &version)
+                {
+                    let payload = serde_json::json!({
+                        "code": err.code,
+                        "reason": err.reason,
+                        "dimsumId": dimsum_id,
+                        "channel": channel,
+                        "enabled": true,
+                    });
+                    let _ = append_and_load_event(
+                        &self.state,
+                        ts,
+                        "dimsums.reject",
+                        None,
+                        None,
+                        None,
+                        &payload,
+                    )
+                    .await;
+                    let _ = self.storage.insert_audit_event(
+                        ts,
+                        "dimsum.trust.reject",
+                        "dimsum",
+                        &dimsum_id,
+                        &payload,
+                    );
+                    return Err(GatewayError::Protocol(err.protocol_message()));
+                }
+            }
+        }
+
         let changed = tokio::task::spawn_blocking({
             let sqlite_path = self.state.sqlite_path.clone();
             let dimsum_id = dimsum_id.clone();
@@ -865,6 +958,10 @@ impl GatewayHandle {
         })
         .await
         .map_err(|e| GatewayError::Protocol(format!("join: {e}")))??;
+
+        if key == "permissions.capabilities" {
+            self.scheduler.enforce_capability_gate(ts);
+        }
 
         let payload = serde_json::json!({"key": key, "value": value});
         append_and_load_event(
@@ -1228,11 +1325,7 @@ impl GatewayServer {
             .lock()
             .expect("cfg mutex poisoned")
             .allow_lan;
-        if allow_lan {
-            cfg.bind_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-        } else {
-            cfg.bind_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        }
+        cfg.bind_addr = effective_bind_addr(allow_lan);
 
         let addr = SocketAddr::new(cfg.bind_addr, cfg.port);
         let listener = TcpListener::bind(addr).await?;
@@ -1244,10 +1337,10 @@ impl GatewayServer {
     /// Useful for tests (bind to port 0 then read `local_addr`).
     pub async fn start_with_listener(&self, listener: TcpListener) -> Result<(), GatewayError> {
         loop {
-            let (stream, _) = listener.accept().await?;
+            let (stream, peer_addr) = listener.accept().await?;
             let state = self.state.clone();
             tokio::spawn(async move {
-                let _ = handle_connection(state, stream).await;
+                let _ = handle_connection(state, stream, peer_addr).await;
             });
         }
     }
@@ -1563,7 +1656,7 @@ fn init_sqlite(sqlite_path: &str) -> Result<(), GatewayError> {
     const INIT_SQL: &str = include_str!("../../bao-storage/migrations/0001_init.sql");
     conn.execute_batch(INIT_SQL)?;
 
-    seed_bundled_dimsums(&conn)?;
+    seed_bundled_dimsums(&conn, sqlite_path)?;
     seed_default_session(&conn)?;
     seed_default_settings(&conn)?;
     Ok(())
@@ -1603,50 +1696,257 @@ fn seed_default_settings(conn: &Connection) -> Result<(), GatewayError> {
     Ok(())
 }
 
-fn seed_bundled_dimsums(conn: &Connection) -> Result<(), GatewayError> {
+fn seed_bundled_dimsums(conn: &Connection, sqlite_path: &str) -> Result<(), GatewayError> {
     let root = bundled_dimsums_root()?;
     let now = now_ts();
 
-    for entry in fs::read_dir(root)
-        .map_err(|e| GatewayError::Protocol(format!("read dimsums dir failed: {e}")))?
-    {
-        let entry =
-            entry.map_err(|e| GatewayError::Protocol(format!("read dimsums entry failed: {e}")))?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let manifest_path = path.join("manifest.json");
-        if !manifest_path.exists() {
-            continue;
-        }
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let mut upsert_count = 0_usize;
 
-        let manifest_text = fs::read_to_string(&manifest_path).map_err(|e| {
-            GatewayError::Protocol(format!("read manifest failed ({:?}): {e}", manifest_path))
-        })?;
-        let manifest_json: Value = serde_json::from_str(&manifest_text).map_err(|e| {
-            GatewayError::Protocol(format!("parse manifest failed ({:?}): {e}", manifest_path))
-        })?;
-
-        let dimsum_id = manifest_json
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                GatewayError::Protocol(format!("manifest missing id ({:?})", manifest_path))
+    let run_result: Result<(), BundledUpgradeFailure> = (|| {
+        for entry in fs::read_dir(root)
+            .map_err(|e| BundledUpgradeFailure {
+                code: DIMSUM_UPGRADE_FAILED_ROLLBACK_APPLIED,
+                reason: format!("read dimsums dir failed: {e}"),
+                dimsum_id: "bundled".to_string(),
+                channel: None,
+                manifest_path: None,
+                installed_version: None,
+                incoming_version: None,
+            })?
+        {
+            let entry = entry.map_err(|e| BundledUpgradeFailure {
+                code: DIMSUM_UPGRADE_FAILED_ROLLBACK_APPLIED,
+                reason: format!("read dimsums entry failed: {e}"),
+                dimsum_id: "bundled".to_string(),
+                channel: None,
+                manifest_path: None,
+                installed_version: None,
+                incoming_version: None,
             })?;
-        let version = manifest_json
-            .get("version")
-            .and_then(Value::as_str)
-            .unwrap_or("0.0.0");
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let manifest_path = path.join("manifest.json");
+            if !manifest_path.exists() {
+                continue;
+            }
 
-        conn.execute(
-            "INSERT INTO dimsums(dimsum_id, enabled, channel, version, manifest_json, installed_at, updated_at) \
-             VALUES (?1, 1, 'bundled', ?2, ?3, ?4, ?4) \
-             ON CONFLICT(dimsum_id) DO UPDATE SET version=excluded.version, manifest_json=excluded.manifest_json, updated_at=excluded.updated_at",
-            params![dimsum_id, version, manifest_text, now],
-        )?;
+            let manifest_text = fs::read_to_string(&manifest_path).map_err(|e| BundledUpgradeFailure {
+                code: DIMSUM_UPGRADE_FAILED_ROLLBACK_APPLIED,
+                reason: format!("read manifest failed ({:?}): {e}", manifest_path),
+                dimsum_id: "bundled".to_string(),
+                channel: None,
+                manifest_path: Some(manifest_path.to_string_lossy().to_string()),
+                installed_version: None,
+                incoming_version: None,
+            })?;
+            let mut manifest_json: Value = serde_json::from_str(&manifest_text).map_err(|e| BundledUpgradeFailure {
+                code: DIMSUM_TRUST_TAMPERED_MANIFEST,
+                reason: format!("parse manifest failed ({:?}): {e}", manifest_path),
+                dimsum_id: "bundled".to_string(),
+                channel: None,
+                manifest_path: Some(manifest_path.to_string_lossy().to_string()),
+                installed_version: None,
+                incoming_version: None,
+            })?;
+
+            let dimsum_id = manifest_json
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| BundledUpgradeFailure {
+                    code: DIMSUM_TRUST_TAMPERED_MANIFEST,
+                    reason: format!("manifest missing id ({:?})", manifest_path),
+                    dimsum_id: "bundled".to_string(),
+                    channel: None,
+                    manifest_path: Some(manifest_path.to_string_lossy().to_string()),
+                    installed_version: None,
+                    incoming_version: None,
+                })?
+                .to_string();
+            let version = manifest_json
+                .get("version")
+                .and_then(Value::as_str)
+                .unwrap_or("0.0.0")
+                .to_string();
+
+            normalize_legacy_bundled_signature(&mut manifest_json, &dimsum_id, &version).map_err(
+                |e| BundledUpgradeFailure {
+                    code: DIMSUM_TRUST_TAMPERED_MANIFEST,
+                    reason: e.to_string(),
+                    dimsum_id: dimsum_id.clone(),
+                    channel: None,
+                    manifest_path: Some(manifest_path.to_string_lossy().to_string()),
+                    installed_version: None,
+                    incoming_version: Some(version.clone()),
+                },
+            )?;
+
+            let channel = manifest_json
+                .get("distribution")
+                .and_then(|d| d.get("channel"))
+                .and_then(Value::as_str)
+                .unwrap_or("bundled")
+                .to_string();
+
+            if let Err(err) =
+                validate_dimsum_manifest_trust(&manifest_json, &dimsum_id, &channel, &version)
+            {
+                return Err(BundledUpgradeFailure {
+                    code: err.code,
+                    reason: err.reason,
+                    dimsum_id,
+                    channel: Some(channel),
+                    manifest_path: Some(manifest_path.to_string_lossy().to_string()),
+                    installed_version: None,
+                    incoming_version: Some(version),
+                });
+            }
+
+            let existing_version: Option<String> = conn
+                .query_row(
+                    "SELECT version FROM dimsums WHERE dimsum_id=?1",
+                    params![dimsum_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| BundledUpgradeFailure {
+                    code: DIMSUM_UPGRADE_FAILED_ROLLBACK_APPLIED,
+                    reason: e.to_string(),
+                    dimsum_id: dimsum_id.clone(),
+                    channel: Some(channel.clone()),
+                    manifest_path: Some(manifest_path.to_string_lossy().to_string()),
+                    installed_version: None,
+                    incoming_version: Some(version.clone()),
+                })?;
+
+            if let Some(existing) = existing_version {
+                if compare_semver(&existing, &version).is_gt() {
+                    return Err(BundledUpgradeFailure {
+                        code: DIMSUM_TRUST_DOWNGRADE_BLOCKED,
+                        reason: format!(
+                            "downgrade blocked for {}: installed={}, incoming={}",
+                            dimsum_id, existing, version
+                        ),
+                        dimsum_id,
+                        channel: Some(channel),
+                        manifest_path: Some(manifest_path.to_string_lossy().to_string()),
+                        installed_version: Some(existing),
+                        incoming_version: Some(version),
+                    });
+                }
+            }
+
+            let manifest_text = serde_json::to_string(&manifest_json).map_err(|e| {
+                BundledUpgradeFailure {
+                    code: DIMSUM_TRUST_TAMPERED_MANIFEST,
+                    reason: format!("serialize manifest failed ({:?}): {e}", manifest_path),
+                    dimsum_id: dimsum_id.clone(),
+                    channel: Some(channel.clone()),
+                    manifest_path: Some(manifest_path.to_string_lossy().to_string()),
+                    installed_version: None,
+                    incoming_version: Some(version.clone()),
+                }
+            })?;
+
+            conn.execute(
+                "INSERT INTO dimsums(dimsum_id, enabled, channel, version, manifest_json, installed_at, updated_at) \
+                 VALUES (?1, 1, 'bundled', ?2, ?3, ?4, ?4) \
+                 ON CONFLICT(dimsum_id) DO UPDATE SET version=excluded.version, manifest_json=excluded.manifest_json, updated_at=excluded.updated_at",
+                params![dimsum_id, version, manifest_text, now],
+            )
+            .map_err(|e| BundledUpgradeFailure {
+                code: DIMSUM_UPGRADE_FAILED_ROLLBACK_APPLIED,
+                reason: e.to_string(),
+                dimsum_id: "bundled".to_string(),
+                channel: None,
+                manifest_path: Some(manifest_path.to_string_lossy().to_string()),
+                installed_version: None,
+                incoming_version: None,
+            })?;
+
+            upsert_count += 1;
+            if should_inject_upgrade_failpoint(conn, upsert_count) {
+                return Err(BundledUpgradeFailure {
+                    code: DIMSUM_UPGRADE_FAILED_ROLLBACK_APPLIED,
+                    reason: "injected bundled upgrade failure by test failpoint".to_string(),
+                    dimsum_id: "bundled".to_string(),
+                    channel: Some("bundled".to_string()),
+                    manifest_path: Some(manifest_path.to_string_lossy().to_string()),
+                    installed_version: None,
+                    incoming_version: None,
+                });
+            }
+        }
+
+        Ok(())
+    })();
+
+    if let Err(err) = run_result {
+        let _ = conn.execute_batch("ROLLBACK");
+        record_upgrade_failure_events(sqlite_path, now, &err);
+        return Err(GatewayError::Protocol(format!(
+            "{}: failedCode={}, dimsumId={}, reason={}",
+            DIMSUM_UPGRADE_FAILED_ROLLBACK_APPLIED, err.code, err.dimsum_id, err.reason
+        )));
     }
+
+    conn.execute_batch("COMMIT")?;
     Ok(())
+}
+
+fn should_inject_upgrade_failpoint(conn: &Connection, upsert_count: usize) -> bool {
+    let target = conn
+        .query_row(
+            "SELECT value_json FROM settings WHERE key='__test.failBundledUpgradeAfter'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    target > 0 && (upsert_count as u64) >= target
+}
+
+fn record_upgrade_failure_events(sqlite_path: &str, ts: i64, failure: &BundledUpgradeFailure) {
+    let reject_payload = serde_json::json!({
+        "code": failure.code,
+        "reason": failure.reason,
+        "dimsumId": failure.dimsum_id,
+        "channel": failure.channel,
+        "path": failure.manifest_path,
+        "installedVersion": failure.installed_version,
+        "incomingVersion": failure.incoming_version,
+    });
+    let rollback_payload = serde_json::json!({
+        "code": DIMSUM_UPGRADE_FAILED_ROLLBACK_APPLIED,
+        "failedCode": failure.code,
+        "reason": failure.reason,
+        "dimsumId": failure.dimsum_id,
+        "channel": failure.channel,
+        "path": failure.manifest_path,
+        "installedVersion": failure.installed_version,
+        "incomingVersion": failure.incoming_version,
+        "rolledBack": true,
+    });
+
+    let Ok(storage) = Storage::open_unchecked(sqlite_path.to_string()) else {
+        return;
+    };
+
+    let _ = storage.insert_event(ts, "dimsums.upgrade.rollback", None, None, None, &rollback_payload);
+    let _ = storage.insert_audit_event(
+        ts,
+        "dimsum.upgrade.rollback",
+        "dimsum",
+        &failure.dimsum_id,
+        &rollback_payload,
+    );
+    let _ = storage.insert_audit_event(ts, "dimsum.install.reject", "dimsum", &failure.dimsum_id, &reject_payload);
 }
 
 fn bundled_dimsums_root() -> Result<std::path::PathBuf, GatewayError> {
@@ -1659,6 +1959,213 @@ fn bundled_dimsums_root() -> Result<std::path::PathBuf, GatewayError> {
         "bundled dimsums directory not found: {}",
         root.to_string_lossy()
     )))
+}
+
+fn trusted_signer_for_channel(channel: &str) -> Option<&'static str> {
+    match channel {
+        "bundled" => Some(TRUSTED_SIGNER_BUNDLED),
+        "community" => Some(TRUSTED_SIGNER_COMMUNITY),
+        _ => None,
+    }
+}
+
+fn normalize_legacy_bundled_signature(
+    manifest: &mut Value,
+    dimsum_id: &str,
+    version: &str,
+) -> Result<(), GatewayError> {
+    let Some(root) = manifest.as_object_mut() else {
+        return Err(GatewayError::Protocol("manifest root must be object".to_string()));
+    };
+    let Some(distribution) = root.get_mut("distribution").and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    let channel = distribution
+        .get("channel")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if channel != "bundled" {
+        return Ok(());
+    }
+    let Some(integrity) = distribution.get_mut("integrity").and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+        let sha256 = integrity
+            .get("sha256")
+            .and_then(Value::as_str)
+            .unwrap_or("0000000000000000000000000000000000000000000000000000000000000000")
+            .to_string();
+    if integrity
+        .get("signedBy")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .is_empty()
+    {
+        integrity.insert(
+            "signedBy".to_string(),
+            Value::String(TRUSTED_SIGNER_BUNDLED.to_string()),
+        );
+    }
+    if integrity
+        .get("signature")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .is_empty()
+    {
+        let signature = expected_signature(
+            dimsum_id,
+            version,
+            &sha256,
+            TRUSTED_SIGNER_BUNDLED,
+        );
+        integrity.insert("signature".to_string(), Value::String(signature));
+    }
+    Ok(())
+}
+
+fn validate_dimsum_manifest_trust(
+    manifest: &Value,
+    expected_dimsum_id: &str,
+    expected_channel: &str,
+    expected_version: &str,
+) -> Result<(), DimsumTrustError> {
+    let manifest_id = manifest
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| DimsumTrustError {
+            code: DIMSUM_TRUST_TAMPERED_MANIFEST,
+            reason: "manifest.id is missing".to_string(),
+        })?;
+    if manifest_id != expected_dimsum_id {
+        return Err(DimsumTrustError {
+            code: DIMSUM_TRUST_TAMPERED_MANIFEST,
+            reason: format!(
+                "manifest id mismatch (expected={}, got={})",
+                expected_dimsum_id, manifest_id
+            ),
+        });
+    }
+
+    let manifest_version = manifest
+        .get("version")
+        .and_then(Value::as_str)
+        .ok_or_else(|| DimsumTrustError {
+            code: DIMSUM_TRUST_TAMPERED_MANIFEST,
+            reason: "manifest.version is missing".to_string(),
+        })?;
+    if manifest_version != expected_version {
+        return Err(DimsumTrustError {
+            code: DIMSUM_TRUST_TAMPERED_MANIFEST,
+            reason: format!(
+                "manifest version mismatch (expected={}, got={})",
+                expected_version, manifest_version
+            ),
+        });
+    }
+
+    let distribution = manifest
+        .get("distribution")
+        .and_then(Value::as_object)
+        .ok_or_else(|| DimsumTrustError {
+            code: DIMSUM_TRUST_TAMPERED_MANIFEST,
+            reason: "distribution is missing".to_string(),
+        })?;
+    let channel = distribution
+        .get("channel")
+        .and_then(Value::as_str)
+        .ok_or_else(|| DimsumTrustError {
+            code: DIMSUM_TRUST_TAMPERED_MANIFEST,
+            reason: "distribution.channel is missing".to_string(),
+        })?;
+    if channel != expected_channel {
+        return Err(DimsumTrustError {
+            code: DIMSUM_TRUST_TAMPERED_MANIFEST,
+            reason: format!(
+                "manifest channel mismatch (expected={}, got={})",
+                expected_channel, channel
+            ),
+        });
+    }
+
+    let trusted_signer = trusted_signer_for_channel(channel).ok_or_else(|| DimsumTrustError {
+        code: DIMSUM_TRUST_UNTRUSTED_SOURCE,
+        reason: format!("untrusted channel: {channel}"),
+    })?;
+
+    let integrity = distribution
+        .get("integrity")
+        .and_then(Value::as_object)
+        .ok_or_else(|| DimsumTrustError {
+            code: DIMSUM_TRUST_TAMPERED_MANIFEST,
+            reason: "distribution.integrity is missing".to_string(),
+        })?;
+    let sha256 = integrity
+        .get("sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| DimsumTrustError {
+            code: DIMSUM_TRUST_TAMPERED_MANIFEST,
+            reason: "integrity.sha256 is missing".to_string(),
+        })?;
+    if sha256.len() != 64 {
+        return Err(DimsumTrustError {
+            code: DIMSUM_TRUST_TAMPERED_MANIFEST,
+            reason: format!("integrity.sha256 must be 64 chars, got {}", sha256.len()),
+        });
+    }
+
+    let signed_by = integrity
+        .get("signedBy")
+        .and_then(Value::as_str)
+        .ok_or_else(|| DimsumTrustError {
+            code: DIMSUM_TRUST_INVALID_SIGNATURE,
+            reason: "integrity.signedBy is missing".to_string(),
+        })?;
+    if signed_by != trusted_signer {
+        return Err(DimsumTrustError {
+            code: DIMSUM_TRUST_UNTRUSTED_SOURCE,
+            reason: format!("signer {} is not trusted for channel {}", signed_by, channel),
+        });
+    }
+
+    let signature = integrity
+        .get("signature")
+        .and_then(Value::as_str)
+        .ok_or_else(|| DimsumTrustError {
+            code: DIMSUM_TRUST_INVALID_SIGNATURE,
+            reason: "integrity.signature is missing".to_string(),
+        })?;
+    let expected_sig = expected_signature(manifest_id, manifest_version, sha256, signed_by);
+    if signature != expected_sig {
+        return Err(DimsumTrustError {
+            code: DIMSUM_TRUST_INVALID_SIGNATURE,
+            reason: "signature mismatch".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn expected_signature(dimsum_id: &str, version: &str, sha256: &str, signed_by: &str) -> String {
+    format!(
+        "bao.sig.v1:{}:{}:{}:{}",
+        dimsum_id, version, sha256, signed_by
+    )
+}
+
+fn compare_semver(left: &str, right: &str) -> std::cmp::Ordering {
+    let left_parts = parse_semver_core(left);
+    let right_parts = parse_semver_core(right);
+    left_parts.cmp(&right_parts)
+}
+
+fn parse_semver_core(version: &str) -> (u64, u64, u64) {
+    let core = version.split('-').next().unwrap_or(version);
+    let mut parts = core.split('.');
+    let major = parts.next().unwrap_or("0").parse::<u64>().unwrap_or(0);
+    let minor = parts.next().unwrap_or("0").parse::<u64>().unwrap_or(0);
+    let patch = parts.next().unwrap_or("0").parse::<u64>().unwrap_or(0);
+    (major, minor, patch)
 }
 
 // -----------------------------
@@ -1674,7 +2181,10 @@ fn bundled_dimsums_root() -> Result<std::path::PathBuf, GatewayError> {
 async fn handle_connection(
     state: Arc<GatewayState>,
     mut stream: TcpStream,
+    peer_addr: SocketAddr,
 ) -> Result<(), GatewayError> {
+    reject_source_if_needed(&state, peer_addr.ip()).await?;
+
     // 1) HTTP Upgrade handshake
     let req = read_http_request(&mut stream).await?;
     let (method, path) = parse_http_request_line(&req)
@@ -1809,6 +2319,72 @@ async fn handle_connection(
             }
         }
     }
+}
+
+fn effective_bind_addr(allow_lan: bool) -> IpAddr {
+    if allow_lan {
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+    } else {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    }
+}
+
+fn is_source_ip_allowed(source_ip: IpAddr, allow_lan: bool) -> bool {
+    if source_ip.is_loopback() {
+        return true;
+    }
+    if !allow_lan {
+        return false;
+    }
+
+    match source_ip {
+        IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            let is_rfc1918 = octets[0] == 10
+                || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+                || (octets[0] == 192 && octets[1] == 168);
+            let is_tailscale = octets[0] == 100 && (64..=127).contains(&octets[1]);
+            is_rfc1918 || is_tailscale
+        }
+        IpAddr::V6(_) => false,
+    }
+}
+
+async fn reject_source_if_needed(
+    state: &Arc<GatewayState>,
+    source_ip: IpAddr,
+) -> Result<(), GatewayError> {
+    let allow_lan = state
+        .runtime_cfg
+        .lock()
+        .expect("cfg mutex poisoned")
+        .allow_lan;
+    if is_source_ip_allowed(source_ip, allow_lan) {
+        return Ok(());
+    }
+
+    let ts = now_ts();
+    let payload = serde_json::json!({
+        "code": GATEWAY_SOURCE_PUBLIC_REJECTED,
+        "reason": "public source is blocked; only RFC1918 LAN and Tailscale are allowed",
+        "sourceIp": source_ip.to_string(),
+        "allowLan": allow_lan,
+    });
+    let _ = append_and_load_event(
+        state,
+        ts,
+        "gateway.connection.reject",
+        None,
+        None,
+        None,
+        &payload,
+    )
+    .await?;
+    let _ = Storage::open(state.sqlite_path.clone())
+        .map_err(|e| GatewayError::Protocol(e.to_string()))?
+        .insert_audit_event(ts, "gateway.connection.reject", "gateway", "connection", &payload)
+        .map_err(|e| GatewayError::Protocol(e.to_string()))?;
+    Err(GatewayError::Unauthorized)
 }
 
 async fn handle_client_command(
@@ -2460,6 +3036,209 @@ mod tests {
         assert_eq!(replay_evt.event_id, msg_evt.event_id);
 
         jh.abort();
+    }
+
+    #[test]
+    fn allow_lan_false_should_bind_localhost_only() {
+        assert_eq!(
+            effective_bind_addr(false),
+            IpAddr::V4(Ipv4Addr::LOCALHOST)
+        );
+    }
+
+    #[test]
+    fn allow_lan_true_should_bind_unspecified() {
+        assert_eq!(
+            effective_bind_addr(true),
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        );
+    }
+
+    #[test]
+    fn source_boundary_should_allow_lan_tailscale_and_loopback() {
+        assert!(is_source_ip_allowed(
+            IpAddr::V4(Ipv4Addr::new(10, 9, 8, 7)),
+            true
+        ));
+        assert!(is_source_ip_allowed(
+            IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)),
+            true
+        ));
+        assert!(is_source_ip_allowed(
+            IpAddr::V4(Ipv4Addr::new(192, 168, 10, 20)),
+            true
+        ));
+        assert!(is_source_ip_allowed(
+            IpAddr::V4(Ipv4Addr::new(100, 64, 10, 20)),
+            true
+        ));
+        assert!(is_source_ip_allowed(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            true
+        ));
+        assert!(is_source_ip_allowed(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST), true));
+    }
+
+    #[test]
+    fn source_boundary_should_reject_public_addresses() {
+        assert!(!is_source_ip_allowed(
+            IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+            true
+        ));
+        assert!(!is_source_ip_allowed(
+            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+            true
+        ));
+        assert!(!is_source_ip_allowed(
+            IpAddr::V6(std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
+            true
+        ));
+    }
+
+    #[tokio::test]
+    async fn public_source_reject_should_write_event_and_audit() {
+        let (_dir, sqlite_path) = temp_sqlite_path();
+        init_sqlite(&sqlite_path).expect("init sqlite");
+        let state = Arc::new(GatewayState {
+            sqlite_path: sqlite_path.clone(),
+            auth: AuthRegistry::new(),
+            runtime_cfg: Mutex::new(RuntimeConfig { allow_lan: true }),
+        });
+
+        let res = reject_source_if_needed(&state, IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))).await;
+        assert!(matches!(res, Err(GatewayError::Unauthorized)));
+
+        let conn = Connection::open(sqlite_path).expect("open sqlite");
+        let (event_type, payload_json): (String, String) = conn
+            .query_row(
+                "SELECT type, payload_json FROM events ORDER BY eventId DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("query event");
+        assert_eq!(event_type, "gateway.connection.reject");
+        let payload: serde_json::Value = serde_json::from_str(&payload_json).expect("parse payload");
+        assert_eq!(payload["code"], "GATEWAY_SOURCE_PUBLIC_REJECTED");
+
+        let (action, audit_payload_json): (String, String) = conn
+            .query_row(
+                "SELECT action, payload_json FROM audit_events ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("query audit");
+        assert_eq!(action, "gateway.connection.reject");
+        let audit_payload: serde_json::Value =
+            serde_json::from_str(&audit_payload_json).expect("parse audit payload");
+        assert_eq!(audit_payload["code"], "GATEWAY_SOURCE_PUBLIC_REJECTED");
+    }
+
+    #[test]
+    fn bundled_upgrade_failure_should_rollback_and_write_machine_readable_audit() {
+        let (_dir, sqlite_path) = temp_sqlite_path();
+        init_sqlite(&sqlite_path).expect("first init sqlite");
+
+        let conn = Connection::open(sqlite_path.clone()).expect("open sqlite");
+        let mut baseline_stmt = conn
+            .prepare("SELECT dimsum_id, version FROM dimsums ORDER BY dimsum_id ASC")
+            .expect("prepare baseline query");
+        let baseline_rows = baseline_stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .expect("query baseline");
+        let mut baseline = Vec::new();
+        for row in baseline_rows {
+            baseline.push(row.expect("read baseline row"));
+        }
+        drop(baseline_stmt);
+
+        conn.execute(
+            "INSERT INTO settings(key, value_json, updated_at) VALUES ('__test.failBundledUpgradeAfter', '1', 1) \
+             ON CONFLICT(key) DO UPDATE SET value_json='1', updated_at=excluded.updated_at",
+            [],
+        )
+        .expect("set failpoint");
+        let err = init_sqlite(&sqlite_path).expect_err("upgrade must fail in test failpoint");
+        conn.execute(
+            "DELETE FROM settings WHERE key='__test.failBundledUpgradeAfter'",
+            [],
+        )
+        .expect("clear failpoint");
+
+        let err_text = err.to_string();
+        assert!(
+            err_text.contains("DIMSUM_UPGRADE_FAILED_ROLLBACK_APPLIED"),
+            "unexpected error: {err_text}"
+        );
+
+        let mut after_stmt = conn
+            .prepare("SELECT dimsum_id, version FROM dimsums ORDER BY dimsum_id ASC")
+            .expect("prepare after query");
+        let after_rows = after_stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .expect("query after");
+        let mut after = Vec::new();
+        for row in after_rows {
+            after.push(row.expect("read after row"));
+        }
+        assert_eq!(after, baseline, "upgrade failure must rollback dimsum versions");
+
+        let (action, payload_json): (String, String) = conn
+            .query_row(
+                "SELECT action, payload_json FROM audit_events WHERE action='dimsum.upgrade.rollback' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("rollback audit should exist");
+        assert_eq!(action, "dimsum.upgrade.rollback");
+        let payload: serde_json::Value = serde_json::from_str(&payload_json).expect("parse payload");
+        assert_eq!(
+            payload["code"],
+            serde_json::json!("DIMSUM_UPGRADE_FAILED_ROLLBACK_APPLIED")
+        );
+        assert_eq!(payload["rolledBack"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn migration_retry_from_partial_state_should_be_idempotent_and_safe() {
+        let (_dir, sqlite_path) = temp_sqlite_path();
+        let conn = Connection::open(sqlite_path.clone()).expect("open sqlite");
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;\
+             CREATE TABLE IF NOT EXISTS sessions (\
+               id INTEGER PRIMARY KEY AUTOINCREMENT,\
+               session_id TEXT NOT NULL UNIQUE,\
+               title TEXT,\
+               created_at INTEGER NOT NULL,\
+               updated_at INTEGER NOT NULL\
+             );",
+        )
+        .expect("seed partial schema");
+
+        init_sqlite(&sqlite_path).expect("retry from partial state should succeed");
+        init_sqlite(&sqlite_path).expect("rerun migration should stay idempotent");
+
+        let default_session_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM sessions WHERE session_id='default'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count default session");
+        assert_eq!(default_session_count, 1);
+
+        let allow_lan_setting_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM settings WHERE key='gateway.allowLan'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count default setting");
+        assert_eq!(allow_lan_setting_count, 1);
+
+        let dimsum_count: i64 = conn
+            .query_row("SELECT COUNT(1) FROM dimsums", [], |r| r.get(0))
+            .expect("count dimsums");
+        assert!(dimsum_count > 0, "bundled dimsums should still be seeded");
     }
 }
 

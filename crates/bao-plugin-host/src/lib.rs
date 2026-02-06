@@ -85,6 +85,7 @@ pub trait WasmInstancePool {
 pub struct PluginHostError {
     pub code: String,
     pub message: String,
+    pub metadata: Option<serde_json::Value>,
 }
 
 pub trait WasmLimitsEnforcer {

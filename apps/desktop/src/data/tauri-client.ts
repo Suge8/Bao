@@ -1,14 +1,17 @@
 import type { DesktopClient } from "./client";
 import type { BaoEvent, UnlistenFn } from "./events";
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 
 // IMPORTANT: This file must remain safe to import in a web-only E2E run.
-// We lazy-load @tauri-apps/api at runtime.
+// We keep static imports to avoid Tauri/Vite dynamic-import warnings,
+// but gate runtime calls behind __TAURI_INTERNALS__ availability checks.
 
 type TauriEventApi = {
   listen: (
     event: string,
     handler: (e: { payload: unknown }) => void,
-  ) => Promise<{ unlisten: UnlistenFn }>;
+  ) => Promise<UnlistenFn>;
 };
 
 type TauriInvokeApi = {
@@ -16,25 +19,18 @@ type TauriInvokeApi = {
 };
 
 async function loadTauriEventApi(): Promise<TauriEventApi | null> {
-  try {
-    const mod = (await import("@tauri-apps/api/event")) as unknown;
-    const listen = (mod as { listen?: unknown }).listen;
-    if (typeof listen !== "function") return null;
-    return { listen: listen as TauriEventApi["listen"] };
-  } catch {
-    return null;
-  }
+  if (!hasTauriInternals()) return null;
+  return { listen };
 }
 
 async function loadTauriInvokeApi(): Promise<TauriInvokeApi | null> {
-  try {
-    const mod = (await import("@tauri-apps/api/core")) as unknown;
-    const invoke = (mod as { invoke?: unknown }).invoke;
-    if (typeof invoke !== "function") return null;
-    return { invoke: invoke as TauriInvokeApi["invoke"] };
-  } catch {
-    return null;
-  }
+  if (!hasTauriInternals()) return null;
+  return { invoke };
+}
+
+function hasTauriInternals(): boolean {
+  if (typeof window === "undefined") return false;
+  return "__TAURI_INTERNALS__" in (window as unknown as Record<string, unknown>);
 }
 
 function missingTauriError(op: string): Error {
@@ -59,7 +55,7 @@ export function createTauriClient(): DesktopClient {
         };
         cb(event);
       });
-      return sub.unlisten;
+      return sub;
     },
 
     async listSessions() {

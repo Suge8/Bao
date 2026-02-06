@@ -78,7 +78,7 @@ fn bundled_manifests_should_be_valid_and_runnable() {
                 manifest_path.display()
             );
 
-            let known_placeholder_bins = [
+            let known_process_bins = [
                 "bao-provider-openai",
                 "bao-provider-anthropic",
                 "bao-provider-gemini",
@@ -91,8 +91,8 @@ fn bundled_manifests_should_be_valid_and_runnable() {
             ];
 
             assert!(
-                !(known_placeholder_bins.contains(&command) && args.is_empty()),
-                "process manifest still uses placeholder command without args: {}",
+                !(known_process_bins.contains(&command) && args.is_empty()),
+                "process manifest uses bin command without args: {}",
                 manifest_path.display()
             );
         }

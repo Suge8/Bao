@@ -47,7 +47,7 @@
   "distribution": {
     "channel": "bundled",
     "integrity": {
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "sha256": "5e2bbe7d83504ddfcca61367b07974274a8f360921e37cbf7da55138ec87923a"
     }
   },
   "tests": {

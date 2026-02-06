@@ -89,6 +89,7 @@ mod tests {
                 bao_plugin_host::PluginHostError {
                     code: "invalid_request".to_string(),
                     message: err.to_string(),
+                    metadata: None,
                 }
             })?;
 
@@ -133,7 +134,7 @@ mod tests {
         let list = super::list_tools_via_runner(
             &handle,
             &runner,
-            serde_json::json!({"transport": "stdio", "command": "mock"}),
+            serde_json::json!({"transport": "stdio", "command": "test-builtin-mcp"}),
         )
         .await
         .expect("list tools");
@@ -147,7 +148,7 @@ mod tests {
         let call = super::call_tool_via_runner(
             &handle,
             &runner,
-            serde_json::json!({"transport": "stdio", "command": "mock"}),
+            serde_json::json!({"transport": "stdio", "command": "test-builtin-mcp"}),
             "fs.read".to_string(),
             serde_json::json!({"path": "a.txt"}),
         )

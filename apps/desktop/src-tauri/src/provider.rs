@@ -221,6 +221,22 @@ fn build_provider_params(session_id: &str, input: &str, cfg: &ProviderConfig) ->
 }
 
 fn parse_provider_result(result: &Value) -> Result<String, String> {
+    if result.get("kind").and_then(Value::as_str) == Some("tool_call") {
+        if let Some(tool_call) = result.get("toolCall").and_then(Value::as_object) {
+            let name = tool_call
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown_tool");
+            let args = tool_call
+                .get("args")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let pretty_args = serde_json::to_string_pretty(&args).unwrap_or_else(|_| args.to_string());
+            return Ok(format!("provider 请求工具调用：{}\n{}", name, pretty_args));
+        }
+        return Err("provider response kind=tool_call but toolCall missing".to_string());
+    }
+
     if let Some(message) = result.get("message").and_then(Value::as_str) {
         let text = message.trim();
         if !text.is_empty() {
@@ -294,6 +310,22 @@ mod tests {
     }
 
     #[test]
+    fn parse_provider_result_should_extract_tool_call() {
+        let out = parse_provider_result(&serde_json::json!({
+            "kind": "tool_call",
+            "toolCall": {
+                "id": "tc_1",
+                "name": "shell.exec",
+                "args": {"command": "echo", "args": ["hi"]},
+                "source": {"provider": "openai", "model": "gpt-4.1-mini"}
+            }
+        }))
+        .expect("parse tool_call");
+        assert!(out.contains("provider 请求工具调用：shell.exec"));
+        assert!(out.contains("\"command\": \"echo\""));
+    }
+
+    #[test]
     fn method_is_supported_should_detect_target() {
         let methods = serde_json::json!({
             "methods": [
@@ -346,6 +378,7 @@ mod tests {
                 bao_plugin_host::PluginHostError {
                     code: "invalid_request".to_string(),
                     message: err.to_string(),
+                    metadata: None,
                 }
             })?;
 

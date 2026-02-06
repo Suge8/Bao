@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -27,7 +27,27 @@ struct CommandSpec {
     cwd: Option<PathBuf>,
     env: Vec<(String, String)>,
     timeout_ms: u64,
+    max_output_bytes: usize,
     stdin_text: Option<String>,
+}
+
+const DEFAULT_MAX_OUTPUT_BYTES: usize = 256 * 1024;
+const MAX_OUTPUT_BYTES_FLOOR: usize = 256;
+const MAX_OUTPUT_BYTES_CEIL: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone)]
+struct OutputLimitBreach {
+    stream: &'static str,
+    limit_bytes: usize,
+    observed_bytes: usize,
+}
+
+fn plugin_error(code: &str, message: String, metadata: Option<Value>) -> PluginHostError {
+    PluginHostError {
+        code: code.to_string(),
+        message,
+        metadata,
+    }
 }
 
 impl ProcessToolRunner {
@@ -63,6 +83,7 @@ impl ProcessToolRunner {
         let obj = args.as_object().ok_or_else(|| PluginHostError {
             code: "invalid_args".to_string(),
             message: "tool args must be an object".to_string(),
+            metadata: None,
         })?;
 
         let meta = obj
@@ -83,6 +104,15 @@ impl ProcessToolRunner {
             .map(|v| v.clamp(50, 60_000))
             .unwrap_or(1_000);
 
+        let max_output_bytes = obj
+            .get("maxOutputBytes")
+            .and_then(Value::as_u64)
+            .map(|v| {
+                let as_usize = usize::try_from(v).unwrap_or(MAX_OUTPUT_BYTES_CEIL);
+                as_usize.clamp(MAX_OUTPUT_BYTES_FLOOR, MAX_OUTPUT_BYTES_CEIL)
+            })
+            .unwrap_or(DEFAULT_MAX_OUTPUT_BYTES);
+
         let command = obj
             .get("command")
             .and_then(Value::as_str)
@@ -92,6 +122,7 @@ impl ProcessToolRunner {
             .ok_or_else(|| PluginHostError {
                 code: "invalid_args".to_string(),
                 message: "tool args.command is required".to_string(),
+                metadata: None,
             })?;
 
         let mut cmd_args = vec![];
@@ -99,11 +130,13 @@ impl ProcessToolRunner {
             let arr = raw_args.as_array().ok_or_else(|| PluginHostError {
                 code: "invalid_args".to_string(),
                 message: "tool args.args must be an array of strings".to_string(),
+                metadata: None,
             })?;
             for item in arr {
                 let s = item.as_str().ok_or_else(|| PluginHostError {
                     code: "invalid_args".to_string(),
                     message: "tool args.args must be an array of strings".to_string(),
+                    metadata: None,
                 })?;
                 cmd_args.push(s.to_string());
             }
@@ -116,11 +149,13 @@ impl ProcessToolRunner {
             let env_obj = raw_env.as_object().ok_or_else(|| PluginHostError {
                 code: "invalid_args".to_string(),
                 message: "tool args.env must be an object".to_string(),
+                metadata: None,
             })?;
             for (k, v) in env_obj {
                 let value = v.as_str().ok_or_else(|| PluginHostError {
                     code: "invalid_args".to_string(),
                     message: format!("tool args.env.{k} must be a string"),
+                    metadata: None,
                 })?;
                 env.push((k.clone(), value.to_string()));
             }
@@ -138,6 +173,7 @@ impl ProcessToolRunner {
             cwd,
             env,
             timeout_ms,
+            max_output_bytes,
             stdin_text,
         })
     }
@@ -189,13 +225,18 @@ impl ToolRunner for ProcessToolRunner {
         let spec = self.parse_spec(dimsum_id, tool_name, args)?;
         if self.is_group_killed(&spec.group) {
             self.clear_group_kill(&spec.group);
-            return Err(PluginHostError {
-                code: "killed".to_string(),
-                message: format!("killed by kill switch group '{}'", spec.group),
-            });
+            return Err(plugin_error(
+                "killed",
+                format!("killed by kill switch group '{}'", spec.group),
+                Some(serde_json::json!({
+                    "reason": "KILL_SWITCH_TRIGGERED",
+                    "group": spec.group,
+                })),
+            ));
         }
 
         let started_at = Instant::now();
+        let started_at_ms = now_unix_ms();
 
         let mut command = Command::new(&spec.command);
         command
@@ -223,13 +264,27 @@ impl ToolRunner for ProcessToolRunner {
             });
         }
 
-        let mut child = command.spawn().map_err(|err| PluginHostError {
-            code: "spawn_failed".to_string(),
-            message: format!("spawn failed for '{}': {err}", spec.command),
+        let mut child = command.spawn().map_err(|err| {
+            plugin_error(
+                "spawn_failed",
+                format!("spawn failed for '{}': {err}", spec.command),
+                None,
+            )
         })?;
 
-        let mut stdout_reader = spawn_pipe_reader(child.stdout.take());
-        let mut stderr_reader = spawn_pipe_reader(child.stderr.take());
+        let output_limit_breach = Arc::new(Mutex::new(None::<OutputLimitBreach>));
+        let mut stdout_reader = spawn_pipe_reader(
+            child.stdout.take(),
+            "stdout",
+            spec.max_output_bytes,
+            Arc::clone(&output_limit_breach),
+        );
+        let mut stderr_reader = spawn_pipe_reader(
+            child.stderr.take(),
+            "stderr",
+            spec.max_output_bytes,
+            Arc::clone(&output_limit_breach),
+        );
 
         let child_pid = child.id();
         self.register_running_pid(&spec.group, child_pid);
@@ -244,10 +299,16 @@ impl ToolRunner for ProcessToolRunner {
                     let _ = join_pipe_reader(stdout_reader.take());
                     let _ = join_pipe_reader(stderr_reader.take());
                     self.clear_running_pid(&spec.group);
-                    return Err(PluginHostError {
-                        code: "stdin_write_failed".to_string(),
-                        message: format!("stdin write failed: {err}"),
-                    });
+                    return Err(plugin_error(
+                        "stdin_write_failed",
+                        format!("stdin write failed: {err}"),
+                        Some(serde_json::json!({
+                            "group": spec.group,
+                            "pid": child_pid,
+                            "startedAtMs": started_at_ms,
+                            "elapsedMs": started_at.elapsed().as_millis() as u64,
+                        })),
+                    ));
                 }
             }
         }
@@ -261,32 +322,79 @@ impl ToolRunner for ProcessToolRunner {
                 let _ = join_pipe_reader(stderr_reader.take());
                 self.clear_running_pid(&spec.group);
                 self.clear_group_kill(&spec.group);
-                return Err(PluginHostError {
-                    code: "killed".to_string(),
-                    message: format!("killed by kill switch group '{}'", spec.group),
-                });
+                return Err(plugin_error(
+                    "killed",
+                    format!("killed by kill switch group '{}'", spec.group),
+                    Some(serde_json::json!({
+                        "reason": "KILL_SWITCH_TRIGGERED",
+                        "group": spec.group,
+                        "pid": child_pid,
+                        "startedAtMs": started_at_ms,
+                        "elapsedMs": started_at.elapsed().as_millis() as u64,
+                    })),
+                ));
             }
 
-            if started_at.elapsed() > Duration::from_millis(spec.timeout_ms) {
+            if let Some(breach) = take_output_limit_breach(&output_limit_breach) {
                 Self::kill_pid_group(child_pid);
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = join_pipe_reader(stdout_reader.take());
                 let _ = join_pipe_reader(stderr_reader.take());
                 self.clear_running_pid(&spec.group);
-                return Err(PluginHostError {
-                    code: "timeout".to_string(),
-                    message: format!("tool execution timeout after {}ms", spec.timeout_ms),
-                });
+                return Err(plugin_error(
+                    "resource_exceeded",
+                    format!(
+                        "{stream} exceeded maxOutputBytes limit ({observed}>{limit})",
+                        stream = breach.stream,
+                        observed = breach.observed_bytes,
+                        limit = breach.limit_bytes
+                    ),
+                    Some(serde_json::json!({
+                        "reason": "OUTPUT_LIMIT_EXCEEDED",
+                        "limitType": "output",
+                        "stream": breach.stream,
+                        "maxOutputBytes": breach.limit_bytes,
+                        "observedBytes": breach.observed_bytes,
+                        "group": spec.group,
+                        "pid": child_pid,
+                        "startedAtMs": started_at_ms,
+                        "elapsedMs": started_at.elapsed().as_millis() as u64,
+                    })),
+                ));
             }
 
-            match child.try_wait().map_err(|err| PluginHostError {
-                code: "wait_failed".to_string(),
-                message: format!("wait failed: {err}"),
-            })? {
+            if started_at.elapsed() > Duration::from_millis(spec.timeout_ms) {
+                let elapsed_ms = started_at.elapsed().as_millis() as u64;
+                Self::kill_pid_group(child_pid);
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_pipe_reader(stdout_reader.take());
+                let _ = join_pipe_reader(stderr_reader.take());
+                self.clear_running_pid(&spec.group);
+                return Err(plugin_error(
+                    "timeout",
+                    format!("tool execution timeout after {}ms", spec.timeout_ms),
+                    Some(serde_json::json!({
+                        "reason": "TIMEOUT_EXCEEDED",
+                        "limitType": "time",
+                        "timeoutMs": spec.timeout_ms,
+                        "elapsedMs": elapsed_ms,
+                        "group": spec.group,
+                        "pid": child_pid,
+                        "startedAtMs": started_at_ms,
+                    })),
+                ));
+            }
+
+            match child
+                .try_wait()
+                .map_err(|err| plugin_error("wait_failed", format!("wait failed: {err}"), None))?
+            {
                 Some(status) => {
                     self.clear_running_pid(&spec.group);
                     let elapsed_ms = started_at.elapsed().as_millis() as u64;
+                    let finished_at_ms = now_unix_ms();
                     let stdout = join_pipe_reader(stdout_reader.take());
                     let stderr = join_pipe_reader(stderr_reader.take());
                     return Ok(ToolRunResult {
@@ -295,13 +403,20 @@ impl ToolRunner for ProcessToolRunner {
                             "dimsumId": dimsum_id,
                             "toolName": tool_name,
                             "group": spec.group,
+                            "pid": child_pid,
                             "command": spec.command,
                             "args": spec.args,
                             "exitCode": status.code(),
                             "success": status.success(),
+                            "startedAtMs": started_at_ms,
+                            "finishedAtMs": finished_at_ms,
                             "durationMs": elapsed_ms,
                             "stdout": stdout,
                             "stderr": stderr,
+                            "limits": {
+                                "timeoutMs": spec.timeout_ms,
+                                "maxOutputBytes": spec.max_output_bytes,
+                            },
                         }),
                     });
                 }
@@ -322,16 +437,62 @@ impl ToolRunner for ProcessToolRunner {
     }
 }
 
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn spawn_pipe_reader(
     pipe: Option<impl Read + Send + 'static>,
+    stream_name: &'static str,
+    max_output_bytes: usize,
+    output_limit_breach: Arc<Mutex<Option<OutputLimitBreach>>>,
 ) -> Option<thread::JoinHandle<Vec<u8>>> {
-    pipe.map(|mut stream| {
+    pipe.map(|mut pipe_stream| {
         thread::spawn(move || {
             let mut bytes = Vec::new();
-            let _ = stream.read_to_end(&mut bytes);
+            let mut chunk = [0_u8; 4096];
+            let mut total = 0_usize;
+
+            loop {
+                let read = match pipe_stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(_) => break,
+                };
+
+                total = total.saturating_add(read);
+                if total > max_output_bytes {
+                    let mut guard = output_limit_breach
+                        .lock()
+                        .expect("output_limit_breach mutex poisoned");
+                    if guard.is_none() {
+                        *guard = Some(OutputLimitBreach {
+                            stream: stream_name,
+                            limit_bytes: max_output_bytes,
+                            observed_bytes: total,
+                        });
+                    }
+                    break;
+                }
+
+                bytes.extend_from_slice(&chunk[..read]);
+            }
+
             bytes
         })
     })
+}
+
+fn take_output_limit_breach(
+    output_limit_breach: &Arc<Mutex<Option<OutputLimitBreach>>>,
+) -> Option<OutputLimitBreach> {
+    output_limit_breach
+        .lock()
+        .expect("output_limit_breach mutex poisoned")
+        .clone()
 }
 
 fn join_pipe_reader(reader: Option<thread::JoinHandle<Vec<u8>>>) -> String {

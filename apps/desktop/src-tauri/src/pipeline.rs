@@ -246,6 +246,7 @@ mod tests {
                 bao_plugin_host::PluginHostError {
                     code: "invalid_request".to_string(),
                     message: err.to_string(),
+                    metadata: None,
                 }
             })?;
 

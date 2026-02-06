@@ -31,7 +31,7 @@
   ],
   "distribution": {
     "channel": "bundled",
-    "integrity": { "sha256": "0000000000000000000000000000000000000000000000000000000000000000" }
+    "integrity": { "sha256": "744847c67aeafb8a640cef8406f935af0d374a7f57a748295437cfb3e4f89b25" }
   },
   "pipelineHooks": [
     {

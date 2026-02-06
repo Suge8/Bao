@@ -28,7 +28,7 @@
   "permissionsRequested": [],
   "distribution": {
     "channel": "bundled",
-    "integrity": { "sha256": "0000000000000000000000000000000000000000000000000000000000000000" }
+    "integrity": { "sha256": "7de0d0e2f971f8ce51fd824de6364468459e580e396605a27042e7e5b40806de" }
   },
   "pipelineHooks": [
     {

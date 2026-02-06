@@ -13,6 +13,12 @@ use thiserror::Error;
 pub enum StorageError {
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("unsafe state {code}: {message}")]
+    UnsafeState {
+        code: String,
+        message: String,
+        details: Value,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +84,33 @@ pub struct MemoryLinkRecord {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditChainIssue {
+    pub code: String,
+    pub event_id: i64,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditChainVerificationResult {
+    pub ok: bool,
+    pub checked_events: usize,
+    pub issue_count: usize,
+    pub issues: Vec<AuditChainIssue>,
+}
+
+#[derive(Debug)]
+struct AuditEventRow {
+    id: i64,
+    ts: i64,
+    action: String,
+    subject_type: String,
+    subject_id: String,
+    payload_json: String,
+    prev_hash: Option<String>,
+    hash: String,
+}
+
 pub struct Storage {
     sqlite_path: String,
     mutex: Mutex<()>,
@@ -92,9 +125,62 @@ impl Storage {
     }
 
     pub fn open(sqlite_path: String) -> Result<Self, StorageError> {
+        let storage = Self::open_unchecked(sqlite_path)?;
+        storage.validate_startup_safety()?;
+        Ok(storage)
+    }
+
+    pub fn open_unchecked(sqlite_path: String) -> Result<Self, StorageError> {
         Ok(Self {
             sqlite_path,
             mutex: Mutex::new(()),
+        })
+    }
+
+    pub fn validate_startup_safety(&self) -> Result<(), StorageError> {
+        self.ensure_event_sequence_contiguous()?;
+        let report = self.verify_audit_chain()?;
+        if report.ok {
+            return Ok(());
+        }
+
+        Err(StorageError::UnsafeState {
+            code: "AUDIT_CHAIN_INVALID".to_string(),
+            message: "audit chain verification failed during startup".to_string(),
+            details: serde_json::json!({
+                "checkedEvents": report.checked_events,
+                "issueCount": report.issue_count,
+                "issues": report.issues,
+            }),
+        })
+    }
+
+    fn ensure_event_sequence_contiguous(&self) -> Result<(), StorageError> {
+        let _guard = self.mutex.lock().expect("storage mutex poisoned");
+        let conn = Connection::open(&self.sqlite_path)?;
+        let (min_id, max_id, count): (Option<i64>, Option<i64>, i64) = conn.query_row(
+            "SELECT MIN(eventId), MAX(eventId), COUNT(1) FROM events",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+
+        let (Some(min_event_id), Some(max_event_id)) = (min_id, max_id) else {
+            return Ok(());
+        };
+        let expected = max_event_id - min_event_id + 1;
+        if expected == count {
+            return Ok(());
+        }
+
+        Err(StorageError::UnsafeState {
+            code: "EVENT_SEQUENCE_GAP".to_string(),
+            message: "events table contains non-contiguous eventId values".to_string(),
+            details: serde_json::json!({
+                "minEventId": min_event_id,
+                "maxEventId": max_event_id,
+                "rowCount": count,
+                "expectedCount": expected,
+            }),
         })
     }
 
@@ -222,20 +308,103 @@ impl Storage {
             .optional()?;
 
         let payload_json = serde_json::to_string(payload).unwrap_or_else(|_| "{}".to_string());
-        let mut hasher = Sha256::new();
-        hasher.update(prev_hash.clone().unwrap_or_default());
-        hasher.update(action.as_bytes());
-        hasher.update(subject_type.as_bytes());
-        hasher.update(subject_id.as_bytes());
-        hasher.update(payload_json.as_bytes());
-        hasher.update(ts.to_string().as_bytes());
-        let hash = hex::encode(hasher.finalize());
+        let hash = compute_audit_hash(
+            prev_hash.as_deref(),
+            action,
+            subject_type,
+            subject_id,
+            &payload_json,
+            ts,
+        );
 
         conn.execute(
             "INSERT INTO audit_events(ts, action, subject_type, subject_id, payload_json, prev_hash, hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![ts, action, subject_type, subject_id, payload_json, prev_hash, hash],
         )?;
         Ok(())
+    }
+
+    pub fn verify_audit_chain(&self) -> Result<AuditChainVerificationResult, StorageError> {
+        let _guard = self.mutex.lock().expect("storage mutex poisoned");
+        let conn = Connection::open(&self.sqlite_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, action, subject_type, subject_id, payload_json, prev_hash, hash FROM audit_events ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(AuditEventRow {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                action: r.get(2)?,
+                subject_type: r.get(3)?,
+                subject_id: r.get(4)?,
+                payload_json: r.get(5)?,
+                prev_hash: r.get(6)?,
+                hash: r.get(7)?,
+            })
+        })?;
+
+        let mut issues = Vec::new();
+        let mut prev_row: Option<(i64, i64, String)> = None;
+        let mut checked_events = 0_usize;
+
+        for row in rows {
+            let row = row?;
+            checked_events += 1;
+
+            if let Some((prev_id, prev_ts, prev_hash)) = &prev_row {
+                if row.prev_hash.as_deref() != Some(prev_hash.as_str()) {
+                    issues.push(AuditChainIssue {
+                        code: "AUDIT_CHAIN_MISSING_LINK".to_string(),
+                        event_id: row.id,
+                        message: format!(
+                            "event {} prev_hash does not link to previous event {}",
+                            row.id, prev_id
+                        ),
+                    });
+                }
+                if row.ts < *prev_ts {
+                    issues.push(AuditChainIssue {
+                        code: "AUDIT_CHAIN_OUT_OF_ORDER_WRITE".to_string(),
+                        event_id: row.id,
+                        message: format!(
+                            "event {} has ts {} earlier than previous event ts {}",
+                            row.id, row.ts, prev_ts
+                        ),
+                    });
+                }
+            } else if row.prev_hash.is_some() {
+                issues.push(AuditChainIssue {
+                    code: "AUDIT_CHAIN_MISSING_LINK".to_string(),
+                    event_id: row.id,
+                    message: format!("first event {} must not have prev_hash", row.id),
+                });
+            }
+
+            let expected_hash = compute_audit_hash(
+                row.prev_hash.as_deref(),
+                &row.action,
+                &row.subject_type,
+                &row.subject_id,
+                &row.payload_json,
+                row.ts,
+            );
+            if row.hash != expected_hash {
+                issues.push(AuditChainIssue {
+                    code: "AUDIT_CHAIN_TAMPERED_HASH".to_string(),
+                    event_id: row.id,
+                    message: format!("event {} hash mismatch", row.id),
+                });
+            }
+
+            prev_row = Some((row.id, row.ts, row.hash));
+        }
+
+        Ok(AuditChainVerificationResult {
+            ok: issues.is_empty(),
+            checked_events,
+            issue_count: issues.len(),
+            issues,
+        })
     }
 
     pub fn get_task_by_id(&self, task_id: &str) -> Result<Option<TaskRecord>, StorageError> {
@@ -271,6 +440,70 @@ impl Storage {
             }));
         }
         Ok(None)
+    }
+
+    pub fn get_setting_json(&self, key: &str) -> Result<Option<Value>, StorageError> {
+        let _guard = self.mutex.lock().expect("storage mutex poisoned");
+        let conn = Connection::open(&self.sqlite_path)?;
+        let value_json = conn
+            .query_row(
+                "SELECT value_json FROM settings WHERE key=?1",
+                params![key],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(value_json.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()))
+    }
+
+    pub fn get_tool_permissions(
+        &self,
+        dimsum_id: &str,
+        tool_name: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        let _guard = self.mutex.lock().expect("storage mutex poisoned");
+        let conn = Connection::open(&self.sqlite_path)?;
+        let manifest_json = conn
+            .query_row(
+                "SELECT manifest_json FROM dimsums WHERE dimsum_id=?1",
+                params![dimsum_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+
+        let Some(raw) = manifest_json else {
+            return Ok(Vec::new());
+        };
+
+        let manifest = match serde_json::from_str::<Value>(&raw) {
+            Ok(v) => v,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        let Some(tools) = manifest.get("tools").and_then(|v| v.as_array()) else {
+            return Ok(Vec::new());
+        };
+
+        for tool in tools {
+            let Some(name) = tool.get("name").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if name != tool_name {
+                continue;
+            }
+            let permissions = tool
+                .get("permissions")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            return Ok(permissions);
+        }
+
+        Ok(Vec::new())
     }
 
     pub fn upsert_memory_item(&self, item: &MemoryItemRecord) -> Result<(), StorageError> {
@@ -431,6 +664,24 @@ impl Storage {
         }
         Ok(None)
     }
+}
+
+fn compute_audit_hash(
+    prev_hash: Option<&str>,
+    action: &str,
+    subject_type: &str,
+    subject_id: &str,
+    payload_json: &str,
+    ts: i64,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(prev_hash.unwrap_or_default().as_bytes());
+    hasher.update(action.as_bytes());
+    hasher.update(subject_type.as_bytes());
+    hasher.update(subject_id.as_bytes());
+    hasher.update(payload_json.as_bytes());
+    hasher.update(ts.to_string().as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 pub fn compute_task_next_run_at(

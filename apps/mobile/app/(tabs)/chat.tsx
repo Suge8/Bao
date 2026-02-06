@@ -45,7 +45,7 @@ export default function ChatScreen() {
           autoCorrect={false}
           value={sessionId}
           onChangeText={setSessionId}
-          placeholder="s1"
+          placeholder={t('chat.sessionIdPlaceholder')}
         />
       </View>
 
@@ -55,7 +55,7 @@ export default function ChatScreen() {
           style={styles.input}
           value={text}
           onChangeText={setText}
-          placeholder="..."
+          placeholder={t('chat.messagePlaceholder')}
         />
       </View>
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { useClient } from "@/data/use-client";
 import type { BaoEvent } from "@/data/events";
@@ -27,7 +27,7 @@ export function ChatLayout() {
 
   const unlistenRef = useRef<null | (() => void)>(null);
 
-  const refreshSessions = async (preferId?: string) => {
+  const refreshSessions = useCallback(async (preferId?: string) => {
     const res = await client.listSessions();
     const list = res.sessions;
     setSessions(list);
@@ -38,7 +38,7 @@ export function ChatLayout() {
       }
       return list[0]?.id ?? "default";
     });
-  };
+  }, [client]);
 
   useEffect(() => {
     let mounted = true;
@@ -58,7 +58,7 @@ export function ChatLayout() {
           if (text && sessionId) {
             setMessagesBySession((prev) => {
               const existing = prev[sessionId] ?? [];
-              const next = [
+              const next: MessageView[] = [
                 {
                   id: `user-${e.eventId}`,
                   role: "user",
@@ -77,7 +77,7 @@ export function ChatLayout() {
           if (output && sessionId) {
             setMessagesBySession((prev) => {
               const existing = prev[sessionId] ?? [];
-              const next = [
+              const next: MessageView[] = [
                 {
                   id: `assistant-${e.eventId}`,
                   role: "assistant",
@@ -108,7 +108,7 @@ export function ChatLayout() {
       unlistenRef.current?.();
       unlistenRef.current = null;
     };
-  }, [client]);
+  }, [client, refreshSessions]);
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
