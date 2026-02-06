@@ -8,6 +8,7 @@ use bao_engine::{
     RouterHook,
 };
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::jsonrpc::{run_server, RpcError};
 
@@ -146,7 +147,10 @@ fn decide_retry_payload(params: &Value) -> Result<Value, RpcError> {
         .and_then(Value::as_i64)
         .unwrap_or(1)
         .max(1);
-    let tool_ok = params.get("toolOk").and_then(Value::as_bool).unwrap_or(true);
+    let tool_ok = params
+        .get("toolOk")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
     let validation_ok = params
         .get("validationOk")
         .and_then(Value::as_bool)
@@ -190,22 +194,47 @@ fn build_memory_extract_plan(params: &Value) -> Result<MemoryMutationPlanV1, Rpc
         });
     }
 
-    let title = shorten_title(user_input, 48);
+    let preference = extract_preference_fact(user_input);
+    let (memory_id, title, content, reason) = match preference {
+        Some((subject, polarity)) => {
+            let memory_id = Some(format!("mem_pref_{}", short_sha256_hex(&subject, 12)));
+            let title = shorten_title(&format!("偏好:{subject}"), 48);
+            let content = if polarity == "dislike" {
+                format!("不喜欢 {subject}")
+            } else {
+                format!("喜欢 {subject}")
+            };
+            let reason = if polarity == "dislike" {
+                "semantic_conflict_update"
+            } else {
+                "explicit_memory_intent"
+            };
+            (memory_id, title, content, reason)
+        }
+        None => (
+            None,
+            shorten_title(user_input, 48),
+            user_input.to_string(),
+            "explicit_memory_intent",
+        ),
+    };
+
+    let source_hash = Some(short_sha256_hex(&content, 24));
     let memory = MemoryItemV1 {
-        id: None,
+        id: memory_id,
         namespace: "chat.user".to_string(),
         kind: "fact".to_string(),
         title,
-        content: Some(user_input.to_string()),
+        content: Some(content),
         json: None,
         score: Some(0.75),
         status: Some("active".to_string()),
-        sourceHash: None,
+        sourceHash: source_hash,
     };
     let mutation = MemoryMutationV1 {
         op: MemoryMutationOpV1::UPSERT,
         idempotencyKey: make_id("idem"),
-        reason: Some("explicit_memory_intent".to_string()),
+        reason: Some(reason.to_string()),
         memory: Some(memory),
         supersede: None,
         delete: None,
@@ -224,6 +253,76 @@ fn should_extract_memory(input: &str) -> bool {
     ["记住", "remember", "memory", "别忘", "保存"]
         .iter()
         .any(|kw| lower.contains(kw))
+}
+
+fn extract_preference_fact(input: &str) -> Option<(String, &'static str)> {
+    if let Some(subject) = extract_subject_after(input, "我不喜欢") {
+        return Some((subject, "dislike"));
+    }
+    if let Some(subject) = extract_subject_after(input, "我喜欢") {
+        return Some((subject, "like"));
+    }
+
+    let lower = input.to_lowercase();
+    for (marker, polarity) in [
+        ("i don't like ", "dislike"),
+        ("i dont like ", "dislike"),
+        ("i dislike ", "dislike"),
+        ("i like ", "like"),
+    ] {
+        if let Some(idx) = lower.find(marker) {
+            let start = idx + marker.len();
+            if start <= lower.len() {
+                if let Some(subject) = normalize_subject(&lower[start..]) {
+                    return Some((subject, polarity));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_subject_after(input: &str, marker: &str) -> Option<String> {
+    let idx = input.find(marker)?;
+    let start = idx + marker.len();
+    if start > input.len() {
+        return None;
+    }
+    normalize_subject(&input[start..])
+}
+
+fn normalize_subject(raw: &str) -> Option<String> {
+    let subject = raw
+        .trim()
+        .trim_start_matches(':')
+        .trim_start_matches('：')
+        .trim()
+        .trim_matches(|c| {
+            matches!(
+                c,
+                '。' | '.' | ',' | '，' | '!' | '！' | '?' | '？' | ';' | '；'
+            )
+        })
+        .trim()
+        .to_string();
+
+    if subject.is_empty() {
+        None
+    } else {
+        Some(subject)
+    }
+}
+
+fn short_sha256_hex(input: &str, max_chars: usize) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    let digest = hasher.finalize();
+    let mut hex = String::new();
+    for b in digest {
+        hex.push_str(&format!("{b:02x}"));
+    }
+    hex.chars().take(max_chars).collect()
 }
 
 fn shorten_title(input: &str, limit: usize) -> String {
@@ -299,5 +398,38 @@ mod tests {
 
         assert_eq!(plan.mutations.len(), 1);
         assert!(plan.planId.starts_with("plan_"));
+    }
+
+    #[test]
+    fn memory_extract_should_generate_stable_preference_memory_id() {
+        let plan1 = build_memory_extract_plan(&serde_json::json!({
+            "sessionId": "s1",
+            "userInput": "请记住我喜欢乌龙茶",
+            "assistantOutput": "好的"
+        }))
+        .expect("memory plan 1");
+        let plan2 = build_memory_extract_plan(&serde_json::json!({
+            "sessionId": "s1",
+            "userInput": "记住，我不喜欢乌龙茶",
+            "assistantOutput": "好的"
+        }))
+        .expect("memory plan 2");
+
+        let id1 = plan1.mutations[0]
+            .memory
+            .as_ref()
+            .and_then(|m| m.id.clone())
+            .expect("stable id 1");
+        let id2 = plan2.mutations[0]
+            .memory
+            .as_ref()
+            .and_then(|m| m.id.clone())
+            .expect("stable id 2");
+
+        assert_eq!(id1, id2, "preference conflict should target same memory id");
+        assert_eq!(
+            plan2.mutations[0].reason.as_deref(),
+            Some("semantic_conflict_update")
+        );
     }
 }
