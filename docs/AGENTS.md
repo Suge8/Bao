@@ -1,6 +1,6 @@
-# Bao — Stage 1（集成可运行）
+# Bao — Stage 2（可用基线）
 
-本文件定义 **Bao 阶段1** 的工程契约：在保留 Stage0 目录与协议稳定性的前提下，把桌面端核心链路（对话/任务/记忆/点心/网关）接线为可运行实现，并保持可审计、可回放、可回归。
+本文件定义 **Bao 阶段2** 的工程契约：在 Stage1 可运行链路基础上，收口发布门禁、可观测性与演化策略，使桌面端主链路达到可用基线（可运行、可审计、可回放、可验证）。
 
 ## 1. 仓库形态（不可变）
 
@@ -16,7 +16,7 @@
 - Mobile：通过 WebSocket Gateway 连接桌面运行的 gateway。
 - 事件统一：`BaoEvent (bao.event/v1)`，并写入 `events` 表用于回放。
 
-### 2.1 桌面端命令面（Stage1 实际提供）
+### 2.1 桌面端命令面（Stage2 实际提供）
 
 - 会话/对话：`sendMessage` / `createSession` / `listSessions` / `runEngineTurn`
 - 任务：`listTasks` / `createTask` / `updateTask` / `enableTask` / `disableTask` / `runTaskNow`
@@ -32,7 +32,7 @@
 
 - 运行时仅允许：`wasm` 与 `process`。
 - Router / Memory / Corrector / Provider 保持点心化边界。
-- Stage1 执行器使用 `ProcessToolRunner`（替代 mock runner），支持超时与 kill group。
+- Stage2 执行器使用 `ProcessToolRunner`，支持超时/kill-group/输出限额，并产出 `processTree` 子进程树采样元数据。
 
 ## 4. skills 仓库处理（确定性）
 
@@ -52,7 +52,7 @@
 - 到期任务仅执行显式 `dimsumId + toolName + args`。
 - 所有执行写 `events` 与 `audit_events`，支持 kill switch。
 
-### 6.1 现状（Stage1）
+### 6.1 现状（Stage2）
 
 - 桌面端启动 scheduler tick（默认 1s），从 SQLite 拉取 due tasks 并触发 `ProcessToolRunner`。
 - Kill Switch 已接入：可终止正在执行任务组并停止 scheduler/gateway。
@@ -64,7 +64,9 @@
 - Settings 可直接维护 `provider.active/model/baseUrl/apiKey`，与运行时调用一致。
 - 新增 `bao-dimsum-process`：bundled provider/skills-adapter/mcp-bridge 具备可执行 JSON-RPC 进程实现。
 - `runEngineTurn` 非工具分支优先走 provider dimsum process(JSON-RPC)执行，保持点心边界一致。
+- `runEngineTurn` provider 分支已支持 `tool_call`（单工具）与 `tool_calls`（并发批量）中途调用闭环，带轮次上限保护。
 - `runEngineTurn` 在 `needsMemory=true` 时会真实调用 `searchIndex/getItems` 组装记忆上下文，不再使用本地占位注入。
+- `memory.extract` 已具备偏好语义冲突去漂移策略（like/dislike 归并稳定 memory id）。
 - `bao.bundled.mcp-bridge` 已提供 `bridge.list_tools/bridge.call_tool`，支持 stdio/http MCP server 桥接。
 - 新增 `resourceList/resourceRead` 桌面命令，已接通 `bao.bundled.skills-adapter` process JSON-RPC。
 

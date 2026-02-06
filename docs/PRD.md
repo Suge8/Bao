@@ -1,4 +1,4 @@
-# Bao — PRD（Stage 1 集成可运行）
+# Bao — PRD（Stage 2 可用基线）
 
 ## 目标
 
@@ -66,13 +66,13 @@
 - 用户显式开启“允许局域网”后才绑定 `0.0.0.0`。
 - 文档与 UI 提示：远程优先 Tailscale/tunnel，不裸露公网。
 
-## Stage 1 -> Stage 2 主要缺口
+## Stage 2 收口结果（当前）
 
-- provider/tool calling 已补到 `provider.delta + tool_call 解析`，仍需继续完善“流式中途工具调用/并发 tool calls”细节。
-- process runner 观测已补 `pid + started/finished` 与失败元数据，仍需继续补齐子进程树级别采样。
-- memory rollback 已具备冲突恢复 + 1200 条压力回归，仍需继续补充更复杂演化策略评测（语义冲突与长期漂移）。
-- desktop e2e 仍是「Tauri mock + 真后端链路」混合模式；虽已新增 Rust 侧真后端回归，但浏览器侧真后端矩阵仍需提升。
-- 构建层 dynamic import 告警已明显收敛，仍需持续跟进剩余 chunk 噪音。
+- provider/tool calling：`runEngineTurn` 非工具分支已支持 provider 返回 `tool_call` 与 `tool_calls`，并在回合同步执行（并发批量工具调用 + 轮次上限保护）。
+- process runner 观测：`ProcessToolRunner` 已新增 `processTree` 采样（root pid、descendant count、rss/cpu 汇总）并覆盖成功/失败元数据。
+- memory 演化：`memory.extract` 新增偏好语义冲突策略（like/dislike 归并到稳定 memory id），降低长期漂移与重复写入。
+- 发布门禁：`P0.CORE_SLO` 已改为 fail-closed（缺失观测直接 fail），避免性能证据缺口被误判为通过。
+- 回归覆盖：desktop Rust 真后端测试矩阵已扩展 provider 单工具/并发工具调用链路可观测性断言。
 
 ## v1.0 发布收口（Go/No-Go 条件）
 

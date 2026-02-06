@@ -9,8 +9,8 @@ Bao 是一个本地优先（desktop-first）的 Agent 框架与应用：
 
 ## 当前阶段
 
-- 当前为 **Stage 1 集成可运行**：核心闭环可用（Chat/Tasks/Memory/Dimsums/Gateway/Scheduler）。
-- 尚未达到“100% 产品级”：仍有 Stage 2 深化项（provider/tool-calling 覆盖、进程观测细化、大规模记忆演化评测、真后端 e2e）。
+- 当前为 **Stage 2 可用基线**：核心闭环 + 发布门禁 + 关键可观测能力已打通（Chat/Tasks/Memory/Dimsums/Gateway/Scheduler）。
+- provider 路径已支持中途工具调用（单工具与并发批量），process runner 已补齐进程树采样，memory.extract 已加入语义冲突去漂移策略。
 
 详见：
 

@@ -1,6 +1,11 @@
 # 当前进度
 
 - gateway frame 已收紧：按 type 绑定具体 payload schema（hello/welcome/event/replay_request/error）。
+- release-gates：`P0.CORE_SLO` 改为 fail-closed（性能观测缺失即失败），避免缺指标时误判 PASS。
+- runEngineTurn/provider：新增 provider `tool_call/tool_calls` 执行闭环（单工具 + 并发批量工具调用 + 轮次上限保护），并写入 `engine.turn.providerToolCalls/providerToolParallelMax` 可观测字段。
+- provider fixtures：`bao-dimsum-process` 新增 `__provider_tool_call__` / `__provider_tool_calls__` 离线夹具，覆盖“中途工具调用后继续生成”的无网络回归路径。
+- plugin-host：`ProcessToolRunner` 增加 `processTree` 子进程树采样（root pid、descendant count、rss/cpu 汇总），成功/超时/kill/资源超限路径统一回传。
+- memory.extract：新增偏好语义冲突去漂移策略（like/dislike 归并稳定 memory id + 冲突更新 reason），减少长期重复记忆写入。
 - provider JSON-RPC 契约补齐：delta/cancel/methods 索引 schemas 已落盘。
 - desktop-tauri：已最小接线 gateway + 事件桥接（bao:event）+ 基础 commands（sendMessage/list*/getSettings/updateSettings）。
 - desktop-tauri：新增 tasks/memory IPC（create/enable/disable/runNow + search/getItems/getTimeline/apply/rollback），并补全前端 client 封装与页面联动。
@@ -217,18 +222,28 @@
 - [DOC] 2026-02-07 `README.md` 增补 Playwright 浏览器安装与 pnpm onlyBuiltDependencies 环境提示
 - [DOC] 2026-02-07 `docs/PRD.md` 更新 Stage2 缺口状态与本轮收口项
 - [FEAT] 2026-02-07 发布收口：补齐 PRD/AGENTS 发布准则，新增 `scripts/release-checklist-validate.mjs` 自动化 go/no-go 校验，并生成 Task 12 发布证据。
+- [FIX] 2026-02-07 `scripts/release-gates-checks.mjs` 将 `P0.CORE_SLO` 调整为缺指标即失败，并新增 schema-tests 用例覆盖缺失指标阻断。
+- [FEAT] 2026-02-07 `runEngineTurn` provider 分支支持 `tool_call/tool_calls` 执行闭环，新增 provider 单工具与并发工具调用真后端回归测试。
+- [FEAT] 2026-02-07 `crates/bao-plugin-host` 新增 `processTree` 子进程树采样元数据并补齐成功/超时断言。
+- [FEAT] 2026-02-07 `crates/bao-dimsum-process` memory.extract 引入偏好语义冲突去漂移策略（稳定 memory id + semantic_conflict_update）。
+- [FEAT] 2026-02-07 schemas/provider 契约扩展 `tool_calls` 批量工具调用并补齐 schema-tests 正反例。
+- [DOC] 2026-02-07 `docs/AGENTS.md` 从 Stage1 契约升级为 Stage2 可用基线说明（含 provider tool-calls/processTree/memory 演化策略）。
 
 # 未来发展（优先级）
 
 P0
 
 - ✅ 已完成（2026-02-06）：本批 P0（schema 绑定、任务校验、provider 矩阵、JSON-RPC 契约测试、process runner、memory rollback、pipeline 化）已全部收口。
+- ✅ 已完成（2026-02-07）：`P0.CORE_SLO` 门禁语义改为 fail-closed（缺失观测=fail），杜绝观测缺口导致的假阳性通过。
 - ✅ 已完成（2026-02-07）：v1.0 发布门禁基线已落地（配置 + 校验 + 汇总输出），后续任务可直接消费 gate 输出。
 - ✅ 已完成（2026-02-07）：dimsum trust gate（签名/来源/防降级）已在 gateway 安装与启用路径阻断，并补齐 3 个正反例测试。
 - ✅ 已完成（2026-02-07）：gateway 远程连接边界已收紧为 LAN/Tailscale allowlist + 公网拒绝审计，补齐来源判定与拒绝路径测试。
 - ✅ 已完成（2026-02-07）：audit hash chain 完整性校验已落地，release gate 可直接消费 verifier 机器可读结果。
 - ✅ 已完成（2026-02-07）：崩溃恢复与事件回放一致性（kill -9 场景）已落地；调度崩溃可恢复且启动阶段会拒绝 unsafe 存储状态。
 - ✅ 已完成（2026-02-07）：发布收口（Task 12）实作：补齐发布准则文档、实现 `scripts/release-checklist-validate.mjs` 门禁校验、生成 RC 归档证据。
+- ✅ 已完成（2026-02-07）：provider 中途工具调用与并发工具调用闭环已打通（含离线 fixture + Rust 真后端回归覆盖）。
+- ✅ 已完成（2026-02-07）：ProcessToolRunner 子进程树采样已落地，进程观测从单 pid 升级为 process tree 级别。
+- ✅ 已完成（2026-02-07）：memory.extract 已具备偏好语义冲突去漂移策略，长期重复写入风险下降。
 
 P1
 
