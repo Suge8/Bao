@@ -123,11 +123,19 @@ def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # Nanobot tool definitions already use the OpenAI function schema.
     converted: list[dict[str, Any]] = []
     for tool in tools:
-        name = tool.get("name")
+        fn = tool.get("function") if isinstance(tool, dict) and tool.get("type") == "function" else None
+        if fn and isinstance(fn, dict):
+            name = fn.get("name")
+            desc = fn.get("description")
+            params = fn.get("parameters")
+        else:
+            name = tool.get("name")
+            desc = tool.get("description")
+            params = tool.get("parameters")
         if not isinstance(name, str) or not name:
             # Skip invalid tools to avoid Codex rejection.
             continue
-        params = tool.get("parameters") or {}
+        params = params or {}
         if not isinstance(params, dict):
             # Parameters must be a JSON Schema object.
             params = {}
@@ -135,7 +143,7 @@ def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "type": "function",
                 "name": name,
-                "description": tool.get("description") or "",
+                "description": desc or "",
                 "parameters": params,
             }
         )
@@ -173,8 +181,9 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[st
             # Then handle tool calls.
             for tool_call in msg.get("tool_calls", []) or []:
                 fn = tool_call.get("function") or {}
-                call_id = tool_call.get("id") or f"call_{idx}"
-                item_id = f"fc_{idx}"
+                call_id, item_id = _split_tool_call_id(tool_call.get("id"))
+                call_id = call_id or f"call_{idx}"
+                item_id = item_id or f"fc_{idx}"
                 input_items.append(
                     {
                         "type": "function_call",
@@ -224,6 +233,15 @@ def _extract_call_id(tool_call_id: Any) -> str:
     if isinstance(tool_call_id, str) and tool_call_id:
         return tool_call_id.split("|", 1)[0]
     return "call_0"
+
+
+def _split_tool_call_id(tool_call_id: Any) -> tuple[str, str | None]:
+    if isinstance(tool_call_id, str) and tool_call_id:
+        if "|" in tool_call_id:
+            call_id, item_id = tool_call_id.split("|", 1)
+            return call_id, item_id or None
+        return tool_call_id, None
+    return "call_0", None
 
 
 def _prompt_cache_key(messages: list[dict[str, Any]]) -> str:
