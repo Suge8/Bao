@@ -216,6 +216,7 @@
 - [FEAT] 2026-02-07 `packages/schema-tests` 增加 provider run/delta 契约正反例，补齐 tool_call + done 覆盖
 - [DOC] 2026-02-07 `README.md` 增补 Playwright 浏览器安装与 pnpm onlyBuiltDependencies 环境提示
 - [DOC] 2026-02-07 `docs/PRD.md` 更新 Stage2 缺口状态与本轮收口项
+- [FEAT] 2026-02-07 发布收口：补齐 PRD/AGENTS 发布准则，新增 `scripts/release-checklist-validate.mjs` 自动化 go/no-go 校验，并生成 Task 12 发布证据。
 
 # 未来发展（优先级）
 
@@ -227,6 +228,7 @@ P0
 - ✅ 已完成（2026-02-07）：gateway 远程连接边界已收紧为 LAN/Tailscale allowlist + 公网拒绝审计，补齐来源判定与拒绝路径测试。
 - ✅ 已完成（2026-02-07）：audit hash chain 完整性校验已落地，release gate 可直接消费 verifier 机器可读结果。
 - ✅ 已完成（2026-02-07）：崩溃恢复与事件回放一致性（kill -9 场景）已落地；调度崩溃可恢复且启动阶段会拒绝 unsafe 存储状态。
+- ✅ 已完成（2026-02-07）：发布收口（Task 12）实作：补齐发布准则文档、实现 `scripts/release-checklist-validate.mjs` 门禁校验、生成 RC 归档证据。
 
 P1
 

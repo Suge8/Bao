@@ -252,6 +252,65 @@ describe("release gates", () => {
     expect(stdout).toContain("PERF_ROUTERMS_OBSERVED=9");
     expect(stdout).toContain("PERF_EXCEEDED=none");
   });
+
+  describe("release-checklist-validate script", () => {
+    it("fails with NO-GO and non-zero exit when P0 evidence is missing", async () => {
+      const dir = await createTempDir();
+      const here = path.dirname(fileURLToPath(import.meta.url));
+      const repoRoot = path.resolve(here, "..", "..", "..");
+      const scriptPath = path.join(repoRoot, "scripts", "release-checklist-validate.mjs");
+      const gateConfigPath = path.join(dir, "gates.yaml");
+
+      const fixture: GateConfig = {
+        version: "v1.0-test",
+        gates: [
+          {
+            gateId: "P0.MISSING",
+            level: "P0",
+            command: "echo test",
+            status: "pass",
+            evidence: ".sisyphus/evidence/non-existent.txt",
+          },
+        ],
+      };
+      await writeFile(gateConfigPath, JSON.stringify(fixture, null, 2), "utf8");
+
+      await expect(execFileAsync("node", [scriptPath, gateConfigPath])).rejects.toMatchObject({
+        code: 1,
+        stdout: expect.stringContaining("OVERALL_RESULT=NO-GO"),
+      });
+    });
+
+    it("succeeds with GO when all P0 gates pass and evidence files exist", async () => {
+      const dir = await createTempDir();
+      const here = path.dirname(fileURLToPath(import.meta.url));
+      const repoRoot = path.resolve(here, "..", "..", "..");
+      const scriptPath = path.join(repoRoot, "scripts", "release-checklist-validate.mjs");
+      const gateConfigPath = path.join(dir, "gates.yaml");
+      
+      const evidenceSubPath = path.join(dir, "p0-success.txt");
+      await writeFile(evidenceSubPath, "success", "utf8");
+      
+      const fixture: GateConfig = {
+        version: "v1.0-test-go",
+        gates: [
+          {
+            gateId: "P0.SUCCESS",
+            level: "P0",
+            command: "echo test",
+            status: "pass",
+            evidence: path.relative(repoRoot, evidenceSubPath),
+          },
+        ],
+      };
+      await writeFile(gateConfigPath, JSON.stringify(fixture, null, 2), "utf8");
+
+      const { stdout } = await execFileAsync("node", [scriptPath, gateConfigPath]);
+      expect(stdout).toContain("OVERALL_RESULT=GO");
+      expect(stdout).toContain("EVIDENCE_CHECK=pass");
+      expect(stdout).toContain("FAILED_GATES=0");
+    });
+  });
 });
 
 async function loadGateConfigAsText(filePath: string): Promise<string> {

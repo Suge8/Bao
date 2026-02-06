@@ -73,3 +73,13 @@
 - memory rollback 已具备冲突恢复 + 1200 条压力回归，仍需继续补充更复杂演化策略评测（语义冲突与长期漂移）。
 - desktop e2e 仍是「Tauri mock + 真后端链路」混合模式；虽已新增 Rust 侧真后端回归，但浏览器侧真后端矩阵仍需提升。
 - 构建层 dynamic import 告警已明显收敛，仍需持续跟进剩余 chunk 噪音。
+
+## v1.0 发布收口（Go/No-Go 条件）
+
+在进入 Stage 2 前，必须满足以下 v1.0 发布门禁：
+
+1. **P0 Gates 全绿**：`P0.LINT`, `P0.TEST`, `P0.TEST_E2E`, `P0.CARGO_WORKSPACE` 必须 status=pass。
+2. **证据齐全**：所有 P0 门禁指定的 `evidence` 文件必须真实存在且内容合法。
+3. **审计链完整**：`verify_audit_chain` 验证通过，无 hash 断裂或篡改。
+4. **性能/稳定达标**：Flake 率 <= 阈值，核心 SLO（Router/FTS/Scheduler）无超标。
+5. **发布收口校验**：`scripts/release-checklist-validate.mjs` 运行通过，生成最终 RC 归档证据。

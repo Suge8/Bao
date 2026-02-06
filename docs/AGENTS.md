@@ -67,3 +67,19 @@
 - `runEngineTurn` 在 `needsMemory=true` 时会真实调用 `searchIndex/getItems` 组装记忆上下文，不再使用本地占位注入。
 - `bao.bundled.mcp-bridge` 已提供 `bridge.list_tools/bridge.call_tool`，支持 stdio/http MCP server 桥接。
 - 新增 `resourceList/resourceRead` 桌面命令，已接通 `bao.bundled.skills-adapter` process JSON-RPC。
+
+## 7. 发布验收与证据（Release Acceptance）
+
+### 7.1 发布门禁（Gates）
+发布前必须通过 `.sisyphus/release-gates/v1.0-macos.yaml` 定义的所有 P0 门禁。
+
+### 7.2 证据要求（Evidence）
+- 每个门禁必须产出对应的证据文件（`.txt` 或 `.json`）。
+- 证据文件必须包含时间戳、执行结果摘要、关键错误/成功特征。
+- 缺失任何 P0 证据将导致发布阻断（Non-zero exit）。
+
+### 7.3 Go/No-Go Checklist
+执行 `pnpm gate:checklist` 进行最终发布收口校验。校验项包含：
+- P0 状态校验
+- 证据物理存在校验
+- 审计链一致性校验（Audit Chain Integrity）
