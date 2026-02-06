@@ -2,4 +2,11 @@
 
 内置 Corrector 点心（pipeline）。
 
-阶段1：只提供 manifest 占位与 hook 声明。
+当前阶段（Stage1）已提供可执行 JSON-RPC 服务：
+- `corrector.methods`
+- `corrector.validate_tool_args`
+- `corrector.validate_tool_result`
+- `corrector.decide_retry`
+
+开发环境运行命令：
+- `cargo run -q -p bao-dimsum-process --bin bao-corrector-hook --`

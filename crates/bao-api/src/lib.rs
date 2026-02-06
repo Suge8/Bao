@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 use serde::{Deserialize, Serialize};
 
 // -----------------------------
@@ -103,11 +105,14 @@ pub struct MemoryHitV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum MemoryMutationOpV1 {
+    #[serde(rename = "UPSERT")]
     UPSERT,
+    #[serde(rename = "SUPERSEDE")]
     SUPERSEDE,
+    #[serde(rename = "DELETE")]
     DELETE,
+    #[serde(rename = "LINK")]
     LINK,
 }
 
@@ -246,7 +251,7 @@ pub struct TaskSpecV1 {
 }
 
 // -----------------------------
-// Schema validation helpers (phase0: stub)
+// Schema validation helpers
 // -----------------------------
 
 #[derive(Debug)]
@@ -255,8 +260,25 @@ pub struct SchemaValidationError {
 }
 
 pub fn validate_json_schema(
-    _schema: &serde_json::Value,
-    _instance: &serde_json::Value,
+    schema: &serde_json::Value,
+    instance: &serde_json::Value,
 ) -> Result<(), SchemaValidationError> {
-    Ok(())
+    let compiled =
+        jsonschema::JSONSchema::compile(schema).map_err(|err| SchemaValidationError {
+            message: format!("compile schema failed: {err}"),
+        })?;
+    let validation_result = compiled.validate(instance);
+    match validation_result {
+        Ok(()) => Ok(()),
+        Err(iter) => {
+            let msg = iter.map(|e| e.to_string()).collect::<Vec<_>>().join("; ");
+            Err(SchemaValidationError {
+                message: if msg.is_empty() {
+                    "schema validation failed".to_string()
+                } else {
+                    msg
+                },
+            })
+        }
+    }
 }

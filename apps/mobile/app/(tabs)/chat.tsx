@@ -4,6 +4,7 @@ import { FlatList, StyleSheet, TextInput, View } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useGateway } from '@/src/gateway/state';
+import { classifyEventCategory, getEventType, type MobileEventCategory } from '@/src/gateway/events';
 import { useI18n } from '@/src/i18n/i18n';
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -15,13 +16,22 @@ export default function ChatScreen() {
   const gw = useGateway();
   const [sessionId, setSessionId] = useState('s1');
   const [text, setText] = useState('');
+  const category = gw.selectedCategory;
+
+  const categoryKeyMap: Record<MobileEventCategory, string> = {
+    message: 'events.message',
+    task: 'events.task',
+    memory: 'events.memory',
+    audit: 'events.audit',
+    other: 'events.other',
+  };
 
   const messageEvents = useMemo(() => {
     return [...gw.events]
       .reverse()
-      .filter((e) => isObject(e) && e.type === 'message.send')
+      .filter((e) => classifyEventCategory(getEventType(e)) === category)
       .slice(0, 100);
-  }, [gw.events]);
+  }, [gw.events, category]);
 
   return (
     <ThemedView style={styles.container}>
@@ -59,6 +69,18 @@ export default function ChatScreen() {
           }}>
           {t('chat.send')}
         </ThemedText>
+      </View>
+
+      <View style={styles.actions}>
+        {(['message', 'task', 'memory', 'audit', 'other'] as MobileEventCategory[]).map((item) => {
+          const label = t(categoryKeyMap[item]);
+          const selected = item === category;
+          return (
+            <ThemedText key={item} type="link" onPress={() => gw.setSelectedCategory(item)}>
+              {selected ? `[${label}]` : label}
+            </ThemedText>
+          );
+        })}
       </View>
 
       <FlatList

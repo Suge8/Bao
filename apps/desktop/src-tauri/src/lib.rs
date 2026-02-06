@@ -4,17 +4,24 @@ use std::{
     time::Duration,
 };
 
+use ::time::OffsetDateTime;
 use bao_api::{BaoEventV1, MemoryMutationPlanV1, TaskSpecV1};
 use bao_gateway::{GatewayConfig, GatewayHandle, GatewayServer};
+use bao_plugin_host::ToolRunner;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use thiserror::Error;
 use tauri::{Emitter, Manager};
+use thiserror::Error;
 use tokio::{
     sync::{broadcast, oneshot},
     time,
 };
-use ::time::OffsetDateTime;
+
+mod dimsum_process;
+mod mcp;
+mod pipeline;
+mod provider;
+mod skills;
 
 // -----------------------------
 // Errors
@@ -100,6 +107,12 @@ struct MemoryGetTimelineInput {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct MemoryListVersionsInput {
+    memory_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct MemoryApplyPlanInput {
     plan: MemoryMutationPlanV1,
 }
@@ -111,6 +124,67 @@ struct MemoryRollbackInput {
     version_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateSessionInput {
+    session_id: String,
+    title: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DimsumIdInput {
+    dimsum_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EngineTurnInput {
+    session_id: String,
+    text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EngineTurnOutput {
+    output: String,
+    matched: bool,
+    needs_memory: bool,
+    tool_name: Option<String>,
+    tool_triggered: bool,
+    tool_ok: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpListToolsInput {
+    server: Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpCallToolInput {
+    server: Value,
+    name: String,
+    #[serde(default)]
+    arguments: Option<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResourceListInput {
+    namespace: String,
+    #[serde(default)]
+    prefix: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResourceReadInput {
+    namespace: String,
+    path: String,
+}
+
 fn default_search_limit() -> i64 {
     50
 }
@@ -120,9 +194,7 @@ fn default_search_limit() -> i64 {
 // -----------------------------
 
 struct AppState {
-    engine: bao_engine::Engine,
-    storage: Arc<bao_storage::Storage>,
-    plugin_runner: Arc<bao_plugin_host::mock_runner::MockToolRunner>,
+    plugin_runner: Arc<bao_plugin_host::process_runner::ProcessToolRunner>,
     scheduler: Arc<bao_engine::scheduler::SchedulerService>,
 
     gateway: GatewayServer,
@@ -135,7 +207,7 @@ struct AppState {
     // local event tailer -> (tauri emit + optional other subscribers)
     event_tx: broadcast::Sender<BaoEventV1>,
 
-    // phase1 minimal scheduler tick task (abort-only)
+    // Stage1 scheduler tick task (running when desktop is alive)
     scheduler_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
 
@@ -146,20 +218,19 @@ impl AppState {
 
         let (event_tx, _) = broadcast::channel(256);
 
+        let storage = Arc::new(
+            bao_storage::Storage::open(sqlite_path.clone())
+                .map_err(|e| DesktopError::Internal(e.to_string()))?,
+        );
+        let plugin_runner = Arc::new(bao_plugin_host::process_runner::ProcessToolRunner::new());
+        let scheduler = Arc::new(bao_engine::Engine::scheduler(
+            Arc::new(bao_engine::storage::SqliteStorage::new(storage)),
+            plugin_runner.clone(),
+        ));
+
         Ok(Self {
-            engine: bao_engine::Engine::new(),
-            storage: Arc::new(
-                bao_storage::Storage::open(sqlite_path.clone())
-                    .map_err(|e| DesktopError::Internal(e.to_string()))?,
-            ),
-            plugin_runner: Arc::new(bao_plugin_host::mock_runner::MockToolRunner::new()),
-            scheduler: Arc::new(bao_engine::Engine::scheduler(
-                Arc::new(bao_engine::storage::SqliteStorage::new(Arc::new(
-                    bao_storage::Storage::open(sqlite_path.clone())
-                        .map_err(|e| DesktopError::Internal(e.to_string()))?,
-                ))),
-                Arc::new(bao_plugin_host::mock_runner::MockToolRunner::new()),
-            )),
+            plugin_runner,
+            scheduler,
 
             gateway,
             gateway_handle,
@@ -178,11 +249,168 @@ fn ensure_sqlite_path(app_data_dir: &Path, file_name: &str) -> DesktopResult<Str
     Ok(app_data_dir.join(file_name).to_string_lossy().to_string())
 }
 
+fn trim_to_chars(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    for ch in text.chars().take(max_chars) {
+        out.push(ch);
+    }
+    if text.chars().count() > max_chars {
+        out.push('…');
+    }
+    out
+}
+
+fn memory_item_to_line(item: &Value) -> Option<String> {
+    let title = item
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            item.get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "memory-item".to_string());
+
+    let content = item
+        .get("content")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            item.get("json")
+                .filter(|v| !v.is_null())
+                .map(|v| v.to_string())
+        });
+
+    let content = content?;
+    Some(format!("- {}: {}", title, trim_to_chars(&content, 220)))
+}
+
+async fn build_provider_input_with_memory(
+    handle: &GatewayHandle,
+    user_text: &str,
+    memory_query: Option<String>,
+) -> Result<String, String> {
+    let text = user_text.trim();
+    if text.is_empty() {
+        return Err("engine input cannot be empty".to_string());
+    }
+
+    let query = memory_query
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(text)
+        .to_string();
+
+    let hits_evt = handle
+        .search_index(query, 5)
+        .await
+        .map_err(|e| format!("search index failed: {e}"))?;
+
+    let hits = hits_evt
+        .payload
+        .get("hits")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let ids: Vec<String> = hits
+        .iter()
+        .filter_map(|hit| hit.get("id").and_then(Value::as_str))
+        .map(str::to_string)
+        .take(5)
+        .collect();
+
+    if ids.is_empty() {
+        return Ok(text.to_string());
+    }
+
+    let items_evt = handle
+        .get_items(ids)
+        .await
+        .map_err(|e| format!("get items failed: {e}"))?;
+
+    let lines: Vec<String> = items_evt
+        .payload
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(memory_item_to_line)
+        .take(5)
+        .collect();
+
+    if lines.is_empty() {
+        return Ok(text.to_string());
+    }
+
+    Ok(format!(
+        "用户输入：{}
+
+相关记忆：
+{}",
+        text,
+        lines.join(
+            "
+"
+        )
+    ))
+}
+
+fn engine_error_code(stage: &str) -> &'static str {
+    match stage {
+        "corrector.validate_tool_result" => "ERR_CORRECTOR_VALIDATE_TOOL_RESULT",
+        "corrector.decide_retry" => "ERR_CORRECTOR_DECIDE_RETRY",
+        "memory.inject.search" => "ERR_MEMORY_INJECT_SEARCH",
+        "memory.inject.pipeline" => "ERR_MEMORY_INJECT_PIPELINE",
+        "provider.call" => "ERR_PROVIDER_CALL",
+        "memory.extract.apply_plan" => "ERR_MEMORY_EXTRACT_APPLY_PLAN",
+        "memory.extract.plan" => "ERR_MEMORY_EXTRACT_PLAN",
+        _ => "ERR_ENGINE_TURN",
+    }
+}
+
+fn build_engine_error_payload(
+    session_id: &str,
+    stage: &str,
+    error: impl Into<String>,
+    extra: Value,
+) -> Value {
+    let mut payload = serde_json::json!({
+        "source": "runEngineTurn",
+        "stage": stage,
+        "sessionId": session_id,
+        "code": engine_error_code(stage),
+        "error": error.into(),
+    });
+
+    if let (Some(dst), Some(src)) = (payload.as_object_mut(), extra.as_object()) {
+        for (key, value) in src {
+            dst.insert(key.clone(), value.clone());
+        }
+    }
+
+    payload
+}
+
 // -----------------------------
 // Commands (Tauri IPC)
 // -----------------------------
 
 #[tauri::command(rename = "sendMessage")]
+#[allow(non_snake_case)]
 async fn send_message(
     state: tauri::State<'_, Arc<AppState>>,
     sessionId: String,
@@ -191,6 +419,471 @@ async fn send_message(
     state
         .gateway_handle
         .send_message(sessionId, text)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename = "runEngineTurn")]
+async fn run_engine_turn(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: EngineTurnInput,
+) -> Result<EngineTurnOutput, String> {
+    let session_id = input.session_id.clone();
+
+    state
+        .gateway_handle
+        .send_message(session_id.clone(), input.text.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let router = pipeline::route_via_pipeline(
+        &state.gateway_handle,
+        state.plugin_runner.as_ref(),
+        &input.text,
+    )
+    .await
+    .map_err(|e| format!("router.route failed: {e}"))?;
+
+    let mut output: Option<String> = None;
+    let mut tool_triggered = false;
+    let mut tool_ok = None;
+    let mut tool_validation_ok: Option<bool> = None;
+    let mut tool_validation_error: Option<String> = None;
+    let mut tool_retry_reason: Option<String> = None;
+    let mut tool_attempts = 0i64;
+    let mut provider_used: Option<String> = None;
+    let mut memory_plan_id: Option<String> = None;
+    let mut memory_mutation_count = 0i64;
+    let tool_name = router.toolName.clone();
+
+    let quote_hit = router
+        .quote
+        .as_ref()
+        .map(|q| input.text.contains(q))
+        .unwrap_or(false);
+
+    let should_trigger_tool = router.matched
+        && quote_hit
+        && router
+            .policy
+            .as_ref()
+            .map(|p| p.mustTrigger)
+            .unwrap_or(false)
+        && router.toolName.is_some();
+
+    if should_trigger_tool {
+        if let Some(name) = tool_name.clone() {
+            let args = router
+                .toolArgs
+                .clone()
+                .unwrap_or_else(|| serde_json::json!({}));
+
+            let tool_call_ir = bao_api::ToolCallIrV1 {
+                id: format!("tc_{}", OffsetDateTime::now_utc().unix_timestamp_nanos()),
+                name: name.clone(),
+                args: args.clone(),
+                quote: router.quote.clone(),
+                source: bao_api::ToolCallSourceV1 {
+                    provider: "bao.bundled.corrector".to_string(),
+                    model: "pipeline-hook".to_string(),
+                },
+            };
+            pipeline::validate_tool_args_via_pipeline(
+                &state.gateway_handle,
+                state.plugin_runner.as_ref(),
+                &tool_call_ir,
+            )
+            .await
+            .map_err(|e| format!("tool args validate failed: {e}"))?;
+
+            tool_triggered = true;
+
+            let max_attempts = 2i64;
+            loop {
+                tool_attempts += 1;
+
+                let (run_ok, run_output, run_error) = match state
+                    .plugin_runner
+                    .run_tool("bao.engine.default", &name, &args)
+                {
+                    Ok(run) => (run.ok, run.output, None),
+                    Err(err) => (
+                        false,
+                        serde_json::json!({"error": err.message}),
+                        Some(err.message),
+                    ),
+                };
+                tool_ok = Some(run_ok);
+
+                let (validation_ok, validation_error) =
+                    match pipeline::validate_tool_result_via_pipeline(
+                        &state.gateway_handle,
+                        state.plugin_runner.as_ref(),
+                        &serde_json::json!({
+                            "ok": run_ok,
+                            "output": run_output,
+                            "error": run_error,
+                            "attempt": tool_attempts,
+                            "toolName": name.clone(),
+                        }),
+                    )
+                    .await
+                    {
+                        Ok(out) => out,
+                        Err(err) => {
+                            let _ = state
+                                .gateway_handle
+                                .emit_event(
+                                    "corrector.validate_tool_result.error".to_string(),
+                                    Some(session_id.clone()),
+                                    build_engine_error_payload(
+                                        &session_id,
+                                        "corrector.validate_tool_result",
+                                        err,
+                                        serde_json::json!({
+                                            "toolName": name.clone(),
+                                            "attempt": tool_attempts,
+                                        }),
+                                    ),
+                                )
+                                .await;
+                            (run_ok, Some("validation bypassed by error".to_string()))
+                        }
+                    };
+
+                tool_validation_ok = Some(validation_ok);
+                tool_validation_error = validation_error.clone();
+
+                let mut output_text = if run_ok {
+                    format!(
+                        "tool {} 执行成功\n{}",
+                        name,
+                        serde_json::to_string_pretty(&run_output)
+                            .unwrap_or_else(|_| run_output.to_string())
+                    )
+                } else {
+                    format!(
+                        "tool {} 执行失败\n{}",
+                        name,
+                        serde_json::to_string_pretty(&run_output)
+                            .unwrap_or_else(|_| run_output.to_string())
+                    )
+                };
+
+                if !validation_ok {
+                    let detail = validation_error
+                        .clone()
+                        .unwrap_or_else(|| "tool result validation failed".to_string());
+                    output_text = format!("{}\n校验失败：{}", output_text, detail);
+                }
+                output = Some(output_text);
+
+                let (should_retry, retry_reason) = match pipeline::decide_retry_via_pipeline(
+                    &state.gateway_handle,
+                    state.plugin_runner.as_ref(),
+                    &serde_json::json!({
+                        "attempt": tool_attempts,
+                        "maxAttempts": max_attempts,
+                        "toolOk": run_ok,
+                        "validationOk": validation_ok,
+                    }),
+                )
+                .await
+                {
+                    Ok(out) => out,
+                    Err(err) => {
+                        let _ = state
+                            .gateway_handle
+                            .emit_event(
+                                "corrector.decide_retry.error".to_string(),
+                                Some(session_id.clone()),
+                                build_engine_error_payload(
+                                    &session_id,
+                                    "corrector.decide_retry",
+                                    err,
+                                    serde_json::json!({
+                                        "toolName": name.clone(),
+                                        "attempt": tool_attempts,
+                                    }),
+                                ),
+                            )
+                            .await;
+                        (false, Some("retry bypassed by error".to_string()))
+                    }
+                };
+
+                tool_retry_reason = retry_reason;
+
+                if !should_retry || tool_attempts >= max_attempts {
+                    break;
+                }
+            }
+        }
+    }
+
+    if output.is_none() {
+        let provider_input = if router.needsMemory {
+            let source_input = match build_provider_input_with_memory(
+                &state.gateway_handle,
+                &input.text,
+                router.memoryQuery.clone(),
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(err) => {
+                    let _ = state
+                        .gateway_handle
+                        .emit_event(
+                            "memory.inject.error".to_string(),
+                            Some(session_id.clone()),
+                            build_engine_error_payload(
+                                &session_id,
+                                "memory.inject.search",
+                                err,
+                                serde_json::json!({
+                                    "memoryQuery": router.memoryQuery.clone(),
+                                }),
+                            ),
+                        )
+                        .await;
+                    input.text.clone()
+                }
+            };
+
+            match pipeline::inject_memory_via_pipeline(
+                &state.gateway_handle,
+                state.plugin_runner.as_ref(),
+                &source_input,
+                router.memoryQuery.clone(),
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(err) => {
+                    let _ = state
+                        .gateway_handle
+                        .emit_event(
+                            "memory.inject.error".to_string(),
+                            Some(session_id.clone()),
+                            build_engine_error_payload(
+                                &session_id,
+                                "memory.inject.pipeline",
+                                err,
+                                serde_json::json!({
+                                    "memoryQuery": router.memoryQuery.clone(),
+                                }),
+                            ),
+                        )
+                        .await;
+                    source_input
+                }
+            }
+        } else {
+            input.text.clone()
+        };
+
+        let provider_identity = provider::resolve_provider_identity(&state.gateway_handle)
+            .await
+            .ok();
+        let provider_attempt = 1i64;
+
+        match provider::call_provider_via_runner(
+            &state.gateway_handle,
+            state.plugin_runner.as_ref(),
+            &session_id,
+            &provider_input,
+        )
+        .await
+        {
+            Ok(call) => {
+                provider_used = Some(call.provider);
+                output = Some(call.output);
+            }
+            Err(err) => {
+                let (provider_name, model_name) = provider_identity.unwrap_or_else(|| {
+                    ("unknown".to_string(), "unknown".to_string())
+                });
+                let _ = state
+                    .gateway_handle
+                    .emit_event(
+                        "provider.call.error".to_string(),
+                        Some(session_id.clone()),
+                        build_engine_error_payload(
+                            &session_id,
+                            "provider.call",
+                            err.clone(),
+                            serde_json::json!({
+                                "provider": provider_name,
+                                "model": model_name,
+                                "attempt": provider_attempt,
+                            }),
+                        ),
+                    )
+                    .await;
+                output = Some(format!("provider 调用失败：{}", err));
+            }
+        }
+    }
+
+    let final_output = output.unwrap_or_default();
+
+    match pipeline::extract_memory_plan_via_pipeline(
+        &state.gateway_handle,
+        state.plugin_runner.as_ref(),
+        &serde_json::json!({
+            "sessionId": session_id.clone(),
+            "userInput": input.text.clone(),
+            "assistantOutput": final_output.clone(),
+            "toolName": tool_name.clone(),
+            "toolTriggered": tool_triggered,
+            "toolOk": tool_ok,
+            "providerUsed": provider_used.clone(),
+        }),
+    )
+    .await
+    {
+        Ok(plan) => {
+            memory_plan_id = Some(plan.planId.clone());
+            memory_mutation_count = plan.mutations.len() as i64;
+            if !plan.mutations.is_empty() {
+                let apply_result = state.gateway_handle.apply_mutation_plan(plan).await;
+                if let Err(err) = apply_result {
+                let _ = state
+                    .gateway_handle
+                    .emit_event(
+                        "memory.extract.error".to_string(),
+                        Some(session_id.clone()),
+                        build_engine_error_payload(
+                            &session_id,
+                            "memory.extract.apply_plan",
+                            format!("apply mutation plan failed: {err}"),
+                            serde_json::json!({
+                                "planId": memory_plan_id.clone(),
+                                "mutationCount": memory_mutation_count,
+                            }),
+                        ),
+                    )
+                    .await;
+                }
+            }
+        }
+        Err(err) => {
+            let _ = state
+                .gateway_handle
+                .emit_event(
+                    "memory.extract.error".to_string(),
+                    Some(session_id.clone()),
+                    build_engine_error_payload(
+                        &session_id,
+                        "memory.extract.plan",
+                        err,
+                        serde_json::json!({
+                            "planId": memory_plan_id.clone(),
+                            "mutationCount": memory_mutation_count,
+                        }),
+                    ),
+                )
+                .await;
+        }
+    }
+
+    let event_payload = serde_json::json!({
+        "sessionId": session_id.clone(),
+        "output": final_output,
+        "matched": router.matched,
+        "needsMemory": router.needsMemory,
+        "toolName": tool_name,
+        "toolTriggered": tool_triggered,
+        "toolOk": tool_ok,
+        "toolValidationOk": tool_validation_ok,
+        "toolValidationError": tool_validation_error,
+        "toolRetryReason": tool_retry_reason,
+        "toolAttempts": tool_attempts,
+        "providerUsed": provider_used,
+        "memoryPlanId": memory_plan_id,
+        "memoryMutationCount": memory_mutation_count,
+    });
+
+    let _ = state
+        .gateway_handle
+        .emit_event("engine.turn".to_string(), Some(session_id), event_payload)
+        .await;
+
+    Ok(EngineTurnOutput {
+        output: final_output,
+        matched: router.matched,
+        needs_memory: router.needsMemory,
+        tool_name,
+        tool_triggered,
+        tool_ok,
+    })
+}
+
+#[tauri::command(rename = "mcpListTools")]
+async fn mcp_list_tools(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: McpListToolsInput,
+) -> Result<Value, String> {
+    mcp::list_tools_via_runner(
+        &state.gateway_handle,
+        state.plugin_runner.as_ref(),
+        input.server,
+    )
+    .await
+}
+
+#[tauri::command(rename = "mcpCallTool")]
+async fn mcp_call_tool(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: McpCallToolInput,
+) -> Result<Value, String> {
+    mcp::call_tool_via_runner(
+        &state.gateway_handle,
+        state.plugin_runner.as_ref(),
+        input.server,
+        input.name,
+        input.arguments.unwrap_or_else(|| serde_json::json!({})),
+    )
+    .await
+}
+
+#[tauri::command(rename = "resourceList")]
+async fn resource_list(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: ResourceListInput,
+) -> Result<Value, String> {
+    skills::list_resources_via_runner(
+        &state.gateway_handle,
+        state.plugin_runner.as_ref(),
+        input.namespace,
+        input.prefix,
+    )
+    .await
+}
+
+#[tauri::command(rename = "resourceRead")]
+async fn resource_read(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: ResourceReadInput,
+) -> Result<Value, String> {
+    skills::read_resource_via_runner(
+        &state.gateway_handle,
+        state.plugin_runner.as_ref(),
+        input.namespace,
+        input.path,
+    )
+    .await
+}
+
+#[tauri::command(rename = "createSession")]
+async fn create_session(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: CreateSessionInput,
+) -> Result<BaoEventV1, String> {
+    state
+        .gateway_handle
+        .create_session(input.session_id, input.title)
         .await
         .map_err(|e| e.to_string())
 }
@@ -206,7 +899,11 @@ async fn list_sessions(state: tauri::State<'_, Arc<AppState>>) -> Result<BaoEven
 
 #[tauri::command(rename = "listTasks")]
 async fn list_tasks(state: tauri::State<'_, Arc<AppState>>) -> Result<BaoEventV1, String> {
-    state.gateway_handle.list_tasks().await.map_err(|e| e.to_string())
+    state
+        .gateway_handle
+        .list_tasks()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command(rename = "createTask")]
@@ -271,12 +968,44 @@ async fn run_task_now(
 
 #[tauri::command(rename = "listDimsums")]
 async fn list_dimsums(state: tauri::State<'_, Arc<AppState>>) -> Result<BaoEventV1, String> {
-    state.gateway_handle.list_dimsums().await.map_err(|e| e.to_string())
+    state
+        .gateway_handle
+        .list_dimsums()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename = "enableDimsum")]
+async fn enable_dimsum(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: DimsumIdInput,
+) -> Result<BaoEventV1, String> {
+    state
+        .gateway_handle
+        .enable_dimsum(input.dimsum_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename = "disableDimsum")]
+async fn disable_dimsum(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: DimsumIdInput,
+) -> Result<BaoEventV1, String> {
+    state
+        .gateway_handle
+        .disable_dimsum(input.dimsum_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command(rename = "listMemories")]
 async fn list_memories(state: tauri::State<'_, Arc<AppState>>) -> Result<BaoEventV1, String> {
-    state.gateway_handle.list_memories().await.map_err(|e| e.to_string())
+    state
+        .gateway_handle
+        .list_memories()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command(rename = "searchIndex")]
@@ -315,6 +1044,18 @@ async fn memory_get_timeline(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command(rename = "listMemoryVersions")]
+async fn memory_list_versions(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: MemoryListVersionsInput,
+) -> Result<BaoEventV1, String> {
+    state
+        .gateway_handle
+        .list_memory_versions(input.memory_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command(rename = "applyMutationPlan")]
 async fn memory_apply_mutation_plan(
     state: tauri::State<'_, Arc<AppState>>,
@@ -341,7 +1082,11 @@ async fn memory_rollback_version(
 
 #[tauri::command(rename = "getSettings")]
 async fn get_settings(state: tauri::State<'_, Arc<AppState>>) -> Result<BaoEventV1, String> {
-    state.gateway_handle.get_settings().await.map_err(|e| e.to_string())
+    state
+        .gateway_handle
+        .get_settings()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command(rename = "updateSettings")]
@@ -368,7 +1113,16 @@ async fn gateway_generate_pairing_token(
 #[tauri::command(rename = "gatewayStart")]
 async fn gateway_start(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
     // Idempotent: if already started, do nothing.
-    if state.gateway_task.lock().expect("gateway_task mutex poisoned").is_some() {
+    if state
+        .gateway_task
+        .lock()
+        .expect("gateway_task mutex poisoned")
+        .is_some()
+    {
+        let _ = state
+            .gateway_handle
+            .update_setting("gateway.running".to_string(), serde_json::json!(true))
+            .await;
         return Ok(());
     }
 
@@ -380,7 +1134,7 @@ async fn gateway_start(state: tauri::State<'_, Arc<AppState>>) -> Result<(), Str
         let fut = gateway.start(GatewayConfig::default());
         tokio::select! {
             _ = &mut stop_rx => {
-                // phase1: gateway server has no graceful shutdown.
+                // Stage1: gateway server stop is handled by aborting this task.
                 // We rely on aborting this task.
             }
             _ = fut => {
@@ -389,7 +1143,14 @@ async fn gateway_start(state: tauri::State<'_, Arc<AppState>>) -> Result<(), Str
         }
     });
 
-    *state.gateway_task.lock().expect("gateway_task mutex poisoned") = Some(jh);
+    *state
+        .gateway_task
+        .lock()
+        .expect("gateway_task mutex poisoned") = Some(jh);
+    let _ = state
+        .gateway_handle
+        .update_setting("gateway.running".to_string(), serde_json::json!(true))
+        .await;
     Ok(())
 }
 
@@ -415,9 +1176,18 @@ async fn gateway_stop(state: tauri::State<'_, Arc<AppState>>) -> Result<(), Stri
     if let Some(tx) = state.stop_tx.lock().expect("stop_tx mutex poisoned").take() {
         let _ = tx.send(());
     }
-    if let Some(jh) = state.gateway_task.lock().expect("gateway_task mutex poisoned").take() {
+    if let Some(jh) = state
+        .gateway_task
+        .lock()
+        .expect("gateway_task mutex poisoned")
+        .take()
+    {
         jh.abort();
     }
+    let _ = state
+        .gateway_handle
+        .update_setting("gateway.running".to_string(), serde_json::json!(false))
+        .await;
     Ok(())
 }
 
@@ -461,6 +1231,55 @@ async fn spawn_event_tailer(app: tauri::AppHandle, state: Arc<AppState>) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::build_engine_error_payload;
+    use serde_json::json;
+
+    #[test]
+    fn build_engine_error_payload_should_include_base_fields() {
+        let payload = build_engine_error_payload(
+            "s1",
+            "provider.call",
+            "timeout",
+            json!({
+                "provider": "bao.bundled.provider.openai",
+                "model": "gpt-4.1-mini",
+                "attempt": 1,
+            }),
+        );
+
+        assert_eq!(payload.get("source"), Some(&json!("runEngineTurn")));
+        assert_eq!(payload.get("stage"), Some(&json!("provider.call")));
+        assert_eq!(payload.get("sessionId"), Some(&json!("s1")));
+        assert_eq!(payload.get("error"), Some(&json!("timeout")));
+        assert_eq!(payload.get("code"), Some(&json!("ERR_PROVIDER_CALL")));
+        assert_eq!(payload.get("provider"), Some(&json!("bao.bundled.provider.openai")));
+        assert_eq!(payload.get("model"), Some(&json!("gpt-4.1-mini")));
+        assert_eq!(payload.get("attempt"), Some(&json!(1)));
+    }
+
+    #[test]
+    fn build_engine_error_payload_should_ignore_non_object_extra() {
+        let payload = build_engine_error_payload("s1", "memory.extract.plan", "boom", json!("raw"));
+
+        assert_eq!(payload.get("source"), Some(&json!("runEngineTurn")));
+        assert_eq!(payload.get("stage"), Some(&json!("memory.extract.plan")));
+        assert_eq!(payload.get("sessionId"), Some(&json!("s1")));
+        assert_eq!(payload.get("error"), Some(&json!("boom")));
+        assert_eq!(payload.get("code"), Some(&json!("ERR_MEMORY_EXTRACT_PLAN")));
+        assert_eq!(payload.as_object().map(|m| m.len()), Some(5));
+    }
+
+
+    #[test]
+    fn build_engine_error_payload_should_fallback_to_generic_error_code() {
+        let payload = build_engine_error_payload("s1", "unknown.stage", "boom", json!({}));
+
+        assert_eq!(payload.get("code"), Some(&json!("ERR_ENGINE_TURN")));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -478,7 +1297,7 @@ pub fn run() {
             let st = state.clone();
             tauri::async_runtime::spawn(async move { spawn_event_tailer(handle, st).await });
 
-            // Phase1 scheduler tick: we don't have bao-engine/bao-plugin-host implementations yet.
+            // Stage1 scheduler tick: fetch due tasks and execute tools continuously.
             // We start a real scheduler tick that fetches due tasks and executes tools.
             let st = state.clone();
             let mut sched_guard = st
@@ -503,6 +1322,12 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             send_message,
+            run_engine_turn,
+            mcp_list_tools,
+            mcp_call_tool,
+            resource_list,
+            resource_read,
+            create_session,
             list_sessions,
             list_tasks,
             create_task,
@@ -511,10 +1336,13 @@ pub fn run() {
             disable_task,
             run_task_now,
             list_dimsums,
+            enable_dimsum,
+            disable_dimsum,
             list_memories,
             search_index,
             memory_get_items,
             memory_get_timeline,
+            memory_list_versions,
             memory_apply_mutation_plan,
             memory_rollback_version,
             get_settings,

@@ -1,12 +1,21 @@
 use std::{
     collections::HashMap,
+    fs,
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    str::FromStr,
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use bao_api::{BaoEventV1, MemoryHitV1, MemoryMutationPlanV1, TaskSpecV1};
+use bao_engine::scheduler::SchedulerService;
+use bao_engine::storage::SqliteStorage;
+use bao_plugin_host::process_runner::ProcessToolRunner;
+use bao_storage::{MemoryItemRecord, MemoryLinkRecord, MemoryVersionRecord, Storage, StorageError};
+use chrono_tz::Tz;
+use cron::Schedule;
 use base64::{engine::general_purpose, Engine as _};
+use hex;
 use rand::{rngs::OsRng, RngCore};
 use rusqlite::{params, Connection};
 use serde::Deserialize;
@@ -44,6 +53,8 @@ impl Default for GatewayConfig {
 #[derive(Clone)]
 pub struct GatewayHandle {
     state: Arc<GatewayState>,
+    scheduler: Arc<SchedulerService>,
+    storage: Arc<Storage>,
 }
 
 impl GatewayHandle {
@@ -53,11 +64,30 @@ impl GatewayHandle {
     }
 
     pub fn create_pairing_token(&self) -> String {
-        self.state.auth.create_pairing()
+        let token = self.state.auth.create_pairing();
+        let now_ts = now_ts();
+        let payload = serde_json::json!({"token": token});
+        let _ = self.storage.insert_audit_event(
+            now_ts,
+            "auth.pairing.create",
+            "auth",
+            "pairing",
+            &payload,
+        );
+        token
     }
 
     pub fn revoke_pairing_token(&self, token: &str) {
-        self.state.auth.revoke(token)
+        self.state.auth.revoke(token);
+        let now_ts = now_ts();
+        let payload = serde_json::json!({"token": token});
+        let _ = self.storage.insert_audit_event(
+            now_ts,
+            "auth.pairing.revoke",
+            "auth",
+            "pairing",
+            &payload,
+        );
     }
 
     /// Runtime config update from desktop IPC.
@@ -72,25 +102,106 @@ impl GatewayHandle {
     // Desktop IPC helpers (phase1 minimal)
     // -----------------------------
 
-    pub async fn send_message(&self, session_id: String, text: String) -> Result<BaoEventV1, GatewayError> {
+    pub async fn send_message(
+        &self,
+        session_id: String,
+        text: String,
+    ) -> Result<BaoEventV1, GatewayError> {
+        let ts = now_ts();
+        ensure_session_exists(&self.state.sqlite_path, &session_id, ts).await?;
         let sid = session_id.clone();
         let payload = serde_json::json!({"sessionId": session_id, "text": text});
-        append_and_load_event(&self.state, now_ts(), "message.send", Some(sid.as_str()), None, None, &payload).await
+        append_and_load_event(
+            &self.state,
+            ts,
+            "message.send",
+            Some(sid.as_str()),
+            None,
+            None,
+            &payload,
+        )
+        .await
+    }
+
+    pub async fn create_session(
+        &self,
+        session_id: String,
+        title: Option<String>,
+    ) -> Result<BaoEventV1, GatewayError> {
+        let ts = now_ts();
+        if session_id.trim().is_empty() {
+            return Err(GatewayError::Protocol(
+                "session id cannot be empty".to_string(),
+            ));
+        }
+        let sid = session_id.clone();
+
+        tokio::task::spawn_blocking({
+            let sqlite_path = self.state.sqlite_path.clone();
+            let session_id = session_id.clone();
+            let title = title.clone();
+            move || {
+                let conn = Connection::open(sqlite_path)?;
+                conn.pragma_update(None, "foreign_keys", "ON")?;
+                conn.execute(
+                    "INSERT INTO sessions(session_id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?3) \
+                     ON CONFLICT(session_id) DO UPDATE SET title=COALESCE(excluded.title, sessions.title), updated_at=excluded.updated_at",
+                    params![session_id, title, ts],
+                )?;
+                Ok::<_, GatewayError>(())
+            }
+        })
+        .await
+        .map_err(|e| GatewayError::Protocol(format!("join: {e}")))??;
+
+        let payload = serde_json::json!({
+            "sessionId": session_id,
+            "title": title,
+        });
+        append_and_load_event(
+            &self.state,
+            ts,
+            "sessions.create",
+            Some(sid.as_str()),
+            None,
+            None,
+            &payload,
+        )
+        .await
     }
 
     pub async fn list_sessions(&self) -> Result<BaoEventV1, GatewayError> {
         let sessions = query_sessions(&self.state.sqlite_path).await?;
         let payload = serde_json::json!({"sessions": sessions});
-        append_and_load_event(&self.state, now_ts(), "sessions.list", None, None, None, &payload).await
+        append_and_load_event(
+            &self.state,
+            now_ts(),
+            "sessions.list",
+            None,
+            None,
+            None,
+            &payload,
+        )
+        .await
     }
 
     pub async fn list_tasks(&self) -> Result<BaoEventV1, GatewayError> {
         let tasks = query_tasks(&self.state.sqlite_path).await?;
         let payload = serde_json::json!({"tasks": tasks});
-        append_and_load_event(&self.state, now_ts(), "tasks.list", None, None, None, &payload).await
+        append_and_load_event(
+            &self.state,
+            now_ts(),
+            "tasks.list",
+            None,
+            None,
+            None,
+            &payload,
+        )
+        .await
     }
 
     pub async fn create_task(&self, spec: TaskSpecV1) -> Result<BaoEventV1, GatewayError> {
+        validate_task_spec(&spec)?;
         let ts = now_ts();
         tokio::task::spawn_blocking({
             let sqlite_path = self.state.sqlite_path.clone();
@@ -104,6 +215,15 @@ impl GatewayHandle {
                     bao_api::TaskScheduleKindV1::Interval => "interval",
                     bao_api::TaskScheduleKindV1::Cron => "cron",
                 };
+
+                let computed_next_run_at = bao_storage::compute_task_next_run_at(
+                    schedule_kind,
+                    spec.schedule.runAtTs,
+                    spec.schedule.intervalMs,
+                    spec.schedule.cron.as_deref(),
+                    spec.schedule.timezone.as_deref(),
+                    ts,
+                );
 
                 let tool = spec.action.toolCall;
                 let tool_args_json = serde_json::to_string(&tool.args).unwrap_or_else(|_| "null".to_string());
@@ -129,7 +249,7 @@ impl GatewayHandle {
                         spec.schedule.intervalMs,
                         spec.schedule.cron,
                         spec.schedule.timezone,
-                        spec.schedule.runAtTs,
+                        computed_next_run_at,
                         tool.dimsumId,
                         tool.toolName,
                         tool_args_json,
@@ -150,6 +270,7 @@ impl GatewayHandle {
     }
 
     pub async fn update_task(&self, spec: TaskSpecV1) -> Result<BaoEventV1, GatewayError> {
+        validate_task_spec(&spec)?;
         let ts = now_ts();
         tokio::task::spawn_blocking({
             let sqlite_path = self.state.sqlite_path.clone();
@@ -163,6 +284,15 @@ impl GatewayHandle {
                     bao_api::TaskScheduleKindV1::Interval => "interval",
                     bao_api::TaskScheduleKindV1::Cron => "cron",
                 };
+
+                let computed_next_run_at = bao_storage::compute_task_next_run_at(
+                    schedule_kind,
+                    spec.schedule.runAtTs,
+                    spec.schedule.intervalMs,
+                    spec.schedule.cron.as_deref(),
+                    spec.schedule.timezone.as_deref(),
+                    ts,
+                );
 
                 let tool = spec.action.toolCall;
                 let tool_args_json = serde_json::to_string(&tool.args).unwrap_or_else(|_| "null".to_string());
@@ -183,7 +313,7 @@ impl GatewayHandle {
                         spec.schedule.intervalMs,
                         spec.schedule.cron,
                         spec.schedule.timezone,
-                        spec.schedule.runAtTs,
+                        computed_next_run_at,
                         tool.dimsumId,
                         tool.toolName,
                         tool_args_json,
@@ -211,9 +341,31 @@ impl GatewayHandle {
             move || {
                 let conn = Connection::open(sqlite_path)?;
                 conn.pragma_update(None, "foreign_keys", "ON")?;
+
+                let (schedule_kind, run_at_ts, interval_ms, cron, timezone): (
+                    String,
+                    Option<i64>,
+                    Option<i64>,
+                    Option<String>,
+                    Option<String>,
+                ) = conn.query_row(
+                    "SELECT schedule_kind, run_at_ts, interval_ms, cron, timezone FROM tasks WHERE task_id=?1",
+                    params![task_id.clone()],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )?;
+
+                let computed_next_run_at = bao_storage::compute_task_next_run_at(
+                    &schedule_kind,
+                    run_at_ts,
+                    interval_ms,
+                    cron.as_deref(),
+                    timezone.as_deref(),
+                    ts,
+                );
+
                 conn.execute(
-                    "UPDATE tasks SET enabled=1, updated_at=?2 WHERE task_id=?1",
-                    params![task_id, ts],
+                    "UPDATE tasks SET enabled=1, next_run_at=?3, updated_at=?2 WHERE task_id=?1",
+                    params![task_id, ts, computed_next_run_at],
                 )?;
                 Ok::<_, GatewayError>(())
             }
@@ -248,63 +400,453 @@ impl GatewayHandle {
     }
 
     pub async fn run_task_now(&self, task_id: String) -> Result<BaoEventV1, GatewayError> {
-        // Phase1: scheduler/runner wiring will execute tool calls; this just emits an intent event.
         let ts = now_ts();
+        let task_id_str = task_id.clone();
         let payload = serde_json::json!({"taskId": task_id});
-        append_and_load_event(&self.state, ts, "tasks.runNow", None, None, None, &payload).await
+        let evt =
+            append_and_load_event(&self.state, ts, "tasks.runNow", None, None, None, &payload)
+                .await?;
+        self.scheduler.run_task_now(&task_id_str, ts);
+        Ok(evt)
     }
 
-    pub async fn search_index(&self, query: String, limit: i64) -> Result<BaoEventV1, GatewayError> {
+    pub async fn search_index(
+        &self,
+        query: String,
+        limit: i64,
+    ) -> Result<BaoEventV1, GatewayError> {
         let hits = memory_search_index(&self.state.sqlite_path, &query, limit).await?;
         let payload = serde_json::json!({"query": query, "hits": hits});
-        append_and_load_event(&self.state, now_ts(), "memory.searchIndex", None, None, None, &payload).await
+        append_and_load_event(
+            &self.state,
+            now_ts(),
+            "memory.searchIndex",
+            None,
+            None,
+            None,
+            &payload,
+        )
+        .await
     }
 
     pub async fn get_items(&self, ids: Vec<String>) -> Result<BaoEventV1, GatewayError> {
         let items = memory_get_items(&self.state.sqlite_path, &ids).await?;
         let payload = serde_json::json!({"ids": ids, "items": items});
-        append_and_load_event(&self.state, now_ts(), "memory.getItems", None, None, None, &payload).await
+        append_and_load_event(
+            &self.state,
+            now_ts(),
+            "memory.getItems",
+            None,
+            None,
+            None,
+            &payload,
+        )
+        .await
     }
 
-    pub async fn get_timeline(&self, namespace: Option<String>) -> Result<BaoEventV1, GatewayError> {
+    pub async fn get_timeline(
+        &self,
+        namespace: Option<String>,
+    ) -> Result<BaoEventV1, GatewayError> {
         let timeline = memory_get_timeline(&self.state.sqlite_path, namespace.clone()).await?;
         let payload = serde_json::json!({"namespace": namespace, "timeline": timeline});
-        append_and_load_event(&self.state, now_ts(), "memory.getTimeline", None, None, None, &payload).await
+        append_and_load_event(
+            &self.state,
+            now_ts(),
+            "memory.getTimeline",
+            None,
+            None,
+            None,
+            &payload,
+        )
+        .await
     }
 
-    pub async fn apply_mutation_plan(&self, _plan: MemoryMutationPlanV1) -> Result<BaoEventV1, GatewayError> {
-        // Phase1 minimal: store-side implementation lands with memory engine.
-        let payload = serde_json::json!({"ok": true});
-        append_and_load_event(&self.state, now_ts(), "memory.applyMutationPlan", None, None, None, &payload).await
+    pub async fn list_memory_versions(
+        &self,
+        memory_id: String,
+    ) -> Result<BaoEventV1, GatewayError> {
+        if memory_id.trim().is_empty() {
+            return Err(GatewayError::Protocol(
+                "memory id cannot be empty".to_string(),
+            ));
+        }
+
+        let versions = tokio::task::spawn_blocking({
+            let storage = self.storage.clone();
+            let memory_id = memory_id.clone();
+            move || storage.list_memory_versions(&memory_id)
+        })
+        .await
+        .map_err(|e| GatewayError::Protocol(format!("join: {e}")))??;
+
+        let payload = serde_json::json!({"memoryId": memory_id, "versions": versions});
+        append_and_load_event(
+            &self.state,
+            now_ts(),
+            "memory.listVersions",
+            None,
+            None,
+            None,
+            &payload,
+        )
+        .await
     }
 
-    pub async fn rollback_version(&self, memory_id: String, version_id: String) -> Result<BaoEventV1, GatewayError> {
+    pub async fn apply_mutation_plan(
+        &self,
+        _plan: MemoryMutationPlanV1,
+    ) -> Result<BaoEventV1, GatewayError> {
+        let ts = now_ts();
+        let plan = _plan;
+        for mutation in plan.mutations.iter() {
+            match mutation.op {
+                bao_api::MemoryMutationOpV1::UPSERT => {
+                    if let Some(mem) = mutation.memory.as_ref() {
+                        let memory_id = mem
+                            .id
+                            .clone()
+                            .unwrap_or_else(|| format!("m_{}", random_token()));
+                        let item = MemoryItemRecord {
+                            memory_id: memory_id.clone(),
+                            namespace: mem.namespace.clone(),
+                            kind: mem.kind.clone(),
+                            title: mem.title.clone(),
+                            content: mem.content.clone(),
+                            json: mem
+                                .json
+                                .as_ref()
+                                .and_then(|j| serde_json::to_string(j).ok()),
+                            score: mem.score.unwrap_or(0.0),
+                            status: mem.status.clone().unwrap_or_else(|| "active".to_string()),
+                            source_hash: mem.sourceHash.clone(),
+                            created_at: ts,
+                            updated_at: ts,
+                            last_injected_at: None,
+                            inject_count: 0,
+                        };
+                        self.storage.upsert_memory_item(&item)?;
+                        let version = MemoryVersionRecord {
+                            version_id: format!("v_{}", random_token()),
+                            memory_id: memory_id.clone(),
+                            prev_version_id: None,
+                            op: "UPSERT".to_string(),
+                            diff_json: serde_json::to_string(&mutation)
+                                .unwrap_or_else(|_| "{}".to_string()),
+                            actor: "gateway".to_string(),
+                            created_at: ts,
+                        };
+                        self.storage.insert_memory_version(&version)?;
+                        let _ = self.storage.insert_audit_event(
+                            ts,
+                            "memory.upsert",
+                            "memory",
+                            &memory_id,
+                            &serde_json::json!({"planId": plan.planId}),
+                        );
+                    }
+                }
+                bao_api::MemoryMutationOpV1::SUPERSEDE => {
+                    if let Some(sup) = mutation.supersede.as_ref() {
+                        let old_memory_snapshot = self.storage.get_memory_item(&sup.oldId)?;
+                        let _ = self.storage.delete_memory_item(&sup.oldId);
+                        if let Some(mem) = mutation.memory.as_ref() {
+                            let memory_id = mem.id.clone().unwrap_or_else(|| sup.newId.clone());
+                            let item = MemoryItemRecord {
+                                memory_id: memory_id.clone(),
+                                namespace: mem.namespace.clone(),
+                                kind: mem.kind.clone(),
+                                title: mem.title.clone(),
+                                content: mem.content.clone(),
+                                json: mem
+                                    .json
+                                    .as_ref()
+                                    .and_then(|j| serde_json::to_string(j).ok()),
+                                score: mem.score.unwrap_or(0.0),
+                                status: mem.status.clone().unwrap_or_else(|| "active".to_string()),
+                                source_hash: mem.sourceHash.clone(),
+                                created_at: ts,
+                                updated_at: ts,
+                                last_injected_at: None,
+                                inject_count: 0,
+                            };
+                            self.storage.upsert_memory_item(&item)?;
+                        }
+                        let version = MemoryVersionRecord {
+                            version_id: format!("v_{}", random_token()),
+                            memory_id: sup.newId.clone(),
+                            prev_version_id: None,
+                            op: "SUPERSEDE".to_string(),
+                            diff_json: serde_json::to_string(&serde_json::json!({
+                                "mutation": mutation,
+                                "oldMemory": old_memory_snapshot.map(|item| memory_record_to_json(&item)),
+                            }))
+                            .unwrap_or_else(|_| "{}".to_string()),
+                            actor: "gateway".to_string(),
+                            created_at: ts,
+                        };
+                        self.storage.insert_memory_version(&version)?;
+                        let _ = self.storage.insert_audit_event(
+                            ts,
+                            "memory.supersede",
+                            "memory",
+                            &sup.newId,
+                            &serde_json::json!({"oldId": sup.oldId, "reason": mutation.reason}),
+                        );
+                    }
+                }
+                bao_api::MemoryMutationOpV1::DELETE => {
+                    if let Some(del) = mutation.delete.as_ref() {
+                        let deleted_memory_snapshot = self.storage.get_memory_item(&del.id)?;
+                        let _ = self.storage.delete_memory_item(&del.id);
+                        let version = MemoryVersionRecord {
+                            version_id: format!("v_{}", random_token()),
+                            memory_id: del.id.clone(),
+                            prev_version_id: None,
+                            op: "DELETE".to_string(),
+                            diff_json: serde_json::to_string(&serde_json::json!({
+                                "mutation": mutation,
+                                "deletedMemory": deleted_memory_snapshot.map(|item| memory_record_to_json(&item)),
+                            }))
+                            .unwrap_or_else(|_| "{}".to_string()),
+                            actor: "gateway".to_string(),
+                            created_at: ts,
+                        };
+                        self.storage.insert_memory_version(&version)?;
+                        let _ = self.storage.insert_audit_event(
+                            ts,
+                            "memory.delete",
+                            "memory",
+                            &del.id,
+                            &serde_json::json!({"reason": mutation.reason}),
+                        );
+                    }
+                }
+                bao_api::MemoryMutationOpV1::LINK => {
+                    if let Some(link) = mutation.link.as_ref() {
+                        let evidence = &link.evidence;
+                        let (message_id, event_id, artifact_sha256) = match evidence.kind {
+                            bao_api::MemoryEvidenceKindV1::Message => {
+                                (evidence.messageId.clone(), None, None)
+                            }
+                            bao_api::MemoryEvidenceKindV1::Event => (None, evidence.eventId, None),
+                            bao_api::MemoryEvidenceKindV1::Artifact => {
+                                (None, None, evidence.artifactSha256.clone())
+                            }
+                        };
+                        let record = MemoryLinkRecord {
+                            memory_id: link.memoryId.clone(),
+                            kind: match evidence.kind {
+                                bao_api::MemoryEvidenceKindV1::Message => "message".to_string(),
+                                bao_api::MemoryEvidenceKindV1::Event => "event".to_string(),
+                                bao_api::MemoryEvidenceKindV1::Artifact => "artifact".to_string(),
+                            },
+                            message_id,
+                            event_id,
+                            artifact_sha256,
+                            weight: evidence.weight,
+                            note: evidence.note.clone(),
+                            created_at: ts,
+                        };
+                        self.storage.insert_memory_link(&record)?;
+                        let _ = self.storage.insert_audit_event(
+                            ts,
+                            "memory.link",
+                            "memory",
+                            &link.memoryId,
+                            &serde_json::json!({"evidence": evidence}),
+                        );
+                    }
+                }
+            }
+        }
+        let payload = serde_json::json!({"ok": true, "planId": plan.planId});
+        append_and_load_event(
+            &self.state,
+            ts,
+            "memory.applyMutationPlan",
+            None,
+            None,
+            None,
+            &payload,
+        )
+        .await
+    }
+
+    pub async fn rollback_version(
+        &self,
+        memory_id: String,
+        version_id: String,
+    ) -> Result<BaoEventV1, GatewayError> {
+        let ts = now_ts();
+        let version = self
+            .storage
+            .get_memory_version(&version_id)?
+            .ok_or_else(|| {
+                GatewayError::Protocol(format!("memory version not found: {version_id}"))
+            })?;
+
+        if version.memory_id != memory_id {
+            return Err(GatewayError::Protocol(
+                "memory/version mismatch".to_string(),
+            ));
+        }
+
+        match version.op.as_str() {
+            "UPSERT" => {
+                let restored = restore_memory_item_from_version(&memory_id, &version, ts)?;
+                self.storage.upsert_memory_item(&restored)?;
+            }
+            "SUPERSEDE" => {
+                rollback_supersede_version(&self.storage, &memory_id, &version, ts)?;
+            }
+            "DELETE" => {
+                let restored = restore_deleted_memory_from_version(&memory_id, &version, ts)?;
+                self.storage.upsert_memory_item(&restored)?;
+            }
+            op => {
+                return Err(GatewayError::Protocol(format!(
+                    "unsupported rollback target op: {op}"
+                )));
+            }
+        }
+
+        let new_version = MemoryVersionRecord {
+            version_id: format!("v_{}", random_token()),
+            memory_id: memory_id.clone(),
+            prev_version_id: Some(version_id.clone()),
+            op: "ROLLBACK".to_string(),
+            diff_json: serde_json::json!({"versionId": version_id, "targetOp": version.op})
+                .to_string(),
+            actor: "gateway".to_string(),
+            created_at: ts,
+        };
+        self.storage.insert_memory_version(&new_version)?;
+        let _ = self.storage.insert_audit_event(
+            ts,
+            "memory.rollback",
+            "memory",
+            &memory_id,
+            &serde_json::json!({"versionId": version_id}),
+        );
+
         let payload = serde_json::json!({"memoryId": memory_id, "versionId": version_id});
-        append_and_load_event(&self.state, now_ts(), "memory.rollbackVersion", None, None, None, &payload).await
+        append_and_load_event(
+            &self.state,
+            ts,
+            "memory.rollbackVersion",
+            None,
+            None,
+            None,
+            &payload,
+        )
+        .await
     }
 
     pub async fn list_dimsums(&self) -> Result<BaoEventV1, GatewayError> {
         let dimsums = query_dimsums(&self.state.sqlite_path).await?;
         let payload = serde_json::json!({"dimsums": dimsums});
-        append_and_load_event(&self.state, now_ts(), "dimsums.list", None, None, None, &payload).await
+        append_and_load_event(
+            &self.state,
+            now_ts(),
+            "dimsums.list",
+            None,
+            None,
+            None,
+            &payload,
+        )
+        .await
+    }
+
+    pub async fn enable_dimsum(&self, dimsum_id: String) -> Result<BaoEventV1, GatewayError> {
+        self.set_dimsum_enabled(dimsum_id, true).await
+    }
+
+    pub async fn disable_dimsum(&self, dimsum_id: String) -> Result<BaoEventV1, GatewayError> {
+        self.set_dimsum_enabled(dimsum_id, false).await
+    }
+
+    async fn set_dimsum_enabled(
+        &self,
+        dimsum_id: String,
+        enabled: bool,
+    ) -> Result<BaoEventV1, GatewayError> {
+        let ts = now_ts();
+        if dimsum_id.trim().is_empty() {
+            return Err(GatewayError::Protocol(
+                "dimsum id cannot be empty".to_string(),
+            ));
+        }
+
+        let changed = tokio::task::spawn_blocking({
+            let sqlite_path = self.state.sqlite_path.clone();
+            let dimsum_id = dimsum_id.clone();
+            move || {
+                let conn = Connection::open(sqlite_path)?;
+                conn.pragma_update(None, "foreign_keys", "ON")?;
+                let changed = conn.execute(
+                    "UPDATE dimsums SET enabled=?2, updated_at=?3 WHERE dimsum_id=?1",
+                    params![dimsum_id, if enabled { 1 } else { 0 }, ts],
+                )?;
+                Ok::<_, GatewayError>(changed)
+            }
+        })
+        .await
+        .map_err(|e| GatewayError::Protocol(format!("join: {e}")))??;
+
+        if changed == 0 {
+            return Err(GatewayError::Protocol(format!(
+                "dimsum not found: {dimsum_id}"
+            )));
+        }
+
+        let payload = serde_json::json!({"dimsumId": dimsum_id, "enabled": enabled});
+        let ty = if enabled {
+            "dimsums.enable"
+        } else {
+            "dimsums.disable"
+        };
+        append_and_load_event(&self.state, ts, ty, None, None, None, &payload).await
     }
 
     pub async fn list_memories(&self) -> Result<BaoEventV1, GatewayError> {
         let memories = query_memories(&self.state.sqlite_path).await?;
         let payload = serde_json::json!({"memories": memories});
-        append_and_load_event(&self.state, now_ts(), "memories.list", None, None, None, &payload).await
+        append_and_load_event(
+            &self.state,
+            now_ts(),
+            "memories.list",
+            None,
+            None,
+            None,
+            &payload,
+        )
+        .await
     }
 
     pub async fn get_settings(&self) -> Result<BaoEventV1, GatewayError> {
         let settings = query_settings(&self.state.sqlite_path).await?;
         let payload = serde_json::json!({"settings": settings});
-        append_and_load_event(&self.state, now_ts(), "settings.get", None, None, None, &payload).await
+        append_and_load_event(
+            &self.state,
+            now_ts(),
+            "settings.get",
+            None,
+            None,
+            None,
+            &payload,
+        )
+        .await
     }
 
     /// Upsert a single setting key.
     ///
     /// Phase1: writes to `settings` table and emits a `settings.update` event.
-    pub async fn update_setting(&self, key: String, value: Value) -> Result<BaoEventV1, GatewayError> {
+    pub async fn update_setting(
+        &self,
+        key: String,
+        value: Value,
+    ) -> Result<BaoEventV1, GatewayError> {
         let ts = now_ts();
         tokio::task::spawn_blocking({
             let sqlite_path = self.state.sqlite_path.clone();
@@ -325,10 +867,46 @@ impl GatewayHandle {
         .map_err(|e| GatewayError::Protocol(format!("join: {e}")))??;
 
         let payload = serde_json::json!({"key": key, "value": value});
-        append_and_load_event(&self.state, ts, "settings.update", None, None, None, &payload).await
+        append_and_load_event(
+            &self.state,
+            ts,
+            "settings.update",
+            None,
+            None,
+            None,
+            &payload,
+        )
+        .await
     }
 
-    pub async fn events_since(&self, last_event_id: Option<i64>, limit: i64) -> Result<Vec<BaoEventV1>, GatewayError> {
+    pub async fn emit_event(
+        &self,
+        ty: String,
+        session_id: Option<String>,
+        payload: Value,
+    ) -> Result<BaoEventV1, GatewayError> {
+        if ty.trim().is_empty() {
+            return Err(GatewayError::Protocol(
+                "event type cannot be empty".to_string(),
+            ));
+        }
+        append_and_load_event(
+            &self.state,
+            now_ts(),
+            ty.as_str(),
+            session_id.as_deref(),
+            None,
+            None,
+            &payload,
+        )
+        .await
+    }
+
+    pub async fn events_since(
+        &self,
+        last_event_id: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<BaoEventV1>, GatewayError> {
         let out = tokio::task::spawn_blocking({
             let sqlite_path = self.state.sqlite_path.clone();
             move || load_events_since(&sqlite_path, last_event_id, limit)
@@ -339,7 +917,11 @@ impl GatewayHandle {
     }
 }
 
-async fn memory_search_index(sqlite_path: &str, query: &str, limit: i64) -> Result<Vec<MemoryHitV1>, GatewayError> {
+async fn memory_search_index(
+    sqlite_path: &str,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<MemoryHitV1>, GatewayError> {
     let q = query.to_string();
     let p = sqlite_path.to_string();
     let limit = limit.clamp(1, 200) as usize;
@@ -423,7 +1005,10 @@ async fn memory_get_items(sqlite_path: &str, ids: &[String]) -> Result<Vec<Value
     .map_err(|e| GatewayError::Protocol(format!("join: {e}")))?
 }
 
-async fn memory_get_timeline(sqlite_path: &str, namespace: Option<String>) -> Result<Vec<Value>, GatewayError> {
+async fn memory_get_timeline(
+    sqlite_path: &str,
+    namespace: Option<String>,
+) -> Result<Vec<Value>, GatewayError> {
     let p = sqlite_path.to_string();
     tokio::task::spawn_blocking(move || {
         let conn = rusqlite::Connection::open(p)?;
@@ -453,6 +1038,148 @@ async fn memory_get_timeline(sqlite_path: &str, namespace: Option<String>) -> Re
     .map_err(|e| GatewayError::Protocol(format!("join: {e}")))?
 }
 
+fn memory_record_to_json(item: &MemoryItemRecord) -> Value {
+    let json_payload = item
+        .json
+        .as_ref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .unwrap_or(Value::Null);
+
+    serde_json::json!({
+        "id": item.memory_id,
+        "namespace": item.namespace,
+        "kind": item.kind,
+        "title": item.title,
+        "content": item.content,
+        "json": json_payload,
+        "score": item.score,
+        "status": item.status,
+        "sourceHash": item.source_hash,
+        "createdAt": item.created_at,
+        "updatedAt": item.updated_at,
+    })
+}
+
+fn parse_memory_item_payload(
+    payload: &Value,
+    fallback_memory_id: &str,
+    ts: i64,
+) -> Result<MemoryItemRecord, GatewayError> {
+    let mem = payload
+        .as_object()
+        .ok_or_else(|| GatewayError::Protocol("memory payload must be object".to_string()))?;
+
+    let memory_id = mem
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or(fallback_memory_id)
+        .to_string();
+
+    let namespace = mem
+        .get("namespace")
+        .and_then(Value::as_str)
+        .ok_or_else(|| GatewayError::Protocol("memory payload missing namespace".to_string()))?
+        .to_string();
+    let kind = mem
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| GatewayError::Protocol("memory payload missing kind".to_string()))?
+        .to_string();
+    let title = mem
+        .get("title")
+        .and_then(Value::as_str)
+        .ok_or_else(|| GatewayError::Protocol("memory payload missing title".to_string()))?
+        .to_string();
+
+    let content = mem
+        .get("content")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let json = mem
+        .get("json")
+        .and_then(|v| (!v.is_null()).then_some(v))
+        .and_then(|v| serde_json::to_string(v).ok());
+    let score = mem.get("score").and_then(Value::as_f64).unwrap_or(0.0);
+    let status = mem
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("active")
+        .to_string();
+    let source_hash = mem
+        .get("sourceHash")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+
+    Ok(MemoryItemRecord {
+        memory_id,
+        namespace,
+        kind,
+        title,
+        content,
+        json,
+        score,
+        status,
+        source_hash,
+        created_at: ts,
+        updated_at: ts,
+        last_injected_at: None,
+        inject_count: 0,
+    })
+}
+
+fn restore_memory_item_from_version(
+    memory_id: &str,
+    version: &MemoryVersionRecord,
+    ts: i64,
+) -> Result<MemoryItemRecord, GatewayError> {
+    let diff = serde_json::from_str::<Value>(&version.diff_json)
+        .map_err(|err| GatewayError::Protocol(format!("invalid version diff json: {err}")))?;
+
+    let mem_payload = diff
+        .get("memory")
+        .or_else(|| diff.get("mutation").and_then(|m| m.get("memory")))
+        .ok_or_else(|| GatewayError::Protocol("version diff missing memory payload".to_string()))?;
+
+    parse_memory_item_payload(mem_payload, memory_id, ts)
+}
+
+fn restore_deleted_memory_from_version(
+    memory_id: &str,
+    version: &MemoryVersionRecord,
+    ts: i64,
+) -> Result<MemoryItemRecord, GatewayError> {
+    let diff = serde_json::from_str::<Value>(&version.diff_json)
+        .map_err(|err| GatewayError::Protocol(format!("invalid version diff json: {err}")))?;
+
+    let deleted_payload = diff
+        .get("deletedMemory")
+        .ok_or_else(|| GatewayError::Protocol("version diff missing deletedMemory".to_string()))?;
+
+    parse_memory_item_payload(deleted_payload, memory_id, ts)
+}
+
+fn rollback_supersede_version(
+    storage: &Storage,
+    new_memory_id: &str,
+    version: &MemoryVersionRecord,
+    ts: i64,
+) -> Result<(), GatewayError> {
+    let diff = serde_json::from_str::<Value>(&version.diff_json)
+        .map_err(|err| GatewayError::Protocol(format!("invalid version diff json: {err}")))?;
+
+    let old_payload = diff
+        .get("oldMemory")
+        .ok_or_else(|| GatewayError::Protocol("version diff missing oldMemory".to_string()))?;
+
+    storage.delete_memory_item(new_memory_id)?;
+    let restored_old = parse_memory_item_payload(old_payload, new_memory_id, ts)?;
+    storage.upsert_memory_item(&restored_old)?;
+
+    Ok(())
+}
+
+
 #[derive(Clone)]
 pub struct GatewayServer {
     state: Arc<GatewayState>,
@@ -466,6 +1193,16 @@ impl GatewayServer {
         let sqlite_path = sqlite_path.into();
         init_sqlite(&sqlite_path)?;
 
+        let storage = Arc::new(
+            Storage::open(sqlite_path.clone())
+                .map_err(|e| GatewayError::Protocol(e.to_string()))?,
+        );
+        let runner = Arc::new(ProcessToolRunner::new());
+        let scheduler = Arc::new(SchedulerService::new(
+            Arc::new(SqliteStorage::new(storage.clone())),
+            runner,
+        ));
+
         let state = Arc::new(GatewayState {
             sqlite_path,
             auth: AuthRegistry::new(),
@@ -475,13 +1212,22 @@ impl GatewayServer {
             Self {
                 state: state.clone(),
             },
-            GatewayHandle { state },
+            GatewayHandle {
+                state,
+                scheduler,
+                storage,
+            },
         ))
     }
 
     pub async fn start(&self, mut cfg: GatewayConfig) -> Result<(), GatewayError> {
         // Apply allow_lan override.
-        let allow_lan = self.state.runtime_cfg.lock().expect("cfg mutex poisoned").allow_lan;
+        let allow_lan = self
+            .state
+            .runtime_cfg
+            .lock()
+            .expect("cfg mutex poisoned")
+            .allow_lan;
         if allow_lan {
             cfg.bind_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
         } else {
@@ -554,6 +1300,9 @@ pub enum ClientFrameV1 {
     ListMemories,
     #[serde(rename = "getSettings")]
     GetSettings,
+
+    #[serde(rename = "revokePairingToken")]
+    RevokePairingToken { token: String },
 }
 
 // -----------------------------
@@ -608,7 +1357,9 @@ impl AuthRegistry {
         if token.starts_with("d_") {
             let g = self.device.lock().expect("device mutex poisoned");
             return match g.get(token).copied() {
-                Some(false) => AuthDecision::Accepted { new_device_token: None },
+                Some(false) => AuthDecision::Accepted {
+                    new_device_token: None,
+                },
                 _ => AuthDecision::Rejected,
             };
         }
@@ -648,6 +1399,106 @@ enum AuthDecision {
 // Storage queries (sessions/tasks/dimsums/memories/settings/events)
 // -----------------------------
 
+fn validate_task_spec(spec: &TaskSpecV1) -> Result<(), GatewayError> {
+    let mut schema = serde_json::from_str::<Value>(include_str!("../../../schemas/task_spec_v1.schema.json"))
+        .map_err(|err| GatewayError::Protocol(format!("load task schema failed: {err}")))?;
+    if let Some(obj) = schema.as_object_mut() {
+        obj.remove("$id");
+    }
+    let instance = serde_json::to_value(spec)
+        .map_err(|err| GatewayError::Protocol(format!("serialize task spec failed: {err}")))?;
+
+    bao_api::validate_json_schema(&schema, &instance).map_err(|err| {
+        GatewayError::Protocol(format!("task spec schema validate failed: {}", err.message))
+    })?;
+
+    validate_task_spec_business(spec)
+}
+
+fn validate_task_spec_business(spec: &TaskSpecV1) -> Result<(), GatewayError> {
+    if spec.id.trim().is_empty() {
+        return Err(GatewayError::Protocol("task id cannot be empty".to_string()));
+    }
+    if spec.title.trim().is_empty() {
+        return Err(GatewayError::Protocol("task title cannot be empty".to_string()));
+    }
+
+    let tool = &spec.action.toolCall;
+    if tool.dimsumId.trim().is_empty() {
+        return Err(GatewayError::Protocol(
+            "task action tool dimsum id cannot be empty".to_string(),
+        ));
+    }
+    if tool.toolName.trim().is_empty() {
+        return Err(GatewayError::Protocol(
+            "task action tool name cannot be empty".to_string(),
+        ));
+    }
+
+    match spec.schedule.kind {
+        bao_api::TaskScheduleKindV1::Once => {
+            if spec.schedule.runAtTs.is_none() {
+                return Err(GatewayError::Protocol(
+                    "schedule.once requires runAtTs".to_string(),
+                ));
+            }
+        }
+        bao_api::TaskScheduleKindV1::Interval => {
+            let ms = spec.schedule.intervalMs.ok_or_else(|| {
+                GatewayError::Protocol("schedule.interval requires intervalMs".to_string())
+            })?;
+            if ms < 1000 {
+                return Err(GatewayError::Protocol(
+                    "schedule.intervalMs must be >= 1000".to_string(),
+                ));
+            }
+        }
+        bao_api::TaskScheduleKindV1::Cron => {
+            let cron_expr = spec
+                .schedule
+                .cron
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| GatewayError::Protocol("schedule.cron requires cron".to_string()))?;
+
+            Schedule::from_str(cron_expr).map_err(|err| {
+                GatewayError::Protocol(format!("invalid schedule.cron expression: {err}"))
+            })?;
+
+            if let Some(tz) = spec
+                .schedule
+                .timezone
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                tz.parse::<Tz>()
+                    .map_err(|err| GatewayError::Protocol(format!("invalid schedule.timezone: {err}")))?;
+            }
+        }
+    }
+
+    if let Some(policy) = spec.policy.as_ref() {
+        if let Some(max_retries) = policy.maxRetries {
+            if !(0..=1).contains(&max_retries) {
+                return Err(GatewayError::Protocol(
+                    "policy.maxRetries must be between 0 and 1".to_string(),
+                ));
+            }
+        }
+        if let Some(timeout_ms) = policy.timeoutMs {
+            if timeout_ms < 1 {
+                return Err(GatewayError::Protocol(
+                    "policy.timeoutMs must be >= 1".to_string(),
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn now_ts() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -655,7 +1506,17 @@ fn now_ts() -> i64 {
         .as_secs() as i64
 }
 
-fn load_events_since(sqlite_path: &str, last_event_id: Option<i64>, limit: i64) -> Result<Vec<BaoEventV1>, GatewayError> {
+fn random_token() -> String {
+    let mut bytes = [0u8; 16];
+    OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+fn load_events_since(
+    sqlite_path: &str,
+    last_event_id: Option<i64>,
+    limit: i64,
+) -> Result<Vec<BaoEventV1>, GatewayError> {
     let limit = limit.clamp(1, 5000);
     let from = last_event_id.unwrap_or(0);
 
@@ -701,7 +1562,103 @@ fn init_sqlite(sqlite_path: &str) -> Result<(), GatewayError> {
     // NOTE: This is allowed because we only read from that file.
     const INIT_SQL: &str = include_str!("../../bao-storage/migrations/0001_init.sql");
     conn.execute_batch(INIT_SQL)?;
+
+    seed_bundled_dimsums(&conn)?;
+    seed_default_session(&conn)?;
+    seed_default_settings(&conn)?;
     Ok(())
+}
+
+fn seed_default_session(conn: &Connection) -> Result<(), GatewayError> {
+    let now = now_ts();
+    conn.execute(
+        "INSERT INTO sessions(session_id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?3) \
+         ON CONFLICT(session_id) DO NOTHING",
+        params!["default", "Default Session", now],
+    )?;
+    Ok(())
+}
+
+fn seed_default_settings(conn: &Connection) -> Result<(), GatewayError> {
+    let now = now_ts();
+    let defaults = [
+        ("gateway.allowLan", serde_json::json!(false)),
+        ("gateway.running", serde_json::json!(false)),
+        ("provider.active", serde_json::json!("openai")),
+        ("provider.model", serde_json::json!("gpt-4.1-mini")),
+        (
+            "provider.baseUrl",
+            serde_json::json!("https://api.openai.com/v1"),
+        ),
+    ];
+
+    for (key, value) in defaults {
+        conn.execute(
+            "INSERT INTO settings(key, value_json, updated_at) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(key) DO NOTHING",
+            params![key, value.to_string(), now],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn seed_bundled_dimsums(conn: &Connection) -> Result<(), GatewayError> {
+    let root = bundled_dimsums_root()?;
+    let now = now_ts();
+
+    for entry in fs::read_dir(root)
+        .map_err(|e| GatewayError::Protocol(format!("read dimsums dir failed: {e}")))?
+    {
+        let entry =
+            entry.map_err(|e| GatewayError::Protocol(format!("read dimsums entry failed: {e}")))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let manifest_path = path.join("manifest.json");
+        if !manifest_path.exists() {
+            continue;
+        }
+
+        let manifest_text = fs::read_to_string(&manifest_path).map_err(|e| {
+            GatewayError::Protocol(format!("read manifest failed ({:?}): {e}", manifest_path))
+        })?;
+        let manifest_json: Value = serde_json::from_str(&manifest_text).map_err(|e| {
+            GatewayError::Protocol(format!("parse manifest failed ({:?}): {e}", manifest_path))
+        })?;
+
+        let dimsum_id = manifest_json
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                GatewayError::Protocol(format!("manifest missing id ({:?})", manifest_path))
+            })?;
+        let version = manifest_json
+            .get("version")
+            .and_then(Value::as_str)
+            .unwrap_or("0.0.0");
+
+        conn.execute(
+            "INSERT INTO dimsums(dimsum_id, enabled, channel, version, manifest_json, installed_at, updated_at) \
+             VALUES (?1, 1, 'bundled', ?2, ?3, ?4, ?4) \
+             ON CONFLICT(dimsum_id) DO UPDATE SET version=excluded.version, manifest_json=excluded.manifest_json, updated_at=excluded.updated_at",
+            params![dimsum_id, version, manifest_text, now],
+        )?;
+    }
+    Ok(())
+}
+
+fn bundled_dimsums_root() -> Result<std::path::PathBuf, GatewayError> {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest_dir.join("../../dimsums/bundled");
+    if root.exists() {
+        return Ok(root);
+    }
+    Err(GatewayError::Protocol(format!(
+        "bundled dimsums directory not found: {}",
+        root.to_string_lossy()
+    )))
 }
 
 // -----------------------------
@@ -714,7 +1671,10 @@ fn init_sqlite(sqlite_path: &str) -> Result<(), GatewayError> {
 // - Server->client is unmasked
 // - No fragmentation
 
-async fn handle_connection(state: Arc<GatewayState>, mut stream: TcpStream) -> Result<(), GatewayError> {
+async fn handle_connection(
+    state: Arc<GatewayState>,
+    mut stream: TcpStream,
+) -> Result<(), GatewayError> {
     // 1) HTTP Upgrade handshake
     let req = read_http_request(&mut stream).await?;
     let (method, path) = parse_http_request_line(&req)
@@ -744,7 +1704,9 @@ async fn handle_connection(state: Arc<GatewayState>, mut stream: TcpStream) -> R
         .await;
     }
 
-    let key = parse_ws_key(&req).ok_or(GatewayError::Handshake("missing sec-websocket-key".to_string()))?;
+    let key = parse_ws_key(&req).ok_or(GatewayError::Handshake(
+        "missing sec-websocket-key".to_string(),
+    ))?;
     let accept = compute_ws_accept(&key);
     let resp = format!(
         "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
@@ -757,7 +1719,10 @@ async fn handle_connection(state: Arc<GatewayState>, mut stream: TcpStream) -> R
         .map_err(|e| GatewayError::Protocol(format!("invalid hello json: {e}")))?;
 
     let (token, last_event_id) = match hello {
-        ClientFrameV1::Hello { token, last_event_id } => (token, last_event_id),
+        ClientFrameV1::Hello {
+            token,
+            last_event_id,
+        } => (token, last_event_id),
         _ => {
             return Err(GatewayError::Protocol("first frame not hello".to_string()));
         }
@@ -769,17 +1734,28 @@ async fn handle_connection(state: Arc<GatewayState>, mut stream: TcpStream) -> R
         AuthDecision::Rejected => return Err(GatewayError::Unauthorized),
     };
 
+    let storage = Storage::open(state.sqlite_path.clone())
+        .map_err(|e| GatewayError::Protocol(e.to_string()))?;
+
     // If this connection was established via pairing token, mint a device token and send it
     // back as a BaoEventV1. (Phase1: stored in-memory only.)
     // NOTE: For minimal correctness with lastEventId semantics, we persist this event.
     let mut paired_event_id: Option<i64> = None;
     if token.starts_with("p_") {
         if let Some(device_token) = new_device_token {
-        let payload = serde_json::json!({"token": device_token});
-        let evt = append_and_load_event(&state, now_ts(), "auth.paired", None, None, None, &payload).await?;
-        paired_event_id = Some(evt.eventId);
-        let txt = serde_json::to_string(&evt).unwrap();
-        write_ws_text_frame(&mut stream, &txt).await?;
+            let payload = serde_json::json!({"token": device_token});
+            let evt =
+                append_and_load_event(&state, now_ts(), "auth.paired", None, None, None, &payload)
+                    .await?;
+            paired_event_id = Some(evt.eventId);
+            let _ = storage
+                .insert_audit_event(now_ts(), "auth.pairing.accept", "auth", "pairing", &payload)
+                .map_err(|e| GatewayError::Protocol(e.to_string()))?;
+            let _ = storage
+                .insert_audit_event(now_ts(), "auth.device.issued", "auth", "device", &payload)
+                .map_err(|e| GatewayError::Protocol(e.to_string()))?;
+            let txt = serde_json::to_string(&evt).unwrap();
+            write_ws_text_frame(&mut stream, &txt).await?;
         }
     }
 
@@ -835,13 +1811,26 @@ async fn handle_connection(state: Arc<GatewayState>, mut stream: TcpStream) -> R
     }
 }
 
-async fn handle_client_command(state: &GatewayState, frame: ClientFrameV1) -> Result<BaoEventV1, GatewayError> {
+async fn handle_client_command(
+    state: &GatewayState,
+    frame: ClientFrameV1,
+) -> Result<BaoEventV1, GatewayError> {
     let ts = now_ts();
     match frame {
         ClientFrameV1::Hello { .. } => Err(GatewayError::Protocol("duplicate hello".to_string())),
         ClientFrameV1::SendMessage { session_id, text } => {
+            ensure_session_exists(&state.sqlite_path, &session_id, ts).await?;
             let payload = serde_json::json!({"sessionId": session_id, "text": text});
-            append_and_load_event(state, ts, "message.send", Some(&session_id), None, None, &payload).await
+            append_and_load_event(
+                state,
+                ts,
+                "message.send",
+                Some(&session_id),
+                None,
+                None,
+                &payload,
+            )
+            .await
         }
         ClientFrameV1::ListSessions => {
             let sessions = query_sessions(&state.sqlite_path).await?;
@@ -868,7 +1857,47 @@ async fn handle_client_command(state: &GatewayState, frame: ClientFrameV1) -> Re
             let payload = serde_json::json!({"settings": settings});
             append_and_load_event(state, ts, "settings.get", None, None, None, &payload).await
         }
+        ClientFrameV1::RevokePairingToken { token } => {
+            state.auth.revoke(&token);
+            let payload = serde_json::json!({"token": token});
+            let _ = Storage::open(state.sqlite_path.clone())
+                .map_err(|e| GatewayError::Protocol(e.to_string()))?
+                .insert_audit_event(ts, "auth.pairing.revoke", "auth", "pairing", &payload)
+                .map_err(|e| GatewayError::Protocol(e.to_string()))?;
+            append_and_load_event(
+                state,
+                ts,
+                "auth.pairing.revoked",
+                None,
+                None,
+                None,
+                &payload,
+            )
+            .await
+        }
     }
+}
+
+async fn ensure_session_exists(
+    sqlite_path: &str,
+    session_id: &str,
+    ts: i64,
+) -> Result<(), GatewayError> {
+    let sqlite_path = sqlite_path.to_string();
+    let session_id = session_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(sqlite_path)?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.execute(
+            "INSERT INTO sessions(session_id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?3) \
+             ON CONFLICT(session_id) DO UPDATE SET updated_at=excluded.updated_at",
+            params![session_id.clone(), session_id, ts],
+        )?;
+        Ok::<_, GatewayError>(())
+    })
+    .await
+    .map_err(|e| GatewayError::Protocol(format!("join: {e}")))??;
+    Ok(())
 }
 
 async fn append_and_load_event(
@@ -958,7 +1987,11 @@ fn parse_http_request_line(req: &str) -> Option<(String, String)> {
     Some((method, path))
 }
 
-async fn write_http_json(stream: &mut TcpStream, status: u16, body: Value) -> Result<(), GatewayError> {
+async fn write_http_json(
+    stream: &mut TcpStream,
+    status: u16,
+    body: Value,
+) -> Result<(), GatewayError> {
     let b = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
     let reason = match status {
         200 => "OK",
@@ -1111,9 +2144,8 @@ async fn query_settings(sqlite_path: &str) -> Result<Vec<Value>, GatewayError> {
     let p = sqlite_path.to_string();
     tokio::task::spawn_blocking(move || {
         let conn = rusqlite::Connection::open(p)?;
-        let mut stmt = conn.prepare(
-            "SELECT key, value_json, updated_at FROM settings ORDER BY key ASC",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT key, value_json, updated_at FROM settings ORDER BY key ASC")?;
         let rows = stmt.query_map([], |r| {
             let key: String = r.get(0)?;
             let value_json: String = r.get(1)?;
@@ -1141,18 +2173,24 @@ async fn read_ws_text_frame(stream: &mut TcpStream) -> Result<String, GatewayErr
     let fin = (hdr[0] & 0x80) != 0;
     let opcode = hdr[0] & 0x0f;
     if !fin {
-        return Err(GatewayError::Protocol("fragmented frames not supported".to_string()));
+        return Err(GatewayError::Protocol(
+            "fragmented frames not supported".to_string(),
+        ));
     }
     if opcode == 0x8 {
         return Err(GatewayError::Protocol("close".to_string()));
     }
     if opcode != 0x1 {
-        return Err(GatewayError::Protocol("only text frames supported".to_string()));
+        return Err(GatewayError::Protocol(
+            "only text frames supported".to_string(),
+        ));
     }
 
     let masked = (hdr[1] & 0x80) != 0;
     if !masked {
-        return Err(GatewayError::Protocol("client frames must be masked".to_string()));
+        return Err(GatewayError::Protocol(
+            "client frames must be masked".to_string(),
+        ));
     }
     let mut len = (hdr[1] & 0x7f) as u64;
     if len == 126 {
@@ -1199,7 +2237,6 @@ async fn write_ws_text_frame(stream: &mut TcpStream, text: &str) -> Result<(), G
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpStream as StdTcpStream;
     use tempfile::TempDir;
     use tokio::net::TcpStream;
 
@@ -1207,14 +2244,18 @@ mod tests {
     struct TestBaoEventV1 {
         #[serde(rename = "eventId")]
         event_id: i64,
+        #[allow(dead_code)]
         ts: i64,
         #[serde(rename = "type")]
         ty: String,
         #[serde(rename = "sessionId")]
+        #[allow(dead_code)]
         session_id: Option<String>,
         #[serde(rename = "messageId")]
+        #[allow(dead_code)]
         message_id: Option<String>,
         #[serde(rename = "deviceId")]
+        #[allow(dead_code)]
         device_id: Option<String>,
         payload: Value,
     }
@@ -1252,12 +2293,17 @@ mod tests {
         }
         let txt = String::from_utf8_lossy(&buf);
         if !txt.starts_with("HTTP/1.1 101") {
-            return Err(GatewayError::Handshake(format!("unexpected response: {txt}")));
+            return Err(GatewayError::Handshake(format!(
+                "unexpected response: {txt}"
+            )));
         }
         Ok(s)
     }
 
-    async fn write_masked_text_frame(stream: &mut TcpStream, text: &str) -> Result<(), GatewayError> {
+    async fn write_masked_text_frame(
+        stream: &mut TcpStream,
+        text: &str,
+    ) -> Result<(), GatewayError> {
         let bytes = text.as_bytes();
         let mut out = Vec::with_capacity(bytes.len() + 32);
         out.push(0x80 | 0x1); // FIN + text
@@ -1288,14 +2334,18 @@ mod tests {
         let fin = (hdr[0] & 0x80) != 0;
         let opcode = hdr[0] & 0x0f;
         if !fin {
-            return Err(GatewayError::Protocol("fragmented frames not supported".to_string()));
+            return Err(GatewayError::Protocol(
+                "fragmented frames not supported".to_string(),
+            ));
         }
         if opcode != 0x1 {
             return Err(GatewayError::Protocol("expected text frame".to_string()));
         }
         let masked = (hdr[1] & 0x80) != 0;
         if masked {
-            return Err(GatewayError::Protocol("server frames must be unmasked".to_string()));
+            return Err(GatewayError::Protocol(
+                "server frames must be unmasked".to_string(),
+            ));
         }
         let mut len = (hdr[1] & 0x7f) as u64;
         if len == 126 {
@@ -1323,16 +2373,27 @@ mod tests {
         let (_dir, sqlite_path) = temp_sqlite_path();
         let (server, _handle) = GatewayServer::open(sqlite_path).expect("open");
 
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.expect("bind");
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind");
         let addr = listener.local_addr().expect("local_addr");
         let jh = tokio::spawn(async move { server.start_with_listener(listener).await });
 
         let mut ws = ws_handshake(addr).await.expect("handshake");
         let hello = serde_json::json!({"type": "hello", "token": "nope", "lastEventId": null});
-        write_masked_text_frame(&mut ws, &hello.to_string()).await.expect("write");
+        write_masked_text_frame(&mut ws, &hello.to_string())
+            .await
+            .expect("write");
 
-        let r = time::timeout(Duration::from_millis(300), read_unmasked_text_frame(&mut ws)).await;
-        assert!(r.is_err() || r.unwrap().is_err(), "expected connection drop");
+        let r = time::timeout(
+            Duration::from_millis(300),
+            read_unmasked_text_frame(&mut ws),
+        )
+        .await;
+        assert!(
+            r.is_err() || r.unwrap().is_err(),
+            "expected connection drop"
+        );
 
         jh.abort();
     }
@@ -1342,7 +2403,9 @@ mod tests {
         let (_dir, sqlite_path) = temp_sqlite_path();
         let (server, handle) = GatewayServer::open(sqlite_path).expect("open");
 
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.expect("bind");
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind");
         let addr = listener.local_addr().expect("local_addr");
         let jh = tokio::spawn(async move { server.start_with_listener(listener).await });
 
@@ -1351,10 +2414,14 @@ mod tests {
         // first connection: pair
         let mut ws1 = ws_handshake(addr).await.expect("handshake1");
         let hello1 = serde_json::json!({"type": "hello", "token": pairing, "lastEventId": null});
-        write_masked_text_frame(&mut ws1, &hello1.to_string()).await.expect("write hello1");
+        write_masked_text_frame(&mut ws1, &hello1.to_string())
+            .await
+            .expect("write hello1");
 
         // auth.paired should come first
-        let paired_txt = read_unmasked_text_frame(&mut ws1).await.expect("read paired");
+        let paired_txt = read_unmasked_text_frame(&mut ws1)
+            .await
+            .expect("read paired");
         let paired_evt: TestBaoEventV1 = serde_json::from_str(&paired_txt).expect("parse paired");
         assert_eq!(paired_evt.ty, "auth.paired");
         let device_token = paired_evt
@@ -1367,7 +2434,9 @@ mod tests {
 
         // append one event
         let cmd = serde_json::json!({"type": "sendMessage", "sessionId": "s1", "text": "hi"});
-        write_masked_text_frame(&mut ws1, &cmd.to_string()).await.expect("write sendMessage");
+        write_masked_text_frame(&mut ws1, &cmd.to_string())
+            .await
+            .expect("write sendMessage");
         let msg_txt = read_unmasked_text_frame(&mut ws1).await.expect("read msg");
         let msg_evt: TestBaoEventV1 = serde_json::from_str(&msg_txt).expect("parse msg");
         assert_eq!(msg_evt.ty, "message.send");
@@ -1378,7 +2447,9 @@ mod tests {
         // reconnect with lastEventId = paired event id, should replay message.send
         let mut ws2 = ws_handshake(addr).await.expect("handshake2");
         let hello2 = serde_json::json!({"type": "hello", "token": device_token, "lastEventId": paired_evt.event_id});
-        write_masked_text_frame(&mut ws2, &hello2.to_string()).await.expect("write hello2");
+        write_masked_text_frame(&mut ws2, &hello2.to_string())
+            .await
+            .expect("write hello2");
 
         let replay_txt = time::timeout(Duration::from_secs(1), read_unmasked_text_frame(&mut ws2))
             .await
@@ -1403,6 +2474,9 @@ pub enum GatewayError {
 
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
+
+    #[error("storage: {0}")]
+    Storage(#[from] StorageError),
 
     #[error("unauthorized")]
     Unauthorized,

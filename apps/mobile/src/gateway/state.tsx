@@ -1,12 +1,35 @@
 import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { GatewayClient } from './client';
+import {
+  aggregateErrorEvents,
+  buildErrorAlerts,
+  countEventsByCategory,
+  getEventId,
+  listErrorEvents,
+  type MobileErrorAggregateDimension,
+  type MobileEventCategory,
+  type MobileEventErrorAlert,
+  type MobileEventErrorAggregate,
+  type MobileEventErrorItem,
+} from './events';
 
 type GatewayState = {
   url: string;
   token: string;
   connected: boolean;
+  replayActive: boolean;
   lastEventId: number | null;
   events: unknown[];
+  eventCounts: Record<MobileEventCategory, number>;
+  errorAggregates: MobileEventErrorAggregate[];
+  errorAlerts: MobileEventErrorAlert[];
+  errorEvents: MobileEventErrorItem[];
+  selectedCategory: MobileEventCategory;
+  errorDimension: MobileErrorAggregateDimension;
+  selectedErrorProvider: string | null;
+  selectedErrorSessionId: string | null;
+  errorWarnThreshold: number;
+  errorCriticalThreshold: number;
 
   connect: (params: { url: string; token: string }) => Promise<void>;
   disconnect: () => void;
@@ -17,6 +40,11 @@ type GatewayState = {
   listDimsums: () => void;
   listMemories: () => void;
   getSettings: () => void;
+  setSelectedCategory: (category: MobileEventCategory) => void;
+  setErrorDimension: (dimension: MobileErrorAggregateDimension) => void;
+  setSelectedErrorProvider: (provider: string | null) => void;
+  setSelectedErrorSessionId: (sessionId: string | null) => void;
+  setErrorThresholds: (thresholds: { warn: number; critical: number }) => void;
 };
 
 const GatewayContext = createContext<GatewayState | null>(null);
@@ -25,19 +53,20 @@ function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
-function getEventId(v: unknown): number | null {
-  if (!isObject(v)) return null;
-  const raw = v.eventId;
-  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
-  return null;
-}
-
 export function GatewayProvider({ children }: { children: React.ReactNode }) {
   const [url, setUrl] = useState('ws://127.0.0.1:3901/ws');
   const [token, setToken] = useState('');
   const [connected, setConnected] = useState(false);
+  const [replayActive, setReplayActive] = useState(false);
   const [events, setEvents] = useState<unknown[]>([]);
+  const [selectedCategory, setSelectedCategory] = useState<MobileEventCategory>('message');
+  const [errorDimension, setErrorDimension] = useState<MobileErrorAggregateDimension>('global');
+  const [selectedErrorProvider, setSelectedErrorProvider] = useState<string | null>(null);
+  const [selectedErrorSessionId, setSelectedErrorSessionId] = useState<string | null>(null);
+  const [errorWarnThreshold, setErrorWarnThreshold] = useState(3);
+  const [errorCriticalThreshold, setErrorCriticalThreshold] = useState(6);
   const [lastEventId, setLastEventId] = useState<number | null>(null);
+  const [lastToken, setLastToken] = useState('');
 
   const clientRef = useRef<GatewayClient | null>(null);
 
@@ -52,7 +81,10 @@ export function GatewayProvider({ children }: { children: React.ReactNode }) {
 
     if (isObject(evt) && evt.type === 'auth.paired' && isObject(evt.payload)) {
       const t = evt.payload.token;
-      if (typeof t === 'string') setToken(t);
+      if (typeof t === 'string') {
+        setToken(t);
+        setLastToken(t);
+      }
     }
   }, []);
 
@@ -60,8 +92,13 @@ export function GatewayProvider({ children }: { children: React.ReactNode }) {
     async (params: { url: string; token: string }) => {
       setUrl(params.url);
       setToken(params.token);
-      setEvents([]);
-      setLastEventId(null);
+
+      const shouldResetHistory = params.url !== url || params.token !== lastToken;
+      if (shouldResetHistory) {
+        setEvents([]);
+        setLastEventId(null);
+      }
+      setReplayActive(!shouldResetHistory && lastEventId != null);
 
       clientRef.current?.disconnect();
       clientRef.current = null;
@@ -74,15 +111,20 @@ export function GatewayProvider({ children }: { children: React.ReactNode }) {
         onError: () => {},
       });
       clientRef.current = c;
-      c.connect({ token: params.token, lastEventId: null });
+      c.connect({
+        token: params.token,
+        lastEventId: shouldResetHistory ? null : lastEventId,
+      });
+      setLastToken(params.token);
     },
-    [onEvent],
+    [lastEventId, lastToken, onEvent, url],
   );
 
   const disconnect = useCallback(() => {
     clientRef.current?.disconnect();
     clientRef.current = null;
     setConnected(false);
+    setReplayActive(false);
   }, []);
 
   const sendMessage = useCallback((params: { sessionId: string; text: string }) => {
@@ -95,13 +137,48 @@ export function GatewayProvider({ children }: { children: React.ReactNode }) {
   const listMemories = useCallback(() => clientRef.current?.send({ type: 'listMemories' }), []);
   const getSettings = useCallback(() => clientRef.current?.send({ type: 'getSettings' }), []);
 
+  const setErrorThresholds = useCallback((thresholds: { warn: number; critical: number }) => {
+    const warn = Math.max(1, Math.floor(thresholds.warn));
+    const critical = Math.max(warn, Math.floor(thresholds.critical));
+    setErrorWarnThreshold(warn);
+    setErrorCriticalThreshold(critical);
+  }, []);
+
   const api = useMemo<GatewayState>(() => {
+    const eventCounts = countEventsByCategory(events);
+    const errorAggregates = aggregateErrorEvents(events, errorDimension);
+    const errorAlerts = buildErrorAlerts(errorAggregates, errorWarnThreshold, errorCriticalThreshold);
+    const providerFilter = errorDimension === 'provider' ? selectedErrorProvider : null;
+    const sessionFilter = errorDimension === 'session' ? selectedErrorSessionId : null;
+    const errorEvents = listErrorEvents(events, {
+      provider: providerFilter,
+      sessionId: sessionFilter,
+      limit: 120,
+    });
+
+    const setErrorDimensionSafe = (dimension: MobileErrorAggregateDimension) => {
+      setErrorDimension(dimension);
+      if (dimension !== 'provider') setSelectedErrorProvider(null);
+      if (dimension !== 'session') setSelectedErrorSessionId(null);
+    };
+
     return {
       url,
       token,
       connected,
+      replayActive,
       lastEventId,
       events,
+      eventCounts,
+      errorAggregates,
+      errorAlerts,
+      errorEvents,
+      selectedCategory,
+      errorDimension,
+      selectedErrorProvider,
+      selectedErrorSessionId,
+      errorWarnThreshold,
+      errorCriticalThreshold,
       connect,
       disconnect,
       sendMessage,
@@ -110,8 +187,35 @@ export function GatewayProvider({ children }: { children: React.ReactNode }) {
       listDimsums,
       listMemories,
       getSettings,
+      setSelectedCategory,
+      setErrorDimension: setErrorDimensionSafe,
+      setSelectedErrorProvider,
+      setSelectedErrorSessionId,
+      setErrorThresholds,
     };
-  }, [url, token, connected, lastEventId, events, connect, disconnect, sendMessage, listSessions, listTasks, listDimsums, listMemories, getSettings]);
+  }, [
+    url,
+    token,
+    connected,
+    replayActive,
+    lastEventId,
+    events,
+    selectedCategory,
+    errorDimension,
+    selectedErrorProvider,
+    selectedErrorSessionId,
+    errorWarnThreshold,
+    errorCriticalThreshold,
+    connect,
+    disconnect,
+    sendMessage,
+    listSessions,
+    listTasks,
+    listDimsums,
+    listMemories,
+    getSettings,
+    setErrorThresholds,
+  ]);
 
   return <GatewayContext.Provider value={api}>{children}</GatewayContext.Provider>;
 }

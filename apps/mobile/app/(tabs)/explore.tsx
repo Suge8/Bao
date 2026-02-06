@@ -3,12 +3,21 @@ import { FlatList, StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { type MobileEventCategory } from '@/src/gateway/events';
 import { useGateway } from '@/src/gateway/state';
 import { useI18n } from '@/src/i18n/i18n';
 
 export default function SessionsScreen() {
   const { t } = useI18n();
   const gw = useGateway();
+
+  const categoryKeyMap: Record<MobileEventCategory, string> = {
+    message: 'events.message',
+    task: 'events.task',
+    memory: 'events.memory',
+    audit: 'events.audit',
+    other: 'events.other',
+  };
 
   const sessions = useMemo(() => {
     const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
@@ -28,6 +37,30 @@ export default function SessionsScreen() {
       <View style={styles.header}>
         <ThemedText type="title">{t('sessions.title')}</ThemedText>
         <ThemedText type="link" onPress={() => gw.listSessions()}>{t('common.refresh')}</ThemedText>
+      </View>
+
+      <View style={styles.actions}>
+        <ThemedText type="link" onPress={() => gw.listTasks()}>
+          {t('sessions.fetchTasks')}
+        </ThemedText>
+        <ThemedText type="link" onPress={() => gw.listDimsums()}>
+          {t('sessions.fetchDimsums')}
+        </ThemedText>
+        <ThemedText type="link" onPress={() => gw.listMemories()}>
+          {t('sessions.fetchMemories')}
+        </ThemedText>
+      </View>
+
+      <View style={styles.actions}>
+        {(['message', 'task', 'memory', 'audit', 'other'] as MobileEventCategory[]).map((item) => {
+          const label = t(categoryKeyMap[item]);
+          const selected = item === gw.selectedCategory;
+          return (
+            <ThemedText key={item} type="link" onPress={() => gw.setSelectedCategory(item)}>
+              {selected ? `[${label}]` : label}
+            </ThemedText>
+          );
+        })}
       </View>
 
       <FlatList
@@ -61,5 +94,11 @@ const styles = StyleSheet.create({
   row: {
     paddingVertical: 10,
     gap: 4,
+  },
+  actions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 14,
+    marginBottom: 4,
   },
 });

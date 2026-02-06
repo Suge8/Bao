@@ -2,4 +2,9 @@
 
 内置 Router 点心（pipeline）。
 
-阶段1：只提供 manifest 占位与 pipeline hook 声明。
+当前阶段（Stage1）已提供可执行 JSON-RPC 服务：
+- `router.methods`
+- `router.route`
+
+开发环境运行命令：
+- `cargo run -q -p bao-dimsum-process --bin bao-router-hook --`
