@@ -75,7 +75,8 @@ function evaluatePerformance(observedInput, thresholdsMs) {
     observedMs,
     exceeded,
     missing,
-    status: exceeded.length > 0 ? "fail" : "pass",
+    // Missing metrics means the SLO gate cannot be proven; treat as fail-closed.
+    status: exceeded.length > 0 || missing.length > 0 ? "fail" : "pass",
   };
 }
 

@@ -184,6 +184,54 @@ describe("release gates", () => {
     expect(report.performance.status).toBe("fail");
   });
 
+  it("fails performance gate when required SLO metrics are missing", async () => {
+    const dir = await createTempDir();
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const repoRoot = path.resolve(here, "..", "..", "..");
+    const scriptPath = path.join(repoRoot, "scripts", "release-gates-checks.mjs");
+    const flakeResultsPath = path.join(dir, "flake-results.json");
+    const perfObservedPath = path.join(dir, "perf-observed.json");
+    const outputPath = path.join(dir, "gate-check-report.json");
+
+    await writeFile(flakeResultsPath, JSON.stringify([true, true], null, 2), "utf8");
+    await writeFile(
+      perfObservedPath,
+      JSON.stringify(
+        {
+          routerMs: 12,
+          // Intentionally omit ftsMs/toolTimeoutMs/schedulerTickMs.
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await expect(
+      execFileAsync("node", [
+        scriptPath,
+        "--flake-results",
+        flakeResultsPath,
+        "--perf-observed",
+        perfObservedPath,
+        "--rounds",
+        "2",
+        "--max-failures",
+        "0",
+        "--output",
+        outputPath,
+      ]),
+    ).rejects.toMatchObject({
+      code: 1,
+    });
+
+    const report = JSON.parse(await loadGateConfigAsText(outputPath));
+    expect(report.performance.missing).toContain("ftsMs");
+    expect(report.performance.missing).toContain("toolTimeoutMs");
+    expect(report.performance.missing).toContain("schedulerTickMs");
+    expect(report.performance.status).toBe("fail");
+  });
+
   it("includes flake/perf report fields in release-gate summary output", async () => {
     const dir = await createTempDir();
     const here = path.dirname(fileURLToPath(import.meta.url));
