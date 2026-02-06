@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.audit.list_by_device.input/v1",
+  "type": "object",
+  "required": ["deviceId"],
+  "properties": {
+    "deviceId": { "type": "string", "minLength": 1 },
+    "action": { "type": ["string", "null"], "minLength": 1 },
+    "startTs": { "type": ["integer", "null"], "minimum": 1 },
+    "endTs": { "type": ["integer", "null"], "minimum": 1 },
+    "cursorTs": { "type": ["integer", "null"], "minimum": 1 },
+    "cursorId": { "type": ["integer", "null"], "minimum": 1 },
+    "limit": { "type": ["integer", "null"], "minimum": 1, "maximum": 200 }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.audit.list.output/v1",
+  "type": "object",
+  "required": ["items", "nextCursor"],
+  "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["id", "ts", "action", "subjectType", "subjectId", "payload", "hash"],
+          "properties": {
+            "id": { "type": "integer", "minimum": 1 },
+            "ts": { "type": "integer", "minimum": 1 },
+            "action": { "type": "string", "minLength": 1 },
+            "subjectType": { "type": "string", "minLength": 1 },
+            "subjectId": { "type": "string", "minLength": 1 },
+            "payload": { "type": ["object", "array", "string", "number", "boolean", "null"] },
+            "prevHash": { "type": ["string", "null"] },
+            "hash": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+      }
+    },
+    "nextCursor": {
+      "type": ["object", "null"],
+      "required": ["ts", "id"],
+      "properties": {
+        "ts": { "type": "integer", "minimum": 1 },
+        "id": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

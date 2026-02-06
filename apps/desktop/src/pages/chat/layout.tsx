@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
 import { useClient } from "@/data/use-client";
 import type { BaoEvent } from "@/data/events";
@@ -22,11 +22,10 @@ export function ChatLayout() {
   const [error, setError] = useState<string | null>(null);
 
   const [events, setEvents] = useState<BaoEvent[]>([]);
-  const [messages, setMessages] = useState<MessageView[]>([]);
+  const [messagesBySession, setMessagesBySession] = useState<Record<string, MessageView[]>>({});
   const [inspectorOpen, setInspectorOpen] = useState(true);
 
   const unlistenRef = useRef<null | (() => void)>(null);
-  const activeSessionRef = useRef(activeSessionId);
 
   const refreshSessions = async (preferId?: string) => {
     const res = await client.listSessions();
@@ -40,10 +39,6 @@ export function ChatLayout() {
       return list[0]?.id ?? "default";
     });
   };
-
-  useEffect(() => {
-    activeSessionRef.current = activeSessionId;
-  }, [activeSessionId]);
 
   useEffect(() => {
     let mounted = true;
@@ -60,37 +55,39 @@ export function ChatLayout() {
         if (e.type === "message.send") {
           const text = typeof payload.text === "string" ? payload.text : "";
           const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : "";
-          setMessages((prev) => {
-            if (!text || sessionId !== activeSessionRef.current) {
-              return prev;
-            }
-            return [
-              {
-                id: `user-${e.eventId}`,
-                role: "user",
-                text,
-              },
-              ...prev,
-            ];
-          });
+          if (text && sessionId) {
+            setMessagesBySession((prev) => {
+              const existing = prev[sessionId] ?? [];
+              const next = [
+                {
+                  id: `user-${e.eventId}`,
+                  role: "user",
+                  text,
+                },
+                ...existing,
+              ];
+              return { ...prev, [sessionId]: next.slice(0, 200) };
+            });
+          }
         }
 
         if (e.type === "engine.turn") {
           const output = typeof payload.output === "string" ? payload.output : "";
           const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : "";
-          setMessages((prev) => {
-            if (!output || sessionId !== activeSessionRef.current) {
-              return prev;
-            }
-            return [
-              {
-                id: `assistant-${e.eventId}`,
-                role: "assistant",
-                text: output,
-              },
-              ...prev,
-            ];
-          });
+          if (output && sessionId) {
+            setMessagesBySession((prev) => {
+              const existing = prev[sessionId] ?? [];
+              const next = [
+                {
+                  id: `assistant-${e.eventId}`,
+                  role: "assistant",
+                  text: output,
+                },
+                ...existing,
+              ];
+              return { ...prev, [sessionId]: next.slice(0, 200) };
+            });
+          }
         }
 
         setEvents((prev) => {
@@ -120,6 +117,10 @@ export function ChatLayout() {
       (s) => (s.title ?? "").toLowerCase().includes(q) || s.id.toLowerCase().includes(q),
     );
   }, [filter, sessions]);
+
+  const messages = useMemo(() => {
+    return messagesBySession[activeSessionId] ?? [];
+  }, [activeSessionId, messagesBySession]);
 
   const send = async () => {
     const text = composer.trim();
@@ -155,7 +156,6 @@ export function ChatLayout() {
               type="button"
               onClick={() => {
                 setActiveSessionId(s.id);
-                setMessages([]);
               }}
               className={cn(
                 "flex items-center justify-between rounded-xl px-3 py-2 text-left text-sm transition hover:bg-foreground/10",

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.device.list.input/v1",
+  "type": "object",
+  "properties": {
+    "includeRevoked": { "type": ["boolean", "null"] },
+    "cursorUpdatedAt": { "type": ["integer", "null"], "minimum": 1 },
+    "cursorId": { "type": ["integer", "null"], "minimum": 1 },
+    "limit": { "type": ["integer", "null"], "minimum": 1, "maximum": 200 }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.device.revoke.output/v1",
+  "type": "object",
+  "required": ["deviceId"],
+  "properties": {
+    "deviceId": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

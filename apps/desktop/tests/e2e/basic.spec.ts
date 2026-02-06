@@ -53,7 +53,10 @@ async function installTauriMock(page: Page) {
       if (cmd === "listSessions") {
         return {
           payload: {
-            sessions: [{ sessionId: "default", title: "Default" }],
+            sessions: [
+              { sessionId: "default", title: "Default" },
+              { sessionId: "s2", title: "Session 2" },
+            ],
           },
         };
       }
@@ -220,6 +223,29 @@ test("open -> chat -> switch tabs -> settings -> toggle language", async ({ page
   await expect(page.getByTestId("nav-chat")).toHaveAttribute("aria-label", "对话");
 });
 
+test("chat should keep history per session when switching", async ({ page }) => {
+  await installTauriMock(page);
+
+  await page.goto("/");
+  await expect(page.getByTestId("page-chat")).toBeVisible();
+
+  await page.evaluate(async () => {
+    const tauri = (window as unknown as { __TAURI_INTERNALS__?: { invoke?: Function } })
+      .__TAURI_INTERNALS__;
+    if (!tauri?.invoke) return;
+    await tauri.invoke("runEngineTurn", { sessionId: "default", text: "hello default" });
+    await tauri.invoke("runEngineTurn", { sessionId: "s2", text: "hello s2" });
+  });
+
+  await expect(page.getByText("hello default")).toBeVisible();
+
+  await page.getByTestId("session-s2").click();
+  await expect(page.getByText("hello s2")).toBeVisible();
+
+  await page.getByTestId("session-default").click();
+  await expect(page.getByText("hello default")).toBeVisible();
+});
+
 test("chat inspector should show retry and memory extraction fields", async ({ page }) => {
   await installTauriMock(page);
 
@@ -314,4 +340,3 @@ test("chat inspector should show provider rate limit with retry stop", async ({ 
   await expect(inspector).toContainText("toolRetryReason");
   await expect(inspector).toContainText("max_attempts_reached");
 });
-

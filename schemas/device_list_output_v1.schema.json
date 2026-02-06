@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bao.device.list.output/v1",
+  "type": "object",
+  "required": ["items", "nextCursor"],
+  "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "deviceId",
+            "platform",
+            "tokenHash",
+            "issuedAt",
+            "revoked",
+            "createdAt",
+            "updatedAt"
+          ],
+          "properties": {
+            "deviceId": { "type": "string", "minLength": 1 },
+            "platform": { "type": "string", "minLength": 1 },
+            "name": { "type": ["string", "null"] },
+            "tokenHash": { "type": "string", "minLength": 1 },
+            "issuedAt": { "type": "integer", "minimum": 1 },
+            "lastSeenAt": { "type": ["integer", "null"], "minimum": 1 },
+            "revoked": { "type": "boolean" },
+            "revokedAt": { "type": ["integer", "null"], "minimum": 1 },
+            "createdAt": { "type": "integer", "minimum": 1 },
+            "updatedAt": { "type": "integer", "minimum": 1 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "nextCursor": {
+        "type": ["object", "null"],
+        "required": ["updatedAt", "id"],
+        "properties": {
+          "updatedAt": { "type": "integer", "minimum": 1 },
+          "id": { "type": "integer", "minimum": 1 }
+        },
+        "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

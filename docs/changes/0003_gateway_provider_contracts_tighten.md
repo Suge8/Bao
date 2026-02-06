@@ -58,6 +58,7 @@
 - runEngineTurn：回合收尾新增 `memory.extract -> applyMutationPlan`，失败写入 `memory.extract.error`，记忆链路形成闭环。
 - desktop：补齐 `@bao/i18n` workspace 依赖，修复 desktop tsc lint 解析失败。
 - toolchain：根目录启用 pnpm `onlyBuiltDependencies`（`esbuild`/`unrs-resolver`），避免安装后 build scripts 被忽略导致构建异常。
+- desktop-ui：Chat 会话切换改为按 session 维持消息历史，不再清空，历史可回看。
 
 - schema：新增 `router_input/memory_inject_input/memory_inject_output/memory_extract_input/toolcall_result/corrector_validation/corrector_retry_input/corrector_retry_output` 契约文件，补齐 pipeline hooks schema 断点。
 - schema-tests：新增 pipeline hooks 示例 payload 校验（正反例），确保 contract 可编译且实例可验证。
@@ -149,6 +150,7 @@
 - [FEAT] 2026-02-06 `bao-dimsum-process` 补齐 `corrector.validate_tool_result` / `corrector.decide_retry` / `memory.extract` JSON-RPC 方法与单测
 - [REFACTOR] 2026-02-06 `runEngineTurn` 工具链路补齐「结果校验→重试决策（最多 1 次重试）→事件可观测」
 - [FEAT] 2026-02-06 `runEngineTurn` 收尾接入 `memory.extract -> applyMutationPlan`，形成记忆演化闭环
+- [FIX] 2026-02-06 Chat 会话切换保留历史消息（按 session 缓存）
 
 - [FEAT] 2026-02-06 新增 pipeline hooks 相关 schemas：`router_input` / `memory_*` / `toolcall_result` / `corrector_*`
 - [FEAT] 2026-02-06 `packages/schema-tests` 增加 pipeline hooks contract 示例校验（正反例）
