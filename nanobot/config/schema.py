@@ -75,6 +75,7 @@ class ProvidersConfig(BaseModel):
     deepseek: ProviderConfig = Field(default_factory=ProviderConfig)
     groq: ProviderConfig = Field(default_factory=ProviderConfig)
     zhipu: ProviderConfig = Field(default_factory=ProviderConfig)
+    dashscope: ProviderConfig = Field(default_factory=ProviderConfig)  # 阿里云通义千问
     vllm: ProviderConfig = Field(default_factory=ProviderConfig)
     gemini: ProviderConfig = Field(default_factory=ProviderConfig)
     moonshot: ProviderConfig = Field(default_factory=ProviderConfig)
@@ -137,6 +138,8 @@ class Config(BaseSettings):
             "zhipu": self.providers.zhipu,
             "glm": self.providers.zhipu,
             "zai": self.providers.zhipu,
+            "dashscope": self.providers.dashscope,
+            "qwen": self.providers.dashscope,
             "groq": self.providers.groq,
             "moonshot": self.providers.moonshot,
             "kimi": self.providers.moonshot,
@@ -158,8 +161,8 @@ class Config(BaseSettings):
             self.providers.openrouter, self.providers.deepseek,
             self.providers.anthropic, self.providers.openai,
             self.providers.gemini, self.providers.zhipu,
-            self.providers.moonshot, self.providers.vllm,
-            self.providers.groq,
+            self.providers.dashscope, self.providers.moonshot,
+            self.providers.vllm, self.providers.groq,
         ]:
             if provider.api_key:
                 return provider.api_key
