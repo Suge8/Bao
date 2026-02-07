@@ -11,16 +11,19 @@ export const unstable_settings = {
   anchor: '(tabs)',
 };
 
+const MODAL_OPTIONS = { presentation: 'modal' as const, title: 'Modal' };
+
 export default function RootLayout() {
   const colorScheme = useColorScheme();
+  const theme = colorScheme === 'dark' ? DarkTheme : DefaultTheme;
 
   return (
     <I18nProvider>
       <GatewayProvider>
-        <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+        <ThemeProvider value={theme}>
           <Stack>
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-            <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
+            <Stack.Screen name="modal" options={MODAL_OPTIONS} />
           </Stack>
           <StatusBar style="auto" />
         </ThemeProvider>

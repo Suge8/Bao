@@ -7,9 +7,12 @@ type I18nContextValue = {
   t: (key: string) => string;
 };
 
-const I18nContext = createContext<I18nContextValue | null>(null);
+type LocaleDict = Record<string, string>;
 
-const MOBILE_LOCALES: Record<BaoLocale, Record<string, string>> = {
+const I18nContext = createContext<I18nContextValue | null>(null);
+const EMPTY_DICT: LocaleDict = {};
+
+const MOBILE_LOCALES: Record<BaoLocale, LocaleDict> = {
   en: {
     'nav.connect': 'Connect',
     'nav.sessions': 'Sessions',
@@ -40,6 +43,14 @@ const MOBILE_LOCALES: Record<BaoLocale, Record<string, string>> = {
     'sessions.fetchTasks': 'Fetch Tasks',
     'sessions.fetchDimsums': 'Fetch Dimsums',
     'sessions.fetchMemories': 'Fetch Memories',
+
+    'actions.title': 'Quick Actions',
+    'actions.fetchAll': 'Fetch All',
+    'actions.fetchSessions': 'Fetch Sessions',
+    'actions.fetchTasks': 'Fetch Tasks',
+    'actions.fetchDimsums': 'Fetch Dimsums',
+    'actions.fetchMemories': 'Fetch Memories',
+    'actions.fetchSettings': 'Fetch Settings',
 
     'chat.title': 'Chat',
     'chat.sessionId': 'Session ID',
@@ -112,6 +123,14 @@ const MOBILE_LOCALES: Record<BaoLocale, Record<string, string>> = {
     'sessions.fetchDimsums': '拉取点心',
     'sessions.fetchMemories': '拉取记忆',
 
+    'actions.title': '快捷动作',
+    'actions.fetchAll': '全部拉取',
+    'actions.fetchSessions': '拉取会话',
+    'actions.fetchTasks': '拉取任务',
+    'actions.fetchDimsums': '拉取点心',
+    'actions.fetchMemories': '拉取记忆',
+    'actions.fetchSettings': '拉取设置',
+
     'chat.title': '聊天',
     'chat.sessionId': '会话 ID',
     'chat.message': '消息',
@@ -154,23 +173,32 @@ const MOBILE_LOCALES: Record<BaoLocale, Record<string, string>> = {
   },
 };
 
+function getBaseLocale(locale: BaoLocale): LocaleDict {
+  return (BAO_LOCALES[locale] as LocaleDict | undefined) ?? EMPTY_DICT;
+}
+
+function getMobileLocale(locale: BaoLocale): LocaleDict {
+  return MOBILE_LOCALES[locale] ?? EMPTY_DICT;
+}
+
 function getString(locale: BaoLocale, key: string): string {
   // Merge strategy: packages/i18n -> mobile overrides.
   // If not found, fallback to key itself (deterministic).
-  const base = (BAO_LOCALES[locale] as Record<string, string> | undefined) ?? {};
-  const local = MOBILE_LOCALES[locale] ?? {};
+  const base = getBaseLocale(locale);
+  const local = getMobileLocale(locale);
   return local[key] ?? base[key] ?? key;
 }
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [locale, setLocale] = useState<BaoLocale>('zh');
-  const value = useMemo<I18nContextValue>(() => {
-    return {
+  const value = useMemo<I18nContextValue>(
+    () => ({
       locale,
       setLocale,
       t: (key: string) => getString(locale, key),
-    };
-  }, [locale]);
+    }),
+    [locale],
+  );
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }

@@ -51,8 +51,22 @@ type ParsedErrorEvent = {
   provider: string | null;
 };
 
+const CATEGORY_PREFIXES = {
+  message: ['message.', 'sessions.', 'provider.', 'corrector.'],
+  task: ['tasks.'],
+  memory: ['memory.', 'memories.'],
+  audit: ['auth.', 'dimsums.', 'settings.', 'gateway.'],
+} as const;
+
+const SPECIAL_MESSAGE_TYPE = 'engine.turn';
+const ERROR_SUFFIX = '.error';
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function startsWithAny(value: string, prefixes: readonly string[]): boolean {
+  return prefixes.some((prefix) => value.startsWith(prefix));
 }
 
 function getPayload(event: unknown): Record<string, unknown> | null {
@@ -86,23 +100,12 @@ export function getEventType(event: unknown): string | null {
 
 export function classifyEventCategory(eventType: string | null): MobileEventCategory {
   if (!eventType) return 'other';
-  if (
-    eventType.startsWith('message.') ||
-    eventType.startsWith('sessions.') ||
-    eventType === 'engine.turn' ||
-    eventType.startsWith('provider.') ||
-    eventType.startsWith('corrector.')
-  ) {
+  if (eventType === SPECIAL_MESSAGE_TYPE || startsWithAny(eventType, CATEGORY_PREFIXES.message)) {
     return 'message';
   }
-  if (eventType.startsWith('tasks.')) return 'task';
-  if (eventType.startsWith('memory.') || eventType.startsWith('memories.')) return 'memory';
-  if (
-    eventType.startsWith('auth.') ||
-    eventType.startsWith('dimsums.') ||
-    eventType.startsWith('settings.') ||
-    eventType.startsWith('gateway.')
-  ) {
+  if (startsWithAny(eventType, CATEGORY_PREFIXES.task)) return 'task';
+  if (startsWithAny(eventType, CATEGORY_PREFIXES.memory)) return 'memory';
+  if (startsWithAny(eventType, CATEGORY_PREFIXES.audit)) {
     return 'audit';
   }
   return 'other';
@@ -127,7 +130,7 @@ export function countEventsByCategory(events: unknown[]): Record<MobileEventCate
 
 function parseErrorEvent(event: unknown): ParsedErrorEvent | null {
   const eventType = getEventType(event);
-  if (!eventType || !eventType.endsWith('.error')) return null;
+  if (!eventType || !eventType.endsWith(ERROR_SUFFIX)) return null;
 
   const payload = getPayload(event);
   return {
@@ -141,6 +144,31 @@ function parseErrorEvent(event: unknown): ParsedErrorEvent | null {
   };
 }
 
+function getAggregateDimensionValue(
+  parsed: ParsedErrorEvent,
+  dimension: MobileErrorAggregateDimension,
+): string | null {
+  if (dimension === 'provider') return normalizeDimensionValue(parsed.provider);
+  if (dimension === 'session') return normalizeDimensionValue(parsed.sessionId);
+  return null;
+}
+
+function getAggregateKey(
+  parsed: ParsedErrorEvent,
+  dimension: MobileErrorAggregateDimension,
+  dimensionValue: string | null,
+): string {
+  return `${dimension}|${dimensionValue ?? ''}|${parsed.eventType}|${parsed.code ?? ''}|${parsed.stage ?? ''}`;
+}
+
+function sortByCountThenLatestEventIdDesc(
+  a: { count: number; latestEventId: number | null },
+  b: { count: number; latestEventId: number | null },
+): number {
+  if (b.count !== a.count) return b.count - a.count;
+  return (b.latestEventId ?? 0) - (a.latestEventId ?? 0);
+}
+
 export function aggregateErrorEvents(
   events: unknown[],
   dimension: MobileErrorAggregateDimension = 'global',
@@ -151,14 +179,8 @@ export function aggregateErrorEvents(
     const parsed = parseErrorEvent(event);
     if (!parsed) continue;
 
-    const dimensionValue =
-      dimension === 'provider'
-        ? normalizeDimensionValue(parsed.provider)
-        : dimension === 'session'
-          ? normalizeDimensionValue(parsed.sessionId)
-          : null;
-
-    const key = `${dimension}|${dimensionValue ?? ''}|${parsed.eventType}|${parsed.code ?? ''}|${parsed.stage ?? ''}`;
+    const dimensionValue = getAggregateDimensionValue(parsed, dimension);
+    const key = getAggregateKey(parsed, dimension, dimensionValue);
 
     const prev = grouped.get(key);
     if (!prev) {
@@ -187,10 +209,7 @@ export function aggregateErrorEvents(
     }
   }
 
-  return [...grouped.values()].sort((a, b) => {
-    if (b.count !== a.count) return b.count - a.count;
-    return (b.latestEventId ?? 0) - (a.latestEventId ?? 0);
-  });
+  return [...grouped.values()].sort(sortByCountThenLatestEventIdDesc);
 }
 
 export function buildErrorAlerts(
@@ -218,9 +237,31 @@ export function buildErrorAlerts(
 
   return alerts.sort((a, b) => {
     if (a.level !== b.level) return a.level === 'critical' ? -1 : 1;
-    if (b.count !== a.count) return b.count - a.count;
-    return (b.latestEventId ?? 0) - (a.latestEventId ?? 0);
+    return sortByCountThenLatestEventIdDesc(a, b);
   });
+}
+
+function shouldIncludeErrorEvent(
+  parsed: ParsedErrorEvent,
+  provider: string | null,
+  sessionId: string | null,
+): boolean {
+  if (provider && normalizeDimensionValue(parsed.provider) !== provider) return false;
+  if (sessionId && normalizeDimensionValue(parsed.sessionId) !== sessionId) return false;
+  return true;
+}
+
+function toErrorItem(parsed: ParsedErrorEvent): MobileEventErrorItem {
+  return {
+    key: `${parsed.eventId ?? 'na'}|${parsed.eventType}|${parsed.code ?? ''}|${parsed.stage ?? ''}`,
+    eventId: parsed.eventId,
+    eventType: parsed.eventType,
+    code: parsed.code,
+    stage: parsed.stage,
+    message: parsed.message,
+    sessionId: parsed.sessionId,
+    provider: parsed.provider,
+  };
 }
 
 export function listErrorEvents(
@@ -240,19 +281,9 @@ export function listErrorEvents(
     const parsed = parseErrorEvent(event);
     if (!parsed) continue;
 
-    if (filterProvider && normalizeDimensionValue(parsed.provider) !== filterProvider) continue;
-    if (filterSessionId && normalizeDimensionValue(parsed.sessionId) !== filterSessionId) continue;
+    if (!shouldIncludeErrorEvent(parsed, filterProvider, filterSessionId)) continue;
 
-    items.push({
-      key: `${parsed.eventId ?? 'na'}|${parsed.eventType}|${parsed.code ?? ''}|${parsed.stage ?? ''}`,
-      eventId: parsed.eventId,
-      eventType: parsed.eventType,
-      code: parsed.code,
-      stage: parsed.stage,
-      message: parsed.message,
-      sessionId: parsed.sessionId,
-      provider: parsed.provider,
-    });
+    items.push(toErrorItem(parsed));
 
     if (items.length >= limit) break;
   }

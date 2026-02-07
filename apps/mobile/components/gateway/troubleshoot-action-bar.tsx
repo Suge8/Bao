@@ -9,44 +9,50 @@ type TroubleshootActionBarProps = {
   title?: string;
 };
 
+type ActionDescriptor = {
+  key: string;
+  labelKey: string;
+  run: () => void;
+};
+
 export function TroubleshootActionBar({ title }: TroubleshootActionBarProps) {
   const { t } = useI18n();
   const gw = useGateway();
 
   const actions = useMemo(
-    () => [
+    (): ActionDescriptor[] => [
       {
         key: 'all',
-        label: t('actions.fetchAll'),
-        onPress: () => gw.runTroubleshootActions(),
+        labelKey: 'actions.fetchAll',
+        run: gw.runTroubleshootActions,
       },
       {
         key: 'sessions',
-        label: t('actions.fetchSessions'),
-        onPress: () => gw.listSessions(),
+        labelKey: 'actions.fetchSessions',
+        run: gw.listSessions,
       },
       {
         key: 'tasks',
-        label: t('actions.fetchTasks'),
-        onPress: () => gw.listTasks(),
+        labelKey: 'actions.fetchTasks',
+        run: gw.listTasks,
       },
       {
         key: 'dimsums',
-        label: t('actions.fetchDimsums'),
-        onPress: () => gw.listDimsums(),
+        labelKey: 'actions.fetchDimsums',
+        run: gw.listDimsums,
       },
       {
         key: 'memories',
-        label: t('actions.fetchMemories'),
-        onPress: () => gw.listMemories(),
+        labelKey: 'actions.fetchMemories',
+        run: gw.listMemories,
       },
       {
         key: 'settings',
-        label: t('actions.fetchSettings'),
-        onPress: () => gw.getSettings(),
+        labelKey: 'actions.fetchSettings',
+        run: gw.getSettings,
       },
     ],
-    [gw, t],
+    [gw],
   );
 
   return (
@@ -54,13 +60,13 @@ export function TroubleshootActionBar({ title }: TroubleshootActionBarProps) {
       <ThemedText type="subtitle">{title ?? t('actions.title')}</ThemedText>
       <View style={styles.grid}>
         {actions.map((action) => (
-          <Pressable
-            key={action.key}
-            style={({ pressed }) => [styles.button, pressed ? styles.buttonPressed : null]}
-            onPress={action.onPress}>
-            <ThemedText style={styles.buttonText}>{action.label}</ThemedText>
-          </Pressable>
-        ))}
+            <Pressable
+              key={action.key}
+              style={({ pressed }) => [styles.button, pressed ? styles.buttonPressed : null]}
+              onPress={action.run}>
+              <ThemedText style={styles.buttonText}>{t(action.labelKey)}</ThemedText>
+            </Pressable>
+          ))}
       </View>
     </View>
   );

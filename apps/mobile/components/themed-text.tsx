@@ -8,6 +8,14 @@ export type ThemedTextProps = TextProps & {
   type?: 'default' | 'title' | 'defaultSemiBold' | 'subtitle' | 'link';
 };
 
+const TYPE_STYLE_MAP = {
+  default: 'default',
+  title: 'title',
+  defaultSemiBold: 'defaultSemiBold',
+  subtitle: 'subtitle',
+  link: 'link',
+} as const;
+
 export function ThemedText({
   style,
   lightColor,
@@ -16,16 +24,13 @@ export function ThemedText({
   ...rest
 }: ThemedTextProps) {
   const color = useThemeColor({ light: lightColor, dark: darkColor }, 'text');
+  const typeStyle = styles[TYPE_STYLE_MAP[type]];
 
   return (
     <Text
       style={[
         { color },
-        type === 'default' ? styles.default : undefined,
-        type === 'title' ? styles.title : undefined,
-        type === 'defaultSemiBold' ? styles.defaultSemiBold : undefined,
-        type === 'subtitle' ? styles.subtitle : undefined,
-        type === 'link' ? styles.link : undefined,
+        typeStyle,
         style,
       ]}
       {...rest}

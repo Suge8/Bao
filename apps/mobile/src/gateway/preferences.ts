@@ -18,6 +18,17 @@ export type GatewayPreferences = {
   errorCriticalThreshold: number;
 };
 
+type RawGatewayPreferences = {
+  url: unknown;
+  token: unknown;
+  selectedCategory: unknown;
+  errorDimension: unknown;
+  selectedErrorProvider: unknown;
+  selectedErrorSessionId: unknown;
+  errorWarnThreshold: unknown;
+  errorCriticalThreshold: unknown;
+};
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -27,15 +38,13 @@ function toSafeString(value: unknown): string | null {
 }
 
 function toSafeCategory(value: unknown): MobileEventCategory | null {
-  return typeof value === 'string' && CATEGORY_SET.has(value as MobileEventCategory)
-    ? (value as MobileEventCategory)
-    : null;
+  if (typeof value !== 'string' || !CATEGORY_SET.has(value as MobileEventCategory)) return null;
+  return value as MobileEventCategory;
 }
 
 function toSafeDimension(value: unknown): MobileErrorAggregateDimension | null {
-  return typeof value === 'string' && DIMENSION_SET.has(value as MobileErrorAggregateDimension)
-    ? (value as MobileErrorAggregateDimension)
-    : null;
+  if (typeof value !== 'string' || !DIMENSION_SET.has(value as MobileErrorAggregateDimension)) return null;
+  return value as MobileErrorAggregateDimension;
 }
 
 function toPositiveInt(value: unknown): number | null {
@@ -46,6 +55,50 @@ function toPositiveInt(value: unknown): number | null {
 
 function getPrefsFile(): File {
   return new File(Paths.document, PREFS_DIR_NAME, PREFS_FILE_NAME);
+}
+
+function toRawPreferences(json: Record<string, unknown>): RawGatewayPreferences {
+  return {
+    url: json.url,
+    token: json.token,
+    selectedCategory: json.selectedCategory,
+    errorDimension: json.errorDimension,
+    selectedErrorProvider: json.selectedErrorProvider,
+    selectedErrorSessionId: json.selectedErrorSessionId,
+    errorWarnThreshold: json.errorWarnThreshold,
+    errorCriticalThreshold: json.errorCriticalThreshold,
+  };
+}
+
+function parseGatewayPreferences(raw: RawGatewayPreferences): GatewayPreferences | null {
+  const url = toSafeString(raw.url);
+  const token = typeof raw.token === 'string' ? raw.token : null;
+  const selectedCategory = toSafeCategory(raw.selectedCategory);
+  const errorDimension = toSafeDimension(raw.errorDimension);
+  const errorWarnThreshold = toPositiveInt(raw.errorWarnThreshold);
+  const errorCriticalThreshold = toPositiveInt(raw.errorCriticalThreshold);
+
+  if (
+    !url ||
+    token == null ||
+    !selectedCategory ||
+    !errorDimension ||
+    !errorWarnThreshold ||
+    !errorCriticalThreshold
+  ) {
+    return null;
+  }
+
+  return {
+    url,
+    token,
+    selectedCategory,
+    errorDimension,
+    selectedErrorProvider: toSafeString(raw.selectedErrorProvider),
+    selectedErrorSessionId: toSafeString(raw.selectedErrorSessionId),
+    errorWarnThreshold,
+    errorCriticalThreshold,
+  };
 }
 
 function ensurePrefsDir(): void {
@@ -63,35 +116,7 @@ export async function loadGatewayPreferences(): Promise<GatewayPreferences | nul
     const raw = await file.text();
     const json: unknown = JSON.parse(raw);
     if (!isObject(json)) return null;
-
-    const url = toSafeString(json.url);
-    const token = typeof json.token === 'string' ? json.token : null;
-    const selectedCategory = toSafeCategory(json.selectedCategory);
-    const errorDimension = toSafeDimension(json.errorDimension);
-    const errorWarnThreshold = toPositiveInt(json.errorWarnThreshold);
-    const errorCriticalThreshold = toPositiveInt(json.errorCriticalThreshold);
-
-    if (
-      !url ||
-      token == null ||
-      !selectedCategory ||
-      !errorDimension ||
-      !errorWarnThreshold ||
-      !errorCriticalThreshold
-    ) {
-      return null;
-    }
-
-    return {
-      url,
-      token,
-      selectedCategory,
-      errorDimension,
-      selectedErrorProvider: toSafeString(json.selectedErrorProvider),
-      selectedErrorSessionId: toSafeString(json.selectedErrorSessionId),
-      errorWarnThreshold,
-      errorCriticalThreshold,
-    };
+    return parseGatewayPreferences(toRawPreferences(json));
   } catch {
     return null;
   }

@@ -2,6 +2,8 @@
 
 - gateway frame 已收紧：按 type 绑定具体 payload schema（hello/welcome/event/replay_request/error）。
 - release-gates：`P0.CORE_SLO` 改为 fail-closed（性能观测缺失即失败），避免缺指标时误判 PASS。
+- release-checklist：新增 `--run` 实时门禁执行模式（逐个执行 P0 command + 回写 evidence + 以真实退出码判定 GO/NO-GO），降低静态 status 过期风险。
+- release-gates/release-checklist：抽取共享 gate-config 模块（路径解析 + 配置校验），并修复 `--run` 下 `P0_PASS` 统计按实际执行结果计算。
 - runEngineTurn/provider：新增 provider `tool_call/tool_calls` 执行闭环（单工具 + 并发批量工具调用 + 轮次上限保护），并写入 `engine.turn.providerToolCalls/providerToolParallelMax` 可观测字段。
 - provider fixtures：`bao-dimsum-process` 新增 `__provider_tool_call__` / `__provider_tool_calls__` 离线夹具，覆盖“中途工具调用后继续生成”的无网络回归路径。
 - plugin-host：`ProcessToolRunner` 增加 `processTree` 子进程树采样（root pid、descendant count、rss/cpu 汇总），成功/超时/kill/资源超限路径统一回传。
@@ -107,6 +109,15 @@
 - memory/stress：新增 `crates/bao-gateway/tests/memory_stress_evolution.rs`，覆盖 1200 条 mutation 批量写入、检索、SUPERSEDE/DELETE 与回滚恢复。
 - desktop-build：`tauri-client` 去除动态 import，改为静态导入 `@tauri-apps/api` + `__TAURI_INTERNALS__` 守卫，收敛 Tauri API dynamic import 构建告警。
 - schema-tests：补充 `bao.provider.run.output/v1` 与 `bao.provider.delta/v1` 的正反例校验，提升 provider 协议回归覆盖。
+- mobile/gateway：`GatewayClient` 新增断线指数退避重连（1s~10s）与连接参数复用，弱网下 iOS 会话更稳定。
+- mobile/gateway：`GatewayProvider` 接入本地偏好加载/持久化（url/token/筛选与阈值），重启后可恢复常用连接上下文。
+- mobile/gateway：补齐 `runTroubleshootActions` 聚合拉取动作并修复类型契约缺口，消除移动端 LSP 报错。
+- mobile/ui：Connect/Explore/Chat 三页完成 iOS 风格视觉重绘（卡片层次、胶囊按钮、分类 chips）并增加 Reanimated 入场动效。
+- mobile/chat：引入 `KeyboardAvoidingView` 与多行输入框，修复 iOS 键盘遮挡与发送交互割裂问题。
+- mobile/theme：统一移动端浅/深色主题 token 与 TabBar 样式，提升页面一致性与可读性。
+- mobile/codesimplifier：按模块完成 Gateway/Screens/Shared 三段式简化重构（抽常量、提炼 helper、收敛重复逻辑），保持行为与视觉语义不变。
+- mobile/codesimplifier：继续完成 Settings/Components 模块简化（筛选与聚合渲染收敛、ThemedText 与 TroubleshootActionBar 去重复），功能保持一致。
+- mobile/codesimplifier：完成“全模块压缩”收口（gateway-support/app-shell/hooks/ui-components），apps/mobile 代码路径已完成结构化简化且行为保持一致。
 
 # 改动记录（最近）
 
@@ -228,6 +239,24 @@
 - [FEAT] 2026-02-07 `crates/bao-dimsum-process` memory.extract 引入偏好语义冲突去漂移策略（稳定 memory id + semantic_conflict_update）。
 - [FEAT] 2026-02-07 schemas/provider 契约扩展 `tool_calls` 批量工具调用并补齐 schema-tests 正反例。
 - [DOC] 2026-02-07 `docs/AGENTS.md` 从 Stage1 契约升级为 Stage2 可用基线说明（含 provider tool-calls/processTree/memory 演化策略）。
+- [FEAT] 2026-02-07 `scripts/release-checklist-validate.mjs` 增加 `--run`，执行 P0 命令并写 evidence 后再判定发布结果；`packages/schema-tests` 补齐 run-mode 覆盖。
+- [REFACTOR] 2026-02-07 抽离 `scripts/release-gates-config.mjs` 复用 gate-config 路径解析与校验逻辑，`release-checklist-validate` 在 `--run` 模式改为基于实际执行结果计算 `P0_PASS`，并补充对应 schema-tests 断言。
+- [FIX] 2026-02-07 `apps/mobile/src/gateway/client.ts` 增加自动重连与退避，弱网断链后可自动恢复。
+- [FEAT] 2026-02-07 `apps/mobile/src/gateway/state.tsx` 接入 gateway 偏好持久化并新增一键排障动作 `runTroubleshootActions`。
+- [FEAT] 2026-02-07 `apps/mobile/app/(tabs)/index.tsx`、`chat.tsx`、`explore.tsx` 完成 iOS 视觉重绘与 Reanimated 入场动效。
+- [FIX] 2026-02-07 `apps/mobile/app/(tabs)/chat.tsx` 增加 `KeyboardAvoidingView`，修复 iOS 输入区遮挡问题。
+- [REFACTOR] 2026-02-07 `apps/mobile/constants/theme.ts` 与 `app/(tabs)/_layout.tsx` 统一主题色与 TabBar 样式，提升一致性。
+- [REFACTOR] 2026-02-07 `apps/mobile/src/gateway/client.ts`、`state.tsx` 完成 Gateway 模块代码简化（提取 helper/常量、收敛重复逻辑），重连与偏好行为不变。
+- [REFACTOR] 2026-02-07 `apps/mobile/app/(tabs)/index.tsx`、`explore.tsx`、`chat.tsx` 完成 Screens 模块代码简化（分类常量、动作映射、发送/解析 helper）。
+- [REFACTOR] 2026-02-07 `apps/mobile/src/i18n/i18n.tsx`、`constants/theme.ts` 完成 Shared 模块代码简化（locale/theme 结构收敛），文案与主题值不变。
+- [FIX] 2026-02-07 `apps/mobile/app/(tabs)/explore.tsx` 统一数组类型写法为 `T[]`，消除 lint warning。
+- [REFACTOR] 2026-02-07 `apps/mobile/app/(tabs)/settings.tsx` 完成 Settings 模块代码简化（维度/分类常量、过滤 helper、阈值解析 helper）。
+- [REFACTOR] 2026-02-07 `apps/mobile/components/themed-text.tsx`、`components/gateway/troubleshoot-action-bar.tsx`、`components/haptic-tab.tsx` 完成 Components 模块代码简化（类型映射与动作描述收敛、iOS 触觉逻辑抽离）。
+- [FIX] 2026-02-07 `apps/mobile/app/(tabs)/settings.tsx` 统一数组类型写法为 `T[]`，消除 lint warning。
+- [REFACTOR] 2026-02-07 `apps/mobile/src/gateway/events.ts`、`src/gateway/preferences.ts` 完成 gateway-support 模块代码简化（分类/聚合 helper 抽离、偏好解析管线收敛）。
+- [REFACTOR] 2026-02-07 `apps/mobile/app/_layout.tsx`、`app/(tabs)/_layout.tsx`、`app/modal.tsx` 完成 app-shell 模块代码简化（导航配置常量化、Tab 配置映射化）。
+- [REFACTOR] 2026-02-07 `apps/mobile/hooks/use-theme-color.ts`、`hooks/use-color-scheme.web.ts`、`components/themed-view.tsx` 完成 hooks/base-view 模块代码简化（回退逻辑压缩与命名统一）。
+- [REFACTOR] 2026-02-07 `apps/mobile/components/ui/*`、`components/parallax-scroll-view.tsx`、`components/hello-wave.tsx`、`components/external-link.tsx` 完成 ui-components 模块代码简化（样式常量与交互 helper 收敛）。
 
 # 未来发展（优先级）
 
@@ -244,6 +273,8 @@ P0
 - ✅ 已完成（2026-02-07）：provider 中途工具调用与并发工具调用闭环已打通（含离线 fixture + Rust 真后端回归覆盖）。
 - ✅ 已完成（2026-02-07）：ProcessToolRunner 子进程树采样已落地，进程观测从单 pid 升级为 process tree 级别。
 - ✅ 已完成（2026-02-07）：memory.extract 已具备偏好语义冲突去漂移策略，长期重复写入风险下降。
+- ✅ 已完成（2026-02-07）：release checklist 支持 `--run` 实时执行 P0 gates 并回写证据，发布判定不再依赖静态状态字段。
+- ✅ 已完成（2026-02-07）：release-gates/checklist 已共享 gate-config 解析模块，避免路径解析/校验重复并保持 CLI 输出兼容。
 
 P1
 

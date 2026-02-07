@@ -12,6 +12,9 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 
 const HEADER_HEIGHT = 250;
+const SCROLL_INPUT_RANGE = [-HEADER_HEIGHT, 0, HEADER_HEIGHT] as const;
+const TRANSLATE_Y_OUTPUT_RANGE = [-HEADER_HEIGHT / 2, 0, HEADER_HEIGHT * 0.75] as const;
+const SCALE_OUTPUT_RANGE = [2, 1, 1] as const;
 
 type Props = PropsWithChildren<{
   headerImage: ReactElement;
@@ -25,20 +28,17 @@ export default function ParallaxScrollView({
 }: Props) {
   const backgroundColor = useThemeColor({}, 'background');
   const colorScheme = useColorScheme() ?? 'light';
+  const headerColor = headerBackgroundColor[colorScheme];
   const scrollRef = useAnimatedRef<Animated.ScrollView>();
   const scrollOffset = useScrollOffset(scrollRef);
   const headerAnimatedStyle = useAnimatedStyle(() => {
     return {
       transform: [
         {
-          translateY: interpolate(
-            scrollOffset.value,
-            [-HEADER_HEIGHT, 0, HEADER_HEIGHT],
-            [-HEADER_HEIGHT / 2, 0, HEADER_HEIGHT * 0.75]
-          ),
+          translateY: interpolate(scrollOffset.value, SCROLL_INPUT_RANGE, TRANSLATE_Y_OUTPUT_RANGE),
         },
         {
-          scale: interpolate(scrollOffset.value, [-HEADER_HEIGHT, 0, HEADER_HEIGHT], [2, 1, 1]),
+          scale: interpolate(scrollOffset.value, SCROLL_INPUT_RANGE, SCALE_OUTPUT_RANGE),
         },
       ],
     };
@@ -52,7 +52,7 @@ export default function ParallaxScrollView({
       <Animated.View
         style={[
           styles.header,
-          { backgroundColor: headerBackgroundColor[colorScheme] },
+          { backgroundColor: headerColor },
           headerAnimatedStyle,
         ]}>
         {headerImage}
@@ -63,9 +63,6 @@ export default function ParallaxScrollView({
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
   header: {
     height: HEADER_HEIGHT,
     overflow: 'hidden',
