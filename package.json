@@ -16,6 +16,7 @@
     "test:e2e": "pnpm -C apps/desktop test:e2e",
     "gate:summary": "node scripts/release-gates-summary.mjs",
     "gate:checklist": "node scripts/release-checklist-validate.mjs",
+    "gate:checklist:run": "node scripts/release-checklist-validate.mjs --run",
     "format": "turbo run format"
   },
   "devDependencies": {

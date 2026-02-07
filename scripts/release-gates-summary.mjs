@@ -1,6 +1,9 @@
-import path from "node:path";
 import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import {
+  loadGateConfigFromFile,
+  resolveGateConfigPath,
+  resolveScriptsRepoRoot,
+} from "./release-gates-config.mjs";
 
 function assertStringField(obj, field, context) {
   const value = obj[field];
@@ -8,43 +11,6 @@ function assertStringField(obj, field, context) {
     throw new Error(`missing required field: ${field} (${context})`);
   }
   return value;
-}
-
-function validateGateConfig(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("invalid gate config: root must be an object");
-  }
-
-  const version = assertStringField(value, "version", "root");
-  const gates = value.gates;
-  if (!Array.isArray(gates) || gates.length === 0) {
-    throw new Error("missing required field: gates (root)");
-  }
-
-  return {
-    version,
-    gates: gates.map((gate, index) => {
-      if (!gate || typeof gate !== "object" || Array.isArray(gate)) {
-        throw new Error(`invalid gate at gates[${index}]: must be object`);
-      }
-      const level = assertStringField(gate, "level", `gates[${index}]`);
-      const status = assertStringField(gate, "status", `gates[${index}]`);
-      if (level !== "P0" && level !== "P1" && level !== "P2") {
-        throw new Error(`invalid gate level at gates[${index}].level: ${level}`);
-      }
-      if (status !== "pass" && status !== "fail") {
-        throw new Error(`invalid gate status at gates[${index}].status: ${status}`);
-      }
-
-      return {
-        gateId: assertStringField(gate, "gateId", `gates[${index}]`),
-        level,
-        command: assertStringField(gate, "command", `gates[${index}]`),
-        status,
-        evidence: assertStringField(gate, "evidence", `gates[${index}]`),
-      };
-    }),
-  };
 }
 
 function assertBooleanField(obj, field, context) {
@@ -134,15 +100,11 @@ function metricLineKey(metric) {
   return metric.replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
 }
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(here, "..");
-const configPath = process.argv[2]
-  ? path.resolve(process.cwd(), process.argv[2])
-  : path.join(repoRoot, ".sisyphus", "release-gates", "v1.0-macos.yaml");
-const reportPath = process.argv[3] ? path.resolve(process.cwd(), process.argv[3]) : null;
+const repoRoot = resolveScriptsRepoRoot(import.meta.url);
+const configPath = resolveGateConfigPath(process.argv[2], repoRoot);
+const reportPath = process.argv[3] ? resolveGateConfigPath(process.argv[3], repoRoot) : null;
 
-const parsed = JSON.parse(await readFile(configPath, "utf8"));
-const config = validateGateConfig(parsed);
+const config = await loadGateConfigFromFile(configPath);
 
 const lines = config.gates.map(
   (gate) => `gateId=${gate.gateId} status=${gate.status} evidence=${gate.evidence}`,

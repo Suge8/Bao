@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import os from "node:os";
@@ -357,6 +357,71 @@ describe("release gates", () => {
       expect(stdout).toContain("OVERALL_RESULT=GO");
       expect(stdout).toContain("EVIDENCE_CHECK=pass");
       expect(stdout).toContain("FAILED_GATES=0");
+    });
+
+    it("executes P0 gate commands in --run mode and overwrites stale status", async () => {
+      const dir = await createTempDir();
+      const here = path.dirname(fileURLToPath(import.meta.url));
+      const repoRoot = path.resolve(here, "..", "..", "..");
+      const scriptPath = path.join(repoRoot, "scripts", "release-checklist-validate.mjs");
+      const gateConfigPath = path.join(dir, "gates.yaml");
+      const evidencePath = path.join(dir, "run-gate-success.txt");
+
+      const fixture: GateConfig = {
+        version: "v1.0-run-mode",
+        gates: [
+          {
+            gateId: "P0.RUN_SUCCESS",
+            level: "P0",
+            command: "node -e \"process.exit(0)\"",
+            status: "fail",
+            evidence: path.relative(repoRoot, evidencePath),
+          },
+        ],
+      };
+      await writeFile(gateConfigPath, JSON.stringify(fixture, null, 2), "utf8");
+
+      const { stdout } = await execFileAsync("node", [scriptPath, gateConfigPath, "--run"]);
+      expect(stdout).toContain("RUN_MODE=1");
+      expect(stdout).toContain("OVERALL_RESULT=GO");
+      expect(stdout).toContain("P0_PASS=1");
+      expect(stdout).toContain("FAILED_GATES=0");
+
+      const evidence = await readFile(evidencePath, "utf8");
+      expect(evidence).toContain("gateId=P0.RUN_SUCCESS");
+      expect(evidence).toContain("status=pass");
+    });
+
+    it("returns NO-GO in --run mode when gate command fails", async () => {
+      const dir = await createTempDir();
+      const here = path.dirname(fileURLToPath(import.meta.url));
+      const repoRoot = path.resolve(here, "..", "..", "..");
+      const scriptPath = path.join(repoRoot, "scripts", "release-checklist-validate.mjs");
+      const gateConfigPath = path.join(dir, "gates.yaml");
+      const evidencePath = path.join(dir, "run-gate-fail.txt");
+
+      const fixture: GateConfig = {
+        version: "v1.0-run-mode-fail",
+        gates: [
+          {
+            gateId: "P0.RUN_FAIL",
+            level: "P0",
+            command: "node -e \"process.exit(3)\"",
+            status: "pass",
+            evidence: path.relative(repoRoot, evidencePath),
+          },
+        ],
+      };
+      await writeFile(gateConfigPath, JSON.stringify(fixture, null, 2), "utf8");
+
+      await expect(execFileAsync("node", [scriptPath, gateConfigPath, "--run"])).rejects.toMatchObject({
+        code: 1,
+        stdout: expect.stringMatching(/P0_PASS=0[\s\S]*OVERALL_RESULT=NO-GO/),
+      });
+
+      const evidence = await readFile(evidencePath, "utf8");
+      expect(evidence).toContain("gateId=P0.RUN_FAIL");
+      expect(evidence).toContain("status=fail");
     });
   });
 });

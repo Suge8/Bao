@@ -1,9 +1,13 @@
 import path from "node:path";
-import { readFile, access } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { access, mkdir, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import {
+  loadGateConfigFromFile,
+  resolveGateConfigPath,
+  resolveScriptsRepoRoot,
+} from "./release-gates-config.mjs";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(here, "..");
+const repoRoot = resolveScriptsRepoRoot(import.meta.url);
 
 async function fileExists(filePath) {
   try {
@@ -14,16 +18,69 @@ async function fileExists(filePath) {
   }
 }
 
+function parseCliArgs(argv) {
+  let configPathArg;
+  let run = false;
+
+  for (const token of argv) {
+    if (token === "--run") {
+      run = true;
+      continue;
+    }
+    if (!token.startsWith("--") && configPathArg == null) {
+      configPathArg = token;
+      continue;
+    }
+    throw new Error(`unsupported argument: ${token}`);
+  }
+
+  return { configPathArg, run };
+}
+
+async function runGateAndWriteEvidence(gate, repoRoot) {
+  const evidencePath = path.resolve(repoRoot, gate.evidence);
+  const startedAt = new Date().toISOString();
+  const result = spawnSync(gate.command, {
+    shell: true,
+    cwd: repoRoot,
+    env: process.env,
+    encoding: "utf8",
+    maxBuffer: 10 * 1024 * 1024,
+  });
+
+  const status = result.status === 0 ? "pass" : "fail";
+  const payload = [
+    `generatedAt=${startedAt}`,
+    `gateId=${gate.gateId}`,
+    `level=${gate.level}`,
+    `command=${gate.command}`,
+    `status=${status}`,
+    `exitCode=${result.status ?? "null"}`,
+    `signal=${result.signal ?? "none"}`,
+    `spawnError=${result.error ? String(result.error.message ?? result.error) : "none"}`,
+    "--- stdout ---",
+    result.stdout ?? "",
+    "--- stderr ---",
+    result.stderr ?? "",
+  ].join("\n");
+
+  await mkdir(path.dirname(evidencePath), { recursive: true });
+  await writeFile(evidencePath, `${payload}\n`, "utf8");
+
+  return {
+    status,
+    evidenceExists: true,
+  };
+}
+
 async function validateChecklist() {
-  const configPath = process.argv[2]
-    ? path.resolve(process.cwd(), process.argv[2])
-    : path.join(repoRoot, ".sisyphus", "release-gates", "v1.0-macos.yaml");
+  const { configPathArg, run } = parseCliArgs(process.argv.slice(2));
+  const configPath = resolveGateConfigPath(configPathArg, repoRoot);
 
   let config;
   try {
-    const content = await readFile(configPath, "utf8");
-    config = JSON.parse(content);
-  } catch (err) {
+    config = await loadGateConfigFromFile(configPath);
+  } catch {
     console.error(`FAILED to read gate config: ${configPath}`);
     process.exit(1);
   }
@@ -34,18 +91,32 @@ async function validateChecklist() {
   let failedGates = 0;
 
   for (const gate of p0Gates) {
-    const evidencePath = path.resolve(repoRoot, gate.evidence);
-    const exists = await fileExists(evidencePath);
-    
+    let status = gate.status;
+    let exists = false;
+
+    if (run) {
+      try {
+        const gateResult = await runGateAndWriteEvidence(gate, repoRoot);
+        status = gateResult.status;
+        exists = gateResult.evidenceExists;
+      } catch {
+        status = "fail";
+        exists = false;
+      }
+    } else {
+      const evidencePath = path.resolve(repoRoot, gate.evidence);
+      exists = await fileExists(evidencePath);
+    }
+
     const gateResult = {
       gateId: gate.gateId,
-      status: gate.status,
+      status,
       evidence: gate.evidence,
       evidenceExists: exists
     };
     results.push(gateResult);
 
-    if (gate.status !== "pass") {
+    if (status !== "pass") {
       failedGates++;
     }
     if (!exists) {
@@ -53,13 +124,14 @@ async function validateChecklist() {
     }
   }
 
-  const p0Total = p0Gates.length;
-  const p0Pass = p0Gates.filter(g => g.status === "pass").length;
+  const p0Total = results.length;
+  const p0Pass = results.filter(r => r.status === "pass").length;
   const evidenceCheck = missingEvidence.length === 0 ? "pass" : "fail";
   const overall = (failedGates === 0 && evidenceCheck === "pass") ? "GO" : "NO-GO";
 
   const lines = [
     `CHECKLIST_VERSION=${config.version}`,
+    `RUN_MODE=${run ? 1 : 0}`,
     `P0_TOTAL=${p0Total}`,
     `P0_PASS=${p0Pass}`,
     `FAILED_GATES=${failedGates}`,
