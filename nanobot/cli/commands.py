@@ -1,7 +1,10 @@
 """CLI commands for nanobot."""
 
 import asyncio
+import os
 from pathlib import Path
+import select
+import sys
 
 import typer
 from rich.console import Console
@@ -16,6 +19,40 @@ app = typer.Typer(
 )
 
 console = Console()
+
+
+def _flush_pending_tty_input() -> None:
+    """Drop unread keypresses typed while the model was generating output."""
+    try:
+        fd = sys.stdin.fileno()
+        if not os.isatty(fd):
+            return
+    except Exception:
+        return
+
+    try:
+        import termios
+
+        termios.tcflush(fd, termios.TCIFLUSH)
+        return
+    except Exception:
+        pass
+
+    try:
+        while True:
+            ready, _, _ = select.select([fd], [], [], 0)
+            if not ready:
+                break
+            if not os.read(fd, 4096):
+                break
+    except Exception:
+        return
+
+
+def _read_interactive_input() -> str:
+    """Read user input with a stable prompt for terminal line editing."""
+    console.print("[bold blue]You:[/bold blue] ", end="")
+    return input()
 
 
 def version_callback(value: bool):
@@ -318,7 +355,8 @@ def agent(
         async def run_interactive():
             while True:
                 try:
-                    user_input = console.input("[bold blue]You:[/bold blue] ")
+                    _flush_pending_tty_input()
+                    user_input = _read_interactive_input()
                     if not user_input.strip():
                         continue
                     
