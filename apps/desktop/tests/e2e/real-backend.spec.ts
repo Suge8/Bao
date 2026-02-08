@@ -1,12 +1,21 @@
 import { test, expect } from "@playwright/test";
 import { SIMULATOR_SCRIPT } from "./fixtures/rust-simulator";
 
+async function ensureChatReady(page: import("@playwright/test").Page) {
+  const input = page.getByTestId("chat-input");
+  if (await input.isDisabled()) {
+    await page.getByTestId("topbar-gateway-toggle").click();
+    await expect(input).toBeEnabled();
+  }
+}
+
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(SIMULATOR_SCRIPT);
   await page.goto("/");
 });
 
 test("error chain should be visible in runtime logs", async ({ page }) => {
+  await ensureChatReady(page);
   await page.getByTestId("chat-input").fill('/tool shell.exec {"command":"__emit_errors__"}');
   await page.getByTestId("chat-send").click();
 
@@ -19,9 +28,9 @@ test("error chain should be visible in runtime logs", async ({ page }) => {
   await expect(modal).toContainText("memory.extract.error");
 });
 
-test("gateway toggle and kill buttons should call different commands", async ({ page }) => {
+test("gateway toggle should cover start and emergency stop", async ({ page }) => {
   await page.getByTestId("topbar-gateway-toggle").click();
-  await page.getByTestId("topbar-kill").click();
+  await page.getByTestId("topbar-gateway-toggle").click();
 
   const trace = await page.evaluate(() => {
     const win = window as unknown as { __TAURI_MOCK_TRACE__?: string[] };

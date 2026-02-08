@@ -114,6 +114,13 @@ export function createTauriClient(): DesktopClient {
       return { ok: true };
     },
 
+    async deleteSession(sessionId) {
+      const api = await loadTauriInvokeApi();
+      if (!api) throw missingTauriError("deleteSession");
+      await api.invoke("delete_session", { input: { sessionId } });
+      return { ok: true };
+    },
+
     async sendMessage(sessionId, text) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("sendMessage");
@@ -132,6 +139,12 @@ export function createTauriClient(): DesktopClient {
         toolTriggered: boolean;
         toolOk?: boolean;
       }>("run_engine_turn", { input: { sessionId, text } });
+    },
+
+    async providerPreflight() {
+      const api = await loadTauriInvokeApi();
+      if (!api) throw missingTauriError("providerPreflight");
+      return api.invoke<{ ready: boolean; reason?: string }>("provider_preflight");
     },
 
     async mcpListTools(server) {

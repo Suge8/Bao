@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Play, Plus, QrCode, Square, Trash2, Wifi } from "lucide-react";
+import { Play, QrCode, Square, Trash2, Wifi } from "lucide-react";
 import QRCode from "qrcode";
-import { useNavigate } from "react-router-dom";
 import { useClient } from "@/data/use-client";
 import type { GatewayDevice } from "@/data/client";
 import { MagicCard } from "@/components/ui/magic-card";
 import { ShinyButton } from "@/components/ui/shiny-button";
 import { useToast } from "@/components/ui/toast";
 import { useI18n } from "@/i18n/i18n";
+import { cn } from "@/lib/utils";
 
 const GATEWAY_DEVICE_EVENT_TYPES = new Set([
   "auth.paired",
@@ -19,7 +19,6 @@ const GATEWAY_DEVICE_EVENT_TYPES = new Set([
 export function Topbar({ title }: { title: string }) {
   const { t } = useI18n();
   const client = useClient();
-  const navigate = useNavigate();
   const { push } = useToast();
   const [gatewayAllowLan, setGatewayAllowLan] = useState<boolean | null>(null);
   const [gatewayRunning, setGatewayRunning] = useState<boolean | null>(null);
@@ -28,7 +27,6 @@ export function Topbar({ title }: { title: string }) {
   const [gatewayPanelOpen, setGatewayPanelOpen] = useState(false);
   const [pairingModalOpen, setPairingModalOpen] = useState(false);
   const [pairingQrImage, setPairingQrImage] = useState("");
-  const [sessionCreating, setSessionCreating] = useState(false);
 
   const refreshGatewaySettings = useCallback(
     async (isMounted: () => boolean = () => true) => {
@@ -126,20 +124,15 @@ export function Topbar({ title }: { title: string }) {
   const handleGatewayToggle = () => {
     if (gatewayBusy || gatewayRunning === null) return;
     setGatewayBusy(true);
-    if (gatewayRunning) {
-      void client
-        .gatewayStop()
-        .then(() => {
-          setGatewayRunning(false);
+    const nextRunning = !gatewayRunning;
+    const action = gatewayRunning ? client.killSwitchStopAll : client.gatewayStart;
+    void action()
+      .then(() => {
+        setGatewayRunning(nextRunning);
+        if (!nextRunning) {
           setPairingModalOpen(false);
-        })
-        .catch(() => setGatewayRunning(null))
-        .finally(() => setGatewayBusy(false));
-      return;
-    }
-    void client
-      .gatewayStart()
-      .then(() => setGatewayRunning(true))
+        }
+      })
       .catch(() => setGatewayRunning(null))
       .finally(() => setGatewayBusy(false));
   };
@@ -205,24 +198,6 @@ export function Topbar({ title }: { title: string }) {
     return `${t("topbar.gateway.devices_online_prefix")}${connectedDevices.length}/${gatewayDevices.length}`;
   }, [connectedDevices.length, gatewayDevices.length, t]);
 
-  const createSessionFromTopbar = useCallback(async () => {
-    if (sessionCreating) return;
-    setSessionCreating(true);
-    const sessionId = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-    try {
-      await client.createSession(sessionId);
-      navigate("/");
-    } catch (err) {
-      push({
-        variant: "error",
-        title: t("topbar.action.new_session"),
-        description: toErrorMessage(err, t("common.unknown_error")),
-      });
-    } finally {
-      setSessionCreating(false);
-    }
-  }, [client, navigate, push, sessionCreating, t]);
-
   return (
     <div className="sticky top-0 z-20">
       <MagicCard className="rounded-2xl border border-border/50 bg-background/60 backdrop-blur-xl">
@@ -248,26 +223,16 @@ export function Topbar({ title }: { title: string }) {
           </div>
 
           <div className="flex items-center gap-2">
-            <TopbarIconButton
-              label={t("topbar.action.new_session")}
-              testId="topbar-new"
-              onClick={() => {
-                void createSessionFromTopbar();
-              }}
-              disabled={sessionCreating}
-            >
-              <Plus className="h-4 w-4" />
-            </TopbarIconButton>
-
             <ShinyButton
               type="button"
               aria-label={t("topbar.gateway.manage")}
               title={t("topbar.gateway.manage")}
-              className={`h-8 w-8 rounded-lg p-0 transition-all ${
+              className={cn(
+                "h-8 w-8 rounded-lg p-0 transition-all",
                 gatewayPanelOpen
                   ? "bg-primary/10 text-primary ring-1 ring-primary/30"
-                  : "bg-muted/50 text-muted-foreground hover:bg-muted"
-              }`}
+                  : "bg-muted/50 text-muted-foreground hover:bg-muted",
+              )}
               onClick={() => setGatewayPanelOpen((prev) => !prev)}
               data-testid="topbar-gateway-manage"
             >
@@ -293,20 +258,6 @@ export function Topbar({ title }: { title: string }) {
               </TopbarIconButton>
             </div>
 
-            <div className="pl-1">
-              <TopbarIconButton
-                label={t("topbar.action.kill_all")}
-                testId="topbar-kill"
-                className="h-9 w-9 bg-red-600 text-white ring-1 ring-red-400/40 shadow-lg shadow-red-700/30 hover:bg-red-700"
-                onClick={() => {
-                  void client.killSwitchStopAll();
-                  setGatewayRunning(false);
-                  setPairingModalOpen(false);
-                }}
-              >
-                <AlertTriangle className="h-4 w-4" />
-              </TopbarIconButton>
-            </div>
           </div>
         </div>
       </MagicCard>
@@ -333,22 +284,14 @@ export function Topbar({ title }: { title: string }) {
                     <button
                       type="button"
                       onClick={() => applyAllowLan(false)}
-                      className={`rounded-lg px-3 py-2 text-xs font-medium transition-all ${
-                        gatewayAllowLan === false
-                          ? "bg-background text-foreground ring-1 ring-border shadow-sm"
-                          : "text-muted-foreground hover:bg-muted/60"
-                      }`}
+                      className={getAccessModeButtonClass(gatewayAllowLan === false)}
                     >
                       {t("topbar.gateway.local_only")}
                     </button>
                     <button
                       type="button"
                       onClick={() => applyAllowLan(true)}
-                      className={`rounded-lg px-3 py-2 text-xs font-medium transition-all ${
-                        gatewayAllowLan === true
-                          ? "bg-background text-foreground ring-1 ring-border shadow-sm"
-                          : "text-muted-foreground hover:bg-muted/60"
-                      }`}
+                      className={getAccessModeButtonClass(gatewayAllowLan === true)}
                     >
                       {t("topbar.gateway.lan_tailscale")}
                     </button>
@@ -430,7 +373,7 @@ export function Topbar({ title }: { title: string }) {
             <div className="text-sm font-semibold">{t("topbar.gateway.scan_qr")}</div>
             <div className="mt-3 flex justify-center rounded-xl bg-white p-3">
               {pairingQrImage ? (
-                <img src={pairingQrImage} alt="pairing-qr" className="h-[220px] w-[220px]" />
+                <img src={pairingQrImage} alt={t("topbar.gateway.pairing_qr")} className="h-[220px] w-[220px]" />
               ) : null}
             </div>
             <div className="mt-2 text-[11px] text-muted-foreground">{t("topbar.gateway.qr_hint")}</div>
@@ -464,6 +407,15 @@ function toErrorMessage(err: unknown, fallback: string): string {
   }
 }
 
+function getAccessModeButtonClass(active: boolean): string {
+  return cn(
+    "rounded-lg px-3 py-2 text-xs font-medium transition-all",
+    active
+      ? "bg-background text-foreground ring-1 ring-border shadow-sm"
+      : "text-muted-foreground hover:bg-muted/60",
+  );
+}
+
 function TopbarIconButton({
   children,
   label,
@@ -485,7 +437,10 @@ function TopbarIconButton({
       aria-label={label}
       data-testid={testId}
       whileTap={{ scale: 0.94 }}
-      className={`inline-flex h-8 w-8 items-center justify-center rounded-lg p-0 transition-all hover:bg-background/80 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-40 ${className ?? ""}`}
+      className={cn(
+        "inline-flex h-8 w-8 items-center justify-center rounded-lg p-0 transition-all hover:bg-background/80 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-40",
+        className,
+      )}
       onClick={onClick}
       disabled={disabled}
     >

@@ -27,6 +27,7 @@ export type DesktopClient = {
 
   listSessions: () => Promise<{ sessions: { id: string; title: string }[] }>;
   createSession: (sessionId: string, title?: string) => Promise<{ ok: true }>;
+  deleteSession: (sessionId: string) => Promise<{ ok: true }>;
   sendMessage: (sessionId: string, text: string) => Promise<{ ok: true }>;
   runEngineTurn: (
     sessionId: string,
@@ -39,6 +40,7 @@ export type DesktopClient = {
     toolTriggered: boolean;
     toolOk?: boolean;
   }>;
+  providerPreflight: () => Promise<{ ready: boolean; reason?: string }>;
   mcpListTools: (server: unknown) => Promise<{ tools?: unknown[]; transport?: string }>;
   mcpCallTool: (
     server: unknown,

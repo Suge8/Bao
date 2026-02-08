@@ -27,21 +27,15 @@ export default function DimsumsPage() {
     try {
       const res = await client.listDimsums();
       const dimsums = (res.dimsums as DimsumItem[]) ?? [];
-      setItems(
-        [...dimsums].sort((a, b) => {
-          if (a.channel === "bundled" && b.channel !== "bundled") return -1;
-          if (a.channel !== "bundled" && b.channel === "bundled") return 1;
-          return a.dimsumId.localeCompare(b.dimsumId);
-        }),
-      );
+      setItems(sortDimsums(dimsums));
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载点心失败");
+      setError(err instanceof Error ? err.message : t("dimsums.error.load_failed"));
       setItems([]);
     } finally {
       setLoading(false);
     }
-  }, [client]);
+  }, [client, t]);
 
   useEffect(() => {
     void refresh();
@@ -54,13 +48,13 @@ export default function DimsumsPage() {
       <div className="flex items-center justify-between">
         <div className="text-xl font-bold tracking-tight">{t("page.dimsums.title")}</div>
         <div className="text-sm text-muted-foreground">
-          {displayItems.length} installed
+          {displayItems.length} {t("dimsums.count_suffix")}
         </div>
       </div>
 
       <div className="mt-6 min-h-0 flex-1 space-y-6 overflow-y-auto pr-1">
         {loading && displayItems.length === 0 ? (
-          <div className="text-sm text-muted-foreground">Loading...</div>
+          <div className="text-sm text-muted-foreground">{t("dimsums.loading")}</div>
         ) : null}
 
         {error ? (
@@ -83,7 +77,7 @@ export default function DimsumsPage() {
                     ? "bg-green-500/10 text-green-600 ring-green-500/20 dark:text-green-400" 
                     : "bg-muted text-muted-foreground ring-border"
                 )}>
-                  {it.enabled ? "Active" : "Disabled"}
+                  {it.enabled ? t("dimsums.status.active") : t("dimsums.status.disabled")}
                 </div>
               </div>
 
@@ -117,7 +111,7 @@ export default function DimsumsPage() {
                     const action = it.enabled ? client.disableDimsum : client.enableDimsum;
                     void action(it.dimsumId)
                       .then(() => refresh())
-                      .catch((err) => setError(err instanceof Error ? err.message : "Action failed"));
+                      .catch((err) => setError(toErrorMessage(err, t("dimsums.error.action_failed"))));
                   }}
                 >
                   <Power className="h-4 w-4" />
@@ -130,10 +124,22 @@ export default function DimsumsPage() {
 
         {!loading && displayItems.length === 0 ? (
           <div className="flex h-40 items-center justify-center rounded-3xl border border-dashed border-border/50 bg-muted/20 text-sm text-muted-foreground">
-            No dimsums installed.
+            {t("dimsums.empty")}
           </div>
         ) : null}
       </div>
     </div>
   );
+}
+
+function sortDimsums(items: DimsumItem[]): DimsumItem[] {
+  return [...items].sort((a, b) => {
+    if (a.channel === "bundled" && b.channel !== "bundled") return -1;
+    if (a.channel !== "bundled" && b.channel === "bundled") return 1;
+    return a.dimsumId.localeCompare(b.dimsumId);
+  });
+}
+
+function toErrorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback;
 }

@@ -123,6 +123,16 @@ export const SIMULATOR_SCRIPT = `
       return { ok: true };
     },
 
+    async delete_session(args) {
+      const input = args && typeof args.input === "object" ? args.input : {};
+      const sessionId = typeof input.sessionId === "string" ? input.sessionId : "";
+      if (!sessionId) throw new Error("sessionId is required");
+      if (!SESSIONS.has(sessionId)) throw new Error("session not found");
+      SESSIONS.delete(sessionId);
+      emitBaoEvent("sessions.delete", { sessionId });
+      return { ok: true };
+    },
+
     async run_engine_turn(args) {
       const input = args && typeof args.input === "object" ? args.input : {};
       const sessionId = typeof input.sessionId === "string" && input.sessionId ? input.sessionId : "default";
@@ -215,6 +225,17 @@ export const SIMULATOR_SCRIPT = `
         toolTriggered,
         toolOk,
       };
+    },
+
+    async provider_preflight() {
+      const provider = String(SETTINGS.get("provider.active") || "").trim();
+      const model = String(SETTINGS.get("provider.model") || "").trim();
+      const baseUrl = String(SETTINGS.get("provider.baseUrl") || "").trim();
+      const apiKey = String(SETTINGS.get("provider.apiKey") || "").trim();
+      if (!provider || !model || !baseUrl || !apiKey) {
+        return { ready: false, reason: "provider config incomplete" };
+      }
+      return { ready: true };
     },
 
     async list_runtime_events(args) {

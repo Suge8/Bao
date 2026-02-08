@@ -66,8 +66,8 @@ export default function SettingsPage() {
     if (!selectedProfile) {
       push({
         variant: "error",
-        title: "删除失败",
-        description: "当前没有可删除的 Provider",
+        title: t("settings.provider.toast.delete_failed"),
+        description: t("settings.provider.toast.delete_empty"),
       });
       return;
     }
@@ -80,29 +80,23 @@ export default function SettingsPage() {
 
     setProviderSaving(true);
     try {
-      await updateSettingStrict(client, "provider.profiles", persistable);
-      await updateSettingStrict(
-        client,
-        "provider.selectedProfileId",
-        nextSelectedPersisted?.id ?? "",
-      );
-      await updateSettingStrict(client, "provider.active", nextSelectedPersisted?.provider ?? "");
-      await updateSettingStrict(client, "provider.model", nextSelectedPersisted?.model ?? "");
-      await updateSettingStrict(client, "provider.baseUrl", nextSelectedPersisted?.baseUrl ?? "");
-      await updateSettingStrict(client, "provider.apiKey", nextSelectedPersisted?.apiKey ?? "");
+      await persistProviderState(client, {
+        profiles: persistable,
+        selectedProfile: nextSelectedPersisted,
+      });
 
       setProviderProfiles(normalizedRemaining.length > 0 ? normalizedRemaining : [nextSelectedLocal]);
       setSelectedProfileId(nextSelectedLocal.id);
 
       push({
         variant: "success",
-        title: "Provider 已删除",
+        title: t("settings.provider.toast.deleted"),
         description: selectedProfile.name || PROVIDER_PLACEHOLDER,
       });
     } catch (err) {
       push({
         variant: "error",
-        title: "删除失败",
+        title: t("settings.provider.toast.delete_failed"),
         description: toErrorMessage(err),
       });
     } finally {
@@ -114,8 +108,8 @@ export default function SettingsPage() {
     if (!selectedProfile) {
       push({
         variant: "error",
-        title: "Provider 保存失败",
-        description: "请先创建模型配置",
+        title: t("settings.provider.toast.save_failed"),
+        description: t("settings.provider.toast.save_missing_config"),
       });
       return;
     }
@@ -129,8 +123,8 @@ export default function SettingsPage() {
     if (!name || !active || !model || !baseUrl) {
       push({
         variant: "error",
-        title: "Provider 保存失败",
-        description: "名称 / Provider / Model / Base URL 不能为空",
+        title: t("settings.provider.toast.save_failed"),
+        description: t("settings.provider.toast.save_fields_required"),
       });
       return;
     }
@@ -139,29 +133,33 @@ export default function SettingsPage() {
     try {
       const persistable = normalizedProfiles.filter(isCompleteProfile);
       if (persistable.length === 0) {
-        throw new Error("没有可保存的 Provider，请先填写完整配置");
+        throw new Error(t("settings.provider.toast.no_persistable"));
       }
       if (!persistable.some((item) => item.id === selectedProfile.id)) {
-        throw new Error("当前选中的 Provider 尚未填写完整");
+        throw new Error(t("settings.provider.toast.incomplete_selected"));
       }
 
-      await updateSettingStrict(client, "provider.active", active);
-      await updateSettingStrict(client, "provider.model", model);
-      await updateSettingStrict(client, "provider.baseUrl", baseUrl);
-      await updateSettingStrict(client, "provider.apiKey", selectedProfile.apiKey.trim());
-      await updateSettingStrict(client, "provider.profiles", persistable);
-      await updateSettingStrict(client, "provider.selectedProfileId", selectedProfile.id);
+      await persistProviderState(client, {
+        profiles: persistable,
+        selectedProfile: {
+          ...selectedProfile,
+          provider: active,
+          model,
+          baseUrl,
+          apiKey: selectedProfile.apiKey.trim(),
+        },
+      });
 
       setProviderProfiles(normalizedProfiles);
       push({
         variant: "success",
-        title: "Provider 配置已保存",
-        description: `当前模型：${active}/${model}`,
+        title: t("settings.provider.toast.saved"),
+        description: `${t("settings.provider.toast.current_model_prefix")}${active}/${model}`,
       });
     } catch (err) {
       push({
         variant: "error",
-        title: "Provider 保存失败",
+        title: t("settings.provider.toast.save_failed"),
         description: toErrorMessage(err),
         durationMs: 7000,
       });
@@ -182,7 +180,7 @@ export default function SettingsPage() {
     <div className="mx-auto flex h-full min-h-0 w-full max-w-6xl flex-col overflow-hidden" data-testid="page-settings">
       <div className="mb-4 shrink-0">
         <h1 className="text-2xl font-bold tracking-tight">{t("page.settings.title")}</h1>
-        <p className="text-muted-foreground mt-1">Configure gateway, providers, and preferences.</p>
+        <p className="text-muted-foreground mt-1">{t("settings.description")}</p>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto pr-1 lg:overflow-hidden lg:pr-0">
@@ -194,7 +192,7 @@ export default function SettingsPage() {
                   <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
                     <Server className="h-4 w-4" />
                   </div>
-                  <div className="text-base font-semibold">AI Providers</div>
+                  <div className="text-base font-semibold">{t("settings.provider.title")}</div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <ShinyButton
@@ -204,7 +202,7 @@ export default function SettingsPage() {
                     data-testid="settings-provider-add"
                   >
                     <Plus className="h-3 w-3" />
-                    Add
+                    {t("settings.provider.add")}
                   </ShinyButton>
                   <ShinyButton
                     type="button"
@@ -216,7 +214,7 @@ export default function SettingsPage() {
                     data-testid="settings-provider-delete"
                   >
                     <Trash2 className="h-3 w-3" />
-                    Delete
+                    {t("settings.provider.delete")}
                   </ShinyButton>
                 </div>
               </div>
@@ -244,31 +242,31 @@ export default function SettingsPage() {
 
                 <div className="min-w-0 space-y-3 md:overflow-y-auto md:pr-1">
                   <InputField
-                    label="Profile Name"
+                    label={t("settings.provider.profile_name")}
                     value={selectedProfile?.name ?? ""}
                     onChange={(value) => updateProfileField("name", value)}
                     placeholder={PROVIDER_PLACEHOLDER}
                   />
                   <InputField
-                    label="Provider"
+                    label={t("settings.provider.provider")}
                     value={selectedProfile?.provider ?? ""}
                     onChange={(value) => updateProfileField("provider", value)}
                     placeholder={PROVIDER_PLACEHOLDER}
                   />
                   <InputField
-                    label="Model ID"
+                    label={t("settings.provider.model_id")}
                     value={selectedProfile?.model ?? ""}
                     onChange={(value) => updateProfileField("model", value)}
                     placeholder={PROVIDER_PLACEHOLDER}
                   />
                   <InputField
-                    label="Base URL"
+                    label={t("settings.provider.base_url")}
                     value={selectedProfile?.baseUrl ?? ""}
                     onChange={(value) => updateProfileField("baseUrl", value)}
                     placeholder={PROVIDER_PLACEHOLDER}
                   />
                   <div className="space-y-1.5">
-                    <div className="text-xs font-medium text-muted-foreground">API Key</div>
+                    <div className="text-xs font-medium text-muted-foreground">{t("settings.provider.api_key")}</div>
                     <div className="relative">
                       <input
                         type="password"
@@ -291,7 +289,7 @@ export default function SettingsPage() {
                       className="w-full h-9 rounded-xl text-xs font-medium"
                       data-testid="settings-provider-save"
                     >
-                      {providerSaving ? "Saving..." : "Save Configuration"}
+                      {providerSaving ? t("settings.provider.saving") : t("settings.provider.save")}
                     </ShinyButton>
                   </div>
                 </div>
@@ -458,7 +456,7 @@ function LogsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
         type="button"
         className="absolute inset-0 cursor-pointer"
         onClick={onClose}
-        aria-label="close-logs-overlay"
+        aria-label={t("settings.logs.close_overlay")}
       />
 
       <div
@@ -493,7 +491,7 @@ function LogsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
                 void fetchData();
               }}
               className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-background text-muted-foreground"
-              aria-label="refresh-logs"
+              aria-label={t("settings.logs.refresh")}
             >
               <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
             </button>
@@ -543,7 +541,7 @@ function LogsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
                       type="button"
                       className="flex w-full items-center justify-between gap-3 text-left"
                       onClick={() =>
-                        setExpandedRuntimeId((prev) => (prev === event.eventId ? null : event.eventId))
+                        setExpandedRuntimeId((prev) => toggleExpandedId(prev, event.eventId))
                       }
                     >
                       <div className="text-sm font-medium">{event.type}</div>
@@ -569,7 +567,7 @@ function LogsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
                   <button
                     type="button"
                     className="flex w-full items-center justify-between gap-3 text-left"
-                    onClick={() => setExpandedAuditId((prev) => (prev === log.id ? null : log.id))}
+                    onClick={() => setExpandedAuditId((prev) => toggleExpandedId(prev, log.id))}
                   >
                     <div className="text-sm font-medium">{log.action}</div>
                     <div className="text-[11px] text-muted-foreground">
@@ -633,6 +631,22 @@ function isCompleteProfile(item: ProviderProfile) {
   return Boolean(item.name.trim() && item.provider.trim() && item.model.trim() && item.baseUrl.trim());
 }
 
+async function persistProviderState(
+  client: ReturnType<typeof useClient>,
+  options: {
+    profiles: ProviderProfile[];
+    selectedProfile: ProviderProfile | null;
+  },
+) {
+  const { profiles, selectedProfile } = options;
+  await updateSettingStrict(client, "provider.profiles", profiles);
+  await updateSettingStrict(client, "provider.selectedProfileId", selectedProfile?.id ?? "");
+  await updateSettingStrict(client, "provider.active", selectedProfile?.provider ?? "");
+  await updateSettingStrict(client, "provider.model", selectedProfile?.model ?? "");
+  await updateSettingStrict(client, "provider.baseUrl", selectedProfile?.baseUrl ?? "");
+  await updateSettingStrict(client, "provider.apiKey", selectedProfile?.apiKey ?? "");
+}
+
 async function updateSettingStrict(
   client: ReturnType<typeof useClient>,
   key: string,
@@ -661,4 +675,8 @@ function safeStringify(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function toggleExpandedId(current: number | null, next: number): number | null {
+  return current === next ? null : next;
 }

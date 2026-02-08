@@ -351,3 +351,4 @@ CHANGELOG.md
 - **提交前必做**：任何代码改动必须同步更新 `docs/changes`，必要时更新本文档。
 - **记录必填**：每次改动必须更新 `docs/changes` 的「当前进度」「改动记录（最近）」「未来发展（优先级）」（完成项移入 Done/Archive）。
 - **格式统一**：`[FEAT|FIX|REFACTOR|DOC] YYYY-MM-DD 事项（PR/issue/commit 链接）`。
+- **修改必须更新文档记录**

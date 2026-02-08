@@ -174,6 +174,12 @@ struct CreateSessionInput {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SessionIdInput {
+    session_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DimsumIdInput {
     dimsum_id: String,
 }
@@ -194,6 +200,13 @@ struct EngineTurnOutput {
     tool_name: Option<String>,
     tool_triggered: bool,
     tool_ok: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderPreflightOutput {
+    ready: bool,
+    reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -827,6 +840,24 @@ async fn run_engine_turn(
     run_engine_turn_inner(state.inner(), input).await
 }
 
+#[tauri::command(rename = "providerPreflight")]
+async fn provider_preflight(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<ProviderPreflightOutput, String> {
+    match provider::preflight_provider_via_runner(&state.gateway_handle, state.plugin_runner.as_ref())
+        .await
+    {
+        Ok(()) => Ok(ProviderPreflightOutput {
+            ready: true,
+            reason: None,
+        }),
+        Err(reason) => Ok(ProviderPreflightOutput {
+            ready: false,
+            reason: Some(reason),
+        }),
+    }
+}
+
 async fn run_engine_turn_inner(
     state: &Arc<AppState>,
     input: EngineTurnInput,
@@ -1439,6 +1470,18 @@ async fn list_sessions(state: tauri::State<'_, Arc<AppState>>) -> Result<BaoEven
     state
         .gateway_handle
         .list_sessions()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename = "deleteSession")]
+async fn delete_session(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: SessionIdInput,
+) -> Result<BaoEventV1, String> {
+    state
+        .gateway_handle
+        .delete_session(input.session_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -2207,12 +2250,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             send_message,
             run_engine_turn,
+            provider_preflight,
             mcp_list_tools,
             mcp_call_tool,
             resource_list,
             resource_read,
             create_session,
             list_sessions,
+            delete_session,
             list_tasks,
             create_task,
             update_task,

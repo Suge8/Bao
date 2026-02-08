@@ -36,6 +36,11 @@ type TaskItem = {
 
 type ScheduleKind = "once" | "interval" | "cron";
 
+const DEFAULT_TOOL_DIMSUM_ID = "bao.engine.default";
+const DEFAULT_TOOL_NAME = "shell.exec";
+const DEFAULT_TIMEOUT_MS = 1000;
+const DEFAULT_MAX_RETRIES = 1;
+
 export default function TasksPage() {
   const { t } = useI18n();
   const client = useClient();
@@ -46,20 +51,11 @@ export default function TasksPage() {
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const [taskId, setTaskId] = useState("");
-  const [title, setTitle] = useState("");
+  const [content, setContent] = useState("");
   const [enabled, setEnabled] = useState(true);
   const [scheduleKind, setScheduleKind] = useState<ScheduleKind>("once");
   const [runAtInput, setRunAtInput] = useState("");
-  const [intervalMsInput, setIntervalMsInput] = useState("60000");
-  const [cronInput, setCronInput] = useState("*/5 * * * *");
-  const [timezone, setTimezone] = useState("UTC");
-  const [toolDimsumId, setToolDimsumId] = useState("bao.engine.default");
-  const [toolName, setToolName] = useState("shell.exec");
-  const [toolArgsInput, setToolArgsInput] = useState('{"command":"sh","args":["-lc","echo bao-task-ok"]}');
-  const [timeoutMsInput, setTimeoutMsInput] = useState("1000");
-  const [maxRetriesInput, setMaxRetriesInput] = useState("1");
-  const [killSwitchGroup, setKillSwitchGroup] = useState("");
+  const [intervalMinutesInput, setIntervalMinutesInput] = useState("60");
   const [showForm, setShowForm] = useState(false);
 
   const refreshTasks = useCallback(async () => {
@@ -69,11 +65,11 @@ export default function TasksPage() {
       setTasks((res.tasks as TaskItem[]) ?? []);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "任务加载失败");
+      setError(err instanceof Error ? err.message : t("tasks.error.load_failed"));
     } finally {
       setLoading(false);
     }
-  }, [client]);
+  }, [client, t]);
 
   useEffect(() => {
     void refreshTasks();
@@ -89,94 +85,61 @@ export default function TasksPage() {
       lastRunAt: task.lastRunAt,
       lastStatus: task.lastStatus,
       lastError: task.lastError,
-      toolDimsumId: task.tool?.dimsumId ?? "",
-      toolName: task.tool?.toolName ?? "",
     }));
   }, [tasks]);
 
   const submitTask = async () => {
-    const id = taskId.trim();
-    const nextTitle = title.trim();
-    if (!id || !nextTitle) {
-      setError("任务 ID 和标题不能为空");
+    const nextContent = content.trim();
+    if (!nextContent) {
+      setError(t("tasks.error.content_required"));
       return;
     }
 
-    let args: unknown;
-    try {
-      args = JSON.parse(toolArgsInput || "null");
-    } catch {
-      setError("工具参数不是合法 JSON");
-      return;
-    }
-
-    const argsObj = args && typeof args === "object" ? (args as Record<string, unknown>) : null;
-    const commandValue = argsObj?.command;
-    if (typeof commandValue !== "string" || commandValue.trim().length === 0) {
-      setError("工具参数必须包含 command 字段（字符串）");
-      return;
-    }
-
-    const timeoutMs = Number(timeoutMsInput);
-    const maxRetries = Number(maxRetriesInput);
+    const id = editingTaskId ?? generateTaskId(nextContent);
     const runAtTs = runAtInput ? Math.floor(new Date(runAtInput).getTime() / 1000) : undefined;
-    const intervalMs = Number(intervalMsInput);
+    const intervalMinutes = Number(intervalMinutesInput);
 
     const schedule: Record<string, unknown> = { kind: scheduleKind };
     if (scheduleKind === "once") {
       schedule.runAtTs = Number.isFinite(runAtTs) ? runAtTs : Math.floor(Date.now() / 1000);
     }
     if (scheduleKind === "interval") {
-      if (!Number.isFinite(intervalMs) || intervalMs < 1000) {
-        setError("intervalMs 必须是 >= 1000 的整数");
+      if (!Number.isFinite(intervalMinutes) || intervalMinutes < 1) {
+        setError(t("tasks.error.interval_minutes_invalid"));
         return;
       }
-      schedule.intervalMs = Math.floor(intervalMs);
-    }
-    if (scheduleKind === "cron") {
-      if (!cronInput.trim()) {
-        setError("cron 表达式不能为空");
-        return;
-      }
-      schedule.cron = cronInput.trim();
-      if (timezone.trim()) {
-        schedule.timezone = timezone.trim();
-      }
+      schedule.intervalMs = Math.floor(intervalMinutes * 60_000);
     }
 
     const spec = {
       id,
-      title: nextTitle,
+      title: nextContent,
       enabled,
       schedule,
       action: {
         kind: "tool_call",
         toolCall: {
-          dimsumId: toolDimsumId.trim(),
-          toolName: toolName.trim(),
-          args,
+          dimsumId: DEFAULT_TOOL_DIMSUM_ID,
+          toolName: DEFAULT_TOOL_NAME,
+          args: buildTaskToolArgs(nextContent),
         },
       },
       policy: {
-        timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.floor(timeoutMs) : undefined,
-        maxRetries: Number.isFinite(maxRetries) && maxRetries >= 0 ? Math.floor(maxRetries) : undefined,
-        killSwitchGroup: killSwitchGroup.trim() || undefined,
+        timeoutMs: DEFAULT_TIMEOUT_MS,
+        maxRetries: DEFAULT_MAX_RETRIES,
       },
     };
 
     setSaving(true);
     setError(null);
     try {
-      if (editingTaskId) {
-        await client.updateTask(spec);
-      } else {
-        await client.createTask(spec);
-      }
+      const saveTask = editingTaskId ? client.updateTask : client.createTask;
+      await saveTask(spec);
       await refreshTasks();
       resetForm();
       setShowForm(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "任务保存失败");
+      setError(toErrorMessage(err, t("tasks.error.save_failed")));
     } finally {
       setSaving(false);
     }
@@ -184,50 +147,24 @@ export default function TasksPage() {
 
   const resetForm = () => {
     setEditingTaskId(null);
-    setTaskId("");
-    setTitle("");
+    setContent("");
     setEnabled(true);
     setScheduleKind("once");
     setRunAtInput("");
-    setIntervalMsInput("60000");
-    setCronInput("*/5 * * * *");
-    setTimezone("UTC");
-    setToolDimsumId("bao.engine.default");
-    setToolName("shell.exec");
-    setToolArgsInput('{"command":"sh","args":["-lc","echo bao-task-ok"]}');
-    setTimeoutMsInput("1000");
-    setMaxRetriesInput("1");
-    setKillSwitchGroup("");
+    setIntervalMinutesInput("60");
   };
 
   const loadTaskForEdit = (id: string) => {
     const task = tasks.find((item) => item.taskId === id);
     if (!task) return;
     setEditingTaskId(task.taskId);
-    setTaskId(task.taskId);
-    setTitle(task.title);
+    setContent(task.title);
     setEnabled(task.enabled);
 
-    const kind = (task.schedule?.kind ?? "once") as ScheduleKind;
+    const kind = task.schedule?.kind === "interval" ? "interval" : "once";
     setScheduleKind(kind);
-    if (task.schedule?.runAtTs) {
-      const date = new Date(task.schedule.runAtTs * 1000);
-      const iso = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-      setRunAtInput(iso);
-    } else {
-      setRunAtInput("");
-    }
-    setIntervalMsInput(String(task.schedule?.intervalMs ?? 60000));
-    setCronInput(task.schedule?.cron ?? "*/5 * * * *");
-    setTimezone(task.schedule?.timezone ?? "UTC");
-    setToolDimsumId(task.tool?.dimsumId ?? "bao.engine.default");
-    setToolName(task.tool?.toolName ?? "shell.exec");
-    setToolArgsInput(
-      JSON.stringify(task.tool?.args ?? { command: "sh", args: ["-lc", "echo bao-task-ok"] }, null, 2),
-    );
-    setTimeoutMsInput(String(task.policy?.timeoutMs ?? 1000));
-    setMaxRetriesInput(String(task.policy?.maxRetries ?? 1));
-    setKillSwitchGroup(task.policy?.killSwitchGroup ?? "");
+    setRunAtInput(toDatetimeLocalInput(task.schedule?.runAtTs));
+    setIntervalMinutesInput(String(intervalMsToMinutes(task.schedule?.intervalMs)));
     setShowForm(true);
   };
 
@@ -243,7 +180,7 @@ export default function TasksPage() {
           }}
           className="h-9 rounded-xl px-4 text-sm font-medium"
         >
-          {showForm ? "Cancel" : "New Task"}
+          {showForm ? t("tasks.form.cancel") : t("tasks.form.new_task")}
         </ShinyButton>
       </div>
 
@@ -255,24 +192,34 @@ export default function TasksPage() {
         >
         <MagicCard className="rounded-3xl border border-border/50 bg-background/60 backdrop-blur-xl">
           <div className="p-6">
-            <div className="mb-4 text-sm font-semibold tracking-tight">{editingTaskId ? "Edit Task" : "Create Task"}</div>
+            <div className="mb-2 text-sm font-semibold tracking-tight">
+              {editingTaskId ? t("tasks.form.edit_title") : t("tasks.form.create_title")}
+            </div>
+            <div className="mb-4 text-xs text-muted-foreground">{t("tasks.form.helper")}</div>
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              <InputField label="Task ID" value={taskId} onChange={setTaskId} disabled={Boolean(editingTaskId)} />
-              <InputField label="Title" value={title} onChange={setTitle} />
+              <div className="col-span-full rounded-xl bg-muted/30 p-3 ring-1 ring-border/50 md:col-span-2 lg:col-span-3">
+                <div className="mb-1.5 text-xs font-medium text-muted-foreground">{t("tasks.form.content_label")}</div>
+                <textarea
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  placeholder={t("tasks.form.content_placeholder")}
+                  className="min-h-[92px] w-full resize-y rounded-lg bg-background px-3 py-2 text-sm outline-none ring-1 ring-border/50 focus:ring-primary/30"
+                  data-testid="task-content-input"
+                />
+              </div>
 
               <SelectField
-                label="Schedule Type"
+                label={t("tasks.form.schedule_type")}
                 value={scheduleKind}
                 onChange={(value) => setScheduleKind(value as ScheduleKind)}
                 options={[
-                  { value: "once", label: "Once" },
-                  { value: "interval", label: "Interval" },
-                  { value: "cron", label: "Cron" },
+                  { value: "once", label: t("tasks.form.schedule_once") },
+                  { value: "interval", label: t("tasks.form.schedule_interval") },
                 ]}
               />
 
               <div className="space-y-1.5 rounded-xl bg-muted/30 p-3 ring-1 ring-border/50">
-                <div className="text-xs font-medium text-muted-foreground">Status</div>
+                <div className="text-xs font-medium text-muted-foreground">{t("tasks.form.status")}</div>
                 <div className="flex gap-2">
                   <button
                     type="button"
@@ -281,8 +228,8 @@ export default function TasksPage() {
                       "flex-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-all",
                       enabled ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-muted"
                     )}
-                  >
-                    Enabled
+                    >
+                    {t("tasks.form.enabled")}
                   </button>
                   <button
                     type="button"
@@ -291,15 +238,15 @@ export default function TasksPage() {
                       "flex-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-all",
                       !enabled ? "bg-muted text-foreground ring-1 ring-border shadow-sm" : "text-muted-foreground hover:bg-muted"
                     )}
-                  >
-                    Disabled
+                    >
+                    {t("tasks.form.disabled")}
                   </button>
                 </div>
               </div>
 
               {scheduleKind === "once" ? (
                 <InputField
-                  label="Run At (Local)"
+                  label={t("tasks.form.run_at")}
                   value={runAtInput}
                   onChange={setRunAtInput}
                   type="datetime-local"
@@ -307,45 +254,12 @@ export default function TasksPage() {
               ) : null}
               {scheduleKind === "interval" ? (
                 <InputField
-                  label="Interval (ms)"
-                  value={intervalMsInput}
-                  onChange={setIntervalMsInput}
+                  label={t("tasks.form.interval_minutes")}
+                  value={intervalMinutesInput}
+                  onChange={setIntervalMinutesInput}
                   type="number"
                 />
               ) : null}
-              {scheduleKind === "cron" ? (
-                <>
-                  <InputField label="Cron Expression" value={cronInput} onChange={setCronInput} />
-                  <InputField label="Timezone" value={timezone} onChange={setTimezone} />
-                </>
-              ) : null}
-
-              <InputField label="Tool Dimsum ID" value={toolDimsumId} onChange={setToolDimsumId} />
-              <InputField label="Tool Name" value={toolName} onChange={setToolName} />
-
-              <InputField
-                label="Timeout (ms)"
-                value={timeoutMsInput}
-                onChange={setTimeoutMsInput}
-                type="number"
-              />
-              <InputField
-                label="Max Retries"
-                value={maxRetriesInput}
-                onChange={setMaxRetriesInput}
-                type="number"
-              />
-
-              <InputField label="Kill Switch Group" value={killSwitchGroup} onChange={setKillSwitchGroup} />
-
-              <div className="col-span-full rounded-xl bg-muted/30 p-3 ring-1 ring-border/50 md:col-span-2 lg:col-span-3">
-                <div className="mb-2 text-xs font-medium text-muted-foreground">Tool Args (JSON)</div>
-                <textarea
-                  value={toolArgsInput}
-                  onChange={(e) => setToolArgsInput(e.target.value)}
-                  className="min-h-[100px] w-full resize-y rounded-lg bg-background px-3 py-2 text-xs font-mono outline-none ring-1 ring-border/50 focus:ring-primary/30"
-                />
-              </div>
             </div>
 
             <div className="mt-6 flex items-center justify-end gap-3">
@@ -359,7 +273,7 @@ export default function TasksPage() {
                   }}
                   className="h-9 rounded-xl px-4 text-sm bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
                 >
-                  Cancel
+                  {t("tasks.form.cancel")}
                 </ShinyButton>
               ) : null}
               <ShinyButton
@@ -370,7 +284,11 @@ export default function TasksPage() {
                 disabled={saving}
                 className="h-9 rounded-xl px-6 text-sm bg-primary text-primary-foreground hover:bg-primary/90"
               >
-                {saving ? "Saving..." : editingTaskId ? "Update Task" : "Create Task"}
+                {saving
+                  ? t("tasks.form.saving")
+                  : editingTaskId
+                    ? t("tasks.form.update")
+                    : t("tasks.form.create")}
               </ShinyButton>
             </div>
           </div>
@@ -407,7 +325,7 @@ export default function TasksPage() {
                       const act = it.enabled ? client.disableTask : client.enableTask;
                       void act(it.id)
                         .then(() => refreshTasks())
-                        .catch((err) => setError(err instanceof Error ? err.message : "Toggle failed"));
+                        .catch((err) => setError(toErrorMessage(err, t("tasks.error.toggle_failed"))));
                     }}
                     className={cn(
                       "rounded-lg p-1.5 hover:bg-muted",
@@ -420,23 +338,25 @@ export default function TasksPage() {
               </div>
 
               <div className="mt-4 flex-1 space-y-2 text-xs text-muted-foreground/80">
-                <div className="flex items-center gap-2 rounded-lg bg-muted/30 px-2 py-1.5">
-                  <div className="font-medium text-foreground">Tool:</div>
-                  <div className="truncate font-mono">{it.toolDimsumId}/{it.toolName}</div>
-                </div>
                 <div className="grid grid-cols-2 gap-2">
                    <div className="rounded-lg bg-muted/30 px-2 py-1.5">
-                     <div className="text-[10px] uppercase tracking-wider opacity-70">Next Run</div>
+                     <div className="text-[10px] uppercase tracking-wider opacity-70">{t("tasks.card.next_run")}</div>
                      <div className="mt-0.5 truncate font-medium text-foreground">{formatUnix(it.nextRunAt)}</div>
                    </div>
                    <div className="rounded-lg bg-muted/30 px-2 py-1.5">
-                     <div className="text-[10px] uppercase tracking-wider opacity-70">Last Run</div>
+                     <div className="text-[10px] uppercase tracking-wider opacity-70">{t("tasks.card.last_run")}</div>
                      <div className="mt-0.5 truncate font-medium text-foreground">{formatUnix(it.lastRunAt)}</div>
                    </div>
                 </div>
+                {it.lastStatus ? (
+                  <div className="rounded-lg bg-muted/30 px-2 py-1.5">
+                    <div className="text-[10px] uppercase tracking-wider opacity-70">{t("tasks.card.last_status")}</div>
+                    <div className="mt-0.5 truncate font-medium text-foreground">{it.lastStatus}</div>
+                  </div>
+                ) : null}
                 {it.lastError ? (
                   <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-red-600 dark:text-red-400">
-                    <div className="font-semibold">Error:</div>
+                    <div className="font-semibold">{t("tasks.card.error")}</div>
                     <div className="line-clamp-2">{it.lastError}</div>
                   </div>
                 ) : null}
@@ -449,14 +369,14 @@ export default function TasksPage() {
                     void client
                       .runTaskNow(it.id)
                       .then(() => refreshTasks())
-                      .catch((err) => setError(err instanceof Error ? err.message : "Run failed"));
+                      .catch((err) => setError(toErrorMessage(err, t("tasks.error.run_failed"))));
                   }}
                   className="w-full h-8 rounded-xl text-xs font-medium"
                   data-testid={`task-run-${it.id}`}
                 >
                   <span className="flex items-center justify-center gap-1.5">
                     <Play className="h-3 w-3" />
-                    Run Now
+                    {t("tasks.card.run_now")}
                   </span>
                 </ShinyButton>
               </div>
@@ -465,13 +385,53 @@ export default function TasksPage() {
         ))}
         {!loading && items.length === 0 ? (
           <div className="col-span-full flex h-40 items-center justify-center rounded-3xl border border-dashed border-border/50 bg-muted/20 text-sm text-muted-foreground">
-            No tasks found. Create one to get started.
+            {t("tasks.empty")}
           </div>
         ) : null}
         </div>
       </div>
     </div>
   );
+}
+
+function buildTaskToolArgs(text: string) {
+  const escaped = text
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\$/g, "\\$")
+    .replace(/`/g, "\\`");
+  return {
+    command: "sh",
+    args: ["-lc", `echo \"${escaped}\"`],
+  };
+}
+
+function generateTaskId(content: string): string {
+  const normalized = content
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-")
+    .replace(/(^-|-$)/g, "")
+    .slice(0, 24);
+  const base = normalized || "task";
+  return `${base}-${Date.now().toString(36)}`;
+}
+
+function intervalMsToMinutes(intervalMs?: number | null): number {
+  if (!intervalMs || intervalMs < 60_000) return 60;
+  return Math.max(1, Math.round(intervalMs / 60_000));
+}
+
+function toDatetimeLocalInput(runAtTs?: number | null): string {
+  if (!runAtTs) {
+    return "";
+  }
+  const date = new Date(runAtTs * 1000);
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+function toErrorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback;
 }
 
 function InputField({

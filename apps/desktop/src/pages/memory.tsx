@@ -82,7 +82,7 @@ export default function MemoryPage() {
       })
       .catch((err) => {
         if (!mounted) return;
-        setError(err instanceof Error ? err.message : "检索失败");
+        setError(toErrorMessage(err, "检索失败"));
       });
     return () => {
       mounted = false;
@@ -110,10 +110,7 @@ export default function MemoryPage() {
 
   const toggleExpand = async (id: string) => {
     const nextOpen = !expanded[id];
-    setExpanded((prev) => {
-      const next = { ...prev, [id]: !prev[id] };
-      return next;
-    });
+    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
 
     if (!nextOpen) return;
 
@@ -142,13 +139,10 @@ export default function MemoryPage() {
       }
 
       if (versionsResult) {
-        const versions = (versionsResult.versions as unknown[])
-          .map(normalizeVersion)
-          .filter((v): v is MemoryVersion => Boolean(v));
-        setVersionsByMemoryId((prev) => ({ ...prev, [id]: versions }));
+        setVersionsByMemoryId((prev) => ({ ...prev, [id]: parseVersions(versionsResult.versions) }));
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载详情失败");
+      setError(toErrorMessage(err, "加载详情失败"));
     } finally {
       if (needItem) {
         setLoadingIds((prev) => ({ ...prev, [id]: false }));
@@ -189,12 +183,9 @@ export default function MemoryPage() {
         return next;
       });
 
-      const versions = (versionsRes.versions as unknown[])
-        .map(normalizeVersion)
-        .filter((v): v is MemoryVersion => Boolean(v));
-      setVersionsByMemoryId((prev) => ({ ...prev, [memoryId]: versions }));
+      setVersionsByMemoryId((prev) => ({ ...prev, [memoryId]: parseVersions(versionsRes.versions) }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "回滚失败");
+      setError(toErrorMessage(err, "回滚失败"));
     } finally {
       setSaving(false);
       setRollingVersionKey(null);
@@ -215,7 +206,7 @@ export default function MemoryPage() {
             data-testid="memory-refresh"
           >
             <RefreshCw className="mr-2 h-3.5 w-3.5" />
-            Refresh
+            {t("memory.action.refresh")}
           </ShinyButton>
       </div>
 
@@ -227,7 +218,7 @@ export default function MemoryPage() {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search memory graph..."
+              placeholder={t("memory.search.placeholder")}
               className="h-11 w-full rounded-xl bg-muted/30 pl-9 pr-4 text-sm outline-none ring-1 ring-border/50 transition-all focus:bg-muted/50 focus:ring-primary/30"
               data-testid="memory-search"
             />
@@ -236,7 +227,7 @@ export default function MemoryPage() {
           <div className="mt-6">
             <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
               <Database className="h-3.5 w-3.5" />
-              Timeline Overview
+              {t("memory.timeline.title")}
             </div>
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {timeline.map((item) => (
@@ -253,7 +244,9 @@ export default function MemoryPage() {
                   </div>
                 </div>
               ))}
-              {timeline.length === 0 ? <div className="col-span-full py-4 text-center text-xs text-muted-foreground">No timeline data available.</div> : null}
+              {timeline.length === 0 ? (
+                <div className="col-span-full py-4 text-center text-xs text-muted-foreground">{t("memory.timeline.empty")}</div>
+              ) : null}
             </div>
           </div>
         </div>
@@ -309,40 +302,40 @@ export default function MemoryPage() {
                   {loading ? (
                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
                         <div className="h-3 w-3 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                        Loading details...
+                        {t("memory.details.loading")}
                      </div>
-                  ) : null}
+                   ) : null}
                   {!loading && detail ? (
                     <div className="space-y-4">
                       <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
                         <div className="flex items-center gap-1.5 rounded-lg bg-background/50 px-2 py-1.5">
-                           <span className="font-medium">ID:</span>
+                           <span className="font-medium">{t("memory.details.id")}</span>
                            <span className="font-mono">{detail.id}</span>
                         </div>
                         <div className="flex items-center gap-1.5 rounded-lg bg-background/50 px-2 py-1.5">
-                           <span className="font-medium">Status:</span>
+                           <span className="font-medium">{t("memory.details.status")}</span>
                            <span>{detail.status ?? "-"}</span>
                         </div>
                         <div className="flex items-center gap-1.5 rounded-lg bg-background/50 px-2 py-1.5">
-                           <span className="font-medium">Score:</span>
+                           <span className="font-medium">{t("memory.details.score")}</span>
                            <span>{String(detail.score ?? "-")}</span>
                         </div>
                         <div className="flex items-center gap-1.5 rounded-lg bg-background/50 px-2 py-1.5">
-                           <span className="font-medium">Updated:</span>
+                           <span className="font-medium">{t("memory.details.updated")}</span>
                            <span>{formatUnix(detail.updatedAt)}</span>
                         </div>
                       </div>
 
                       <div>
-                        <div className="mb-1.5 text-xs font-medium text-muted-foreground">Content</div>
+                        <div className="mb-1.5 text-xs font-medium text-muted-foreground">{t("memory.details.content")}</div>
                         <div className="rounded-xl border border-border/50 bg-background p-3 text-xs leading-relaxed text-foreground/90">
-                          {detail.content ?? <span className="text-muted-foreground italic">(empty content)</span>}
+                          {detail.content ?? <span className="text-muted-foreground italic">{t("memory.details.empty_content")}</span>}
                         </div>
                       </div>
 
                       {detail.json ? (
                          <div>
-                            <div className="mb-1.5 text-xs font-medium text-muted-foreground">Metadata (JSON)</div>
+                            <div className="mb-1.5 text-xs font-medium text-muted-foreground">{t("memory.details.metadata")}</div>
                             <pre className="max-h-40 overflow-auto rounded-xl border border-border/50 bg-muted/20 p-3 font-mono text-[10px] text-foreground/80 scrollbar-thin scrollbar-thumb-muted-foreground/20">
                               {safeJson(detail.json)}
                             </pre>
@@ -352,11 +345,11 @@ export default function MemoryPage() {
                       <div className="rounded-xl border border-border/50 bg-background/50 p-3">
                         <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
                           <History className="h-3.5 w-3.5" />
-                          Version History
+                          {t("memory.version_history.title")}
                         </div>
-                        {loadingVersions ? <div className="text-[10px] text-muted-foreground">Loading versions...</div> : null}
+                        {loadingVersions ? <div className="text-[10px] text-muted-foreground">{t("memory.version_history.loading")}</div> : null}
                         {!loadingVersions && versions.length === 0 ? (
-                          <div className="text-[10px] text-muted-foreground">No version history available.</div>
+                          <div className="text-[10px] text-muted-foreground">{t("memory.version_history.empty")}</div>
                         ) : null}
                         {!loadingVersions && versions.length > 0 ? (
                           <div className="space-y-1.5">
@@ -374,7 +367,7 @@ export default function MemoryPage() {
                                       <span className="rounded bg-background px-1 py-0.5 text-[9px] uppercase tracking-wider text-muted-foreground border border-border/50">{version.op}</span>
                                     </div>
                                     <div className="mt-0.5 truncate text-[10px] text-muted-foreground/70">
-                                      {formatUnix(version.createdAt)} · {version.actor ?? "system"}
+                                      {formatUnix(version.createdAt)} · {version.actor ?? t("memory.version_history.system")}
                                     </div>
                                   </div>
                                   <ShinyButton
@@ -386,7 +379,7 @@ export default function MemoryPage() {
                                     className="h-6 rounded-md px-2 text-[10px]"
                                     data-testid={`memory-rollback-${detail.id}-${version.versionId}`}
                                   >
-                                    {isRolling ? "Rolling back..." : "Rollback"}
+                                    {isRolling ? t("memory.version_history.rolling_back") : t("memory.version_history.rollback")}
                                   </ShinyButton>
                                 </div>
                               );
@@ -396,7 +389,7 @@ export default function MemoryPage() {
                       </div>
                     </div>
                   ) : null}
-                  {!loading && !detail ? <div className="text-xs text-muted-foreground">Details not found.</div> : null}
+                  {!loading && !detail ? <div className="text-xs text-muted-foreground">{t("memory.details.not_found")}</div> : null}
                 </div>
               ) : null}
             </motion.div>
@@ -426,6 +419,17 @@ function safeJson(v: unknown): string {
   } catch {
     return String(v);
   }
+}
+
+function parseVersions(rawVersions: unknown): MemoryVersion[] {
+  if (!Array.isArray(rawVersions)) {
+    return [];
+  }
+  return rawVersions.map(normalizeVersion).filter((v): v is MemoryVersion => Boolean(v));
+}
+
+function toErrorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback;
 }
 
 function normalizeVersion(raw: unknown): MemoryVersion | null {

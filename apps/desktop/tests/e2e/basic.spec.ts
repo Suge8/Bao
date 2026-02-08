@@ -1,15 +1,21 @@
 import { test, expect } from "@playwright/test";
 import { SIMULATOR_SCRIPT } from "./fixtures/rust-simulator";
 
+async function ensureChatReady(page: import("@playwright/test").Page) {
+  const input = page.getByTestId("chat-input");
+  if (await input.isDisabled()) {
+    await page.getByTestId("topbar-gateway-toggle").click();
+    await expect(input).toBeEnabled();
+  }
+}
+
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(SIMULATOR_SCRIPT);
   await page.goto("/");
 });
 
 test("topbar should keep global controls without model badge", async ({ page }) => {
-  await expect(page.getByTestId("topbar-new")).toBeVisible();
   await expect(page.getByTestId("topbar-gateway-toggle")).toBeVisible();
-  await expect(page.getByTestId("topbar-kill")).toBeVisible();
   await expect(page.getByTestId("topbar-model")).toHaveCount(0);
 });
 
@@ -26,6 +32,9 @@ test("settings locale toggle should still work", async ({ page }) => {
 
 test("chat should keep messages by session", async ({ page }) => {
   await expect(page.getByTestId("page-chat")).toBeVisible();
+  await expect(page.getByTestId("chat-input")).toBeDisabled();
+  await expect(page.getByTestId("chat-compose-guard")).toContainText("Gateway");
+  await ensureChatReady(page);
 
   await page.getByTestId("chat-input").fill("hello default");
   await page.getByTestId("chat-send").click();
@@ -59,6 +68,7 @@ test("settings logs modal should open, switch tabs and close", async ({ page }) 
 });
 
 test("logs modal should show runtime and audit entries", async ({ page }) => {
+  await ensureChatReady(page);
   await page.getByTestId("chat-input").fill('/tool shell.exec {"command":"__provider_error_retry__"}');
   await page.getByTestId("chat-send").click();
 

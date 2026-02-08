@@ -1,5 +1,7 @@
 # 当前进度
 
+- desktop i18n 收口：任务/记忆/点心/设置/导航中的硬编码英文已迁移到 `apps/desktop/src/i18n/desktop-locales.ts`，新增中英文词条并统一 `t(key)` 调用。
+- tasks 页面已降复杂度：创建任务改为「自然语言内容 + 单次/循环时间」最小输入，保留执行链路与 run-now/启停能力。
 - gateway frame 已收紧：按 type 绑定具体 payload schema（hello/welcome/event/replay_request/error）。
 - release-gates：`P0.CORE_SLO` 改为 fail-closed（性能观测缺失即失败），避免缺指标时误判 PASS。
 - release-checklist：新增 `--run` 实时门禁执行模式（逐个执行 P0 command + 回写 evidence + 以真实退出码判定 GO/NO-GO），降低静态 status 过期风险。
@@ -131,6 +133,7 @@
 - desktop-layout：Tasks/Dimsums/Memory/Settings 页面滚动统一下沉到内容区（标题区固定、内容区 `overflow-y-auto`），进一步避免“整页滚动条”表现。
 - desktop-settings-layout：Settings 页面改为「主配置卡 + 侧栏功能卡」双区布局（`lg` 断点），并补齐 `min-w-0/minmax(0,1fr)` 与容器滚动边界，修复 Provider 表单右侧超界与非预期纵向滚动条。
 - desktop-settings-layout：对 Settings 新布局做 `code-simplifier` 等价收口，提取重复按钮样式常量并整理 JSX 层级缩进，保持视觉与交互不变。
+- desktop-ui：Topbar 按钮收口为两类核心动作（Gateway 管理 + Gateway Start/Stop）；移除顶栏“新对话”重复入口与独立红色急停按钮，停止动作统一走 `killSwitchStopAll`。
 - [FIX] 2026-02-08 回滚恢复：恢复 `apps/desktop/src/pages/chat/layout.tsx` 的两栏会话布局（移除 Inspector）、发送中 MagicUI loading + 输入框锁定、模型选择居中与右上“新对话”按钮。
 - [FIX] 2026-02-08 回滚恢复：恢复 `apps/desktop/src/data/tauri-client.ts` 的 `create_session/run_engine_turn/gateway_set_allow_lan` `input` 参数封装，并同步 `apps/desktop/src/i18n/desktop-locales.ts` 与 `apps/desktop/tests/e2e/fixtures/rust-simulator.ts` 兼容文案/入参解析。
 - [FIX] 2026-02-08 二次恢复 2b 回滚：恢复 Topbar 连接中心（网关启停/访问模式/扫码配对/设备列表）、恢复 `pairingQr/listGatewayDevices/revokeGatewayDevice` IPC 链路与 `gateway_set_allow_lan` 参数契约，并移除 Settings 重复网关面板。
@@ -140,6 +143,7 @@
 
 # 改动记录（最近）
 
+- [FEAT] 2026-02-08 桌面 i18n 与任务体验收口：`apps/desktop/src/pages/{tasks.tsx,memory.tsx,dimsums.tsx,settings.tsx}`、`apps/desktop/src/components/layout/{app-shell.tsx,topbar.tsx}`、`apps/desktop/src/i18n/desktop-locales.ts`。将硬编码英文迁移到 i18n，并把 Tasks 创建表单简化为自然语言输入 + 单次/循环时间。
 - [FIX] 2026-02-08 恢复被 2b 回滚的 Topbar 网关收口：`apps/desktop/src/components/layout/topbar.tsx`、`apps/desktop/src/data/client.ts`、`apps/desktop/src/data/tauri-client.ts`、`apps/desktop/src/pages/settings.tsx`、`apps/desktop/src/i18n/desktop-locales.ts`、`apps/desktop/src-tauri/src/lib.rs`、`crates/bao-gateway/src/lib.rs`，并同步 e2e 断言至连接中心语义。
 - [FIX] 2026-02-08 恢复被回滚的桌面 Chat 改动：`apps/desktop/src/pages/chat/layout.tsx`（loading + 输入锁定 + 模型居中 + 新对话按钮 + 列表动画/贴底布局）、`apps/desktop/src/data/tauri-client.ts`（关键命令 `input` 参数封装）、`apps/desktop/src/i18n/desktop-locales.ts`（chat 文案键）、`apps/desktop/tests/e2e/fixtures/rust-simulator.ts`（命令入参兼容）。
 - [FEAT] 2026-02-08 `crates/bao-dimsum-process/src/pipeline_hooks.rs` 提炼 mem0 优势能力到本地策略：`memory.extract` 从“关键词硬触发”升级为“显式意图 + 高置信隐式偏好”，新增称呼偏好规则（`叫我X/别叫我X/call me X`）、噪声过滤与稳定 ID 覆盖更新（`mem_pref_user_addressing`），并补齐 4 个回归单测。
@@ -287,6 +291,7 @@
 - [FEAT] 2026-02-07 `apps/desktop/src-tauri/tauri.conf.json` 启用 `maximized=true`（启动即最佳可用尺寸）；`apps/desktop/src/components/ui/{dot-pattern,magic-card,shiny-button}.tsx` 新增并在 desktop 各页/布局全面替换交互按钮与主要容器为 Magic UI 风格组件。
 - [FIX] 2026-02-07 `apps/desktop/src/components/layout/topbar.tsx` 修复 Gateway 顶栏控制歧义：Pause 改为 Start/Stop toggle、状态文案改为 Online/Offline、New Session 从 Gateway 控制组拆分并增加按钮禁用态。
 - [FIX] 2026-02-07 `apps/desktop/src/components/layout/app-shell.tsx`、`apps/desktop/src/App.tsx`、`apps/desktop/src/globals.css`、`apps/desktop/src/pages/{chat.tsx,chat/layout.tsx,tasks.tsx,dimsums.tsx,memory.tsx,settings.tsx}` 调整为固定视口 + 页面内滚动布局，避免整页纵向滚动。
+- [FIX] 2026-02-08 精简 Topbar 顶部按钮：`apps/desktop/src/components/layout/topbar.tsx` 移除 `topbar-new` 与 `topbar-kill`，将停止语义合并进 `topbar-gateway-toggle`（运行中点击触发 `killSwitchStopAll`）；同步 `apps/desktop/tests/e2e/{basic.spec.ts,real-backend.spec.ts}` 断言。
 
 # 未来发展（优先级）
 
@@ -316,8 +321,11 @@ P1
 - ✅ 已完成（2026-02-07）：desktop 全局 UI 视觉统一收口（导航/页头/主页面卡片化与响应式布局完成）。
 - ✅ 已完成（2026-02-07）：desktop 页面滚动收口（壳层固定视口 + 各页容器内滚动），整页滚动条问题显著缓解。
 - ✅ 已完成（2026-02-07）：Topbar 三按钮语义文档化（New Session / Gateway Toggle / Kill All）并明确职责边界。
+- ✅ 已完成（2026-02-08）：Topbar 进一步减负为两按钮交互（移除重复新对话 + 合并急停到 Gateway 停止动作），降低用户心智负担。
+- ✅ 已完成（2026-02-08）：Tasks 创建体验收口为自然语言最小输入（内容 + 单次/循环时间），并将相关页面硬编码英文统一迁移到 i18n。
 - ⏳ 待进行：补一组 desktop 布局回归（1280x760、1366x768、1440x900）截图基线，持续防止 Chat 三栏布局再次发生横向裁剪。
 - ⏳ 待进行：补齐 desktop 全页面 Magic UI 视觉回归截图与关键交互录屏基线（主题一致性、可读性、按钮可达性）。
+- ⏳ 待进行：在不增加表单复杂度前提下，引入任务自然语言结构化解析（时间短语/周期语义），替换当前最小命令模板生成策略。
 
 P2
 

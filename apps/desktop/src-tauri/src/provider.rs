@@ -1,5 +1,6 @@
 use bao_gateway::GatewayHandle;
 use bao_plugin_host::ToolRunner;
+use reqwest::blocking::Client as HttpClient;
 use serde_json::{json, Map, Value};
 
 use crate::dimsum_process::{self, ProcessRuntime};
@@ -103,6 +104,17 @@ pub async fn resolve_provider_identity(
     let cfg = load_provider_config(handle).await?;
     let runtime = load_provider_runtime(handle, &cfg.active).await?;
     Ok((runtime.dimsum_id, cfg.model))
+}
+
+pub async fn preflight_provider_via_runner(
+    handle: &GatewayHandle,
+    runner: &(dyn ToolRunner + Send + Sync),
+) -> Result<(), String> {
+    let cfg = load_provider_config(handle).await?;
+    let runtime = load_provider_runtime(handle, &cfg.active).await?;
+
+    probe_provider_methods(runner, &runtime)?;
+    check_provider_connectivity(&cfg, &runtime.dimsum_id)
 }
 
 async fn load_provider_config(handle: &GatewayHandle) -> Result<ProviderConfig, String> {
@@ -360,6 +372,128 @@ fn method_is_supported(methods_result: &Value, method: &str) -> bool {
             })
         })
         .unwrap_or(false)
+}
+
+fn check_provider_connectivity(cfg: &ProviderConfig, dimsum_id: &str) -> Result<(), String> {
+    let kind = if dimsum_id.ends_with("anthropic") {
+        "anthropic"
+    } else if dimsum_id.ends_with("gemini") {
+        "gemini"
+    } else if dimsum_id.ends_with("xai") {
+        "xai"
+    } else {
+        "openai"
+    };
+
+    let client = HttpClient::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("build connectivity client failed: {e}"))?;
+
+    match kind {
+        "anthropic" => {
+            let key = load_api_key_from_cfg("anthropic", cfg)?;
+            let base = cfg
+                .base_url
+                .as_deref()
+                .unwrap_or("https://api.anthropic.com")
+                .trim_end_matches('/');
+            let rsp = client
+                .get(format!("{base}/v1/models"))
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01")
+                .send()
+                .map_err(|e| format!("provider connectivity request failed: {e}"))?;
+            validate_connectivity_response(rsp)
+        }
+        "gemini" => {
+            let key = load_api_key_from_cfg("gemini", cfg)?;
+            let base = cfg
+                .base_url
+                .as_deref()
+                .unwrap_or("https://generativelanguage.googleapis.com")
+                .trim_end_matches('/');
+            let rsp = client
+                .get(format!("{base}/v1beta/models"))
+                .query(&[("key", key)])
+                .send()
+                .map_err(|e| format!("provider connectivity request failed: {e}"))?;
+            validate_connectivity_response(rsp)
+        }
+        "xai" => {
+            let key = load_api_key_from_cfg("xai", cfg)?;
+            let base = cfg
+                .base_url
+                .as_deref()
+                .unwrap_or("https://api.x.ai/v1")
+                .trim_end_matches('/');
+            let rsp = client
+                .get(format!("{base}/models"))
+                .bearer_auth(key)
+                .send()
+                .map_err(|e| format!("provider connectivity request failed: {e}"))?;
+            validate_connectivity_response(rsp)
+        }
+        _ => {
+            let key = load_api_key_from_cfg("openai", cfg)?;
+            let base = cfg
+                .base_url
+                .as_deref()
+                .unwrap_or("https://api.openai.com/v1")
+                .trim_end_matches('/');
+            let rsp = client
+                .get(format!("{base}/models"))
+                .bearer_auth(key)
+                .send()
+                .map_err(|e| format!("provider connectivity request failed: {e}"))?;
+            validate_connectivity_response(rsp)
+        }
+    }
+}
+
+fn validate_connectivity_response(response: reqwest::blocking::Response) -> Result<(), String> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+
+    let body = response
+        .text()
+        .unwrap_or_else(|_| "unable to read response body".to_string());
+    Err(format!(
+        "provider connectivity check failed: http {} ({})",
+        status.as_u16(),
+        body
+    ))
+}
+
+fn load_api_key_from_cfg(kind: &str, cfg: &ProviderConfig) -> Result<String, String> {
+    if let Some(v) = cfg
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        return Ok(v.to_string());
+    }
+
+    let keys: &[&str] = match kind {
+        "anthropic" => &["ANTHROPIC_API_KEY", "BAO_PROVIDER_API_KEY"],
+        "gemini" => &["GEMINI_API_KEY", "GOOGLE_API_KEY", "BAO_PROVIDER_API_KEY"],
+        "xai" => &["XAI_API_KEY", "BAO_PROVIDER_API_KEY"],
+        _ => &["OPENAI_API_KEY", "BAO_PROVIDER_API_KEY"],
+    };
+
+    for key in keys {
+        if let Ok(value) = std::env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Ok(trimmed.to_string());
+            }
+        }
+    }
+
+    Err("missing api key (config.apiKey or env)".to_string())
 }
 
 #[cfg(test)]

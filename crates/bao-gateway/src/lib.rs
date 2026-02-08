@@ -242,6 +242,51 @@ impl GatewayHandle {
         .await
     }
 
+    pub async fn delete_session(&self, session_id: String) -> Result<BaoEventV1, GatewayError> {
+        let ts = now_ts();
+        if session_id.trim().is_empty() {
+            return Err(GatewayError::Protocol(
+                "session id cannot be empty".to_string(),
+            ));
+        }
+        let sid = session_id.clone();
+
+        tokio::task::spawn_blocking({
+            let sqlite_path = self.state.sqlite_path.clone();
+            let session_id = session_id.clone();
+            move || {
+                let mut conn = Connection::open(sqlite_path)?;
+                conn.pragma_update(None, "foreign_keys", "ON")?;
+                let tx = conn.transaction()?;
+                tx.execute(
+                    "DELETE FROM tool_calls WHERE session_id=?1",
+                    params![&session_id],
+                )?;
+                tx.execute("DELETE FROM messages WHERE session_id=?1", params![&session_id])?;
+                let deleted = tx.execute("DELETE FROM sessions WHERE session_id=?1", params![&session_id])?;
+                if deleted == 0 {
+                    return Err(GatewayError::Protocol("session not found".to_string()));
+                }
+                tx.commit()?;
+                Ok::<_, GatewayError>(())
+            }
+        })
+        .await
+        .map_err(|e| GatewayError::Protocol(format!("join: {e}")))??;
+
+        let payload = serde_json::json!({"sessionId": sid});
+        append_and_load_event(
+            &self.state,
+            ts,
+            "sessions.delete",
+            Some(sid.as_str()),
+            None,
+            None,
+            &payload,
+        )
+        .await
+    }
+
     pub async fn list_tasks(&self) -> Result<BaoEventV1, GatewayError> {
         let tasks = query_tasks(&self.state.sqlite_path).await?;
         let payload = serde_json::json!({"tasks": tasks});
