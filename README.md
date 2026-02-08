@@ -16,7 +16,7 @@
 
 ⚡️ Delivers core agent functionality in just **~4,000** lines of code — **99% smaller** than Clawdbot's 430k+ lines.
 
-📏 Real-time line count: **3,423 lines** (run `bash core_agent_lines.sh` to verify anytime)
+📏 Real-time line count: **3,429 lines** (run `bash core_agent_lines.sh` to verify anytime)
 
 ## 📢 News
 
@@ -293,10 +293,6 @@ nanobot gateway
 
 Uses **WebSocket** long connection — no public IP required.
 
-```bash
-pip install nanobot-ai[feishu]
-```
-
 **1. Create a Feishu bot**
 - Visit [Feishu Open Platform](https://open.feishu.cn/app)
 - Create a new app → Enable **Bot** capability
@@ -341,10 +337,6 @@ nanobot gateway
 <summary><b>DingTalk (钉钉)</b></summary>
 
 Uses **Stream Mode** — no public IP required.
-
-```bash
-pip install nanobot-ai[dingtalk]
-```
 
 **1. Create a DingTalk bot**
 - Visit [DingTalk Open Platform](https://open-dev.dingtalk.com/)
