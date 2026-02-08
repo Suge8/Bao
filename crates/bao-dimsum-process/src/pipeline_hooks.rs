@@ -186,7 +186,22 @@ fn build_memory_extract_plan(params: &Value) -> Result<MemoryMutationPlanV1, Rpc
         .map(str::trim)
         .unwrap_or_default();
 
-    if user_input.is_empty() || !should_extract_memory(user_input) {
+    let explicit_memory_intent = should_extract_memory(user_input);
+    let noisy_implicit_input = is_noisy_for_implicit_memory(user_input);
+    let addressing = if explicit_memory_intent || !noisy_implicit_input {
+        extract_addressing_preference(user_input)
+    } else {
+        None
+    };
+    let preference = if explicit_memory_intent || !noisy_implicit_input {
+        extract_preference_fact(user_input)
+    } else {
+        None
+    };
+
+    if user_input.is_empty()
+        || (!explicit_memory_intent && addressing.is_none() && preference.is_none())
+    {
         return Ok(MemoryMutationPlanV1 {
             planId: plan_id,
             mutations: vec![],
@@ -194,9 +209,27 @@ fn build_memory_extract_plan(params: &Value) -> Result<MemoryMutationPlanV1, Rpc
         });
     }
 
-    let preference = extract_preference_fact(user_input);
-    let (memory_id, title, content, reason) = match preference {
-        Some((subject, polarity)) => {
+    let (memory_id, title, content, reason) = match (addressing, preference) {
+        (Some((nickname, polarity)), _) => {
+            let title = shorten_title(&format!("称呼偏好:{nickname}"), 48);
+            let content = if polarity == "avoid" {
+                format!("不希望被称呼为 {nickname}")
+            } else {
+                format!("希望被称呼为 {nickname}")
+            };
+            let reason = if polarity == "avoid" {
+                "implicit_addressing_avoid"
+            } else {
+                "implicit_addressing_preference"
+            };
+            (
+                Some("mem_pref_user_addressing".to_string()),
+                title,
+                content,
+                reason,
+            )
+        }
+        (None, Some((subject, polarity))) => {
             let memory_id = Some(format!("mem_pref_{}", short_sha256_hex(&subject, 12)));
             let title = shorten_title(&format!("偏好:{subject}"), 48);
             let content = if polarity == "dislike" {
@@ -206,12 +239,14 @@ fn build_memory_extract_plan(params: &Value) -> Result<MemoryMutationPlanV1, Rpc
             };
             let reason = if polarity == "dislike" {
                 "semantic_conflict_update"
-            } else {
+            } else if explicit_memory_intent {
                 "explicit_memory_intent"
+            } else {
+                "implicit_preference_inference"
             };
             (memory_id, title, content, reason)
         }
-        None => (
+        (None, None) => (
             None,
             shorten_title(user_input, 48),
             user_input.to_string(),
@@ -255,6 +290,52 @@ fn should_extract_memory(input: &str) -> bool {
         .any(|kw| lower.contains(kw))
 }
 
+fn is_noisy_for_implicit_memory(input: &str) -> bool {
+    let lower = input.to_lowercase();
+    input.chars().count() > 240
+        || input.contains('\n')
+        || input.contains("```")
+        || lower.contains("http://")
+        || lower.contains("https://")
+}
+
+fn extract_addressing_preference(input: &str) -> Option<(String, &'static str)> {
+    for marker in ["别叫我", "不要叫我", "别再叫我", "别称呼我", "不要称呼我"] {
+        if let Some(nickname) = extract_nickname_after(input, marker) {
+            return Some((nickname, "avoid"));
+        }
+    }
+
+    for marker in [
+        "以后叫我",
+        "请叫我",
+        "你就叫我",
+        "可以叫我",
+        "叫我",
+        "称呼我为",
+        "我的昵称是",
+        "我昵称是",
+    ] {
+        if let Some(nickname) = extract_nickname_after(input, marker) {
+            return Some((nickname, "prefer"));
+        }
+    }
+
+    for marker in ["do not call me ", "don't call me ", "dont call me "] {
+        if let Some(nickname) = extract_ascii_marker_subject(input, marker) {
+            return Some((nickname, "avoid"));
+        }
+    }
+
+    for marker in ["please call me ", "call me ", "my nickname is "] {
+        if let Some(nickname) = extract_ascii_marker_subject(input, marker) {
+            return Some((nickname, "prefer"));
+        }
+    }
+
+    None
+}
+
 fn extract_preference_fact(input: &str) -> Option<(String, &'static str)> {
     if let Some(subject) = extract_subject_after(input, "我不喜欢") {
         return Some((subject, "dislike"));
@@ -292,16 +373,39 @@ fn extract_subject_after(input: &str, marker: &str) -> Option<String> {
     normalize_subject(&input[start..])
 }
 
+fn extract_nickname_after(input: &str, marker: &str) -> Option<String> {
+    let idx = input.find(marker)?;
+    let start = idx + marker.len();
+    if start > input.len() {
+        return None;
+    }
+    normalize_nickname(&input[start..])
+}
+
+fn extract_ascii_marker_subject(input: &str, marker: &str) -> Option<String> {
+    let lower = input.to_lowercase();
+    let idx = lower.find(marker)?;
+    let start = idx + marker.len();
+    if start > input.len() {
+        return None;
+    }
+    normalize_nickname(&input[start..])
+}
+
 fn normalize_subject(raw: &str) -> Option<String> {
     let subject = raw
         .trim()
         .trim_start_matches(':')
         .trim_start_matches('：')
+        .trim_start_matches('"')
+        .trim_start_matches('\'')
+        .trim_start_matches('“')
+        .trim_start_matches('”')
         .trim()
         .trim_matches(|c| {
             matches!(
                 c,
-                '。' | '.' | ',' | '，' | '!' | '！' | '?' | '？' | ';' | '；'
+                '。' | '.' | ',' | '，' | '!' | '！' | '?' | '？' | ';' | '；' | '"' | '\''
             )
         })
         .trim()
@@ -312,6 +416,39 @@ fn normalize_subject(raw: &str) -> Option<String> {
     } else {
         Some(subject)
     }
+}
+
+fn normalize_nickname(raw: &str) -> Option<String> {
+    let nickname = normalize_subject(raw)?;
+    let lower = nickname.to_lowercase();
+    let chars = nickname.chars().count();
+
+    if chars > 24
+        || lower.contains("http://")
+        || lower.contains("https://")
+        || nickname.contains('\n')
+    {
+        return None;
+    }
+
+    if [
+        "去", "来", "帮", "把", "给", "做", "弄", "看", "查", "写", "发", "买", "打开", "执行",
+        "运行",
+    ]
+    .iter()
+    .any(|prefix| nickname.starts_with(prefix))
+    {
+        return None;
+    }
+
+    if ["to ", "please ", "help ", "run ", "open "]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+    {
+        return None;
+    }
+
+    Some(nickname)
 }
 
 fn short_sha256_hex(input: &str, max_chars: usize) -> String {
@@ -431,5 +568,93 @@ mod tests {
             plan2.mutations[0].reason.as_deref(),
             Some("semantic_conflict_update")
         );
+    }
+
+    #[test]
+    fn memory_extract_should_capture_implicit_addressing_preference() {
+        let plan = build_memory_extract_plan(&serde_json::json!({
+            "sessionId": "s1",
+            "userInput": "以后叫我大哥",
+            "assistantOutput": "收到"
+        }))
+        .expect("memory plan");
+
+        assert_eq!(plan.mutations.len(), 1);
+        let memory = plan.mutations[0]
+            .memory
+            .as_ref()
+            .expect("memory payload should exist");
+        assert_eq!(memory.id.as_deref(), Some("mem_pref_user_addressing"));
+        assert_eq!(memory.title, "称呼偏好:大哥");
+        assert_eq!(memory.content.as_deref(), Some("希望被称呼为 大哥"));
+        assert_eq!(
+            plan.mutations[0].reason.as_deref(),
+            Some("implicit_addressing_preference")
+        );
+    }
+
+    #[test]
+    fn memory_extract_should_capture_implicit_addressing_avoid() {
+        let plan = build_memory_extract_plan(&serde_json::json!({
+            "sessionId": "s1",
+            "userInput": "别叫我大哥",
+            "assistantOutput": "收到"
+        }))
+        .expect("memory plan");
+
+        assert_eq!(plan.mutations.len(), 1);
+        let memory = plan.mutations[0]
+            .memory
+            .as_ref()
+            .expect("memory payload should exist");
+        assert_eq!(memory.id.as_deref(), Some("mem_pref_user_addressing"));
+        assert_eq!(memory.content.as_deref(), Some("不希望被称呼为 大哥"));
+        assert_eq!(
+            plan.mutations[0].reason.as_deref(),
+            Some("implicit_addressing_avoid")
+        );
+    }
+
+    #[test]
+    fn memory_extract_should_not_store_command_like_addressing_text() {
+        let plan = build_memory_extract_plan(&serde_json::json!({
+            "sessionId": "s1",
+            "userInput": "叫我去买咖啡",
+            "assistantOutput": "好的"
+        }))
+        .expect("memory plan");
+
+        assert!(plan.mutations.is_empty());
+    }
+
+    #[test]
+    fn memory_extract_addressing_should_use_stable_memory_id() {
+        let plan1 = build_memory_extract_plan(&serde_json::json!({
+            "sessionId": "s1",
+            "userInput": "叫我大哥",
+            "assistantOutput": "好的"
+        }))
+        .expect("memory plan 1");
+
+        let plan2 = build_memory_extract_plan(&serde_json::json!({
+            "sessionId": "s1",
+            "userInput": "以后叫我老大",
+            "assistantOutput": "好的"
+        }))
+        .expect("memory plan 2");
+
+        let id1 = plan1.mutations[0]
+            .memory
+            .as_ref()
+            .and_then(|m| m.id.clone())
+            .expect("stable id 1");
+        let id2 = plan2.mutations[0]
+            .memory
+            .as_ref()
+            .and_then(|m| m.id.clone())
+            .expect("stable id 2");
+
+        assert_eq!(id1, id2);
+        assert_eq!(id1, "mem_pref_user_addressing");
     }
 }

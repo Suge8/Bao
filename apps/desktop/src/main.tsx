@@ -5,6 +5,7 @@ import "./globals.css";
 import { I18nProvider } from "./i18n/i18n";
 import { ClientProvider } from "./data/use-client";
 import { subscribeBaoEvents } from "@/lib/bao-events";
+import { ToastProvider } from "@/components/ui/toast";
 
 // Runtime event log hook.
 subscribeBaoEvents((evt) => {
@@ -18,7 +19,9 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <I18nProvider>
       <ClientProvider>
-        <App />
+        <ToastProvider>
+          <App />
+        </ToastProvider>
       </ClientProvider>
     </I18nProvider>
   </React.StrictMode>,

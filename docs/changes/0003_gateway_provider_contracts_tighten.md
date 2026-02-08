@@ -8,6 +8,7 @@
 - provider fixtures：`bao-dimsum-process` 新增 `__provider_tool_call__` / `__provider_tool_calls__` 离线夹具，覆盖“中途工具调用后继续生成”的无网络回归路径。
 - plugin-host：`ProcessToolRunner` 增加 `processTree` 子进程树采样（root pid、descendant count、rss/cpu 汇总），成功/超时/kill/资源超限路径统一回传。
 - memory.extract：新增偏好语义冲突去漂移策略（like/dislike 归并稳定 memory id + 冲突更新 reason），减少长期重复记忆写入。
+- memory.extract：新增隐式称呼偏好抽取（`叫我/请叫我/别叫我/call me`）与噪声过滤（长文本/多行/链接/代码块）；称呼偏好固定写入 `mem_pref_user_addressing`，支持同 ID 覆盖更新。
 - provider JSON-RPC 契约补齐：delta/cancel/methods 索引 schemas 已落盘。
 - desktop-tauri：已最小接线 gateway + 事件桥接（bao:event）+ 基础 commands（sendMessage/list*/getSettings/updateSettings）。
 - desktop-tauri：新增 tasks/memory IPC（create/enable/disable/runNow + search/getItems/getTimeline/apply/rollback），并补全前端 client 封装与页面联动。
@@ -66,6 +67,9 @@
 - desktop：补齐 `@bao/i18n` workspace 依赖，修复 desktop tsc lint 解析失败。
 - toolchain：根目录启用 pnpm `onlyBuiltDependencies`（`esbuild`/`unrs-resolver`），避免安装后 build scripts 被忽略导致构建异常。
 - desktop-ui：Chat 会话切换改为按 session 维持消息历史，不再清空，历史可回看。
+- desktop-ui：Provider 设置升级为「模型配置列表 + 详情编辑」布局，支持新增模型配置并持久化 `provider.profiles/provider.selectedProfileId`，保存后可在 Chat 顶栏下拉直接切换并回写 `provider.active/model/baseUrl/apiKey`。
+- desktop-ui：新增 MagicUI 风格全局 Toast 封装（根节点 provider + 动画通知列表），Provider 保存失败会显示精确错误来源（具体 setting key），并统一将可点击元素 cursor 调整为 pointer。
+- desktop-ui：完成全局视觉收口（AppShell/Topbar/Chat/Tasks/Dimsums/Memory/Settings/Page Header），统一玻璃卡片层次、按钮风格、间距与响应式布局，保持原有功能与 testid 不变。
 
 - schema：新增 `router_input/memory_inject_input/memory_inject_output/memory_extract_input/toolcall_result/corrector_validation/corrector_retry_input/corrector_retry_output` 契约文件，补齐 pipeline hooks schema 断点。
 - schema-tests：新增 pipeline hooks 示例 payload 校验（正反例），确保 contract 可编译且实例可验证。
@@ -100,6 +104,7 @@
 - gateway/tests：`bundled_manifest_schema` 变量/报错文案去除 placeholder 误导命名，明确为 process bin 校验。
 - dimsums/bundled：9 个内置 manifest 的 `distribution.integrity.sha256` 已从全零占位切换为确定性非零值（基于 `id@version`）。
 - docs：同步修正 `dimsums/bundled/README.md` 与 `docs/PRD.md` 对 pipeline hooks 与 e2e 现状的过期表述。
+- docs：`docs/PRD.md` 新增 Topbar 三按钮交互规范（`+` 新建会话 / `▶-■` Gateway 启停 / `红色■` Kill All）与边界约束说明。
 - storage：新增 audit hash chain verifier，校验 `prev_hash -> hash` 连续性并检测 tampered/missing/out-of-order；结果结构固定为 machine-readable 字段供 release gate 消费。
 - scheduler/storage：新增 crash-injection 恢复一致性能力（kill -9 模拟），任务在 `task.run.started` 后崩溃可重启恢复并保持 at-least-once；`Storage::open` 新增事件连续性+审计链启动校验，unsafe 状态返回结构化错误。
 - desktop-tauri/tests：新增 `runEngineTurn` 真后端回归测试（工具成功链路 + provider 失败链路），直接验证 `provider.call.error` 与 `engine.turn` 事件可观测。
@@ -118,9 +123,26 @@
 - mobile/codesimplifier：按模块完成 Gateway/Screens/Shared 三段式简化重构（抽常量、提炼 helper、收敛重复逻辑），保持行为与视觉语义不变。
 - mobile/codesimplifier：继续完成 Settings/Components 模块简化（筛选与聚合渲染收敛、ThemedText 与 TroubleshootActionBar 去重复），功能保持一致。
 - mobile/codesimplifier：完成“全模块压缩”收口（gateway-support/app-shell/hooks/ui-components），apps/mobile 代码路径已完成结构化简化且行为保持一致。
+- desktop-ui：主窗口新增最小尺寸约束（`minWidth=1280`、`minHeight=760`），并修复 Chat 三栏布局在窄宽度下的右侧 Inspector 裁剪问题（`min-w-0 + minmax(0,1fr)`）。
+- desktop-ui：桌面启动窗口改为默认最大化（保留最小尺寸门槛），并在 AppShell/Topbar/Chat/Tasks/Dimsums/Memory/Settings/Toast 统一接入 Magic UI 组件（`MagicCard`/`ShinyButton`/`DotPattern`）以优化布局与交互一致性。
+- desktop-ui：Topbar Gateway 控制语义已收口为单一 Start/Stop 切换（移除 Pause 语义歧义），状态文案明确为 Online/Offline，并将 New Session 与 Gateway 控制分组解耦。
+- desktop-layout：壳层改为固定视口（`h-screen + overflow-hidden`）并将 Chat/Tasks/Dimsums/Memory/Settings 切换为“页面容器内滚动”，降低整页纵向滚动条出现概率。
+- desktop-layout：窗口尺寸策略更新为默认 `1440x900` + 约束 `min 1100x700 / max 2560x1600`，并将 AppShell 改为 `h-full` 以匹配根容器高度，避免视口单位导致的整页滚动抖动。
+- desktop-layout：Tasks/Dimsums/Memory/Settings 页面滚动统一下沉到内容区（标题区固定、内容区 `overflow-y-auto`），进一步避免“整页滚动条”表现。
+- desktop-settings-layout：Settings 页面改为「主配置卡 + 侧栏功能卡」双区布局（`lg` 断点），并补齐 `min-w-0/minmax(0,1fr)` 与容器滚动边界，修复 Provider 表单右侧超界与非预期纵向滚动条。
+- desktop-settings-layout：对 Settings 新布局做 `code-simplifier` 等价收口，提取重复按钮样式常量并整理 JSX 层级缩进，保持视觉与交互不变。
+- [FIX] 2026-02-08 回滚恢复：恢复 `apps/desktop/src/pages/chat/layout.tsx` 的两栏会话布局（移除 Inspector）、发送中 MagicUI loading + 输入框锁定、模型选择居中与右上“新对话”按钮。
+- [FIX] 2026-02-08 回滚恢复：恢复 `apps/desktop/src/data/tauri-client.ts` 的 `create_session/run_engine_turn/gateway_set_allow_lan` `input` 参数封装，并同步 `apps/desktop/src/i18n/desktop-locales.ts` 与 `apps/desktop/tests/e2e/fixtures/rust-simulator.ts` 兼容文案/入参解析。
+- [FIX] 2026-02-08 二次恢复 2b 回滚：恢复 Topbar 连接中心（网关启停/访问模式/扫码配对/设备列表）、恢复 `pairingQr/listGatewayDevices/revokeGatewayDevice` IPC 链路与 `gateway_set_allow_lan` 参数契约，并移除 Settings 重复网关面板。
+- [FIX] 2026-02-08 桌面窗口与布局滚动收口：`apps/desktop/src-tauri/tauri.conf.json` 新增 min/max 尺寸约束并上调默认窗口；`apps/desktop/src/components/layout/app-shell.tsx` 改为 `h-full`；`apps/desktop/src/pages/{tasks.tsx,dimsums.tsx,memory.tsx,settings.tsx}` 改为“标题固定 + 内容区滚动”，消除整页滚动条。
+- [FIX] 2026-02-08 Settings 布局溢出修复：`apps/desktop/src/pages/settings.tsx` 调整为 `lg` 双区主从布局并收紧 Provider 内部网格（`minmax(0,1fr)` + `min-w-0`），修复输入区域横向超界与页面垂直滚动条异常。
+- [REFACTOR] 2026-02-08 Settings 代码简化：`apps/desktop/src/pages/settings.tsx` 使用 code-simplifier 提取重复 class 常量（Provider 列表项/语言切换按钮）并整理新布局区域结构，保持行为与样式一致。
 
 # 改动记录（最近）
 
+- [FIX] 2026-02-08 恢复被 2b 回滚的 Topbar 网关收口：`apps/desktop/src/components/layout/topbar.tsx`、`apps/desktop/src/data/client.ts`、`apps/desktop/src/data/tauri-client.ts`、`apps/desktop/src/pages/settings.tsx`、`apps/desktop/src/i18n/desktop-locales.ts`、`apps/desktop/src-tauri/src/lib.rs`、`crates/bao-gateway/src/lib.rs`，并同步 e2e 断言至连接中心语义。
+- [FIX] 2026-02-08 恢复被回滚的桌面 Chat 改动：`apps/desktop/src/pages/chat/layout.tsx`（loading + 输入锁定 + 模型居中 + 新对话按钮 + 列表动画/贴底布局）、`apps/desktop/src/data/tauri-client.ts`（关键命令 `input` 参数封装）、`apps/desktop/src/i18n/desktop-locales.ts`（chat 文案键）、`apps/desktop/tests/e2e/fixtures/rust-simulator.ts`（命令入参兼容）。
+- [FEAT] 2026-02-08 `crates/bao-dimsum-process/src/pipeline_hooks.rs` 提炼 mem0 优势能力到本地策略：`memory.extract` 从“关键词硬触发”升级为“显式意图 + 高置信隐式偏好”，新增称呼偏好规则（`叫我X/别叫我X/call me X`）、噪声过滤与稳定 ID 覆盖更新（`mem_pref_user_addressing`），并补齐 4 个回归单测。
 - [FEAT] 2026-02-05 收紧 gateway frame schema（payload 与 type 绑定）
 - [FEAT] 2026-02-05 增加 provider JSON-RPC 契约 schemas（delta/cancel/methods）
 - [FEAT] 2026-02-05 桌面端接线 gateway + bao:event（Tauri commands 最小集）
@@ -232,6 +254,7 @@
 - [FEAT] 2026-02-07 `packages/schema-tests` 增加 provider run/delta 契约正反例，补齐 tool_call + done 覆盖
 - [DOC] 2026-02-07 `README.md` 增补 Playwright 浏览器安装与 pnpm onlyBuiltDependencies 环境提示
 - [DOC] 2026-02-07 `docs/PRD.md` 更新 Stage2 缺口状态与本轮收口项
+- [DOC] 2026-02-07 `docs/PRD.md` 增补 Topbar 三按钮语义规范与状态边界（避免 Pause/Stop/Kill 语义混淆）
 - [FEAT] 2026-02-07 发布收口：补齐 PRD/AGENTS 发布准则，新增 `scripts/release-checklist-validate.mjs` 自动化 go/no-go 校验，并生成 Task 12 发布证据。
 - [FIX] 2026-02-07 `scripts/release-gates-checks.mjs` 将 `P0.CORE_SLO` 调整为缺指标即失败，并新增 schema-tests 用例覆盖缺失指标阻断。
 - [FEAT] 2026-02-07 `runEngineTurn` provider 分支支持 `tool_call/tool_calls` 执行闭环，新增 provider 单工具与并发工具调用真后端回归测试。
@@ -257,6 +280,13 @@
 - [REFACTOR] 2026-02-07 `apps/mobile/app/_layout.tsx`、`app/(tabs)/_layout.tsx`、`app/modal.tsx` 完成 app-shell 模块代码简化（导航配置常量化、Tab 配置映射化）。
 - [REFACTOR] 2026-02-07 `apps/mobile/hooks/use-theme-color.ts`、`hooks/use-color-scheme.web.ts`、`components/themed-view.tsx` 完成 hooks/base-view 模块代码简化（回退逻辑压缩与命名统一）。
 - [REFACTOR] 2026-02-07 `apps/mobile/components/ui/*`、`components/parallax-scroll-view.tsx`、`components/hello-wave.tsx`、`components/external-link.tsx` 完成 ui-components 模块代码简化（样式常量与交互 helper 收敛）。
+- [FIX] 2026-02-07 `apps/desktop/src/pages/settings.tsx`、`apps/desktop/src/pages/chat/layout.tsx`、`apps/desktop/src/lib/provider-profiles.ts` 修复 Provider 保存无效/模型不可新增与不可在对话中选择的问题，新增 profiles 持久化与聊天模型选择联动。
+- [FIX] 2026-02-07 `apps/desktop/src/components/ui/toast.tsx`、`apps/desktop/src/pages/settings.tsx`、`apps/desktop/src/globals.css` 新增 MagicUI 风格全局 Toast 并接入 Provider 保存链路，失败时展示可诊断错误，统一可点击元素 pointer 光标。
+- [REFACTOR] 2026-02-07 `apps/desktop/src/components/layout/*`、`apps/desktop/src/pages/*`、`apps/desktop/src/globals.css` 完成桌面端 UI 全量美化收口（视觉统一、布局响应式、交互一致性），未改动业务逻辑。
+- [FIX] 2026-02-07 `apps/desktop/src-tauri/tauri.conf.json` 增加桌面窗口最小尺寸（1280x760）并上调默认窗口为 1440x900；`app-shell/chat` 补齐 `min-w-0` 与 `minmax(0,1fr)` 以修复右侧对话 Inspector 显示不全。
+- [FEAT] 2026-02-07 `apps/desktop/src-tauri/tauri.conf.json` 启用 `maximized=true`（启动即最佳可用尺寸）；`apps/desktop/src/components/ui/{dot-pattern,magic-card,shiny-button}.tsx` 新增并在 desktop 各页/布局全面替换交互按钮与主要容器为 Magic UI 风格组件。
+- [FIX] 2026-02-07 `apps/desktop/src/components/layout/topbar.tsx` 修复 Gateway 顶栏控制歧义：Pause 改为 Start/Stop toggle、状态文案改为 Online/Offline、New Session 从 Gateway 控制组拆分并增加按钮禁用态。
+- [FIX] 2026-02-07 `apps/desktop/src/components/layout/app-shell.tsx`、`apps/desktop/src/App.tsx`、`apps/desktop/src/globals.css`、`apps/desktop/src/pages/{chat.tsx,chat/layout.tsx,tasks.tsx,dimsums.tsx,memory.tsx,settings.tsx}` 调整为固定视口 + 页面内滚动布局，避免整页纵向滚动。
 
 # 未来发展（优先级）
 
@@ -278,7 +308,16 @@ P0
 
 P1
 
+- ✅ 已完成（2026-02-08）：Topbar 网关收口链路已从 2b 回滚中恢复（连接中心、扫码配对、设备列表、LAN 文案、Settings 去重与 e2e 回归）。
+- ✅ 已完成（2026-02-08）：memory.extract 已支持隐式称呼偏好抽取（`叫我/别叫我/call me`）与噪声过滤，称呼偏好通过稳定 memory id `mem_pref_user_addressing` 覆盖更新。
 - ✅ 已完成（2026-02-06）：mobile 远程排障 P1（跨页筛选联动、异常链路聚合、provider/session 维度钻取、阈值告警）已收口。
+- ✅ 已完成（2026-02-07）：desktop Provider 配置体验收口（可新增模型、可保存 profile、可在 Chat 中选择并立即映射到运行时 provider 配置）。
+- ✅ 已完成（2026-02-07）：desktop 交互反馈收口（全局 Toast + Provider 保存精确报错 + 可点击元素 pointer 一致性）。
+- ✅ 已完成（2026-02-07）：desktop 全局 UI 视觉统一收口（导航/页头/主页面卡片化与响应式布局完成）。
+- ✅ 已完成（2026-02-07）：desktop 页面滚动收口（壳层固定视口 + 各页容器内滚动），整页滚动条问题显著缓解。
+- ✅ 已完成（2026-02-07）：Topbar 三按钮语义文档化（New Session / Gateway Toggle / Kill All）并明确职责边界。
+- ⏳ 待进行：补一组 desktop 布局回归（1280x760、1366x768、1440x900）截图基线，持续防止 Chat 三栏布局再次发生横向裁剪。
+- ⏳ 待进行：补齐 desktop 全页面 Magic UI 视觉回归截图与关键交互录屏基线（主题一致性、可读性、按钮可达性）。
 
 P2
 

@@ -10,7 +10,7 @@ import SettingsPage from "@/pages/settings";
 function PageTransition({ children }: { children: React.ReactNode }) {
   return (
     <motion.div
-      className="h-full"
+      className="h-full min-h-0"
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -6 }}

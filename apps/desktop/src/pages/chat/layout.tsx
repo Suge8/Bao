@@ -1,8 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
+import { ChevronDown, Loader2, MessageSquare, Plus, Search, Send } from "lucide-react";
 import { useClient } from "@/data/use-client";
-import type { BaoEvent } from "@/data/events";
 import { cn } from "@/lib/utils";
+import {
+  parseProviderState,
+  PROVIDER_PLACEHOLDER,
+  toSettingsMap,
+  type ProviderProfile,
+} from "@/lib/provider-profiles";
+import { MagicCard } from "@/components/ui/magic-card";
+import { ShinyButton } from "@/components/ui/shiny-button";
+import { useToast } from "@/components/ui/toast";
+import { useI18n } from "@/i18n/i18n";
 
 type Session = { id: string; title?: string };
 type MessageView = {
@@ -12,7 +22,9 @@ type MessageView = {
 };
 
 export function ChatLayout() {
+  const { t } = useI18n();
   const client = useClient();
+  const { push } = useToast();
 
   const [sessions, setSessions] = useState<Session[]>([]);
   const [filter, setFilter] = useState("");
@@ -21,31 +33,71 @@ export function ChatLayout() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [events, setEvents] = useState<BaoEvent[]>([]);
   const [messagesBySession, setMessagesBySession] = useState<Record<string, MessageView[]>>({});
-  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [providerProfiles, setProviderProfiles] = useState<ProviderProfile[]>([]);
+  const [selectedProfileId, setSelectedProfileId] = useState<string>("");
 
   const unlistenRef = useRef<null | (() => void)>(null);
 
-  const refreshSessions = useCallback(async (preferId?: string) => {
-    const res = await client.listSessions();
-    const list = res.sessions;
-    setSessions(list);
-    setActiveSessionId((prev) => {
-      const wanted = preferId ?? prev;
-      if (wanted && list.some((session) => session.id === wanted)) {
-        return wanted;
-      }
-      return list[0]?.id ?? "default";
-    });
+  const refreshSessions = useCallback(
+    async (preferId?: string) => {
+      const res = await client.listSessions();
+      const list = res.sessions;
+      setSessions(list);
+      setActiveSessionId((prev) => {
+        const wanted = preferId ?? prev;
+        if (wanted && list.some((session) => session.id === wanted)) {
+          return wanted;
+        }
+        return list[0]?.id ?? "default";
+      });
+    },
+    [client],
+  );
+
+  const loadProviderProfiles = useCallback(async () => {
+    const settings = await client.getSettings();
+    const providerState = parseProviderState(toSettingsMap(settings.settings));
+    const selectableProfiles = providerState.profiles.filter(isSelectableProviderProfile);
+    setProviderProfiles(selectableProfiles);
+    if (selectableProfiles.length === 0) {
+      setSelectedProfileId("");
+      return;
+    }
+    const selectedId = selectableProfiles.some((item) => item.id === providerState.selectedProfileId)
+      ? providerState.selectedProfileId
+      : selectableProfiles[0].id;
+    setSelectedProfileId(selectedId);
   }, [client]);
+
+  const applyProviderProfile = useCallback(
+    async (profileId: string) => {
+      const selected = providerProfiles.find((item) => item.id === profileId);
+      if (!selected) return;
+      setSelectedProfileId(profileId);
+      await Promise.all([
+        client.updateSettings("provider.selectedProfileId", selected.id),
+        client.updateSettings("provider.active", selected.provider),
+        client.updateSettings("provider.model", selected.model),
+        client.updateSettings("provider.baseUrl", selected.baseUrl),
+        client.updateSettings("provider.apiKey", selected.apiKey),
+      ]);
+    },
+    [client, providerProfiles],
+  );
 
   useEffect(() => {
     let mounted = true;
 
     refreshSessions().catch((err) => {
       if (!mounted) return;
-      setError(err instanceof Error ? err.message : "加载会话失败");
+      setError(toErrorMessage(err, t("chat.error.load_sessions_failed")));
+    });
+
+    loadProviderProfiles().catch(() => {
+      if (!mounted) return;
+      setProviderProfiles([]);
+      setSelectedProfileId("");
     });
 
     client
@@ -90,17 +142,21 @@ export function ChatLayout() {
           }
         }
 
-        setEvents((prev) => {
-          const next = [e, ...prev];
-          return next.slice(0, 200);
-        });
+        if (e.type === "settings.update") {
+          const key = typeof payload.key === "string" ? payload.key : "";
+          if (key.startsWith("provider.")) {
+            void loadProviderProfiles().catch(() => {
+              // ignore stream-side refresh errors
+            });
+          }
+        }
       })
       .then((unlisten) => {
         unlistenRef.current = unlisten;
       })
       .catch((err) => {
         if (!mounted) return;
-        setError(err instanceof Error ? err.message : "订阅事件失败");
+        setError(toErrorMessage(err, t("chat.error.subscribe_failed")));
       });
 
     return () => {
@@ -108,7 +164,7 @@ export function ChatLayout() {
       unlistenRef.current?.();
       unlistenRef.current = null;
     };
-  }, [client, refreshSessions]);
+  }, [client, loadProviderProfiles, refreshSessions, t]);
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -127,132 +183,215 @@ export function ChatLayout() {
     if (!text || sending) return;
     setSending(true);
     setError(null);
+    setComposer("");
     try {
       await client.runEngineTurn(activeSessionId, text);
-      setComposer("");
       await refreshSessions(activeSessionId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "发送失败");
+      const message = toErrorMessage(err, t("chat.error.send_failed"));
+      setError(message);
+      push({
+        variant: "error",
+        title: t("chat.error.send_failed"),
+        description: message,
+      });
     } finally {
       setSending(false);
     }
   };
 
+  const createNewSession = useCallback(async () => {
+    if (sending) return;
+    const sessionId = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    setError(null);
+    try {
+      await client.createSession(sessionId);
+      setComposer("");
+      await refreshSessions(sessionId);
+    } catch (err) {
+      const message = toErrorMessage(err, t("chat.error.create_session_failed"));
+      setError(message);
+      push({
+        variant: "error",
+        title: t("chat.error.create_session_failed"),
+        description: message,
+      });
+    }
+  }, [client, push, refreshSessions, sending, t]);
+
   return (
-    <div className="grid min-h-0 grid-cols-[260px_1fr_auto] gap-4" data-testid="chat-layout">
-      <section className="rounded-2xl bg-foreground/5 p-3" data-testid="chat-sessions">
-        <input
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          placeholder="搜索会话"
-          className="h-10 w-full rounded-xl bg-background px-3 text-sm outline-none"
-          data-testid="sessions-search"
-        />
-        <motion.div layout className="mt-3 flex flex-col gap-1">
-          {filtered.map((s) => (
-            <motion.button
-              layout
-              key={s.id}
-              type="button"
-              onClick={() => {
-                setActiveSessionId(s.id);
-              }}
-              className={cn(
-                "flex items-center justify-between rounded-xl px-3 py-2 text-left text-sm transition hover:bg-foreground/10",
-                s.id === activeSessionId && "bg-foreground/10",
-              )}
-              data-testid={`session-${s.id}`}
-            >
-              <span className="truncate">{s.title ?? s.id}</span>
-              <span className="ml-2 text-xs text-muted-foreground">{s.id}</span>
-            </motion.button>
-          ))}
-        </motion.div>
-      </section>
-
-      <section className="flex min-h-0 flex-col rounded-2xl bg-foreground/5 p-4" data-testid="chat-stream">
-        <div className="flex items-center justify-between">
-          <div className="text-sm font-semibold">{activeSessionId}</div>
-          <button
-            type="button"
-            className="rounded-xl px-3 py-2 text-xs text-muted-foreground transition hover:bg-foreground/10"
-            onClick={() => setInspectorOpen((v) => !v)}
-            data-testid="inspector-toggle"
-          >
-            Inspector
-          </button>
-        </div>
-
-        <div className="mt-3 flex-1 overflow-auto rounded-xl bg-background p-3">
-          <StreamingMessages messages={messages} eventCount={events.length} />
-        </div>
-
-        <div className="mt-3 rounded-xl bg-background p-2">
-          <div className="flex items-center gap-2">
-            <input
-              value={composer}
-              onChange={(e) => setComposer(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void send();
-                }
-              }}
-              placeholder="输入消息并回车发送"
-              className="h-10 flex-1 rounded-xl bg-foreground/5 px-3 text-sm outline-none"
-              data-testid="chat-input"
-            />
-            <button
-              type="button"
-              onClick={() => {
-                void send();
-              }}
-              disabled={sending || composer.trim().length === 0}
-              className={cn(
-                "h-10 rounded-xl px-4 text-sm transition",
-                sending || composer.trim().length === 0
-                  ? "cursor-not-allowed bg-foreground/10 text-muted-foreground"
-                  : "bg-foreground text-background hover:opacity-90",
-              )}
-              data-testid="chat-send"
-            >
-              {sending ? "发送中" : "发送"}
-            </button>
-          </div>
-          {error ? <div className="mt-2 text-xs text-red-500">{error}</div> : null}
-        </div>
-      </section>
-
-      <motion.section
-        animate={{ width: inspectorOpen ? 360 : 0, opacity: inspectorOpen ? 1 : 0 }}
-        transition={{ duration: 0.2, ease: "easeOut" }}
-        className={cn(
-          "overflow-hidden rounded-2xl bg-foreground/5 p-3",
-          !inspectorOpen && "p-0",
-        )}
-        data-testid="chat-inspector"
+    <div
+      className="grid h-full min-h-0 min-w-0 grid-cols-[280px_minmax(0,1fr)] items-stretch gap-6 overflow-hidden"
+      data-testid="chat-layout"
+    >
+      <MagicCard
+        className="min-w-0 h-full rounded-3xl border border-border/50 bg-background/60 backdrop-blur-xl [&>div:last-child]:h-full"
+        data-testid="chat-sessions"
       >
-        <div className="text-sm font-semibold">Events</div>
-        <div className="mt-2 space-y-2 overflow-auto text-xs text-muted-foreground">
-          {events.slice(0, 30).map((e) => (
-            <div key={e.eventId} className="rounded-xl bg-background p-2">
-              <div className="text-foreground">{e.type}</div>
-              <pre className="mt-1 whitespace-pre-wrap break-words">{safeJson(e.payload)}</pre>
+        <section className="flex h-full min-w-0 flex-col p-4">
+          <div className="relative mb-4">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/50" />
+            <input
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder={t("chat.search.placeholder")}
+              className="h-10 w-full rounded-xl bg-muted/50 pl-9 pr-4 text-sm outline-none transition-colors focus:bg-muted"
+              data-testid="sessions-search"
+            />
+          </div>
+          <div className="flex-1 overflow-y-auto pr-1">
+            <motion.div layout="position" initial={false} className="flex flex-col gap-1.5">
+              {filtered.map((s) => (
+                <motion.button
+                  layout="position"
+                  initial={false}
+                  transition={{ layout: { duration: 0.18, ease: [0.22, 1, 0.36, 1] } }}
+                  key={s.id}
+                  type="button"
+                  onClick={() => {
+                    setActiveSessionId(s.id);
+                  }}
+                  className={cn(
+                    "group flex w-full flex-col items-start gap-1 rounded-xl px-3 py-2.5 text-left transition-all hover:bg-muted/50",
+                    s.id === activeSessionId && "bg-muted shadow-sm ring-1 ring-border/50",
+                  )}
+                  data-testid={`session-${s.id}`}
+                >
+                  <span
+                    className={cn(
+                      "w-full truncate text-sm font-medium transition-colors",
+                      s.id === activeSessionId
+                        ? "text-foreground"
+                        : "text-muted-foreground group-hover:text-foreground",
+                    )}
+                  >
+                    {s.title ?? s.id}
+                  </span>
+                  <span className="w-full truncate text-[10px] text-muted-foreground/50 font-mono tracking-tight">
+                    {s.id}
+                  </span>
+                </motion.button>
+              ))}
+            </motion.div>
+          </div>
+        </section>
+      </MagicCard>
+
+      <MagicCard
+        className="min-w-0 h-full rounded-3xl border border-border/50 bg-background/60 backdrop-blur-xl [&>div:last-child]:h-full"
+        data-testid="chat-stream"
+      >
+        <section className="flex h-full min-h-0 min-w-0 flex-col p-6">
+          <div className="mb-4 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-border/40 pb-4">
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <MessageSquare className="h-4 w-4" />
+              </div>
+              <div className="truncate text-sm font-semibold tracking-tight">{activeSessionId}</div>
             </div>
-          ))}
-        </div>
-      </motion.section>
+            <div className="relative justify-self-center">
+              <select
+                value={selectedProfileId}
+                onChange={(e) => {
+                  void applyProviderProfile(e.target.value).catch((err) => {
+                    setError(toErrorMessage(err, t("chat.error.switch_model_failed")));
+                  });
+                }}
+                disabled={providerProfiles.length === 0}
+                className="h-8 min-w-[220px] appearance-none rounded-lg bg-muted/50 pl-3 pr-8 text-center text-xs font-medium text-muted-foreground transition-colors hover:bg-muted focus:outline-none focus:ring-1 focus:ring-primary/20"
+                data-testid="chat-model-select"
+              >
+                {providerProfiles.length === 0 ? (
+                  <option value="">{PROVIDER_PLACEHOLDER}</option>
+                ) : (
+                  providerProfiles.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
+                  ))
+                )}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
+            </div>
+            <div className="justify-self-end">
+              <ShinyButton
+                type="button"
+                onClick={() => {
+                  void createNewSession();
+                }}
+                disabled={sending}
+                className={cn(
+                  "h-8 rounded-xl px-3 text-xs font-medium transition-all",
+                  sending
+                    ? "opacity-50 cursor-not-allowed bg-muted text-muted-foreground"
+                    : "bg-primary text-primary-foreground shadow-md hover:translate-y-[-1px]",
+                )}
+                data-testid="chat-new-session"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>{t("chat.action.new_session")}</span>
+              </ShinyButton>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto pr-2 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-muted">
+            <StreamingMessages messages={messages} loading={sending} />
+          </div>
+
+          <div className="mt-4">
+            <div className="relative flex items-end gap-2 rounded-2xl bg-muted/30 p-2 ring-1 ring-border/50 focus-within:bg-muted/50 focus-within:ring-primary/30 transition-all">
+              <textarea
+                value={composer}
+                onChange={(e) => setComposer(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void send();
+                  }
+                }}
+                placeholder={t("chat.compose.placeholder")}
+                className="max-h-32 min-h-[44px] w-full resize-none bg-transparent px-3 py-2.5 text-sm outline-none placeholder:text-muted-foreground/50"
+                data-testid="chat-input"
+                rows={1}
+                disabled={sending}
+              />
+              <ShinyButton
+                type="button"
+                onClick={() => {
+                  void send();
+                }}
+                disabled={sending || composer.trim().length === 0}
+                className={cn(
+                  "mb-0.5 h-9 shrink-0 rounded-xl px-4 text-sm font-medium transition-all",
+                  sending || composer.trim().length === 0
+                    ? "opacity-50 cursor-not-allowed bg-muted text-muted-foreground"
+                    : "bg-primary text-primary-foreground shadow-md hover:translate-y-[-1px]",
+                )}
+                data-testid="chat-send"
+              >
+                {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              </ShinyButton>
+            </div>
+            {error ? (
+              <div className="mt-2 text-xs font-medium text-destructive animate-in fade-in slide-in-from-top-1">
+                {error}
+              </div>
+            ) : null}
+          </div>
+        </section>
+      </MagicCard>
     </div>
   );
 }
 
 function StreamingMessages({
   messages,
-  eventCount,
+  loading,
 }: {
   messages: MessageView[];
-  eventCount: number;
+  loading: boolean;
 }) {
+  const { t } = useI18n();
   const lines = useMemo(() => {
     if (messages.length > 0) {
       return messages;
@@ -261,27 +400,46 @@ function StreamingMessages({
       {
         id: "assistant-ready",
         role: "assistant" as const,
-        text: "assistant: ready",
-      },
-      {
-        id: "events-counter",
-        role: "assistant" as const,
-        text: `events: ${String(eventCount)}`,
+        text: t("chat.streaming.ready"),
       },
     ];
-  }, [eventCount, messages]);
+  }, [messages, t]);
 
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col-reverse gap-4 py-4">
+      {loading ? (
+        <div
+          className="self-start rounded-2xl rounded-bl-sm border border-border/50 bg-muted/80 px-4 py-3 shadow-sm"
+          data-testid="chat-loading"
+        >
+          <div className="flex items-center gap-1.5">
+            {[0, 1, 2].map((idx) => (
+              <motion.span
+                key={idx}
+                className="h-1.5 w-1.5 rounded-full bg-muted-foreground/70"
+                animate={{ opacity: [0.25, 1, 0.25], y: [0, -2, 0] }}
+                transition={{
+                  duration: 0.9,
+                  repeat: Number.POSITIVE_INFINITY,
+                  ease: "easeInOut",
+                  delay: idx * 0.12,
+                }}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
       {lines.map((line, idx) => (
         <motion.div
           key={line.id}
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.18, ease: "easeOut", delay: idx * 0.03 }}
+          initial={{ opacity: 0, y: 10, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1], delay: idx * 0.05 }}
           className={cn(
-            "rounded-xl p-3 text-sm",
-            line.role === "user" ? "bg-foreground text-background" : "bg-foreground/5",
+            "max-w-[85%] rounded-2xl p-4 text-sm leading-relaxed shadow-sm",
+            line.role === "user"
+              ? "self-end bg-primary text-primary-foreground rounded-br-sm"
+              : "self-start bg-muted/80 text-foreground rounded-bl-sm border border-border/50",
           )}
           data-testid={`chat-line-${idx}`}
         >
@@ -299,10 +457,22 @@ function toPayloadObject(payload: unknown): Record<string, unknown> {
   return {};
 }
 
-function safeJson(v: unknown): string {
-  try {
-    return JSON.stringify(v, null, 2);
-  } catch {
-    return String(v);
+function toErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof Error && err.message.trim()) return err.message;
+  if (typeof err === "string" && err.trim()) return err;
+  if (err && typeof err === "object") {
+    const raw = err as Record<string, unknown>;
+    if (typeof raw.message === "string" && raw.message.trim()) return raw.message;
+    if (typeof raw.error === "string" && raw.error.trim()) return raw.error;
   }
+  try {
+    const serialized = JSON.stringify(err);
+    return serialized && serialized !== "{}" ? serialized : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function isSelectableProviderProfile(item: ProviderProfile): boolean {
+  return Boolean(item.provider.trim() && item.model.trim() && item.baseUrl.trim());
 }

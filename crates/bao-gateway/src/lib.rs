@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     str::FromStr,
@@ -11,14 +11,17 @@ use bao_api::{BaoEventV1, MemoryHitV1, MemoryMutationPlanV1, TaskSpecV1};
 use bao_engine::scheduler::SchedulerService;
 use bao_engine::storage::SqliteStorage;
 use bao_plugin_host::process_runner::ProcessToolRunner;
-use bao_storage::{MemoryItemRecord, MemoryLinkRecord, MemoryVersionRecord, Storage, StorageError};
+use bao_storage::{
+    AuditEventRecord, MemoryItemRecord, MemoryLinkRecord, MemoryVersionRecord, Storage,
+    StorageError,
+};
 use chrono_tz::Tz;
 use cron::Schedule;
 use base64::{engine::general_purpose, Engine as _};
 use hex;
 use rand::{rngs::OsRng, RngCore};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha1::{Digest as _, Sha1};
 use thiserror::Error;
@@ -91,6 +94,13 @@ pub struct GatewayHandle {
     storage: Arc<Storage>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayDevice {
+    pub device_id: String,
+    pub connected: bool,
+}
+
 impl GatewayHandle {
     /// Expose underlying SQLite path for desktop glue.
     pub fn sqlite_path(&self) -> String {
@@ -122,6 +132,19 @@ impl GatewayHandle {
             "pairing",
             &payload,
         );
+    }
+
+    pub fn list_gateway_devices(&self) -> Vec<GatewayDevice> {
+        self.state.auth.list_devices()
+    }
+
+    pub fn revoke_gateway_device(&self, token: &str) {
+        self.state.auth.revoke(token);
+        let now_ts = now_ts();
+        let payload = serde_json::json!({"token": token});
+        let _ = self
+            .storage
+            .insert_audit_event(now_ts, "auth.device.revoke", "auth", "device", &payload);
     }
 
     /// Runtime config update from desktop IPC.
@@ -1012,6 +1035,20 @@ impl GatewayHandle {
         .map_err(|e| GatewayError::Protocol(format!("join: {e}")))??;
         Ok(out)
     }
+
+    pub async fn audit_events_since(
+        &self,
+        last_audit_id: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<AuditEventRecord>, GatewayError> {
+        let out = tokio::task::spawn_blocking({
+            let storage = self.storage.clone();
+            move || storage.list_audit_events_since(last_audit_id, limit)
+        })
+        .await
+        .map_err(|e| GatewayError::Protocol(format!("join: {e}")))??;
+        Ok(out)
+    }
 }
 
 async fn memory_search_index(
@@ -1408,6 +1445,8 @@ struct AuthRegistry {
     pairing: Mutex<HashMap<String, bool>>,
     /// Long-lived device tokens (phase1: in-memory only).
     device: Mutex<HashMap<String, bool>>,
+    /// Currently connected device tokens.
+    connected: Mutex<HashSet<String>>,
 }
 
 impl AuthRegistry {
@@ -1415,6 +1454,7 @@ impl AuthRegistry {
         Self {
             pairing: Mutex::new(HashMap::new()),
             device: Mutex::new(HashMap::new()),
+            connected: Mutex::new(HashSet::new()),
         }
     }
 
@@ -1441,6 +1481,10 @@ impl AuthRegistry {
                 *v = true;
             }
         }
+        self.connected
+            .lock()
+            .expect("connected mutex poisoned")
+            .remove(token);
     }
 
     fn accept_or_pair(&self, token: &str) -> AuthDecision {
@@ -1450,9 +1494,15 @@ impl AuthRegistry {
         if token.starts_with("d_") {
             let g = self.device.lock().expect("device mutex poisoned");
             return match g.get(token).copied() {
-                Some(false) => AuthDecision::Accepted {
-                    new_device_token: None,
-                },
+                Some(false) => {
+                    self.connected
+                        .lock()
+                        .expect("connected mutex poisoned")
+                        .insert(token.to_string());
+                    AuthDecision::Accepted {
+                        new_device_token: None,
+                    }
+                }
                 _ => AuthDecision::Rejected,
             };
         }
@@ -1465,6 +1515,10 @@ impl AuthRegistry {
                     let device_token = self.create_device_token();
                     let mut d = self.device.lock().expect("device mutex poisoned");
                     d.insert(device_token.clone(), false);
+                    self.connected
+                        .lock()
+                        .expect("connected mutex poisoned")
+                        .insert(device_token.clone());
                     AuthDecision::Accepted {
                         new_device_token: Some(device_token),
                     }
@@ -1480,6 +1534,42 @@ impl AuthRegistry {
         let mut bytes = [0u8; 32];
         OsRng.fill_bytes(&mut bytes);
         format!("d_{}", general_purpose::URL_SAFE_NO_PAD.encode(bytes))
+    }
+
+    fn list_devices(&self) -> Vec<GatewayDevice> {
+        let device = self.device.lock().expect("device mutex poisoned");
+        let connected = self.connected.lock().expect("connected mutex poisoned");
+        let mut out = device
+            .iter()
+            .filter_map(|(token, revoked)| {
+                if *revoked {
+                    return None;
+                }
+                Some(GatewayDevice {
+                    device_id: token.clone(),
+                    connected: connected.contains(token),
+                })
+            })
+            .collect::<Vec<_>>();
+        out.sort_by(|a, b| b.connected.cmp(&a.connected).then(a.device_id.cmp(&b.device_id)));
+        out
+    }
+
+    fn set_connected(&self, token: &str, is_connected: bool) {
+        if !token.starts_with("d_") {
+            return;
+        }
+        if is_connected {
+            self.connected
+                .lock()
+                .expect("connected mutex poisoned")
+                .insert(token.to_string());
+            return;
+        }
+        self.connected
+            .lock()
+            .expect("connected mutex poisoned")
+            .remove(token);
     }
 }
 
@@ -2252,7 +2342,7 @@ async fn handle_connection(
     // NOTE: For minimal correctness with lastEventId semantics, we persist this event.
     let mut paired_event_id: Option<i64> = None;
     if token.starts_with("p_") {
-        if let Some(device_token) = new_device_token {
+        if let Some(device_token) = new_device_token.clone() {
             let payload = serde_json::json!({"token": device_token});
             let evt =
                 append_and_load_event(&state, now_ts(), "auth.paired", None, None, None, &payload)
@@ -2268,6 +2358,12 @@ async fn handle_connection(
             write_ws_text_frame(&mut stream, &txt).await?;
         }
     }
+
+    let active_device_token = if token.starts_with("d_") {
+        Some(token.clone())
+    } else {
+        new_device_token.clone()
+    };
 
     // 3) Replay from storage by lastEventId (best-effort; phase1: may be empty)
     let replay = tokio::task::spawn_blocking({
@@ -2287,6 +2383,7 @@ async fn handle_connection(
     }
     let mut ticker = time::interval(Duration::from_millis(250));
 
+    let mut exit_result: Result<(), GatewayError> = Ok(());
     loop {
         tokio::select! {
             _ = ticker.tick() => {
@@ -2307,18 +2404,44 @@ async fn handle_connection(
             r = read_ws_text_frame(&mut stream) => {
                 let txt = match r {
                     Ok(t) => t,
-                    Err(GatewayError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
-                    Err(e) => return Err(e),
+                    Err(GatewayError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                        exit_result = Ok(());
+                        break;
+                    }
+                    Err(e) => {
+                        exit_result = Err(e);
+                        break;
+                    }
                 };
-                let frame: ClientFrameV1 = serde_json::from_str(&txt)
-                    .map_err(|e| GatewayError::Protocol(format!("invalid frame json: {e}")))?;
-                let evt = handle_client_command(&state, frame).await?;
+                let frame: ClientFrameV1 = match serde_json::from_str(&txt) {
+                    Ok(frame) => frame,
+                    Err(e) => {
+                        exit_result = Err(GatewayError::Protocol(format!("invalid frame json: {e}")));
+                        break;
+                    }
+                };
+                let evt = match handle_client_command(&state, frame).await {
+                    Ok(evt) => evt,
+                    Err(e) => {
+                        exit_result = Err(e);
+                        break;
+                    }
+                };
                 cursor = cursor.max(evt.eventId);
                 let out = serde_json::to_string(&evt).unwrap();
-                write_ws_text_frame(&mut stream, &out).await?;
+                if let Err(e) = write_ws_text_frame(&mut stream, &out).await {
+                    exit_result = Err(e);
+                    break;
+                }
             }
         }
     }
+
+    if let Some(device_token) = active_device_token.as_deref() {
+        state.auth.set_connected(device_token, false);
+    }
+
+    exit_result
 }
 
 fn effective_bind_addr(allow_lan: bool) -> IpAddr {
@@ -3036,6 +3159,33 @@ mod tests {
         assert_eq!(replay_evt.event_id, msg_evt.event_id);
 
         jh.abort();
+    }
+
+    #[tokio::test]
+    async fn audit_events_since_should_support_cursor_and_limit() {
+        let (_dir, sqlite_path) = temp_sqlite_path();
+        let (_server, handle) = GatewayServer::open(sqlite_path).expect("open");
+
+        let _ = handle.create_pairing_token();
+        let _ = handle.create_pairing_token();
+
+        let first_page = handle
+            .audit_events_since(None, 1)
+            .await
+            .expect("first page");
+        assert_eq!(first_page.len(), 1);
+        assert_eq!(first_page[0].action, "auth.pairing.create");
+
+        let cursor = first_page[0].id;
+        let second_page = handle
+            .audit_events_since(Some(cursor), 10)
+            .await
+            .expect("second page");
+        assert!(!second_page.is_empty());
+        assert!(second_page.iter().all(|item| item.id > cursor));
+        assert!(second_page
+            .iter()
+            .all(|item| item.action == "auth.pairing.create"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import type { DesktopClient } from "./client";
+import type { DesktopClient, GatewayDevice } from "./client";
 import type { BaoEvent, UnlistenFn } from "./events";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -58,11 +58,34 @@ export function createTauriClient(): DesktopClient {
       return sub;
     },
 
+    async listRuntimeEvents(cursor, limit) {
+      const api = await loadTauriInvokeApi();
+      if (!api) throw missingTauriError("listRuntimeEvents");
+      return api.invoke<{ events: BaoEvent[] }>("list_runtime_events", { cursor, limit });
+    },
+
+    async listAuditLogs(cursor, limit) {
+      const api = await loadTauriInvokeApi();
+      if (!api) throw missingTauriError("listAuditLogs");
+      return api.invoke<{
+        logs: {
+          id: number;
+          ts: number;
+          action: string;
+          subjectType: string;
+          subjectId: string;
+          payload: unknown;
+          prevHash?: string | null;
+          hash: string;
+        }[];
+      }>("list_audit_logs", { cursor, limit });
+    },
+
     async listSessions() {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("listSessions");
       const evt = await api.invoke<{ payload: { sessions: { id: string; title: string }[] } }>(
-        "listSessions",
+        "list_sessions",
       );
       const sessions = (evt as { payload: { sessions: unknown[] } }).payload.sessions
         .map((s) => {
@@ -83,14 +106,18 @@ export function createTauriClient(): DesktopClient {
     async createSession(sessionId, title) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("createSession");
-      await api.invoke("createSession", { sessionId, title });
+      const input: { sessionId: string; title?: string } = { sessionId };
+      if (typeof title === "string" && title.trim().length > 0) {
+        input.title = title;
+      }
+      await api.invoke("create_session", { input });
       return { ok: true };
     },
 
     async sendMessage(sessionId, text) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("sendMessage");
-      await api.invoke("sendMessage", { sessionId, text });
+      await api.invoke("send_message", { sessionId, text });
       return { ok: true };
     },
 
@@ -104,19 +131,19 @@ export function createTauriClient(): DesktopClient {
         toolName?: string;
         toolTriggered: boolean;
         toolOk?: boolean;
-      }>("runEngineTurn", { sessionId, text });
+      }>("run_engine_turn", { input: { sessionId, text } });
     },
 
     async mcpListTools(server) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("mcpListTools");
-      return api.invoke<{ tools?: unknown[]; transport?: string }>("mcpListTools", { server });
+      return api.invoke<{ tools?: unknown[]; transport?: string }>("mcp_list_tools", { server });
     },
 
     async mcpCallTool(server, name, argumentsValue) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("mcpCallTool");
-      return api.invoke<{ result?: unknown; transport?: string }>("mcpCallTool", {
+      return api.invoke<{ result?: unknown; transport?: string }>("mcp_call_tool", {
         server,
         name,
         arguments: argumentsValue,
@@ -126,89 +153,89 @@ export function createTauriClient(): DesktopClient {
     async resourceList(namespace, prefix) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("resourceList");
-      return api.invoke<{ items?: unknown[] }>("resourceList", { namespace, prefix });
+      return api.invoke<{ items?: unknown[] }>("resource_list", { namespace, prefix });
     },
 
     async resourceRead(namespace, path) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("resourceRead");
-      return api.invoke<Record<string, unknown>>("resourceRead", { namespace, path });
+      return api.invoke<Record<string, unknown>>("resource_read", { namespace, path });
     },
 
     async listTasks() {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("listTasks");
-      const evt = await api.invoke<{ payload: { tasks: unknown[] } }>("listTasks");
+      const evt = await api.invoke<{ payload: { tasks: unknown[] } }>("list_tasks");
       return { tasks: (evt as { payload: { tasks: unknown[] } }).payload.tasks };
     },
 
     async listDimsums() {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("listDimsums");
-      const evt = await api.invoke<{ payload: { dimsums: unknown[] } }>("listDimsums");
+      const evt = await api.invoke<{ payload: { dimsums: unknown[] } }>("list_dimsums");
       return { dimsums: (evt as { payload: { dimsums: unknown[] } }).payload.dimsums };
     },
 
     async createTask(spec) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("createTask");
-      await api.invoke("createTask", { spec });
+      await api.invoke("create_task", { spec });
       return { ok: true };
     },
 
     async updateTask(spec) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("updateTask");
-      await api.invoke("updateTask", { spec });
+      await api.invoke("update_task", { spec });
       return { ok: true };
     },
 
     async enableTask(taskId) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("enableTask");
-      await api.invoke("enableTask", { taskId });
+      await api.invoke("enable_task", { taskId });
       return { ok: true };
     },
 
     async disableTask(taskId) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("disableTask");
-      await api.invoke("disableTask", { taskId });
+      await api.invoke("disable_task", { taskId });
       return { ok: true };
     },
 
     async runTaskNow(taskId) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("runTaskNow");
-      await api.invoke("runTaskNow", { taskId });
+      await api.invoke("run_task_now", { taskId });
       return { ok: true };
     },
 
     async enableDimsum(dimsumId) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("enableDimsum");
-      await api.invoke("enableDimsum", { dimsumId });
+      await api.invoke("enable_dimsum", { dimsumId });
       return { ok: true };
     },
 
     async disableDimsum(dimsumId) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("disableDimsum");
-      await api.invoke("disableDimsum", { dimsumId });
+      await api.invoke("disable_dimsum", { dimsumId });
       return { ok: true };
     },
 
     async listMemories() {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("listMemories");
-      const evt = await api.invoke<{ payload: { memories: unknown[] } }>("listMemories");
+      const evt = await api.invoke<{ payload: { memories: unknown[] } }>("list_memories");
       return { memories: (evt as { payload: { memories: unknown[] } }).payload.memories };
     },
 
     async searchIndex(query, limit) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("searchIndex");
-      const evt = await api.invoke<{ payload: { hits: unknown[] } }>("searchIndex", {
+      const evt = await api.invoke<{ payload: { hits: unknown[] } }>("search_index", {
         query,
         limit,
       });
@@ -218,14 +245,14 @@ export function createTauriClient(): DesktopClient {
     async getItems(ids) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("getItems");
-      const evt = await api.invoke<{ payload: { items: unknown[] } }>("getItems", { ids });
+      const evt = await api.invoke<{ payload: { items: unknown[] } }>("memory_get_items", { ids });
       return { items: (evt as { payload: { items: unknown[] } }).payload.items };
     },
 
     async getTimeline(namespace) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("getTimeline");
-      const evt = await api.invoke<{ payload: { timeline: unknown[] } }>("getTimeline", {
+      const evt = await api.invoke<{ payload: { timeline: unknown[] } }>("memory_get_timeline", {
         namespace,
       });
       return { timeline: (evt as { payload: { timeline: unknown[] } }).payload.timeline };
@@ -234,7 +261,7 @@ export function createTauriClient(): DesktopClient {
     async listMemoryVersions(memoryId) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("listMemoryVersions");
-      const evt = await api.invoke<{ payload: { versions: unknown[] } }>("listMemoryVersions", {
+      const evt = await api.invoke<{ payload: { versions: unknown[] } }>("memory_list_versions", {
         memoryId,
       });
       return { versions: (evt as { payload: { versions: unknown[] } }).payload.versions };
@@ -243,14 +270,14 @@ export function createTauriClient(): DesktopClient {
     async applyMutationPlan(plan) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("applyMutationPlan");
-      await api.invoke("applyMutationPlan", { plan });
+      await api.invoke("memory_apply_mutation_plan", { plan });
       return { ok: true };
     },
 
     async rollbackVersion(memoryId, versionId) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("rollbackVersion");
-      await api.invoke("rollbackVersion", { memoryId, versionId });
+      await api.invoke("memory_rollback_version", { memoryId, versionId });
       return { ok: true };
     },
 
@@ -258,7 +285,7 @@ export function createTauriClient(): DesktopClient {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("getSettings");
       const evt = await api.invoke<{ payload: { settings: { key: string; value: unknown }[] } }>(
-        "getSettings",
+        "get_settings",
       );
       return {
         settings: (evt as { payload: { settings: { key: string; value: unknown }[] } }).payload
@@ -269,38 +296,56 @@ export function createTauriClient(): DesktopClient {
     async updateSettings(key, value) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("updateSettings");
-      await api.invoke("updateSettings", { key, value });
+      await api.invoke("update_settings", { input: { key, value } });
       return { ok: true };
     },
 
     async generatePairingToken() {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("generatePairingToken");
-      return api.invoke<{ token: string }>("generatePairingToken");
+      return api.invoke<{ token: string }>("gateway_generate_pairing_token");
+    },
+
+    async pairingQr() {
+      const api = await loadTauriInvokeApi();
+      if (!api) throw missingTauriError("pairingQr");
+      return api.invoke<{ token: string; wsUrl: string; qrText: string }>("gateway_pairing_qr");
+    },
+
+    async listGatewayDevices() {
+      const api = await loadTauriInvokeApi();
+      if (!api) throw missingTauriError("listGatewayDevices");
+      return api.invoke<{ devices: GatewayDevice[] }>("gateway_list_devices");
+    },
+
+    async revokeGatewayDevice(deviceId) {
+      const api = await loadTauriInvokeApi();
+      if (!api) throw missingTauriError("revokeGatewayDevice");
+      await api.invoke("gateway_revoke_device", { input: { deviceId } });
     },
 
     async gatewayStart() {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("gatewayStart");
-      await api.invoke("gatewayStart");
+      await api.invoke("gateway_start");
     },
 
     async gatewayStop() {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("gatewayStop");
-      await api.invoke("gatewayStop");
+      await api.invoke("gateway_stop");
     },
 
     async gatewaySetAllowLan(allow) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("gatewaySetAllowLan");
-      await api.invoke("gatewaySetAllowLan", { allow });
+      await api.invoke("gateway_set_allow_lan", { input: { allow } });
     },
 
     async killSwitchStopAll() {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("killSwitchStopAll");
-      await api.invoke("killSwitchStopAll");
+      await api.invoke("kill_switch_stop_all");
     },
   };
 }

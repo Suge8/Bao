@@ -1,314 +1,333 @@
-
-import { Page } from "@playwright/test";
-
-// Types matching Rust backend
-export type BaoEvent = {
-  eventId: number;
-  type: string;
-  ts: number;
-  payload: unknown;
-};
-
-type EngineTurnInput = {
-  sessionId: string;
-  text: string;
-};
-
-// Simulator State
-type Session = {
-  id: string;
-  title: string;
-  messages: Array<{ role: string; content: string }>;
-};
-
-export class RustCoreSimulator {
-  private sessions: Map<string, Session> = new Map();
-  private eventListeners: Map<string, Map<number, number>> = new Map();
-  private callbacks: Map<number, { callback: (payload: unknown) => void; once: boolean }> = new Map();
-  private eventIdSeq = 1000;
-  private listenerSeq = 1;
-  private callbackSeq = 1;
-
-  constructor() {
-    this.sessions.set("default", { id: "default", title: "Default", messages: [] });
-  }
-
-  // --- Tauri IPC Mock Implementation ---
-
-  async install(page: Page) {
-    await page.addInitScript(() => {
-      // @ts-ignore
-      window.__RUST_SIMULATOR_callbacks__ = new Map();
-      // @ts-ignore
-      window.__RUST_SIMULATOR_listeners__ = new Map();
-    });
-
-    await page.exposeFunction("rustSimulatorEmit", (eventName: string, payload: unknown) => {
-       // This function is called by the simulator (Node side) to emit events to the browser
-       // But wait, page.exposeFunction exposes Node -> Browser?
-       // No, exposeFunction adds a function in Browser that calls back to Node.
-       // We want the reverse: Node (Playwright) triggering Browser callback.
-       // Actually, we can just use page.evaluate to trigger the callbacks.
-    });
-    
-    // We'll implement the mock entirely in the browser context for simplicity and speed,
-    // avoiding serializing everything back and forth to Node unless necessary.
-    // The "Simulator" will be a complex InitScript.
-  }
-}
-
-// We will inject the entire simulator logic as a browser-side script.
-// This ensures it runs synchronously with the app's requests and behaves like a fast local backend.
-
 export const SIMULATOR_SCRIPT = `
-(function() {
+(function () {
   const SESSIONS = new Map([
     ["default", { id: "default", title: "Default", messages: [] }],
-    ["s2", { id: "s2", title: "Session 2", messages: [] }]
+    ["s2", { id: "s2", title: "Session 2", messages: [] }],
   ]);
-  const LISTENERS = new Map(); // event -> Map<id, callbackId>
-  const CALLBACKS = new Map(); // callbackId -> {cb, once}
+
+  const SETTINGS = new Map([
+    ["gateway.allowLan", false],
+    ["gateway.running", false],
+    [
+      "provider.profiles",
+      [
+        {
+          id: "mock-openai",
+          name: "openai/gpt-4.1-mini",
+          provider: "openai",
+          model: "gpt-4.1-mini",
+          baseUrl: "https://api.openai.com/v1",
+          apiKey: "sk-test",
+        },
+      ],
+    ],
+    ["provider.selectedProfileId", "mock-openai"],
+    ["provider.active", "openai"],
+    ["provider.model", "gpt-4.1-mini"],
+    ["provider.baseUrl", "https://api.openai.com/v1"],
+    ["provider.apiKey", "sk-test"],
+  ]);
+
+  const LISTENERS = new Map();
+  const CALLBACKS = new Map();
+  const RUNTIME_EVENTS = [];
+  const AUDIT_LOGS = [];
+  const COMMAND_TRACE = [];
+
   let EVENT_ID = 1000;
   let LISTENER_ID = 1;
   let CALLBACK_ID = 1;
+  let PREV_HASH = null;
 
-  // --- Helpers ---
-  function emit(eventName, payload) {
-    const listeners = LISTENERS.get(eventName);
-    if (!listeners) return;
-    
-    // Wrap in standard Tauri event envelope
-    const eventObj = {
-      event: eventName,
-      payload: {
-        eventId: ++EVENT_ID,
-        type: payload.type || eventName,
-        ts: Date.now(),
-        payload: payload.payload || payload
-      }
+  function buildAuditFromEvent(evt) {
+    const hash = "hash-" + String(evt.eventId);
+    const row = {
+      id: evt.eventId,
+      ts: evt.ts,
+      action: evt.type,
+      subjectType: "event",
+      subjectId: String(evt.eventId),
+      payload: evt.payload,
+      prevHash: PREV_HASH,
+      hash,
     };
-    
-    // In Tauri v2, the listener callback receives the Event object
-    // but our tauri-client.ts wrapper expects { payload: ... } or just payload depending on implementation.
-    // client.ts: 
-    // const raw = e.payload ...
-    // So we should match what tauri-client.ts expects.
-    // tauri-client.ts line 53: const raw = e.payload ...
-    
-    for (const [lid, cid] of listeners.entries()) {
-      const record = CALLBACKS.get(cid);
-      if (record) {
-        // The mock in basic.spec.ts passes { event, id, payload }
-        // tauri-client.ts uses api.listen which returns an unlisten function.
-        // The callback passed to api.listen receives an event object.
-        record.callback(eventObj);
-        if (record.once) {
-          CALLBACKS.delete(cid);
-          listeners.delete(lid);
-        }
+    PREV_HASH = hash;
+    return row;
+  }
+
+  function emitBaoEvent(type, payload) {
+    const evt = {
+      eventId: ++EVENT_ID,
+      type,
+      ts: Date.now(),
+      payload,
+    };
+
+    RUNTIME_EVENTS.push(evt);
+    AUDIT_LOGS.push(buildAuditFromEvent(evt));
+
+    const listeners = LISTENERS.get("bao:event");
+    if (!listeners) return evt;
+
+    for (const [listenerId, callbackId] of listeners.entries()) {
+      const record = CALLBACKS.get(callbackId);
+      if (!record) continue;
+      record.callback({ event: "bao:event", id: listenerId, payload: evt });
+      if (record.once) {
+        CALLBACKS.delete(callbackId);
+        listeners.delete(listenerId);
       }
     }
+
+    return evt;
   }
 
-  function errorPayload(source, stage, code, error, extra = {}) {
-    return {
-        source,
-        stage,
-        code,
-        error: String(error),
-        ...extra
-    };
+  function listByCursor(items, cursor, limit) {
+    const from = typeof cursor === "number" ? cursor : 0;
+    const safeLimit = Math.max(1, Math.min(2000, typeof limit === "number" ? limit : 50));
+    return items.filter((item) => item.id > from || item.eventId > from).slice(-safeLimit);
   }
-
-  // --- Commands ---
 
   const COMMANDS = {
-    async listSessions() {
-      return { payload: { sessions: Array.from(SESSIONS.values()).map(s => ({ sessionId: s.id, title: s.title })) } };
-    },
-    
-    async createSession({ sessionId, title }) {
-      SESSIONS.set(sessionId, { id: sessionId, title: title || sessionId, messages: [] });
-      return { payload: { eventId: ++EVENT_ID, type: "session.created", ts: Date.now(), payload: { sessionId } } };
+    async get_settings() {
+      return {
+        payload: {
+          settings: Array.from(SETTINGS.entries()).map(([key, value]) => ({ key, value })),
+        },
+      };
     },
 
-    async sendMessage({ sessionId, text }) {
-      const session = SESSIONS.get(sessionId);
-      if (session) {
-        session.messages.push({ role: "user", content: text });
-      }
+    async update_settings(args) {
+      const input = args && typeof args.input === "object" ? args.input : {};
+      const key = typeof input.key === "string" ? input.key : "";
+      SETTINGS.set(key, input.value);
+      emitBaoEvent("settings.update", { key, value: input.value });
       return { ok: true };
     },
 
-    async runEngineTurn({ sessionId, text }) {
-      // 1. Emit message.send
-      emit("bao:event", {
-        type: "message.send",
-        payload: { sessionId, text }
-      });
+    async list_sessions() {
+      return {
+        payload: {
+          sessions: Array.from(SESSIONS.values()).map((s) => ({ sessionId: s.id, title: s.title })),
+        },
+      };
+    },
 
-      // 2. Router Simulation
-      let matched = true;
-      let toolName = null;
-      let toolArgs = null;
-      let needsMemory = false;
-      let output = "";
-      
-      // Simple Router Rules
-      if (text.includes("/tool ")) {
-         // Explicit tool call
-         const parts = text.split(" ");
-         toolName = parts[1];
-         try {
-           const jsonStr = text.substring(text.indexOf("{"));
-           toolArgs = JSON.parse(jsonStr);
-         } catch (e) {
-           toolArgs = {};
-         }
-      } else if (text.includes("memory")) {
-         needsMemory = true;
+    async create_session(args) {
+      const input = args && typeof args.input === "object" ? args.input : {};
+      const sessionId = typeof input.sessionId === "string" ? input.sessionId : "";
+      if (!sessionId) throw new Error("sessionId is required");
+      const title = typeof input.title === "string" && input.title.length > 0 ? input.title : sessionId;
+      SESSIONS.set(sessionId, { id: sessionId, title, messages: [] });
+      emitBaoEvent("sessions.create", { sessionId, title });
+      return { ok: true };
+    },
+
+    async run_engine_turn(args) {
+      const input = args && typeof args.input === "object" ? args.input : {};
+      const sessionId = typeof input.sessionId === "string" && input.sessionId ? input.sessionId : "default";
+      const text = typeof input.text === "string" ? input.text : "";
+
+      const session = SESSIONS.get(sessionId) || { id: sessionId, title: sessionId, messages: [] };
+      if (!SESSIONS.has(sessionId)) {
+        SESSIONS.set(sessionId, session);
       }
 
-      // 3. Tool Execution & Failure Simulation
-      let toolTriggered = false;
-      let toolOk = undefined;
-      let toolValidationOk = undefined;
-      let toolValidationError = undefined;
-      let toolRetryReason = undefined;
-      let toolAttempts = 0;
-      let providerUsed = null;
+      session.messages.push({ role: "user", content: text });
+      emitBaoEvent("message.send", { sessionId, text });
 
-      if (toolName) {
+      let output = "Echo: " + text;
+      let toolName = "shell.exec";
+      let toolTriggered = text.includes("/tool");
+      let toolOk = !toolTriggered;
+      let toolAttempts = toolTriggered ? 2 : 0;
+      let toolRetryReason = toolTriggered ? "max_attempts_reached" : null;
+      let providerUsed = toolTriggered ? null : "bao.bundled.provider.openai";
+
+      if (text.includes("__provider_error_retry__")) {
+        emitBaoEvent("provider.call.error", {
+          source: "runEngineTurn",
+          stage: "provider.call",
+          sessionId,
+          code: "ERR_PROVIDER_CALL",
+          error: "provider run timeout",
+          provider: "openai",
+          model: "gpt-4.1-mini",
+          attempt: 1,
+        });
+        output = "provider run timeout";
         toolTriggered = true;
-        
-        // --- Failure Scenarios ---
-        if (toolArgs?.command === "__emit_errors__") {
-          // Simulate Corrector Error
-          emit("bao:event", {
-            type: "corrector.validate_tool_result.error",
-            payload: errorPayload("runEngineTurn", "corrector.validate_tool_result", "ERR_CORRECTOR_VALIDATE_TOOL_RESULT", "validator unavailable", { sessionId, toolName, attempt: 1 })
-          });
-          
-          // Simulate Memory Extract Error
-          emit("bao:event", {
-            type: "memory.extract.error",
-            payload: errorPayload("runEngineTurn", "memory.extract.apply_plan", "ERR_MEMORY_EXTRACT_APPLY_PLAN", "apply mutation plan failed", { sessionId, planId: "plan_error", mutationCount: 1 })
-          });
-          
-          output = "tool execution failed";
-          toolOk = false;
-        } 
-        else if (toolArgs?.command === "__provider_error_retry__") {
-           // Simulate Provider Timeout
-           emit("bao:event", {
-             type: "provider.call.error",
-             payload: errorPayload("runEngineTurn", "provider.call", "ERR_PROVIDER_CALL", "provider run timeout", { sessionId, provider: "openai", model: "gpt-4", attempt: 1 })
-           });
-           output = "provider run timeout";
-           toolAttempts = 2;
-           toolRetryReason = "max_attempts_reached";
-        }
-        else if (toolArgs?.command === "__provider_unauthorized__") {
-           emit("bao:event", {
-             type: "provider.call.error",
-             payload: errorPayload("runEngineTurn", "provider.call", "ERR_PROVIDER_CALL", "provider unauthorized", { sessionId, provider: "openai", model: "gpt-4", attempt: 1 })
-           });
-           output = "provider unauthorized";
-           toolAttempts = 2;
-           toolRetryReason = "max_attempts_reached";
-        }
-        else if (toolArgs?.command === "echo") {
-           // Success
-           toolOk = true;
-           toolValidationOk = true;
-           output = "tool echo 执行成功\\n" + (toolArgs.args ? toolArgs.args.join(" ") : "hi");
-           toolAttempts = 1;
-        }
-        else {
-           // Default tool failure
-           toolOk = false;
-           output = "tool execution failed";
-           toolAttempts = 2;
-           toolRetryReason = "max_attempts_reached";
-        }
-      } else {
-        // Chat Turn (Provider)
-        providerUsed = "bao.bundled.provider.openai";
-        output = "Echo: " + text;
+        toolOk = false;
+      } else if (text.includes("__emit_errors__")) {
+        emitBaoEvent("corrector.validate_tool_result.error", {
+          source: "runEngineTurn",
+          stage: "corrector.validate_tool_result",
+          sessionId,
+          code: "ERR_CORRECTOR_VALIDATE_TOOL_RESULT",
+          error: "validator unavailable",
+          toolName,
+          attempt: 1,
+        });
+        emitBaoEvent("memory.extract.error", {
+          source: "runEngineTurn",
+          stage: "memory.extract.apply_plan",
+          sessionId,
+          code: "ERR_MEMORY_EXTRACT_APPLY_PLAN",
+          error: "apply mutation plan failed",
+          planId: "plan_error",
+          mutationCount: 1,
+        });
+        output = "tool execution failed";
+        toolTriggered = true;
+        toolOk = false;
+      } else if (text.includes("/tool") && text.includes("echo")) {
+        output = "tool echo 执行成功\\nhello world";
+        toolTriggered = true;
+        toolOk = true;
+        toolAttempts = 1;
+        toolRetryReason = null;
       }
 
-      // 4. Emit engine.turn
-      const turnPayload = {
+      session.messages.push({ role: "assistant", content: output });
+
+      emitBaoEvent("engine.turn", {
         sessionId,
         output,
-        matched,
-        needsMemory,
+        matched: true,
+        needsMemory: false,
         toolName,
         toolTriggered,
         toolOk,
-        toolValidationOk,
-        toolValidationError,
+        toolValidationOk: toolOk,
+        toolValidationError: toolOk ? null : "tool execution failed",
         toolRetryReason,
         toolAttempts,
         providerUsed,
         memoryPlanId: toolTriggered ? "plan_sim" : null,
-        memoryMutationCount: toolTriggered ? 1 : 0
-      };
-
-      emit("bao:event", {
-        type: "engine.turn",
-        payload: turnPayload
+        memoryMutationCount: toolTriggered ? 1 : 0,
       });
 
       return {
         output,
-        matched,
-        needsMemory,
+        matched: true,
+        needsMemory: false,
         toolName,
         toolTriggered,
-        toolOk
+        toolOk,
       };
     },
 
+    async list_runtime_events(args) {
+      const cursor = args && typeof args.cursor === "number" ? args.cursor : undefined;
+      const limit = args && typeof args.limit === "number" ? args.limit : undefined;
+      return { events: listByCursor(RUNTIME_EVENTS, cursor, limit) };
+    },
+
+    async list_audit_logs(args) {
+      const cursor = args && typeof args.cursor === "number" ? args.cursor : undefined;
+      const limit = args && typeof args.limit === "number" ? args.limit : undefined;
+      return { logs: listByCursor(AUDIT_LOGS, cursor, limit) };
+    },
+
+    async gateway_start() {
+      SETTINGS.set("gateway.running", true);
+      return null;
+    },
+
+    async gateway_stop() {
+      SETTINGS.set("gateway.running", false);
+      return null;
+    },
+
+    async gateway_set_allow_lan(args) {
+      const input = args && typeof args.input === "object" ? args.input : {};
+      SETTINGS.set("gateway.allowLan", Boolean(input.allow));
+      return null;
+    },
+
+    async kill_switch_stop_all() {
+      SETTINGS.set("gateway.running", false);
+      return null;
+    },
+
+    async list_tasks() {
+      return { payload: { tasks: [] } };
+    },
+
+    async list_dimsums() {
+      return { payload: { dimsums: [] } };
+    },
+
+    async list_memories() {
+      return { payload: { memories: [] } };
+    },
+
+    async search_index() {
+      return { payload: { hits: [] } };
+    },
+
+    async memory_get_items() {
+      return { payload: { items: [] } };
+    },
+
+    async memory_get_timeline() {
+      return { payload: { timeline: [] } };
+    },
+
+    async memory_list_versions() {
+      return { payload: { versions: [] } };
+    },
+
+    async apply_mutation_plan() {
+      return { ok: true };
+    },
+
+    async memory_rollback_version() {
+      return { ok: true };
+    },
+
     "plugin:event|listen": async (args) => {
-       const event = args.event;
-       const callbackId = args.handler;
-       if (!LISTENERS.has(event)) {
-         LISTENERS.set(event, new Map());
-       }
-       const listenerId = LISTENER_ID++;
-       LISTENERS.get(event).set(listenerId, callbackId);
-       return listenerId;
+      const event = String(args && args.event ? args.event : "");
+      const callbackId = Number(args && args.handler ? args.handler : 0);
+      if (!LISTENERS.has(event)) {
+        LISTENERS.set(event, new Map());
+      }
+      const listenerId = LISTENER_ID++;
+      LISTENERS.get(event).set(listenerId, callbackId);
+      return listenerId;
     },
 
     "plugin:event|unlisten": async (args) => {
-       // Implementation detail
-       return null;
-    }
+      const event = String(args && args.event ? args.event : "");
+      const listenerId = Number(args && args.eventId ? args.eventId : 0);
+      const listeners = LISTENERS.get(event);
+      if (listeners) listeners.delete(listenerId);
+      return null;
+    },
   };
 
-  // --- Inject ---
+  window.__TAURI_MOCK_TRACE__ = COMMAND_TRACE;
+
   window.__TAURI_INTERNALS__ = {
-    transformCallback: (callback, once = false) => {
+    transformCallback: function (callback, once) {
       const id = CALLBACK_ID++;
-      CALLBACKS.set(id, { callback, once });
+      CALLBACKS.set(id, { callback: callback, once: Boolean(once) });
       return id;
     },
-    unregisterCallback: (id) => {
+    unregisterCallback: function (id) {
       CALLBACKS.delete(id);
     },
-    invoke: async (cmd, args) => {
-      // console.log("Invoke:", cmd, args);
-      if (COMMANDS[cmd]) {
-        return COMMANDS[cmd](args);
+    invoke: async function (cmd, args) {
+      COMMAND_TRACE.push(cmd);
+      if (Object.prototype.hasOwnProperty.call(COMMANDS, cmd)) {
+        return COMMANDS[cmd](args || {});
       }
-      // console.warn("Unknown command:", cmd);
       return null;
-    }
+    },
   };
-  
+
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
-      unregisterListener: () => {}
+    unregisterListener: function () {},
   };
 })();
 `;

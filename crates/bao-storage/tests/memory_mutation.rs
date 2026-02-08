@@ -193,3 +193,31 @@ fn audit_chain_verifier_has_machine_readable_fields() {
     );
     assert_eq!(json["issues"][0]["event_id"], serde_json::json!(2));
 }
+
+#[test]
+fn list_audit_events_since_should_support_cursor_and_limit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("test.sqlite");
+    let conn = Connection::open(&db).expect("open");
+    conn.execute_batch(INIT_SQL).expect("init schema");
+
+    let storage = Storage::open(db.to_string_lossy().to_string()).expect("storage");
+    storage
+        .insert_audit_event(1, "act", "sub", "1", &serde_json::json!({"a": 1}))
+        .expect("audit1");
+    storage
+        .insert_audit_event(2, "act", "sub", "2", &serde_json::json!({"a": 2}))
+        .expect("audit2");
+
+    let first_page = storage
+        .list_audit_events_since(None, 1)
+        .expect("list first page");
+    assert_eq!(first_page.len(), 1);
+
+    let second_page = storage
+        .list_audit_events_since(Some(first_page[0].id), 10)
+        .expect("list second page");
+    assert_eq!(second_page.len(), 1);
+    assert_eq!(second_page[0].subject_id, "2");
+    assert_eq!(second_page[0].payload["a"], serde_json::json!(2));
+}

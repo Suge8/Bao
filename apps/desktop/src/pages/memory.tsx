@@ -1,7 +1,10 @@
 import { useI18n } from "@/i18n/i18n";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
 import { useClient } from "@/data/use-client";
+import { MagicCard } from "@/components/ui/magic-card";
+import { ShinyButton } from "@/components/ui/shiny-button";
+import { Brain, ChevronDown, Clock, Database, History, RefreshCw, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type MemoryHit = {
@@ -60,14 +63,14 @@ export default function MemoryPage() {
   const [saving, setSaving] = useState(false);
   const [rollingVersionKey, setRollingVersionKey] = useState<string | null>(null);
 
-  const refreshTimeline = async () => {
+  const refreshTimeline = useCallback(async () => {
     try {
       const res = await client.getTimeline(undefined);
       setTimeline((res.timeline as TimelineItem[]) ?? []);
     } catch {
       setTimeline([]);
     }
-  };
+  }, [client]);
 
   useEffect(() => {
     let mounted = true;
@@ -88,7 +91,7 @@ export default function MemoryPage() {
 
   useEffect(() => {
     void refreshTimeline();
-  }, [client]);
+  }, [refreshTimeline]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -199,147 +202,207 @@ export default function MemoryPage() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-5xl space-y-4" data-testid="page-memory">
-      <div className="text-xl font-semibold">{t("page.memory.title")}</div>
-
-      <div className="rounded-2xl bg-foreground/5 p-4">
-        <div className="flex items-center gap-2">
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索记忆"
-            className="h-10 flex-1 rounded-xl bg-background px-3 text-sm outline-none"
-            data-testid="memory-search"
-          />
-          <button
+    <div className="mx-auto flex h-full min-h-0 w-full max-w-6xl flex-col overflow-hidden" data-testid="page-memory">
+      <div className="flex items-center justify-between">
+         <h1 className="text-xl font-bold tracking-tight">{t("page.memory.title")}</h1>
+         <ShinyButton
             type="button"
             onClick={() => {
               void refreshTimeline();
             }}
             disabled={saving}
-            className={cn(
-              "h-10 rounded-xl px-4 text-sm transition",
-              saving
-                ? "cursor-not-allowed bg-foreground/10 text-muted-foreground"
-                : "bg-foreground text-background hover:opacity-90",
-            )}
+            className="h-8 rounded-xl px-4 text-xs font-medium"
             data-testid="memory-refresh"
           >
-            刷新
-          </button>
-        </div>
+            <RefreshCw className="mr-2 h-3.5 w-3.5" />
+            Refresh
+          </ShinyButton>
+      </div>
 
-        <div className="mt-3 rounded-xl bg-background p-3">
-          <div className="text-xs text-muted-foreground">Timeline（namespace 聚合）</div>
-          <div className="mt-2 grid gap-2 sm:grid-cols-2">
-            {timeline.map((item) => (
-              <div key={item.namespace} className="rounded-xl bg-foreground/5 p-2 text-xs text-muted-foreground">
-                <div className="text-foreground">{item.namespace}</div>
-                <div>count: {item.count}</div>
-                <div>updated: {formatUnix(item.updatedAt)}</div>
-              </div>
-            ))}
-            {timeline.length === 0 ? <div className="text-xs text-muted-foreground">暂无 timeline 数据</div> : null}
+      <div className="mt-6 min-h-0 flex-1 space-y-6 overflow-y-auto pr-1">
+      <MagicCard className="rounded-3xl border border-border/50 bg-background/60 backdrop-blur-sm">
+        <div className="p-6">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/50" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search memory graph..."
+              className="h-11 w-full rounded-xl bg-muted/30 pl-9 pr-4 text-sm outline-none ring-1 ring-border/50 transition-all focus:bg-muted/50 focus:ring-primary/30"
+              data-testid="memory-search"
+            />
+          </div>
+
+          <div className="mt-6">
+            <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+              <Database className="h-3.5 w-3.5" />
+              Timeline Overview
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {timeline.map((item) => (
+                <div key={item.namespace} className="flex flex-col justify-between rounded-xl bg-muted/30 p-3 ring-1 ring-border/50 transition-colors hover:bg-muted/50">
+                  <div className="flex items-center justify-between">
+                     <div className="font-mono text-xs font-medium text-foreground">{item.namespace}</div>
+                        <div className="rounded-full bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                       {item.count}
+                     </div>
+                  </div>
+                  <div className="mt-2 flex items-center gap-1 text-[10px] text-muted-foreground/70">
+                    <Clock className="h-3 w-3" />
+                    {formatUnix(item.updatedAt)}
+                  </div>
+                </div>
+              ))}
+              {timeline.length === 0 ? <div className="col-span-full py-4 text-center text-xs text-muted-foreground">No timeline data available.</div> : null}
+            </div>
           </div>
         </div>
+      </MagicCard>
 
-        {error ? <div className="mt-2 text-xs text-red-500">{error}</div> : null}
+      {error ? <div className="rounded-xl bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
 
-        <motion.div layout className="mt-3 grid gap-2">
-          {filtered.map((h) => {
-            const isOpen = Boolean(expanded[h.id]);
-            const detail = itemsById[h.id];
-            const loading = Boolean(loadingIds[h.id]);
-            const versions = versionsByMemoryId[h.id] ?? [];
-            const loadingVersions = Boolean(loadingVersionIds[h.id]);
+      <div className="space-y-2">
+        {filtered.map((h) => {
+          const isOpen = Boolean(expanded[h.id]);
+          const detail = itemsById[h.id];
+          const loading = Boolean(loadingIds[h.id]);
+          const versions = versionsByMemoryId[h.id] ?? [];
+          const loadingVersions = Boolean(loadingVersionIds[h.id]);
 
-            return (
-              <motion.div layout key={h.id} className="rounded-2xl bg-background p-3" data-testid={`memory-hit-${h.id}`}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void toggleExpand(h.id);
-                  }}
-                  className="flex w-full cursor-pointer items-start justify-between gap-3 text-left"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">{h.title}</div>
-                    <div className="mt-0.5 truncate text-xs text-muted-foreground">{h.snippet}</div>
-                    <div className="mt-0.5 text-xs text-muted-foreground">
-                      {(h.namespace ?? "-") + " / " + (h.kind ?? "-")}
-                    </div>
+          return (
+            <motion.div 
+              layout 
+              key={h.id} 
+              className={cn(
+                "overflow-hidden rounded-2xl border bg-background/60 backdrop-blur-sm transition-all",
+                    isOpen ? "border-primary/20 shadow-sm ring-1 ring-primary/10" : "border-border/50 hover:border-border"
+              )}
+              data-testid={`memory-hit-${h.id}`}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  void toggleExpand(h.id);
+                }}
+                className="flex w-full items-start justify-between gap-4 p-4 text-left transition-colors hover:bg-muted/30"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <Brain className="h-4 w-4 text-primary/70" />
+                    <div className="truncate text-sm font-semibold text-foreground">{h.title}</div>
+                    <div className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{h.score.toFixed(2)}</div>
                   </div>
-                  <div className="text-xs text-muted-foreground">{h.score.toFixed(2)}</div>
-                </button>
+                  <div className="mt-1 line-clamp-2 text-xs text-muted-foreground/80">{h.snippet}</div>
+                  <div className="mt-2 flex items-center gap-2 text-[10px] text-muted-foreground/60">
+                    <span className="font-mono">{h.namespace}</span>
+                    <span>/</span>
+                    <span className="font-mono">{h.kind}</span>
+                  </div>
+                </div>
+                <div className={cn("mt-1 transition-transform", isOpen && "rotate-180")}>
+                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                </div>
+              </button>
 
-                {isOpen ? (
-                  <div className="mt-3 rounded-xl bg-foreground/5 p-3 text-xs text-muted-foreground">
-                    {loading ? <div>加载详情中...</div> : null}
-                    {!loading && detail ? (
-                      <>
-                        <div className="text-foreground">ID: {detail.id}</div>
-                        <div className="mt-1">status: {detail.status ?? "-"}</div>
-                        <div className="mt-1">score: {String(detail.score ?? "-")}</div>
-                        <div className="mt-1">updated: {formatUnix(detail.updatedAt)}</div>
-                        <div className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-background p-2 text-foreground">
-                          {detail.content ?? "(empty content)"}
+              {isOpen ? (
+                <div className="border-t border-border/50 bg-muted/10 p-4">
+                  {loading ? (
+                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <div className="h-3 w-3 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                        Loading details...
+                     </div>
+                  ) : null}
+                  {!loading && detail ? (
+                    <div className="space-y-4">
+                      <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                        <div className="flex items-center gap-1.5 rounded-lg bg-background/50 px-2 py-1.5">
+                           <span className="font-medium">ID:</span>
+                           <span className="font-mono">{detail.id}</span>
                         </div>
-                        <pre className="mt-2 overflow-auto rounded-lg bg-background p-2 text-[11px] text-foreground">
-                          {safeJson(detail.json)}
-                        </pre>
-                        <div className="mt-2 rounded-lg bg-background p-2">
-                          <div className="text-[11px] text-muted-foreground">版本历史</div>
-                          {loadingVersions ? <div className="mt-1">加载版本中...</div> : null}
-                          {!loadingVersions && versions.length === 0 ? (
-                            <div className="mt-1">暂无版本</div>
-                          ) : null}
-                          {!loadingVersions && versions.length > 0 ? (
-                            <div className="mt-2 space-y-1">
-                              {versions.map((version) => {
-                                const rollbackKey = `${detail.id}:${version.versionId}`;
-                                const isRolling = saving && rollingVersionKey === rollbackKey;
-                                return (
-                                  <div
-                                    key={version.versionId}
-                                    className="flex items-center justify-between rounded-md bg-foreground/5 px-2 py-1"
-                                  >
-                                    <div className="min-w-0 pr-2 text-[11px] text-muted-foreground">
-                                      <div className="truncate text-foreground">{version.versionId}</div>
-                                      <div className="truncate">
-                                        {version.op} · {formatUnix(version.createdAt)} · {version.actor ?? "-"}
-                                      </div>
+                        <div className="flex items-center gap-1.5 rounded-lg bg-background/50 px-2 py-1.5">
+                           <span className="font-medium">Status:</span>
+                           <span>{detail.status ?? "-"}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 rounded-lg bg-background/50 px-2 py-1.5">
+                           <span className="font-medium">Score:</span>
+                           <span>{String(detail.score ?? "-")}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 rounded-lg bg-background/50 px-2 py-1.5">
+                           <span className="font-medium">Updated:</span>
+                           <span>{formatUnix(detail.updatedAt)}</span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="mb-1.5 text-xs font-medium text-muted-foreground">Content</div>
+                        <div className="rounded-xl border border-border/50 bg-background p-3 text-xs leading-relaxed text-foreground/90">
+                          {detail.content ?? <span className="text-muted-foreground italic">(empty content)</span>}
+                        </div>
+                      </div>
+
+                      {detail.json ? (
+                         <div>
+                            <div className="mb-1.5 text-xs font-medium text-muted-foreground">Metadata (JSON)</div>
+                            <pre className="max-h-40 overflow-auto rounded-xl border border-border/50 bg-muted/20 p-3 font-mono text-[10px] text-foreground/80 scrollbar-thin scrollbar-thumb-muted-foreground/20">
+                              {safeJson(detail.json)}
+                            </pre>
+                         </div>
+                      ) : null}
+
+                      <div className="rounded-xl border border-border/50 bg-background/50 p-3">
+                        <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                          <History className="h-3.5 w-3.5" />
+                          Version History
+                        </div>
+                        {loadingVersions ? <div className="text-[10px] text-muted-foreground">Loading versions...</div> : null}
+                        {!loadingVersions && versions.length === 0 ? (
+                          <div className="text-[10px] text-muted-foreground">No version history available.</div>
+                        ) : null}
+                        {!loadingVersions && versions.length > 0 ? (
+                          <div className="space-y-1.5">
+                            {versions.map((version) => {
+                              const rollbackKey = `${detail.id}:${version.versionId}`;
+                              const isRolling = saving && rollingVersionKey === rollbackKey;
+                              return (
+                                <div
+                                  key={version.versionId}
+                                  className="flex items-center justify-between rounded-lg bg-muted/30 px-2 py-1.5 transition-colors hover:bg-muted/50"
+                                >
+                                  <div className="min-w-0 pr-3">
+                                    <div className="flex items-center gap-2 text-[10px]">
+                                      <span className="font-mono font-medium text-foreground">{version.versionId.slice(0, 8)}...</span>
+                                      <span className="rounded bg-background px-1 py-0.5 text-[9px] uppercase tracking-wider text-muted-foreground border border-border/50">{version.op}</span>
                                     </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        void rollbackToVersion(detail.id, version.versionId);
-                                      }}
-                                      disabled={saving}
-                                      className={cn(
-                                        "rounded-lg px-2 py-1 text-[11px] transition",
-                                        saving
-                                          ? "cursor-not-allowed bg-foreground/10 text-muted-foreground"
-                                          : "bg-foreground/10 text-foreground hover:bg-foreground/20",
-                                      )}
-                                      data-testid={`memory-rollback-${detail.id}-${version.versionId}`}
-                                    >
-                                      {isRolling ? "回滚中" : "回滚到此版本"}
-                                    </button>
+                                    <div className="mt-0.5 truncate text-[10px] text-muted-foreground/70">
+                                      {formatUnix(version.createdAt)} · {version.actor ?? "system"}
+                                    </div>
                                   </div>
-                                );
-                              })}
-                            </div>
-                          ) : null}
-                        </div>
-                      </>
-                    ) : null}
-                    {!loading && !detail ? <div>未加载到详情。</div> : null}
-                  </div>
-                ) : null}
-              </motion.div>
-            );
-          })}
-        </motion.div>
+                                  <ShinyButton
+                                    type="button"
+                                    onClick={() => {
+                                      void rollbackToVersion(detail.id, version.versionId);
+                                    }}
+                                    disabled={saving}
+                                    className="h-6 rounded-md px-2 text-[10px]"
+                                    data-testid={`memory-rollback-${detail.id}-${version.versionId}`}
+                                  >
+                                    {isRolling ? "Rolling back..." : "Rollback"}
+                                  </ShinyButton>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+                  {!loading && !detail ? <div className="text-xs text-muted-foreground">Details not found.</div> : null}
+                </div>
+              ) : null}
+            </motion.div>
+          );
+        })}
+      </div>
       </div>
     </div>
   );
@@ -349,7 +412,12 @@ function formatUnix(ts?: number | null) {
   if (!ts) return "-";
   const d = new Date(ts * 1000);
   if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleString();
+  return d.toLocaleString(undefined, {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function safeJson(v: unknown): string {

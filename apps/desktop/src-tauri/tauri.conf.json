@@ -13,8 +13,14 @@
     "windows": [
       {
         "title": "desktop",
-        "width": 800,
-        "height": 600
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1100,
+        "minHeight": 700,
+        "maxWidth": 2560,
+        "maxHeight": 1600,
+        "resizable": true,
+        "center": true
       }
     ],
     "security": {

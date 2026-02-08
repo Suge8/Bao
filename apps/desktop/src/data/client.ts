@@ -1,7 +1,29 @@
 import type { BaoEvent, UnlistenFn } from "./events";
 
+export type GatewayDevice = {
+  deviceId: string;
+  connected: boolean;
+};
+
 export type DesktopClient = {
   onBaoEvent: (cb: (event: BaoEvent) => void) => Promise<UnlistenFn>;
+
+  listRuntimeEvents: (cursor?: number, limit?: number) => Promise<{ events: BaoEvent[] }>;
+  listAuditLogs: (
+    cursor?: number,
+    limit?: number,
+  ) => Promise<{
+    logs: {
+      id: number;
+      ts: number;
+      action: string;
+      subjectType: string;
+      subjectId: string;
+      payload: unknown;
+      prevHash?: string | null;
+      hash: string;
+    }[];
+  }>;
 
   listSessions: () => Promise<{ sessions: { id: string; title: string }[] }>;
   createSession: (sessionId: string, title?: string) => Promise<{ ok: true }>;
@@ -47,6 +69,9 @@ export type DesktopClient = {
   getSettings: () => Promise<{ settings: { key: string; value: unknown }[] }>;
   updateSettings: (key: string, value: unknown) => Promise<{ ok: true }>;
   generatePairingToken: () => Promise<{ token: string }>;
+  pairingQr: () => Promise<{ token: string; wsUrl: string; qrText: string }>;
+  listGatewayDevices: () => Promise<{ devices: GatewayDevice[] }>;
+  revokeGatewayDevice: (deviceId: string) => Promise<void>;
   gatewayStart: () => Promise<void>;
   gatewayStop: () => Promise<void>;
   gatewaySetAllowLan: (allow: boolean) => Promise<void>;

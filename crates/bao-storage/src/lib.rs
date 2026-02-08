@@ -99,6 +99,19 @@ pub struct AuditChainVerificationResult {
     pub issues: Vec<AuditChainIssue>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditEventRecord {
+    pub id: i64,
+    pub ts: i64,
+    pub action: String,
+    pub subject_type: String,
+    pub subject_id: String,
+    pub payload: Value,
+    pub prev_hash: Option<String>,
+    pub hash: String,
+}
+
 #[derive(Debug)]
 struct AuditEventRow {
     id: i64,
@@ -405,6 +418,41 @@ impl Storage {
             issue_count: issues.len(),
             issues,
         })
+    }
+
+    pub fn list_audit_events_since(
+        &self,
+        last_audit_id: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<AuditEventRecord>, StorageError> {
+        let _guard = self.mutex.lock().expect("storage mutex poisoned");
+        let conn = Connection::open(&self.sqlite_path)?;
+        let from = last_audit_id.unwrap_or(0);
+        let limit = limit.clamp(1, 5000);
+
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, action, subject_type, subject_id, payload_json, prev_hash, hash \
+             FROM audit_events WHERE id > ?1 ORDER BY id ASC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![from, limit], |r| {
+            let payload_json: String = r.get(5)?;
+            Ok(AuditEventRecord {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                action: r.get(2)?,
+                subject_type: r.get(3)?,
+                subject_id: r.get(4)?,
+                payload: serde_json::from_str::<Value>(&payload_json).unwrap_or(Value::Null),
+                prev_hash: r.get(6)?,
+                hash: r.get(7)?,
+            })
+        })?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 
     pub fn get_task_by_id(&self, task_id: &str) -> Result<Option<TaskRecord>, StorageError> {

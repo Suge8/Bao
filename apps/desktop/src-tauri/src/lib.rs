@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    net::UdpSocket,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -7,7 +8,7 @@ use std::{
 
 use ::time::OffsetDateTime;
 use bao_api::{BaoEventV1, MemoryMutationPlanV1, TaskSpecV1};
-use bao_gateway::{GatewayConfig, GatewayHandle, GatewayServer};
+use bao_gateway::{GatewayConfig, GatewayDevice as GatewayDeviceRecord, GatewayHandle, GatewayServer};
 use bao_plugin_host::ToolRunner;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -68,6 +69,33 @@ struct PairingTokenOutput {
     token: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PairingQrOutput {
+    token: String,
+    ws_url: String,
+    qr_text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GatewayDeviceOutput {
+    device_id: String,
+    connected: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GatewayDeviceListOutput {
+    devices: Vec<GatewayDeviceOutput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RevokeGatewayDeviceInput {
+    device_id: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateTaskInput {
@@ -86,6 +114,18 @@ struct SearchIndexInput {
     query: String,
     #[serde(default = "default_search_limit")]
     limit: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeEventsOutput {
+    events: Vec<BaoEventV1>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuditLogsOutput {
+    logs: Vec<bao_storage::AuditEventRecord>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -188,6 +228,10 @@ struct ResourceReadInput {
 
 fn default_search_limit() -> i64 {
     50
+}
+
+fn default_logs_limit() -> i64 {
+    200
 }
 
 // -----------------------------
@@ -1603,6 +1647,34 @@ async fn update_settings(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command(rename = "listRuntimeEvents")]
+async fn list_runtime_events(
+    state: tauri::State<'_, Arc<AppState>>,
+    cursor: Option<i64>,
+    limit: Option<i64>,
+) -> Result<RuntimeEventsOutput, String> {
+    let events = state
+        .gateway_handle
+        .events_since(cursor, limit.unwrap_or_else(default_logs_limit))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(RuntimeEventsOutput { events })
+}
+
+#[tauri::command(rename = "listAuditLogs")]
+async fn list_audit_logs(
+    state: tauri::State<'_, Arc<AppState>>,
+    cursor: Option<i64>,
+    limit: Option<i64>,
+) -> Result<AuditLogsOutput, String> {
+    let logs = state
+        .gateway_handle
+        .audit_events_since(cursor, limit.unwrap_or_else(default_logs_limit))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(AuditLogsOutput { logs })
+}
+
 #[tauri::command(rename = "generatePairingToken")]
 async fn gateway_generate_pairing_token(
     state: tauri::State<'_, Arc<AppState>>,
@@ -1610,6 +1682,46 @@ async fn gateway_generate_pairing_token(
     Ok(PairingTokenOutput {
         token: state.gateway_handle.create_pairing_token(),
     })
+}
+
+#[tauri::command(rename = "pairingQr")]
+async fn gateway_pairing_qr(state: tauri::State<'_, Arc<AppState>>) -> Result<PairingQrOutput, String> {
+    let token = state.gateway_handle.create_pairing_token();
+    let ws_url = resolve_pairing_ws_url();
+    let qr_text = serde_json::json!({
+        "kind": "bao.pairing.qr.v1",
+        "token": token,
+        "wsUrl": ws_url,
+    })
+    .to_string();
+
+    Ok(PairingQrOutput {
+        token,
+        ws_url,
+        qr_text,
+    })
+}
+
+#[tauri::command(rename = "listGatewayDevices")]
+async fn gateway_list_devices(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<GatewayDeviceListOutput, String> {
+    let devices = state
+        .gateway_handle
+        .list_gateway_devices()
+        .into_iter()
+        .map(map_gateway_device)
+        .collect();
+    Ok(GatewayDeviceListOutput { devices })
+}
+
+#[tauri::command(rename = "revokeGatewayDevice")]
+async fn gateway_revoke_device(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: RevokeGatewayDeviceInput,
+) -> Result<(), String> {
+    state.gateway_handle.revoke_gateway_device(&input.device_id);
+    Ok(())
 }
 
 #[tauri::command(rename = "gatewayStart")]
@@ -1707,6 +1819,26 @@ async fn kill_switch_stop_all(state: tauri::State<'_, Arc<AppState>>) -> Result<
 
     // Reuse gateway_stop semantics.
     gateway_stop(state).await
+}
+
+fn map_gateway_device(device: GatewayDeviceRecord) -> GatewayDeviceOutput {
+    GatewayDeviceOutput {
+        device_id: device.device_id,
+        connected: device.connected,
+    }
+}
+
+fn resolve_pairing_ws_url() -> String {
+    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+        let _ = socket.connect("8.8.8.8:80");
+        if let Ok(local_addr) = socket.local_addr() {
+            let ip = local_addr.ip();
+            if ip.is_ipv4() && !ip.is_loopback() {
+                return format!("ws://{}:3901/ws", ip);
+            }
+        }
+    }
+    "ws://127.0.0.1:3901/ws".to_string()
 }
 
 // -----------------------------
@@ -2099,9 +2231,14 @@ pub fn run() {
             memory_rollback_version,
             get_settings,
             update_settings,
+            list_runtime_events,
+            list_audit_logs,
             gateway_start,
             gateway_stop,
             gateway_generate_pairing_token,
+            gateway_pairing_qr,
+            gateway_list_devices,
+            gateway_revoke_device,
             gateway_set_allow_lan,
             kill_switch_stop_all,
         ])
