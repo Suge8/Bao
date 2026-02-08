@@ -141,6 +141,24 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         model_overrides=(),
     ),
 
+    # OpenAI Codex: uses OAuth, not API key.
+    ProviderSpec(
+        name="openai_codex",
+        keywords=("openai-codex", "codex"),
+        env_key="",                         # OAuth-based, no API key
+        display_name="OpenAI Codex",
+        litellm_prefix="",                  # Not routed through LiteLLM
+        skip_prefixes=(),
+        env_extras=(),
+        is_gateway=False,
+        is_local=False,
+        detect_by_key_prefix="",
+        detect_by_base_keyword="codex",
+        default_api_base="https://chatgpt.com/backend-api",
+        strip_model_prefix=False,
+        model_overrides=(),
+    ),
+
     # DeepSeek: needs "deepseek/" prefix for LiteLLM routing.
     ProviderSpec(
         name="deepseek",
