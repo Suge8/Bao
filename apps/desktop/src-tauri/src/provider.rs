@@ -15,6 +15,46 @@ struct ProviderConfig {
     max_tokens: Option<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderKind {
+    Openai,
+    Anthropic,
+    Gemini,
+    Xai,
+}
+
+impl ProviderKind {
+    fn from_dimsum_id(dimsum_id: &str) -> Self {
+        if dimsum_id.ends_with("anthropic") {
+            Self::Anthropic
+        } else if dimsum_id.ends_with("gemini") {
+            Self::Gemini
+        } else if dimsum_id.ends_with("xai") {
+            Self::Xai
+        } else {
+            Self::Openai
+        }
+    }
+
+    fn default_base_url(self) -> &'static str {
+        match self {
+            Self::Openai => "https://api.openai.com/v1",
+            Self::Anthropic => "https://api.anthropic.com",
+            Self::Gemini => "https://generativelanguage.googleapis.com",
+            Self::Xai => "https://api.x.ai/v1",
+        }
+    }
+
+    fn api_key_label(self) -> &'static str {
+        match self {
+            Self::Openai => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Gemini => "gemini",
+            Self::Xai => "xai",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ProviderCallResult {
     pub provider: String,
@@ -142,34 +182,10 @@ async fn load_provider_config(handle: &GatewayHandle) -> Result<ProviderConfig, 
         };
         let value = item.get("value").cloned().unwrap_or(Value::Null);
         match key {
-            "provider.active" => {
-                active = value
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-            }
-            "provider.model" => {
-                model = value
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-            }
-            "provider.baseUrl" => {
-                base_url = value
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-            }
-            "provider.apiKey" => {
-                api_key = value
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-            }
+            "provider.active" => active = non_empty_string(&value),
+            "provider.model" => model = non_empty_string(&value),
+            "provider.baseUrl" => base_url = non_empty_string(&value),
+            "provider.apiKey" => api_key = non_empty_string(&value),
             "provider.temperature" => {
                 temperature = value.as_f64();
             }
@@ -375,15 +391,7 @@ fn method_is_supported(methods_result: &Value, method: &str) -> bool {
 }
 
 fn check_provider_connectivity(cfg: &ProviderConfig, dimsum_id: &str) -> Result<(), String> {
-    let kind = if dimsum_id.ends_with("anthropic") {
-        "anthropic"
-    } else if dimsum_id.ends_with("gemini") {
-        "gemini"
-    } else if dimsum_id.ends_with("xai") {
-        "xai"
-    } else {
-        "openai"
-    };
+    let kind = ProviderKind::from_dimsum_id(dimsum_id);
 
     let client = HttpClient::builder()
         .timeout(std::time::Duration::from_secs(8))
@@ -391,12 +399,12 @@ fn check_provider_connectivity(cfg: &ProviderConfig, dimsum_id: &str) -> Result<
         .map_err(|e| format!("build connectivity client failed: {e}"))?;
 
     match kind {
-        "anthropic" => {
-            let key = load_api_key_from_cfg("anthropic", cfg)?;
+        ProviderKind::Anthropic => {
+            let key = load_api_key_from_cfg(kind.api_key_label(), cfg)?;
             let base = cfg
                 .base_url
                 .as_deref()
-                .unwrap_or("https://api.anthropic.com")
+                .unwrap_or(kind.default_base_url())
                 .trim_end_matches('/');
             let rsp = client
                 .get(format!("{base}/v1/models"))
@@ -406,12 +414,12 @@ fn check_provider_connectivity(cfg: &ProviderConfig, dimsum_id: &str) -> Result<
                 .map_err(|e| format!("provider connectivity request failed: {e}"))?;
             validate_connectivity_response(rsp)
         }
-        "gemini" => {
-            let key = load_api_key_from_cfg("gemini", cfg)?;
+        ProviderKind::Gemini => {
+            let key = load_api_key_from_cfg(kind.api_key_label(), cfg)?;
             let base = cfg
                 .base_url
                 .as_deref()
-                .unwrap_or("https://generativelanguage.googleapis.com")
+                .unwrap_or(kind.default_base_url())
                 .trim_end_matches('/');
             let rsp = client
                 .get(format!("{base}/v1beta/models"))
@@ -420,12 +428,12 @@ fn check_provider_connectivity(cfg: &ProviderConfig, dimsum_id: &str) -> Result<
                 .map_err(|e| format!("provider connectivity request failed: {e}"))?;
             validate_connectivity_response(rsp)
         }
-        "xai" => {
-            let key = load_api_key_from_cfg("xai", cfg)?;
+        ProviderKind::Xai => {
+            let key = load_api_key_from_cfg(kind.api_key_label(), cfg)?;
             let base = cfg
                 .base_url
                 .as_deref()
-                .unwrap_or("https://api.x.ai/v1")
+                .unwrap_or(kind.default_base_url())
                 .trim_end_matches('/');
             let rsp = client
                 .get(format!("{base}/models"))
@@ -434,12 +442,12 @@ fn check_provider_connectivity(cfg: &ProviderConfig, dimsum_id: &str) -> Result<
                 .map_err(|e| format!("provider connectivity request failed: {e}"))?;
             validate_connectivity_response(rsp)
         }
-        _ => {
-            let key = load_api_key_from_cfg("openai", cfg)?;
+        ProviderKind::Openai => {
+            let key = load_api_key_from_cfg(kind.api_key_label(), cfg)?;
             let base = cfg
                 .base_url
                 .as_deref()
-                .unwrap_or("https://api.openai.com/v1")
+                .unwrap_or(kind.default_base_url())
                 .trim_end_matches('/');
             let rsp = client
                 .get(format!("{base}/models"))
@@ -449,6 +457,14 @@ fn check_provider_connectivity(cfg: &ProviderConfig, dimsum_id: &str) -> Result<
             validate_connectivity_response(rsp)
         }
     }
+}
+
+fn non_empty_string(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 fn validate_connectivity_response(response: reqwest::blocking::Response) -> Result<(), String> {

@@ -88,6 +88,19 @@ export const SIMULATOR_SCRIPT = `
     return items.filter((item) => item.id > from || item.eventId > from).slice(-safeLimit);
   }
 
+  function readSettingString(key) {
+    return String(SETTINGS.get(key) || "").trim();
+  }
+
+  function hasProviderPreflightConfig() {
+    return Boolean(
+      readSettingString("provider.active") &&
+        readSettingString("provider.model") &&
+        readSettingString("provider.baseUrl") &&
+        readSettingString("provider.apiKey"),
+    );
+  }
+
   const COMMANDS = {
     async get_settings() {
       return {
@@ -228,11 +241,7 @@ export const SIMULATOR_SCRIPT = `
     },
 
     async provider_preflight() {
-      const provider = String(SETTINGS.get("provider.active") || "").trim();
-      const model = String(SETTINGS.get("provider.model") || "").trim();
-      const baseUrl = String(SETTINGS.get("provider.baseUrl") || "").trim();
-      const apiKey = String(SETTINGS.get("provider.apiKey") || "").trim();
-      if (!provider || !model || !baseUrl || !apiKey) {
+      if (!hasProviderPreflightConfig()) {
         return { ready: false, reason: "provider config incomplete" };
       }
       return { ready: true };
@@ -252,11 +261,13 @@ export const SIMULATOR_SCRIPT = `
 
     async gateway_start() {
       SETTINGS.set("gateway.running", true);
+      emitBaoEvent("settings.update", { key: "gateway.running", value: true });
       return null;
     },
 
     async gateway_stop() {
       SETTINGS.set("gateway.running", false);
+      emitBaoEvent("settings.update", { key: "gateway.running", value: false });
       return null;
     },
 
@@ -268,6 +279,7 @@ export const SIMULATOR_SCRIPT = `
 
     async kill_switch_stop_all() {
       SETTINGS.set("gateway.running", false);
+      emitBaoEvent("settings.update", { key: "gateway.running", value: false });
       return null;
     },
 

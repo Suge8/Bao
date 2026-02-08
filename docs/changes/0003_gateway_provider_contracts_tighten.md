@@ -134,6 +134,7 @@
 - desktop-settings-layout：Settings 页面改为「主配置卡 + 侧栏功能卡」双区布局（`lg` 断点），并补齐 `min-w-0/minmax(0,1fr)` 与容器滚动边界，修复 Provider 表单右侧超界与非预期纵向滚动条。
 - desktop-settings-layout：对 Settings 新布局做 `code-simplifier` 等价收口，提取重复按钮样式常量并整理 JSX 层级缩进，保持视觉与交互不变。
 - desktop-ui：Topbar 按钮收口为两类核心动作（Gateway 管理 + Gateway Start/Stop）；移除顶栏“新对话”重复入口与独立红色急停按钮，停止动作统一走 `killSwitchStopAll`。
+- desktop-ui：Chat 输入区新增运行门禁：`gateway.running=false` 时输入框禁用并提示先启动项目；Gateway 运行后需通过 provider 配置完整性+连通性 preflight 才可发送。
 - [FIX] 2026-02-08 回滚恢复：恢复 `apps/desktop/src/pages/chat/layout.tsx` 的两栏会话布局（移除 Inspector）、发送中 MagicUI loading + 输入框锁定、模型选择居中与右上“新对话”按钮。
 - [FIX] 2026-02-08 回滚恢复：恢复 `apps/desktop/src/data/tauri-client.ts` 的 `create_session/run_engine_turn/gateway_set_allow_lan` `input` 参数封装，并同步 `apps/desktop/src/i18n/desktop-locales.ts` 与 `apps/desktop/tests/e2e/fixtures/rust-simulator.ts` 兼容文案/入参解析。
 - [FIX] 2026-02-08 二次恢复 2b 回滚：恢复 Topbar 连接中心（网关启停/访问模式/扫码配对/设备列表）、恢复 `pairingQr/listGatewayDevices/revokeGatewayDevice` IPC 链路与 `gateway_set_allow_lan` 参数契约，并移除 Settings 重复网关面板。
@@ -143,6 +144,7 @@
 
 # 改动记录（最近）
 
+- [REFACTOR] 2026-02-08 对 Chat 可用性门禁相关改动执行 code-simplifier 等价收口：`apps/desktop/src/pages/chat/layout.tsx`、`apps/desktop/src-tauri/src/{provider.rs,lib.rs}`、`apps/desktop/tests/e2e/{basic.spec.ts,real-backend.spec.ts,fixtures/rust-simulator.ts}`，仅做重复逻辑提炼与可读性优化，行为不变。
 - [FEAT] 2026-02-08 桌面 i18n 与任务体验收口：`apps/desktop/src/pages/{tasks.tsx,memory.tsx,dimsums.tsx,settings.tsx}`、`apps/desktop/src/components/layout/{app-shell.tsx,topbar.tsx}`、`apps/desktop/src/i18n/desktop-locales.ts`。将硬编码英文迁移到 i18n，并把 Tasks 创建表单简化为自然语言输入 + 单次/循环时间。
 - [FIX] 2026-02-08 恢复被 2b 回滚的 Topbar 网关收口：`apps/desktop/src/components/layout/topbar.tsx`、`apps/desktop/src/data/client.ts`、`apps/desktop/src/data/tauri-client.ts`、`apps/desktop/src/pages/settings.tsx`、`apps/desktop/src/i18n/desktop-locales.ts`、`apps/desktop/src-tauri/src/lib.rs`、`crates/bao-gateway/src/lib.rs`，并同步 e2e 断言至连接中心语义。
 - [FIX] 2026-02-08 恢复被回滚的桌面 Chat 改动：`apps/desktop/src/pages/chat/layout.tsx`（loading + 输入锁定 + 模型居中 + 新对话按钮 + 列表动画/贴底布局）、`apps/desktop/src/data/tauri-client.ts`（关键命令 `input` 参数封装）、`apps/desktop/src/i18n/desktop-locales.ts`（chat 文案键）、`apps/desktop/tests/e2e/fixtures/rust-simulator.ts`（命令入参兼容）。
@@ -292,6 +294,7 @@
 - [FIX] 2026-02-07 `apps/desktop/src/components/layout/topbar.tsx` 修复 Gateway 顶栏控制歧义：Pause 改为 Start/Stop toggle、状态文案改为 Online/Offline、New Session 从 Gateway 控制组拆分并增加按钮禁用态。
 - [FIX] 2026-02-07 `apps/desktop/src/components/layout/app-shell.tsx`、`apps/desktop/src/App.tsx`、`apps/desktop/src/globals.css`、`apps/desktop/src/pages/{chat.tsx,chat/layout.tsx,tasks.tsx,dimsums.tsx,memory.tsx,settings.tsx}` 调整为固定视口 + 页面内滚动布局，避免整页纵向滚动。
 - [FIX] 2026-02-08 精简 Topbar 顶部按钮：`apps/desktop/src/components/layout/topbar.tsx` 移除 `topbar-new` 与 `topbar-kill`，将停止语义合并进 `topbar-gateway-toggle`（运行中点击触发 `killSwitchStopAll`）；同步 `apps/desktop/tests/e2e/{basic.spec.ts,real-backend.spec.ts}` 断言。
+- [FEAT] 2026-02-08 Chat 发送前检测收口：`apps/desktop/src/pages/chat/layout.tsx` 增加 `gateway.running + providerPreflight` 门禁并禁用输入态；`apps/desktop/src-tauri/src/{lib.rs,provider.rs}` 新增 `providerPreflight/provider_preflight`（模型配置与连通性检测）；同步 `apps/desktop/src/data/{client.ts,tauri-client.ts}`、`apps/desktop/src/i18n/desktop-locales.ts` 与 e2e simulator/spec。
 
 # 未来发展（优先级）
 
@@ -322,7 +325,9 @@ P1
 - ✅ 已完成（2026-02-07）：desktop 页面滚动收口（壳层固定视口 + 各页容器内滚动），整页滚动条问题显著缓解。
 - ✅ 已完成（2026-02-07）：Topbar 三按钮语义文档化（New Session / Gateway Toggle / Kill All）并明确职责边界。
 - ✅ 已完成（2026-02-08）：Topbar 进一步减负为两按钮交互（移除重复新对话 + 合并急停到 Gateway 停止动作），降低用户心智负担。
+- ✅ 已完成（2026-02-08）：Chat 输入框加入“网关运行 + 模型连通”双检测门禁，未就绪时禁用并显示明确原因。
 - ✅ 已完成（2026-02-08）：Tasks 创建体验收口为自然语言最小输入（内容 + 单次/循环时间），并将相关页面硬编码英文统一迁移到 i18n。
+- ✅ 已完成（2026-02-08）：上述桌面端改动已完成 code-simplifier 二次收口（等价重构），并通过 lint/build 验证。
 - ⏳ 待进行：补一组 desktop 布局回归（1280x760、1366x768、1440x900）截图基线，持续防止 Chat 三栏布局再次发生横向裁剪。
 - ⏳ 待进行：补齐 desktop 全页面 Magic UI 视觉回归截图与关键交互录屏基线（主题一致性、可读性、按钮可达性）。
 - ⏳ 待进行：在不增加表单复杂度前提下，引入任务自然语言结构化解析（时间短语/周期语义），替换当前最小命令模板生成策略。

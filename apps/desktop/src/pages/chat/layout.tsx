@@ -22,6 +22,14 @@ type MessageView = {
   text: string;
 };
 
+type ComposerGuardState = {
+  gatewayRunning: boolean;
+  selectedProfileReady: boolean;
+  providerChecking: boolean;
+  providerReady: boolean;
+  providerReason: string | null;
+};
+
 export function ChatLayout() {
   const { t } = useI18n();
   const sessionLabel = t("chat.action.new_session");
@@ -111,9 +119,7 @@ export function ChatLayout() {
 
   const refreshProviderReadiness = useCallback(async () => {
     if (!gatewayRunning || !selectedProfileReady) {
-      setProviderChecking(false);
-      setProviderReady(false);
-      setProviderReason(null);
+      clearProviderReadiness(setProviderChecking, setProviderReady, setProviderReason);
       return;
     }
 
@@ -215,22 +221,24 @@ export function ChatLayout() {
   }, [refreshProviderReadiness]);
 
   const composerGuardReason = useMemo(() => {
-    if (!gatewayRunning) {
-      return t("chat.guard.gateway_required");
-    }
-    if (!selectedProfileReady) {
-      return t("chat.guard.model_required");
-    }
-    if (providerChecking) {
-      return t("chat.guard.provider_checking");
-    }
-    if (!providerReady) {
-      return providerReason ?? t("chat.guard.provider_unreachable");
-    }
-    return null;
+    return resolveComposerGuardReason(
+      {
+        gatewayRunning,
+        selectedProfileReady,
+        providerChecking,
+        providerReady,
+        providerReason,
+      },
+      t,
+    );
   }, [gatewayRunning, providerChecking, providerReady, providerReason, selectedProfileReady, t]);
 
   const composerBlocked = composerGuardReason !== null;
+
+  const getSidebarSessionTitle = useCallback(
+    (session: Session) => getSessionDisplayTitle(sessionLabel, session.id, session.title),
+    [sessionLabel],
+  );
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -360,7 +368,7 @@ export function ChatLayout() {
                           : "text-muted-foreground group-hover:text-foreground",
                       )}
                     >
-                      {getSessionDisplayTitle(sessionLabel, s.id, s.title)}
+                      {getSidebarSessionTitle(s)}
                     </span>
                   </button>
                   <button
@@ -598,4 +606,30 @@ function isSelectableProviderProfile(item: ProviderProfile): boolean {
 
 function isGatewayRunningEnabled(value: unknown): boolean {
   return value === true;
+}
+
+function clearProviderReadiness(
+  setProviderChecking: React.Dispatch<React.SetStateAction<boolean>>,
+  setProviderReady: React.Dispatch<React.SetStateAction<boolean>>,
+  setProviderReason: React.Dispatch<React.SetStateAction<string | null>>,
+) {
+  setProviderChecking(false);
+  setProviderReady(false);
+  setProviderReason(null);
+}
+
+function resolveComposerGuardReason(state: ComposerGuardState, t: (key: string) => string): string | null {
+  if (!state.gatewayRunning) {
+    return t("chat.guard.gateway_required");
+  }
+  if (!state.selectedProfileReady) {
+    return t("chat.guard.model_required");
+  }
+  if (state.providerChecking) {
+    return t("chat.guard.provider_checking");
+  }
+  if (!state.providerReady) {
+    return state.providerReason ?? t("chat.guard.provider_unreachable");
+  }
+  return null;
 }

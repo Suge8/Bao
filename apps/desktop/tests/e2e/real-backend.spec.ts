@@ -1,8 +1,10 @@
 import { test, expect } from "@playwright/test";
 import { SIMULATOR_SCRIPT } from "./fixtures/rust-simulator";
 
+const CHAT_INPUT_TEST_ID = "chat-input";
+
 async function ensureChatReady(page: import("@playwright/test").Page) {
-  const input = page.getByTestId("chat-input");
+  const input = page.getByTestId(CHAT_INPUT_TEST_ID);
   if (await input.isDisabled()) {
     await page.getByTestId("topbar-gateway-toggle").click();
     await expect(input).toBeEnabled();
@@ -16,7 +18,7 @@ test.beforeEach(async ({ page }) => {
 
 test("error chain should be visible in runtime logs", async ({ page }) => {
   await ensureChatReady(page);
-  await page.getByTestId("chat-input").fill('/tool shell.exec {"command":"__emit_errors__"}');
+  await page.getByTestId(CHAT_INPUT_TEST_ID).fill('/tool shell.exec {"command":"__emit_errors__"}');
   await page.getByTestId("chat-send").click();
 
   await page.getByTestId("nav-settings").click();

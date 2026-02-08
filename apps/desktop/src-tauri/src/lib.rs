@@ -209,6 +209,21 @@ struct ProviderPreflightOutput {
     reason: Option<String>,
 }
 
+impl ProviderPreflightOutput {
+    fn from_preflight_result(result: Result<(), String>) -> Self {
+        match result {
+            Ok(()) => Self {
+                ready: true,
+                reason: None,
+            },
+            Err(reason) => Self {
+                ready: false,
+                reason: Some(reason),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct McpListToolsInput {
@@ -844,18 +859,10 @@ async fn run_engine_turn(
 async fn provider_preflight(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<ProviderPreflightOutput, String> {
-    match provider::preflight_provider_via_runner(&state.gateway_handle, state.plugin_runner.as_ref())
-        .await
-    {
-        Ok(()) => Ok(ProviderPreflightOutput {
-            ready: true,
-            reason: None,
-        }),
-        Err(reason) => Ok(ProviderPreflightOutput {
-            ready: false,
-            reason: Some(reason),
-        }),
-    }
+    let result =
+        provider::preflight_provider_via_runner(&state.gateway_handle, state.plugin_runner.as_ref())
+            .await;
+    Ok(ProviderPreflightOutput::from_preflight_result(result))
 }
 
 async fn run_engine_turn_inner(

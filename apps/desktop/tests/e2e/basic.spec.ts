@@ -1,12 +1,18 @@
 import { test, expect } from "@playwright/test";
 import { SIMULATOR_SCRIPT } from "./fixtures/rust-simulator";
 
+const CHAT_INPUT_TEST_ID = "chat-input";
+
 async function ensureChatReady(page: import("@playwright/test").Page) {
-  const input = page.getByTestId("chat-input");
+  const input = page.getByTestId(CHAT_INPUT_TEST_ID);
   if (await input.isDisabled()) {
     await page.getByTestId("topbar-gateway-toggle").click();
     await expect(input).toBeEnabled();
   }
+}
+
+function messageLine(page: import("@playwright/test").Page, text: string) {
+  return page.locator('[data-testid^="chat-line-"]').filter({ hasText: text }).first();
 }
 
 test.beforeEach(async ({ page }) => {
@@ -32,27 +38,21 @@ test("settings locale toggle should still work", async ({ page }) => {
 
 test("chat should keep messages by session", async ({ page }) => {
   await expect(page.getByTestId("page-chat")).toBeVisible();
-  await expect(page.getByTestId("chat-input")).toBeDisabled();
+  await expect(page.getByTestId(CHAT_INPUT_TEST_ID)).toBeDisabled();
   await expect(page.getByTestId("chat-compose-guard")).toContainText("Gateway");
   await ensureChatReady(page);
 
-  await page.getByTestId("chat-input").fill("hello default");
+  await page.getByTestId(CHAT_INPUT_TEST_ID).fill("hello default");
   await page.getByTestId("chat-send").click();
-  await expect(
-    page.locator('[data-testid^="chat-line-"]').filter({ hasText: "hello default" }).first(),
-  ).toBeVisible();
+  await expect(messageLine(page, "hello default")).toBeVisible();
 
   await page.getByTestId("session-s2").click();
-  await page.getByTestId("chat-input").fill("hello s2");
+  await page.getByTestId(CHAT_INPUT_TEST_ID).fill("hello s2");
   await page.getByTestId("chat-send").click();
-  await expect(
-    page.locator('[data-testid^="chat-line-"]').filter({ hasText: "hello s2" }).first(),
-  ).toBeVisible();
+  await expect(messageLine(page, "hello s2")).toBeVisible();
 
   await page.getByTestId("session-default").click();
-  await expect(
-    page.locator('[data-testid^="chat-line-"]').filter({ hasText: "hello default" }).first(),
-  ).toBeVisible();
+  await expect(messageLine(page, "hello default")).toBeVisible();
 });
 
 test("settings logs modal should open, switch tabs and close", async ({ page }) => {
@@ -69,7 +69,7 @@ test("settings logs modal should open, switch tabs and close", async ({ page }) 
 
 test("logs modal should show runtime and audit entries", async ({ page }) => {
   await ensureChatReady(page);
-  await page.getByTestId("chat-input").fill('/tool shell.exec {"command":"__provider_error_retry__"}');
+  await page.getByTestId(CHAT_INPUT_TEST_ID).fill('/tool shell.exec {"command":"__provider_error_retry__"}');
   await page.getByTestId("chat-send").click();
 
   await page.getByTestId("nav-settings").click();
