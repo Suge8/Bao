@@ -51,6 +51,10 @@ class ProviderSpec:
     # per-model param overrides, e.g. (("kimi-k2.5", {"temperature": 1.0}),)
     model_overrides: tuple[tuple[str, dict[str, Any]], ...] = ()
 
+    # OAuth-based providers (e.g., OpenAI Codex) don't use API keys
+    is_oauth: bool = False                   # if True, uses OAuth flow instead of API key
+    oauth_provider: str = ""                 # OAuth provider name for token retrieval
+
     @property
     def label(self) -> str:
         return self.display_name or self.name.title()
@@ -157,6 +161,8 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         default_api_base="https://chatgpt.com/backend-api",
         strip_model_prefix=False,
         model_overrides=(),
+        is_oauth=True,                      # OAuth-based authentication
+        oauth_provider="openai-codex",      # OAuth provider identifier
     ),
 
     # DeepSeek: needs "deepseek/" prefix for LiteLLM routing.

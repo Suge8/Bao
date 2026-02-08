@@ -173,20 +173,33 @@ This file stores important information that should persist across sessions.
 
 
 def _make_provider(config):
-    """Create LiteLLMProvider from config. Exits if no API key found."""
+    """Create provider from config. Exits if no credentials found."""
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
-    from oauth_cli_kit import get_token as get_codex_token
+    from nanobot.providers.registry import PROVIDERS
+    from oauth_cli_kit import get_token as get_oauth_token
 
-    p = config.get_provider()
     model = config.agents.defaults.model
-    if model.startswith("openai-codex/"):
-        try:
-            _ = get_codex_token()
-        except Exception:
-            console.print("Please run: [cyan]nanobot login --provider openai-codex[/cyan]")
+    model_lower = model.lower()
+
+    # Check for OAuth-based providers first (registry-driven)
+    for spec in PROVIDERS:
+        if spec.is_oauth and any(kw in model_lower for kw in spec.keywords):
+            # OAuth provider matched
+            try:
+                _ = get_oauth_token(spec.oauth_provider or spec.name)
+            except Exception:
+                console.print(f"Please run: [cyan]nanobot login --provider {spec.name}[/cyan]")
+                raise typer.Exit(1)
+            # Return appropriate OAuth provider class
+            if spec.name == "openai_codex":
+                return OpenAICodexProvider(default_model=model)
+            # Future OAuth providers can be added here
+            console.print(f"[red]Error: OAuth provider '{spec.name}' not fully implemented.[/red]")
             raise typer.Exit(1)
-        return OpenAICodexProvider(default_model=model)
+
+    # Standard API key-based providers
+    p = config.get_provider()
     if not (p and p.api_key) and not model.startswith("bedrock/"):
         console.print("[red]Error: No API key configured.[/red]")
         console.print("Set one in ~/.nanobot/config.json under providers section")
