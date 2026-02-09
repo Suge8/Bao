@@ -3,15 +3,18 @@ type BaoSetting = {
   value: unknown;
 };
 
-export const PROVIDER_PLACEHOLDER = "PLACEHOLDER";
-
 export type ProviderProfile = {
   id: string;
   name: string;
   provider: string;
-  model: string;
+  modelIds: string[];
   baseUrl: string;
   apiKey: string;
+};
+
+export type ProviderModelProfile = ProviderProfile & {
+  model: string;
+  modelKey: string;
 };
 
 type ProviderState = {
@@ -26,12 +29,28 @@ export function toSettingsMap(settings: BaoSetting[]): Map<string, unknown> {
 export function createProfileDraft(): ProviderProfile {
   return {
     id: createId(),
-    name: PROVIDER_PLACEHOLDER,
+    name: "",
     provider: "",
-    model: "",
+    modelIds: [],
     baseUrl: "",
     apiKey: "",
   };
+}
+
+export function expandProfilesToModelProfiles(profiles: ProviderProfile[]): ProviderModelProfile[] {
+  const out: ProviderModelProfile[] = [];
+  for (const item of profiles) {
+    for (const model of item.modelIds) {
+      const modelId = model.trim();
+      if (!modelId) continue;
+      out.push({
+        ...item,
+        model: modelId,
+        modelKey: `${item.id}:${modelId}`,
+      });
+    }
+  }
+  return out;
 }
 
 export function parseProviderState(entries: Map<string, unknown>): ProviderState {
@@ -68,9 +87,9 @@ function deriveLegacyProfiles(entries: Map<string, unknown>): ProviderProfile[] 
   return [
     {
       id: createId(),
-      name: `${provider || PROVIDER_PLACEHOLDER}/${model || PROVIDER_PLACEHOLDER}`,
+      name: "",
       provider,
-      model,
+      modelIds: model ? [model] : [],
       baseUrl,
       apiKey,
     },
@@ -85,18 +104,33 @@ function normalizeProfile(raw: unknown): ProviderProfile | null {
   const model = asString(item.model) ?? "";
   const baseUrl = asString(item.baseUrl) ?? "";
   const apiKey = asString(item.apiKey) ?? "";
+  const modelIds = parseModelIds(item.modelIds, model);
 
   const id = asString(item.id) ?? createId();
-  const name = asString(item.name) ?? `${provider || PROVIDER_PLACEHOLDER}/${model || PROVIDER_PLACEHOLDER}`;
+  const name = asString(item.name) ?? "";
 
   return {
     id,
     name,
     provider,
-    model,
+    modelIds,
     baseUrl,
     apiKey,
   };
+}
+
+function parseModelIds(raw: unknown, fallbackModel: string): string[] {
+  const fromArray = Array.isArray(raw)
+    ? raw
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter((item) => item.length > 0)
+    : [];
+  if (fromArray.length > 0) return uniq(fromArray);
+  return fallbackModel ? [fallbackModel] : [];
+}
+
+function uniq(values: string[]): string[] {
+  return Array.from(new Set(values));
 }
 
 function asString(value: unknown): string | null {

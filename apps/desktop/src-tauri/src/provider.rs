@@ -24,12 +24,13 @@ enum ProviderKind {
 }
 
 impl ProviderKind {
-    fn from_dimsum_id(dimsum_id: &str) -> Self {
-        if dimsum_id.ends_with("anthropic") {
+    fn from_active(active: &str) -> Self {
+        let low = active.to_lowercase();
+        if low.contains("anthropic") {
             Self::Anthropic
-        } else if dimsum_id.ends_with("gemini") {
+        } else if low.contains("gemini") {
             Self::Gemini
-        } else if dimsum_id.ends_with("xai") {
+        } else if low.contains("xai") {
             Self::Xai
         } else {
             Self::Openai
@@ -51,6 +52,24 @@ impl ProviderKind {
             Self::Anthropic => "anthropic",
             Self::Gemini => "gemini",
             Self::Xai => "xai",
+        }
+    }
+
+    fn dimsum_id(self) -> &'static str {
+        match self {
+            Self::Openai => "bao.bundled.provider.openai",
+            Self::Anthropic => "bao.bundled.provider.anthropic",
+            Self::Gemini => "bao.bundled.provider.gemini",
+            Self::Xai => "bao.bundled.provider.xai",
+        }
+    }
+
+    fn process_bin(self) -> &'static str {
+        match self {
+            Self::Openai => "bao-provider-openai",
+            Self::Anthropic => "bao-provider-anthropic",
+            Self::Gemini => "bao-provider-gemini",
+            Self::Xai => "bao-provider-xai",
         }
     }
 }
@@ -148,13 +167,10 @@ pub async fn resolve_provider_identity(
 
 pub async fn preflight_provider_via_runner(
     handle: &GatewayHandle,
-    runner: &(dyn ToolRunner + Send + Sync),
+    _runner: &(dyn ToolRunner + Send + Sync),
 ) -> Result<(), String> {
     let cfg = load_provider_config(handle).await?;
-    let runtime = load_provider_runtime(handle, &cfg.active).await?;
-
-    probe_provider_methods(runner, &runtime)?;
-    check_provider_connectivity(&cfg, &runtime.dimsum_id)
+    check_provider_connectivity(&cfg).map_err(|err| format_preflight_error(&err))
 }
 
 async fn load_provider_config(handle: &GatewayHandle) -> Result<ProviderConfig, String> {
@@ -225,29 +241,11 @@ fn normalize_provider_to_dimsum_id(active: &str) -> String {
         return value.to_string();
     }
 
-    let low = value.to_lowercase();
-    if low.contains("anthropic") {
-        return "bao.bundled.provider.anthropic".to_string();
-    }
-    if low.contains("gemini") {
-        return "bao.bundled.provider.gemini".to_string();
-    }
-    if low.contains("xai") {
-        return "bao.bundled.provider.xai".to_string();
-    }
-    "bao.bundled.provider.openai".to_string()
+    ProviderKind::from_active(value).dimsum_id().to_string()
 }
 
 fn default_runtime_for(dimsum_id: &str) -> ProcessRuntime {
-    let bin = if dimsum_id.ends_with("anthropic") {
-        "bao-provider-anthropic"
-    } else if dimsum_id.ends_with("gemini") {
-        "bao-provider-gemini"
-    } else if dimsum_id.ends_with("xai") {
-        "bao-provider-xai"
-    } else {
-        "bao-provider-openai"
-    };
+    let bin = ProviderKind::from_active(dimsum_id).process_bin();
 
     ProcessRuntime {
         dimsum_id: dimsum_id.to_string(),
@@ -304,14 +302,16 @@ fn build_provider_params_with_messages(
 }
 
 fn parse_provider_result(result: &Value) -> Result<ProviderOutput, String> {
-    if result.get("kind").and_then(Value::as_str) == Some("tool_call") {
+    let kind = result.get("kind").and_then(Value::as_str);
+
+    if kind == Some("tool_call") {
         let tool_call = result
             .get("toolCall")
             .ok_or_else(|| "provider response kind=tool_call but toolCall missing".to_string())?;
         return Ok(ProviderOutput::ToolCall(parse_provider_tool_call(tool_call)?));
     }
 
-    if result.get("kind").and_then(Value::as_str) == Some("tool_calls") {
+    if kind == Some("tool_calls") {
         let calls = result
             .get("toolCalls")
             .and_then(Value::as_array)
@@ -319,10 +319,10 @@ fn parse_provider_result(result: &Value) -> Result<ProviderOutput, String> {
         if calls.is_empty() {
             return Err("provider response toolCalls cannot be empty".to_string());
         }
-        let mut parsed = Vec::with_capacity(calls.len());
-        for call in calls {
-            parsed.push(parse_provider_tool_call(call)?);
-        }
+        let parsed = calls
+            .iter()
+            .map(parse_provider_tool_call)
+            .collect::<Result<Vec<_>, _>>()?;
         return Ok(ProviderOutput::ToolCalls(parsed));
     }
 
@@ -390,75 +390,6 @@ fn method_is_supported(methods_result: &Value, method: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn check_provider_connectivity(cfg: &ProviderConfig, dimsum_id: &str) -> Result<(), String> {
-    let kind = ProviderKind::from_dimsum_id(dimsum_id);
-
-    let client = HttpClient::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .build()
-        .map_err(|e| format!("build connectivity client failed: {e}"))?;
-
-    match kind {
-        ProviderKind::Anthropic => {
-            let key = load_api_key_from_cfg(kind.api_key_label(), cfg)?;
-            let base = cfg
-                .base_url
-                .as_deref()
-                .unwrap_or(kind.default_base_url())
-                .trim_end_matches('/');
-            let rsp = client
-                .get(format!("{base}/v1/models"))
-                .header("x-api-key", key)
-                .header("anthropic-version", "2023-06-01")
-                .send()
-                .map_err(|e| format!("provider connectivity request failed: {e}"))?;
-            validate_connectivity_response(rsp)
-        }
-        ProviderKind::Gemini => {
-            let key = load_api_key_from_cfg(kind.api_key_label(), cfg)?;
-            let base = cfg
-                .base_url
-                .as_deref()
-                .unwrap_or(kind.default_base_url())
-                .trim_end_matches('/');
-            let rsp = client
-                .get(format!("{base}/v1beta/models"))
-                .query(&[("key", key)])
-                .send()
-                .map_err(|e| format!("provider connectivity request failed: {e}"))?;
-            validate_connectivity_response(rsp)
-        }
-        ProviderKind::Xai => {
-            let key = load_api_key_from_cfg(kind.api_key_label(), cfg)?;
-            let base = cfg
-                .base_url
-                .as_deref()
-                .unwrap_or(kind.default_base_url())
-                .trim_end_matches('/');
-            let rsp = client
-                .get(format!("{base}/models"))
-                .bearer_auth(key)
-                .send()
-                .map_err(|e| format!("provider connectivity request failed: {e}"))?;
-            validate_connectivity_response(rsp)
-        }
-        ProviderKind::Openai => {
-            let key = load_api_key_from_cfg(kind.api_key_label(), cfg)?;
-            let base = cfg
-                .base_url
-                .as_deref()
-                .unwrap_or(kind.default_base_url())
-                .trim_end_matches('/');
-            let rsp = client
-                .get(format!("{base}/models"))
-                .bearer_auth(key)
-                .send()
-                .map_err(|e| format!("provider connectivity request failed: {e}"))?;
-            validate_connectivity_response(rsp)
-        }
-    }
-}
-
 fn non_empty_string(value: &Value) -> Option<String> {
     value
         .as_str()
@@ -467,20 +398,131 @@ fn non_empty_string(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-fn validate_connectivity_response(response: reqwest::blocking::Response) -> Result<(), String> {
-    let status = response.status();
-    if status.is_success() {
-        return Ok(());
-    }
+fn check_provider_connectivity(cfg: &ProviderConfig) -> Result<(), String> {
+    let kind = ProviderKind::from_active(&cfg.active);
+    let key = load_api_key_from_cfg(kind.api_key_label(), cfg)?;
+    let base = cfg
+        .base_url
+        .as_deref()
+        .unwrap_or(kind.default_base_url())
+        .trim_end_matches('/');
 
-    let body = response
+    let client = HttpClient::builder()
+        .timeout(std::time::Duration::from_millis(2200))
+        .build()
+        .map_err(|e| format!("build connectivity client failed: {e}"))?;
+
+    let rsp = match kind {
+        ProviderKind::Anthropic => client
+            .get(format!("{base}/v1/models"))
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01")
+            .send()
+            .map_err(|e| format!("provider connectivity request failed: {e}"))?,
+        ProviderKind::Gemini => client
+            .get(format!("{base}/v1beta/models"))
+            .query(&[("key", key)])
+            .send()
+            .map_err(|e| format!("provider connectivity request failed: {e}"))?,
+        ProviderKind::Xai | ProviderKind::Openai => client
+            .get(format!("{base}/models"))
+            .bearer_auth(key)
+            .send()
+            .map_err(|e| format!("provider connectivity request failed: {e}"))?,
+    };
+
+    let status = rsp.status();
+    let body = rsp
         .text()
         .unwrap_or_else(|_| "unable to read response body".to_string());
-    Err(format!(
-        "provider connectivity check failed: http {} ({})",
-        status.as_u16(),
-        body
-    ))
+    if !status.is_success() {
+        return Err(format!(
+            "provider model list failed: http {} ({})",
+            status.as_u16(),
+            body
+        ));
+    }
+
+    let payload: Value =
+        serde_json::from_str(&body).map_err(|e| format!("provider model list invalid json: {e}"))?;
+    let models = extract_model_ids(&payload, kind);
+    ensure_model_available(&cfg.model, &models)
+}
+
+fn extract_model_ids(payload: &Value, kind: ProviderKind) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let mut push = |raw: &str| {
+        let value = raw.trim();
+        if value.is_empty() {
+            return;
+        }
+        let key = value.to_lowercase();
+        if seen.insert(key) {
+            out.push(value.to_string());
+        }
+        if let Some(stripped) = value.strip_prefix("models/") {
+            let trimmed = stripped.trim();
+            if !trimmed.is_empty() {
+                let stripped_key = trimmed.to_lowercase();
+                if seen.insert(stripped_key) {
+                    out.push(trimmed.to_string());
+                }
+            }
+        }
+    };
+
+    match kind {
+        ProviderKind::Gemini => {
+            if let Some(items) = payload.get("models").and_then(Value::as_array) {
+                for item in items {
+                    if let Some(name) = item.get("name").and_then(Value::as_str) {
+                        push(name);
+                    }
+                    if let Some(id) = item.get("id").and_then(Value::as_str) {
+                        push(id);
+                    }
+                }
+            }
+        }
+        ProviderKind::Openai | ProviderKind::Anthropic | ProviderKind::Xai => {
+            if let Some(items) = payload.get("data").and_then(Value::as_array) {
+                for item in items {
+                    if let Some(id) = item.get("id").and_then(Value::as_str) {
+                        push(id);
+                    }
+                    if let Some(name) = item.get("name").and_then(Value::as_str) {
+                        push(name);
+                    }
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn ensure_model_available(model: &str, available_models: &[String]) -> Result<(), String> {
+    let selected = model.trim();
+    if selected.is_empty() {
+        return Err("model_invalid: model id is empty".to_string());
+    }
+    if available_models.is_empty() {
+        return Err("provider model list is empty".to_string());
+    }
+
+    let selected_lower = selected.to_lowercase();
+    let matched = available_models.iter().any(|item| {
+        let lower = item.to_lowercase();
+        lower == selected_lower || lower.ends_with(&format!("/{selected_lower}"))
+    });
+
+    if matched {
+        Ok(())
+    } else {
+        Err(format!("model_invalid: model id `{selected}` not found"))
+    }
 }
 
 fn load_api_key_from_cfg(kind: &str, cfg: &ProviderConfig) -> Result<String, String> {
@@ -510,6 +552,29 @@ fn load_api_key_from_cfg(kind: &str, cfg: &ProviderConfig) -> Result<String, Str
     }
 
     Err("missing api key (config.apiKey or env)".to_string())
+}
+
+fn format_preflight_error(error: &str) -> String {
+    let lower = error.to_lowercase();
+    if lower.contains("missing api key") || lower.contains("401") || lower.contains("unauthorized") {
+        return "auth_invalid: api key is invalid or missing".to_string();
+    }
+    if lower.contains("404") || (lower.contains("model") && lower.contains("not found")) {
+        return "model_invalid: model id is not available".to_string();
+    }
+    if lower.contains("403") || lower.contains("forbidden") || lower.contains("permission") {
+        return "permission_denied: provider access is denied".to_string();
+    }
+    if lower.contains("429") || lower.contains("rate") || lower.contains("quota") {
+        return "rate_limited: too many requests".to_string();
+    }
+    if lower.contains("timeout") || lower.contains("timed out") {
+        return "network_timeout: provider request timed out".to_string();
+    }
+    if lower.contains("http 5") || lower.contains("server") || lower.contains("overload") {
+        return "provider_unavailable: provider service is temporarily unavailable".to_string();
+    }
+    format!("provider_preflight_failed: {error}")
 }
 
 #[cfg(test)]

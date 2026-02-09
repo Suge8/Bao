@@ -17,13 +17,7 @@ fn tick_runs_due_task_and_writes_events_and_audit() {
     let conn = Connection::open(&db).expect("open");
     conn.execute_batch(INIT_SQL).expect("init schema");
 
-    let tool_args = serde_json::json!({"k": "v"}).to_string();
-    conn.execute(
-        "INSERT INTO tasks(task_id, title, enabled, schedule_kind, run_at_ts, interval_ms, cron, timezone, next_run_at, last_run_at, last_status, last_error, tool_dimsum_id, tool_name, tool_args_json, policy_json, kill_switch_group, created_at, updated_at) \
-         VALUES (?1, ?2, 1, 'once', 0, NULL, NULL, NULL, 1, NULL, NULL, NULL, 'd1', 't1', ?3, NULL, NULL, 0, 0)",
-        params!["t1", "task", tool_args],
-    )
-    .expect("insert task");
+    insert_once_task(&conn, "t1", "task", None);
 
     let storage = Arc::new(Storage::open(db.to_string_lossy().to_string()).expect("storage"));
     let scheduler = SchedulerService::new(
@@ -53,6 +47,34 @@ fn tick_runs_due_task_and_writes_events_and_audit() {
 }
 
 #[test]
+fn tick_writes_task_reminder_into_default_session() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("task_reminder.sqlite");
+    let conn = Connection::open(&db).expect("open");
+    conn.execute_batch(INIT_SQL).expect("init schema");
+
+    seed_default_session(&conn);
+    insert_once_task(&conn, "t1", "叫我喝水", None);
+
+    let storage = Arc::new(Storage::open(db.to_string_lossy().to_string()).expect("storage"));
+    let scheduler = SchedulerService::new(
+        Arc::new(SqliteStorage::new(storage.clone())),
+        Arc::new(TestRunner::ok()),
+    );
+
+    scheduler.tick(10);
+
+    let reminder_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(1) FROM messages WHERE session_id='default' AND role='assistant' AND content LIKE '%[任务提醒]%'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("reminder count");
+    assert_eq!(reminder_count, 1);
+}
+
+#[test]
 fn run_task_now_blocks_unauthorized_tool_before_execution() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = dir.path().join("unauth.sqlite");
@@ -78,13 +100,7 @@ fn run_task_now_blocks_unauthorized_tool_before_execution() {
     )
     .expect("insert settings");
 
-    let tool_args = serde_json::json!({"k": "v"}).to_string();
-    conn.execute(
-        "INSERT INTO tasks(task_id, title, enabled, schedule_kind, run_at_ts, interval_ms, cron, timezone, next_run_at, last_run_at, last_status, last_error, tool_dimsum_id, tool_name, tool_args_json, policy_json, kill_switch_group, created_at, updated_at) \
-         VALUES (?1, ?2, 1, 'once', 0, NULL, NULL, NULL, 1, NULL, NULL, NULL, 'd1', 't1', ?3, NULL, NULL, 0, 0)",
-        params!["t1", "task", tool_args],
-    )
-    .expect("insert task");
+    insert_once_task(&conn, "t1", "task", None);
 
     let storage = Arc::new(Storage::open(db.to_string_lossy().to_string()).expect("storage"));
     let runner = Arc::new(TestRunner::ok());
@@ -141,13 +157,7 @@ fn capability_revocation_stops_running_group_fail_closed() {
     )
     .expect("insert settings");
 
-    let tool_args = serde_json::json!({"k": "v"}).to_string();
-    conn.execute(
-        "INSERT INTO tasks(task_id, title, enabled, schedule_kind, run_at_ts, interval_ms, cron, timezone, next_run_at, last_run_at, last_status, last_error, tool_dimsum_id, tool_name, tool_args_json, policy_json, kill_switch_group, created_at, updated_at) \
-         VALUES (?1, ?2, 1, 'once', 0, NULL, NULL, NULL, 1, NULL, NULL, NULL, 'd1', 't1', ?3, NULL, 'g1', 0, 0)",
-        params!["t1", "task", tool_args],
-    )
-    .expect("insert task");
+    insert_once_task(&conn, "t1", "task", Some("g1"));
 
     let storage = Arc::new(Storage::open(db.to_string_lossy().to_string()).expect("storage"));
     let runner = Arc::new(TestRunner::blocking());
@@ -202,13 +212,7 @@ fn crash_during_run_recovers_with_contiguous_replay_and_at_least_once() {
     let conn = Connection::open(&db).expect("open");
     conn.execute_batch(INIT_SQL).expect("init schema");
 
-    let tool_args = serde_json::json!({"k": "v"}).to_string();
-    conn.execute(
-        "INSERT INTO tasks(task_id, title, enabled, schedule_kind, run_at_ts, interval_ms, cron, timezone, next_run_at, last_run_at, last_status, last_error, tool_dimsum_id, tool_name, tool_args_json, policy_json, kill_switch_group, created_at, updated_at) \
-         VALUES (?1, ?2, 1, 'once', 0, NULL, NULL, NULL, 1, NULL, NULL, NULL, 'd1', 't1', ?3, NULL, NULL, 0, 0)",
-        params!["t1", "task", tool_args],
-    )
-    .expect("insert task");
+    insert_once_task(&conn, "t1", "task", None);
 
     let first_storage = Arc::new(Storage::open(db.to_string_lossy().to_string()).expect("storage"));
     let first_scheduler = SchedulerService::new(
@@ -386,4 +390,22 @@ impl CrashInjector for OneShotCrashInjector {
     fn should_crash(&self, point: CrashPoint, _task_id: &str) -> bool {
         point == self.point && !self.fired.swap(true, Ordering::SeqCst)
     }
+}
+
+fn seed_default_session(conn: &Connection) {
+    conn.execute(
+        "INSERT INTO sessions(session_id, title, created_at, updated_at) VALUES ('default', 'Default Session', 0, 0)",
+        [],
+    )
+    .expect("seed default session");
+}
+
+fn insert_once_task(conn: &Connection, task_id: &str, title: &str, group: Option<&str>) {
+    let tool_args = serde_json::json!({"k": "v"}).to_string();
+    conn.execute(
+        "INSERT INTO tasks(task_id, title, enabled, schedule_kind, run_at_ts, interval_ms, cron, timezone, next_run_at, last_run_at, last_status, last_error, tool_dimsum_id, tool_name, tool_args_json, policy_json, kill_switch_group, created_at, updated_at) \
+         VALUES (?1, ?2, 1, 'once', 0, NULL, NULL, NULL, 1, NULL, NULL, NULL, 'd1', 't1', ?3, NULL, ?4, 0, 0)",
+        params![task_id, title, tool_args, group],
+    )
+    .expect("insert task");
 }

@@ -9,7 +9,6 @@ import {
   createProfileDraft,
   parseProviderState,
   toSettingsMap,
-  PROVIDER_PLACEHOLDER,
   type ProviderProfile,
 } from "@/lib/provider-profiles";
 import { FileText, Globe, Key, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
@@ -91,7 +90,7 @@ export default function SettingsPage() {
       push({
         variant: "success",
         title: t("settings.provider.toast.deleted"),
-        description: selectedProfile.name || PROVIDER_PLACEHOLDER,
+        description: selectedProfile.name || selectedProfile.provider || t("settings.provider.unnamed"),
       });
     } catch (err) {
       push({
@@ -116,11 +115,11 @@ export default function SettingsPage() {
 
     const normalizedProfiles = normalizeProviderProfiles(providerProfiles);
     const active = selectedProfile.provider.trim();
-    const model = selectedProfile.model.trim();
+    const modelIds = selectedProfile.modelIds;
     const baseUrl = selectedProfile.baseUrl.trim();
-    const name = selectedProfile.name.trim();
+    const name = selectedProfile.name.trim() || selectedProfile.provider.trim();
 
-    if (!name || !active || !model || !baseUrl) {
+    if (!active || modelIds.length === 0 || !baseUrl) {
       push({
         variant: "error",
         title: t("settings.provider.toast.save_failed"),
@@ -143,8 +142,9 @@ export default function SettingsPage() {
         profiles: persistable,
         selectedProfile: {
           ...selectedProfile,
+          name,
           provider: active,
-          model,
+          modelIds,
           baseUrl,
           apiKey: selectedProfile.apiKey.trim(),
         },
@@ -154,7 +154,7 @@ export default function SettingsPage() {
       push({
         variant: "success",
         title: t("settings.provider.toast.saved"),
-        description: `${t("settings.provider.toast.current_model_prefix")}${active}/${model}`,
+        description: `${t("settings.provider.toast.current_model_prefix")}${active}/${modelIds[0]}`,
       });
     } catch (err) {
       push({
@@ -197,24 +197,26 @@ export default function SettingsPage() {
                 <div className="flex shrink-0 items-center gap-2">
                   <ShinyButton
                     type="button"
-                    className="h-7 rounded-lg px-2 text-xs gap-1"
+                    className="h-7 w-7 rounded-lg p-0"
                     onClick={addProviderProfile}
                     data-testid="settings-provider-add"
+                    aria-label={t("settings.provider.add")}
+                    title={t("settings.provider.add")}
                   >
                     <Plus className="h-3 w-3" />
-                    {t("settings.provider.add")}
                   </ShinyButton>
                   <ShinyButton
                     type="button"
-                    className="h-7 rounded-lg px-2 text-xs gap-1"
+                    className="h-7 w-7 rounded-lg p-0"
                     onClick={() => {
                       void deleteProviderProfile();
                     }}
                     disabled={providerSaving}
                     data-testid="settings-provider-delete"
+                    aria-label={t("settings.provider.delete")}
+                    title={t("settings.provider.delete")}
                   >
                     <Trash2 className="h-3 w-3" />
-                    {t("settings.provider.delete")}
                   </ShinyButton>
                 </div>
               </div>
@@ -232,9 +234,11 @@ export default function SettingsPage() {
                       )}
                       data-testid={`settings-provider-item-${item.id}`}
                     >
-                      <div className="truncate text-xs font-medium">{item.name || PROVIDER_PLACEHOLDER}</div>
+                      <div className="truncate text-xs font-medium">{item.name || item.provider || t("settings.provider.unnamed")}</div>
                       <div className="truncate text-[10px] text-muted-foreground/70">
-                        {item.provider && item.model ? `${item.provider}/${item.model}` : PROVIDER_PLACEHOLDER}
+                        {item.provider && item.modelIds.length > 0
+                          ? `${item.provider} · ${item.modelIds.length} ${t("settings.provider.model_ids")}`
+                          : t("settings.provider.empty_hint")}
                       </div>
                     </button>
                   ))}
@@ -245,25 +249,19 @@ export default function SettingsPage() {
                     label={t("settings.provider.profile_name")}
                     value={selectedProfile?.name ?? ""}
                     onChange={(value) => updateProfileField("name", value)}
-                    placeholder={PROVIDER_PLACEHOLDER}
+                    placeholder={t("settings.provider.hint.profile_name")}
                   />
                   <InputField
                     label={t("settings.provider.provider")}
                     value={selectedProfile?.provider ?? ""}
                     onChange={(value) => updateProfileField("provider", value)}
-                    placeholder={PROVIDER_PLACEHOLDER}
-                  />
-                  <InputField
-                    label={t("settings.provider.model_id")}
-                    value={selectedProfile?.model ?? ""}
-                    onChange={(value) => updateProfileField("model", value)}
-                    placeholder={PROVIDER_PLACEHOLDER}
+                    placeholder={t("settings.provider.hint.provider")}
                   />
                   <InputField
                     label={t("settings.provider.base_url")}
                     value={selectedProfile?.baseUrl ?? ""}
                     onChange={(value) => updateProfileField("baseUrl", value)}
-                    placeholder={PROVIDER_PLACEHOLDER}
+                    placeholder={t("settings.provider.hint.base_url")}
                   />
                   <div className="space-y-1.5">
                     <div className="text-xs font-medium text-muted-foreground">{t("settings.provider.api_key")}</div>
@@ -273,10 +271,20 @@ export default function SettingsPage() {
                         value={selectedProfile?.apiKey ?? ""}
                         onChange={(e) => updateProfileField("apiKey", e.target.value)}
                         className="h-9 w-full rounded-xl bg-muted/30 px-3 text-xs outline-none ring-1 ring-border/50 focus:ring-primary/30 transition-all"
-                        placeholder={PROVIDER_PLACEHOLDER}
+                        placeholder={t("settings.provider.hint.api_key")}
                       />
                       <Key className="absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
                     </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <div className="text-xs font-medium text-muted-foreground">{t("settings.provider.model_ids")}</div>
+                    <textarea
+                      value={buildModelIdsText(selectedProfile?.modelIds ?? [])}
+                      onChange={(e) => updateProfileField("modelIds", parseModelIdsText(e.target.value))}
+                      className="min-h-[112px] w-full resize-y rounded-xl bg-muted/30 px-3 py-2 text-xs leading-5 outline-none ring-1 ring-border/50 transition-all focus:ring-primary/30"
+                      placeholder={t("settings.provider.hint.model_ids")}
+                    />
                   </div>
 
                   <div className="pt-2">
@@ -330,26 +338,22 @@ export default function SettingsPage() {
                 </div>
 
                 <div className="flex rounded-xl bg-muted/30 p-1 ring-1 ring-border/50">
-                  <button
-                    type="button"
-                    onClick={() => setLocale("zh")}
-                    className={cn(
-                      languageButtonBaseClass,
-                      locale === "zh" ? languageButtonActiveClass : languageButtonInactiveClass,
-                    )}
-                  >
-                    中文
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setLocale("en")}
-                    className={cn(
-                      languageButtonBaseClass,
-                      locale === "en" ? languageButtonActiveClass : languageButtonInactiveClass,
-                    )}
-                  >
-                    English
-                  </button>
+                  {[
+                    { value: "zh" as const, label: "中文" },
+                    { value: "en" as const, label: "English" },
+                  ].map((item) => (
+                    <button
+                      key={item.value}
+                      type="button"
+                      onClick={() => setLocale(item.value)}
+                      className={cn(
+                        languageButtonBaseClass,
+                        locale === item.value ? languageButtonActiveClass : languageButtonInactiveClass,
+                      )}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
                 </div>
               </div>
             </MagicCard>
@@ -609,7 +613,7 @@ function InputField({
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="h-9 w-full rounded-xl bg-muted/30 px-3 text-xs outline-none ring-1 ring-border/50 focus:ring-primary/30 transition-all placeholder:text-muted-foreground/30"
+        className="h-9 w-full rounded-xl bg-muted/30 px-3 text-xs outline-none ring-1 ring-border/50 focus:ring-primary/30 transition-all placeholder:text-muted-foreground/40"
         placeholder={placeholder}
       />
     </label>
@@ -619,16 +623,16 @@ function InputField({
 function normalizeProviderProfiles(items: ProviderProfile[]): ProviderProfile[] {
   return items.map((item) => ({
     ...item,
-    name: item.name.trim() || PROVIDER_PLACEHOLDER,
+    name: item.name.trim(),
     provider: item.provider.trim(),
-    model: item.model.trim(),
+    modelIds: uniq(item.modelIds.map((model) => model.trim()).filter(Boolean)),
     baseUrl: item.baseUrl.trim(),
     apiKey: item.apiKey.trim(),
   }));
 }
 
 function isCompleteProfile(item: ProviderProfile) {
-  return Boolean(item.name.trim() && item.provider.trim() && item.model.trim() && item.baseUrl.trim());
+  return Boolean(item.provider.trim() && item.modelIds.length > 0 && item.baseUrl.trim());
 }
 
 async function persistProviderState(
@@ -642,9 +646,26 @@ async function persistProviderState(
   await updateSettingStrict(client, "provider.profiles", profiles);
   await updateSettingStrict(client, "provider.selectedProfileId", selectedProfile?.id ?? "");
   await updateSettingStrict(client, "provider.active", selectedProfile?.provider ?? "");
-  await updateSettingStrict(client, "provider.model", selectedProfile?.model ?? "");
+  await updateSettingStrict(client, "provider.model", selectedProfile?.modelIds[0] ?? "");
   await updateSettingStrict(client, "provider.baseUrl", selectedProfile?.baseUrl ?? "");
   await updateSettingStrict(client, "provider.apiKey", selectedProfile?.apiKey ?? "");
+}
+
+function parseModelIdsText(value: string): string[] {
+  return uniq(
+    value
+      .split(/\r?\n|,/)
+      .map((item) => item.trim())
+      .filter(Boolean),
+  );
+}
+
+function buildModelIdsText(modelIds: string[]): string {
+  return modelIds.join("\n");
+}
+
+function uniq(values: string[]): string[] {
+  return Array.from(new Set(values));
 }
 
 async function updateSettingStrict(

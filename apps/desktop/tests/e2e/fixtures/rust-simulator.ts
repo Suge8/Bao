@@ -1,8 +1,8 @@
 export const SIMULATOR_SCRIPT = `
 (function () {
   const SESSIONS = new Map([
-    ["default", { id: "default", title: "Default", messages: [] }],
-    ["s2", { id: "s2", title: "Session 2", messages: [] }],
+    ["default", { id: "default", title: "Default", createdAt: Date.now(), updatedAt: Date.now(), messages: [] }],
+    ["s2", { id: "s2", title: "Session 2", createdAt: Date.now(), updatedAt: Date.now(), messages: [] }],
   ]);
 
   const SETTINGS = new Map([
@@ -121,9 +121,23 @@ export const SIMULATOR_SCRIPT = `
     async list_sessions() {
       return {
         payload: {
-          sessions: Array.from(SESSIONS.values()).map((s) => ({ sessionId: s.id, title: s.title })),
+          sessions: Array.from(SESSIONS.values()).map((s) => ({
+            sessionId: s.id,
+            title: s.title,
+            createdAt: s.createdAt,
+            updatedAt: s.updatedAt,
+          })),
         },
       };
+    },
+
+    async list_messages(args) {
+      const input = args && typeof args.input === "object" ? args.input : {};
+      const sessionId = typeof input.sessionId === "string" ? input.sessionId : "default";
+      const limit = typeof input.limit === "number" ? input.limit : 200;
+      const session = SESSIONS.get(sessionId);
+      const messages = session ? session.messages.slice(-Math.max(1, Math.min(500, limit))).reverse() : [];
+      return { payload: { messages } };
     },
 
     async create_session(args) {
@@ -131,7 +145,13 @@ export const SIMULATOR_SCRIPT = `
       const sessionId = typeof input.sessionId === "string" ? input.sessionId : "";
       if (!sessionId) throw new Error("sessionId is required");
       const title = typeof input.title === "string" && input.title.length > 0 ? input.title : sessionId;
-      SESSIONS.set(sessionId, { id: sessionId, title, messages: [] });
+      SESSIONS.set(sessionId, {
+        id: sessionId,
+        title,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: [],
+      });
       emitBaoEvent("sessions.create", { sessionId, title });
       return { ok: true };
     },
@@ -151,12 +171,15 @@ export const SIMULATOR_SCRIPT = `
       const sessionId = typeof input.sessionId === "string" && input.sessionId ? input.sessionId : "default";
       const text = typeof input.text === "string" ? input.text : "";
 
-      const session = SESSIONS.get(sessionId) || { id: sessionId, title: sessionId, messages: [] };
+      const session =
+        SESSIONS.get(sessionId) ||
+        { id: sessionId, title: sessionId, createdAt: Date.now(), updatedAt: Date.now(), messages: [] };
       if (!SESSIONS.has(sessionId)) {
         SESSIONS.set(sessionId, session);
       }
 
-      session.messages.push({ role: "user", content: text });
+      session.messages.push({ messageId: "m-" + Date.now() + "-u", role: "user", content: text, createdAt: Date.now() });
+      session.updatedAt = Date.now();
       emitBaoEvent("message.send", { sessionId, text });
 
       let output = "Echo: " + text;
@@ -211,7 +234,13 @@ export const SIMULATOR_SCRIPT = `
         toolRetryReason = null;
       }
 
-      session.messages.push({ role: "assistant", content: output });
+      session.messages.push({
+        messageId: "m-" + Date.now() + "-a",
+        role: "assistant",
+        content: output,
+        createdAt: Date.now(),
+      });
+      session.updatedAt = Date.now();
 
       emitBaoEvent("engine.turn", {
         sessionId,

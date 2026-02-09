@@ -18,6 +18,8 @@ pub struct SchedulerService {
 const CAP_SETTINGS_KEY: &str = "permissions.capabilities";
 const CODE_PERMISSION_CAPABILITY_DENIED: &str = "PERMISSION_CAPABILITY_DENIED";
 const CODE_PERMISSION_CAPABILITY_REVOKED: &str = "PERMISSION_CAPABILITY_REVOKED";
+const DEFAULT_TASK_SESSION_ID: &str = "default";
+const DEFAULT_TASK_SESSION_TITLE: &str = "Default Session";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrashPoint {
@@ -136,15 +138,18 @@ impl SchedulerService {
                 "deniedCapabilities": denied,
                 "code": CODE_PERMISSION_CAPABILITY_REVOKED,
             });
-            let _ =
-                self.storage
-                    .insert_event(now_ts, "task.run.revoked", None, None, None, &payload);
-            let _ = self.storage.insert_audit_event(
+            self.emit_task_action(
                 now_ts,
                 "task.run.revoked",
-                "task",
                 &meta.task_id,
                 &payload,
+                &payload,
+            );
+            self.send_task_chat_reminder(
+                now_ts,
+                &meta.task_id,
+                "任务执行被中止（权限已撤销）",
+                Some(denied.join(",")),
             );
         }
     }
@@ -184,15 +189,12 @@ impl SchedulerService {
                 },
                 now_ts,
             );
-            let _ =
-                self.storage
-                    .insert_event(now_ts, "task.run.rejected", None, None, None, &payload);
-            let _ = self.storage.insert_audit_event(
+            self.emit_task_action(now_ts, "task.run.rejected", &task.id, &payload, &payload);
+            self.send_task_chat_reminder(
                 now_ts,
-                "task.run.rejected",
-                "task",
-                &task.id,
-                &payload,
+                &task.title,
+                "任务执行被拒绝（权限不足）",
+                Some(denied_caps.join(",")),
             );
             return;
         }
@@ -211,20 +213,14 @@ impl SchedulerService {
             );
         }
 
-        let _ = self.storage.insert_event(
+        let started_event_payload = json!({"taskId": task_id.clone(), "group": group.clone()});
+        let started_audit_payload = json!({"group": group.clone()});
+        self.emit_task_action(
             now_ts,
             "task.run.started",
-            None,
-            None,
-            None,
-            &json!({"taskId": task_id, "group": group}),
-        );
-        let _ = self.storage.insert_audit_event(
-            now_ts,
-            "task.run.started",
-            "task",
             &task_id,
-            &json!({"group": group.clone()}),
+            &started_event_payload,
+            &started_audit_payload,
         );
         if self
             .crash_injector
@@ -239,27 +235,30 @@ impl SchedulerService {
         let (record, run_meta) = resolve_run_result(task_id.clone(), run);
 
         let _ = self.storage.mark_task_run(&record, now_ts);
-        let _ = self.storage.insert_event(
+        let finished_event_payload = json!({
+            "taskId": task_id.clone(),
+            "group": group.clone(),
+            "status": record.status.clone(),
+            "error": record.error.clone(),
+            "result": run_meta,
+        });
+        let finished_audit_payload = json!({
+            "status": record.status,
+            "error": record.error,
+            "result": run_meta
+        });
+        self.emit_task_action(
             now_ts,
             "task.run.finished",
-            None,
-            None,
-            None,
-            &json!({
-                "taskId": task_id,
-                "group": group,
-                "status": record.status.clone(),
-                "error": record.error.clone(),
-                "result": run_meta,
-            }),
-        );
-        let _ = self.storage.insert_audit_event(
-            now_ts,
-            "task.run.finished",
-            "task",
             &task_id,
-            &json!({"status": record.status, "error": record.error, "result": run_meta}),
+            &finished_event_payload,
+            &finished_audit_payload,
         );
+        if record.status == "success" {
+            self.send_task_chat_reminder(now_ts, &task.title, "任务已完成", None);
+        } else {
+            self.send_task_chat_reminder(now_ts, &task.title, "任务执行失败", record.error.clone());
+        }
 
         let mut g = self
             .running_groups
@@ -273,6 +272,69 @@ impl SchedulerService {
             Ok(Some(value)) => CapabilityPolicy::AllowSet(parse_allowed_caps(value)),
             Ok(None) | Err(_) => CapabilityPolicy::AllowAll,
         }
+    }
+
+    fn send_task_chat_reminder(
+        &self,
+        now_ts: i64,
+        task_title: &str,
+        summary: &str,
+        detail: Option<String>,
+    ) {
+        if self
+            .storage
+            .ensure_session_exists(
+                DEFAULT_TASK_SESSION_ID,
+                Some(DEFAULT_TASK_SESSION_TITLE),
+                now_ts,
+            )
+            .is_err()
+        {
+            return;
+        }
+
+        let content = format_task_reminder_content(task_title, summary, detail.as_deref());
+
+        let message_id = match self.storage.append_message(
+            DEFAULT_TASK_SESSION_ID,
+            "assistant",
+            &content,
+            now_ts,
+        ) {
+            Ok(id) => id,
+            Err(_) => return,
+        };
+
+        let payload = json!({
+            "sessionId": DEFAULT_TASK_SESSION_ID,
+            "messageId": message_id,
+            "role": "assistant",
+            "content": content,
+        });
+        let _ = self.storage.insert_event(
+            now_ts,
+            "message.send",
+            Some(DEFAULT_TASK_SESSION_ID),
+            Some(message_id.as_str()),
+            None,
+            &payload,
+        );
+    }
+
+    fn emit_task_action(
+        &self,
+        now_ts: i64,
+        action: &str,
+        task_id: &str,
+        event_payload: &Value,
+        audit_payload: &Value,
+    ) {
+        let _ = self
+            .storage
+            .insert_event(now_ts, action, None, None, None, event_payload);
+        let _ = self
+            .storage
+            .insert_audit_event(now_ts, action, "task", task_id, audit_payload);
     }
 }
 
@@ -354,6 +416,15 @@ fn resolve_run_result(
                 json!({"ok": false, "error": {"code": error_code, "message": error_message}}),
             )
         }
+    }
+}
+
+fn format_task_reminder_content(task_title: &str, summary: &str, detail: Option<&str>) -> String {
+    match detail {
+        Some(err) if !err.trim().is_empty() => {
+            format!("[任务提醒] {summary}：{task_title}。\n详情：{err}")
+        }
+        _ => format!("[任务提醒] {summary}：{task_title}"),
     }
 }
 

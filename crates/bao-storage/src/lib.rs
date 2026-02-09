@@ -1,12 +1,13 @@
 use chrono::{TimeZone, Utc};
 use chrono_tz::Tz;
 use cron::Schedule;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use std::str::FromStr;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -210,31 +211,7 @@ impl Storage {
              WHERE enabled=1 AND next_run_at IS NOT NULL AND next_run_at <= ?1 \
              ORDER BY next_run_at ASC LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![now_ts, limit], |r| {
-            let tool_args_json: String = r.get(14)?;
-            let policy_json: Option<String> = r.get(15)?;
-            Ok(TaskRecord {
-                id: r.get(0)?,
-                title: r.get(1)?,
-                enabled: r.get::<_, i64>(2)? == 1,
-                schedule_kind: r.get(3)?,
-                run_at_ts: r.get(4)?,
-                interval_ms: r.get(5)?,
-                cron: r.get(6)?,
-                timezone: r.get(7)?,
-                next_run_at: r.get(8)?,
-                last_run_at: r.get(9)?,
-                last_status: r.get(10)?,
-                last_error: r.get(11)?,
-                tool_dimsum_id: r.get(12)?,
-                tool_name: r.get(13)?,
-                tool_args: serde_json::from_str::<Value>(&tool_args_json).unwrap_or(Value::Null),
-                policy: policy_json.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
-                kill_switch_group: r.get(16)?,
-                created_at: r.get(17)?,
-                updated_at: r.get(18)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![now_ts, limit], parse_task_record)?;
 
         let mut out = Vec::new();
         for row in rows {
@@ -278,6 +255,51 @@ impl Storage {
             params![task_id, now_ts, status, error, next_run_at, enabled_after],
         )?;
         Ok(())
+    }
+
+    pub fn ensure_session_exists(
+        &self,
+        session_id: &str,
+        title: Option<&str>,
+        now_ts: i64,
+    ) -> Result<(), StorageError> {
+        let _guard = self.mutex.lock().expect("storage mutex poisoned");
+        let conn = Connection::open(&self.sqlite_path)?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.execute(
+            "INSERT INTO sessions(session_id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?3) \
+             ON CONFLICT(session_id) DO UPDATE SET title=COALESCE(sessions.title, excluded.title), updated_at=excluded.updated_at",
+            params![session_id, title, now_ts],
+        )?;
+        Ok(())
+    }
+
+    pub fn append_message(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        now_ts: i64,
+    ) -> Result<String, StorageError> {
+        let message_id = format!(
+            "m-task-{now_ts}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let _guard = self.mutex.lock().expect("storage mutex poisoned");
+        let conn = Connection::open(&self.sqlite_path)?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.execute(
+            "INSERT INTO messages(message_id, session_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![message_id, session_id, role, content, now_ts],
+        )?;
+        conn.execute(
+            "UPDATE sessions SET updated_at=?2 WHERE session_id=?1",
+            params![session_id, now_ts],
+        )?;
+        Ok(message_id)
     }
 
     pub fn insert_event(
@@ -463,29 +485,7 @@ impl Storage {
         )?;
         let mut rows = stmt.query(params![task_id])?;
         if let Some(r) = rows.next()? {
-            let tool_args_json: String = r.get(14)?;
-            let policy_json: Option<String> = r.get(15)?;
-            return Ok(Some(TaskRecord {
-                id: r.get(0)?,
-                title: r.get(1)?,
-                enabled: r.get::<_, i64>(2)? == 1,
-                schedule_kind: r.get(3)?,
-                run_at_ts: r.get(4)?,
-                interval_ms: r.get(5)?,
-                cron: r.get(6)?,
-                timezone: r.get(7)?,
-                next_run_at: r.get(8)?,
-                last_run_at: r.get(9)?,
-                last_status: r.get(10)?,
-                last_error: r.get(11)?,
-                tool_dimsum_id: r.get(12)?,
-                tool_name: r.get(13)?,
-                tool_args: serde_json::from_str::<Value>(&tool_args_json).unwrap_or(Value::Null),
-                policy: policy_json.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
-                kill_switch_group: r.get(16)?,
-                created_at: r.get(17)?,
-                updated_at: r.get(18)?,
-            }));
+            return Ok(Some(parse_task_record(r)?));
         }
         Ok(None)
     }
@@ -712,6 +712,32 @@ impl Storage {
         }
         Ok(None)
     }
+}
+
+fn parse_task_record(row: &Row<'_>) -> rusqlite::Result<TaskRecord> {
+    let tool_args_json: String = row.get(14)?;
+    let policy_json: Option<String> = row.get(15)?;
+    Ok(TaskRecord {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        enabled: row.get::<_, i64>(2)? == 1,
+        schedule_kind: row.get(3)?,
+        run_at_ts: row.get(4)?,
+        interval_ms: row.get(5)?,
+        cron: row.get(6)?,
+        timezone: row.get(7)?,
+        next_run_at: row.get(8)?,
+        last_run_at: row.get(9)?,
+        last_status: row.get(10)?,
+        last_error: row.get(11)?,
+        tool_dimsum_id: row.get(12)?,
+        tool_name: row.get(13)?,
+        tool_args: serde_json::from_str::<Value>(&tool_args_json).unwrap_or(Value::Null),
+        policy: policy_json.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
+        kill_switch_group: row.get(16)?,
+        created_at: row.get(17)?,
+        updated_at: row.get(18)?,
+    })
 }
 
 fn compute_audit_hash(

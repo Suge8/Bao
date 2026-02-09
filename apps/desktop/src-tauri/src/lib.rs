@@ -180,6 +180,13 @@ struct SessionIdInput {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ListMessagesInput {
+    session_id: String,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DimsumIdInput {
     dimsum_id: String,
 }
@@ -1309,6 +1316,15 @@ async fn run_engine_turn_inner(
     }
 
     let final_output = output.unwrap_or_default();
+    let assistant_message_id = state
+        .gateway_handle
+        .append_message(
+            session_id.clone(),
+            "assistant".to_string(),
+            final_output.clone(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
     match pipeline::extract_memory_plan_via_pipeline(
         &state.gateway_handle,
@@ -1372,6 +1388,7 @@ async fn run_engine_turn_inner(
 
     let event_payload = serde_json::json!({
         "sessionId": session_id.clone(),
+        "messageId": assistant_message_id,
         "output": final_output,
         "matched": router.matched,
         "needsMemory": router.needsMemory,
@@ -1477,6 +1494,18 @@ async fn list_sessions(state: tauri::State<'_, Arc<AppState>>) -> Result<BaoEven
     state
         .gateway_handle
         .list_sessions()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename = "listMessages")]
+async fn list_messages(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: ListMessagesInput,
+) -> Result<BaoEventV1, String> {
+    state
+        .gateway_handle
+        .list_messages(input.session_id, input.limit)
         .await
         .map_err(|e| e.to_string())
 }
@@ -2264,6 +2293,7 @@ pub fn run() {
             resource_read,
             create_session,
             list_sessions,
+            list_messages,
             delete_session,
             list_tasks,
             create_task,

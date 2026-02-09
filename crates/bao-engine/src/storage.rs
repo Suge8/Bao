@@ -34,6 +34,19 @@ pub trait StorageFacade: Send + Sync {
     ) -> Result<(), StorageError>;
     fn get_task_by_id(&self, task_id: &str) -> Result<Option<TaskRecord>, StorageError>;
     fn get_setting_json(&self, key: &str) -> Result<Option<Value>, StorageError>;
+    fn ensure_session_exists(
+        &self,
+        session_id: &str,
+        title: Option<&str>,
+        now_ts: i64,
+    ) -> Result<(), StorageError>;
+    fn append_message(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        now_ts: i64,
+    ) -> Result<String, StorageError>;
     fn get_tool_permissions(
         &self,
         dimsum_id: &str,
@@ -110,6 +123,25 @@ impl StorageFacade for SqliteStorage {
 
     fn get_setting_json(&self, key: &str) -> Result<Option<Value>, StorageError> {
         self.inner.get_setting_json(key)
+    }
+
+    fn ensure_session_exists(
+        &self,
+        session_id: &str,
+        title: Option<&str>,
+        now_ts: i64,
+    ) -> Result<(), StorageError> {
+        self.inner.ensure_session_exists(session_id, title, now_ts)
+    }
+
+    fn append_message(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        now_ts: i64,
+    ) -> Result<String, StorageError> {
+        self.inner.append_message(session_id, role, content, now_ts)
     }
 
     fn get_tool_permissions(

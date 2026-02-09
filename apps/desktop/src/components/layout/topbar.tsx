@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Play, QrCode, Square, Trash2, Wifi } from "lucide-react";
+import { ChevronDown, Play, QrCode, Square, Trash2, Wifi } from "lucide-react";
 import QRCode from "qrcode";
+import { useLocation } from "react-router-dom";
 import { useClient } from "@/data/use-client";
 import type { GatewayDevice } from "@/data/client";
 import { MagicCard } from "@/components/ui/magic-card";
 import { ShinyButton } from "@/components/ui/shiny-button";
 import { useToast } from "@/components/ui/toast";
 import { useI18n } from "@/i18n/i18n";
+import { expandProfilesToModelProfiles, parseProviderState, toSettingsMap, type ProviderModelProfile } from "@/lib/provider-profiles";
 import { cn } from "@/lib/utils";
 
 const GATEWAY_DEVICE_EVENT_TYPES = new Set([
@@ -18,6 +20,7 @@ const GATEWAY_DEVICE_EVENT_TYPES = new Set([
 
 export function Topbar({ title }: { title: string }) {
   const { t } = useI18n();
+  const location = useLocation();
   const client = useClient();
   const { push } = useToast();
   const [gatewayAllowLan, setGatewayAllowLan] = useState<boolean | null>(null);
@@ -27,6 +30,10 @@ export function Topbar({ title }: { title: string }) {
   const [gatewayPanelOpen, setGatewayPanelOpen] = useState(false);
   const [pairingModalOpen, setPairingModalOpen] = useState(false);
   const [pairingQrImage, setPairingQrImage] = useState("");
+  const [providerProfiles, setProviderProfiles] = useState<ProviderModelProfile[]>([]);
+  const [selectedProfileId, setSelectedProfileId] = useState("");
+
+  const isChatPage = location.pathname === "/";
 
   const refreshGatewaySettings = useCallback(
     async (isMounted: () => boolean = () => true) => {
@@ -61,6 +68,34 @@ export function Topbar({ title }: { title: string }) {
     [client],
   );
 
+  const refreshProviderProfiles = useCallback(
+    async (isMounted: () => boolean = () => true) => {
+      try {
+        const settings = await client.getSettings();
+        if (!isMounted()) return;
+        const settingsMap = toSettingsMap(settings.settings);
+        const state = parseProviderState(settingsMap);
+        const selectableProfiles = expandProfilesToModelProfiles(state.profiles).filter(
+          isSelectableProviderProfile,
+        );
+        setProviderProfiles(selectableProfiles);
+        if (selectableProfiles.length === 0) {
+          setSelectedProfileId("");
+          return;
+        }
+        const selectedId = selectableProfiles.some((item) => item.id === state.selectedProfileId)
+          ? state.selectedProfileId
+          : selectableProfiles[0].id;
+        setSelectedProfileId(selectedId);
+      } catch {
+        if (!isMounted()) return;
+        setProviderProfiles([]);
+        setSelectedProfileId("");
+      }
+    },
+    [client],
+  );
+
   useEffect(() => {
     let mounted = true;
     let unlisten: (() => void) | null = null;
@@ -68,6 +103,7 @@ export function Topbar({ title }: { title: string }) {
 
     void refreshGatewaySettings(isMounted);
     void refreshGatewayDevices(isMounted);
+    void refreshProviderProfiles(isMounted);
 
     void client
       .onBaoEvent((evt) => {
@@ -92,6 +128,10 @@ export function Topbar({ title }: { title: string }) {
             }
             return;
           }
+
+          if (key.startsWith("provider.")) {
+            void refreshProviderProfiles(isMounted);
+          }
         }
 
         if (GATEWAY_DEVICE_EVENT_TYPES.has(evt.type)) {
@@ -109,7 +149,23 @@ export function Topbar({ title }: { title: string }) {
       mounted = false;
       unlisten?.();
     };
-  }, [client, refreshGatewayDevices, refreshGatewaySettings]);
+  }, [client, refreshGatewayDevices, refreshGatewaySettings, refreshProviderProfiles]);
+
+  const applyProviderProfile = useCallback(
+    async (profileId: string) => {
+      const selected = providerProfiles.find((item) => item.id === profileId);
+      if (!selected) return;
+      setSelectedProfileId(profileId);
+      await Promise.all([
+        client.updateSettings("provider.selectedProfileId", selected.id),
+        client.updateSettings("provider.active", selected.provider),
+        client.updateSettings("provider.model", selected.model),
+        client.updateSettings("provider.baseUrl", selected.baseUrl),
+        client.updateSettings("provider.apiKey", selected.apiKey),
+      ]);
+    },
+    [client, providerProfiles],
+  );
 
   const gatewayLabel = useMemo(() => {
     if (gatewayRunning === null || gatewayAllowLan === null) {
@@ -120,6 +176,15 @@ export function Topbar({ title }: { title: string }) {
     }
     return gatewayAllowLan ? t("topbar.gateway.offline_lan") : t("topbar.gateway.offline_local");
   }, [gatewayAllowLan, gatewayRunning, t]);
+
+  const handleProfileChange = useCallback(
+    (profileId: string) => {
+      void applyProviderProfile(profileId).catch(() => {
+        // ignore topbar model switch errors here
+      });
+    },
+    [applyProviderProfile],
+  );
 
   const handleGatewayToggle = () => {
     if (gatewayBusy || gatewayRunning === null) return;
@@ -223,6 +288,31 @@ export function Topbar({ title }: { title: string }) {
           </div>
 
           <div className="flex items-center gap-2">
+            {isChatPage ? (
+              <div className="relative">
+                <select
+                  value={selectedProfileId}
+                  onChange={(e) => {
+                    handleProfileChange(e.target.value);
+                  }}
+                  disabled={providerProfiles.length === 0}
+                  className="h-8 min-w-[220px] appearance-none rounded-lg bg-muted/50 pl-3 pr-8 text-center text-xs font-medium text-muted-foreground transition-colors hover:bg-muted focus:outline-none focus:ring-1 focus:ring-primary/20"
+                  data-testid="topbar-chat-model-select"
+                >
+                  {providerProfiles.length === 0 ? (
+                    <option value="">{t("settings.provider.empty_hint")}</option>
+                  ) : (
+                    providerProfiles.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name}
+                      </option>
+                    ))
+                  )}
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
+              </div>
+            ) : null}
+
             <ShinyButton
               type="button"
               aria-label={t("topbar.gateway.manage")}
@@ -389,6 +479,10 @@ function toPayloadObject(payload: unknown): Record<string, unknown> {
     return payload as Record<string, unknown>;
   }
   return {};
+}
+
+function isSelectableProviderProfile(item: ProviderModelProfile): boolean {
+  return Boolean(item.provider.trim() && item.model.trim() && item.baseUrl.trim());
 }
 
 function toErrorMessage(err: unknown, fallback: string): string {

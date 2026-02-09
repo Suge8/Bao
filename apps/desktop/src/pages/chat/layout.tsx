@@ -1,21 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
-import { ChevronDown, Loader2, MessageSquare, Plus, Search, Send, Trash2 } from "lucide-react";
+import { Loader2, Plus, Search, Send, Trash2 } from "lucide-react";
 import { useClient } from "@/data/use-client";
 import { cn } from "@/lib/utils";
 import { buildDefaultSessionTitle, getSessionDisplayTitle } from "@/lib/session-titles";
-import {
-  parseProviderState,
-  PROVIDER_PLACEHOLDER,
-  toSettingsMap,
-  type ProviderProfile,
-} from "@/lib/provider-profiles";
+import { expandProfilesToModelProfiles, parseProviderState, toSettingsMap, type ProviderModelProfile } from "@/lib/provider-profiles";
 import { MagicCard } from "@/components/ui/magic-card";
 import { ShinyButton } from "@/components/ui/shiny-button";
 import { useToast } from "@/components/ui/toast";
 import { useI18n } from "@/i18n/i18n";
 
-type Session = { id: string; title?: string };
+type Session = { id: string; title?: string | null; createdAt?: number; updatedAt?: number };
 type MessageView = {
   id: string;
   role: "user" | "assistant";
@@ -44,11 +39,11 @@ export function ChatLayout() {
   const [error, setError] = useState<string | null>(null);
 
   const [messagesBySession, setMessagesBySession] = useState<Record<string, MessageView[]>>({});
-  const [providerProfiles, setProviderProfiles] = useState<ProviderProfile[]>([]);
+  const [providerProfiles, setProviderProfiles] = useState<ProviderModelProfile[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string>("");
   const [gatewayRunning, setGatewayRunning] = useState(false);
   const [providerChecking, setProviderChecking] = useState(false);
-  const [providerReady, setProviderReady] = useState(false);
+  const [providerReady, setProviderReady] = useState(true);
   const [providerReason, setProviderReason] = useState<string | null>(null);
 
   const unlistenRef = useRef<null | (() => void)>(null);
@@ -74,7 +69,9 @@ export function ChatLayout() {
     const settingsMap = toSettingsMap(settings.settings);
     setGatewayRunning(isGatewayRunningEnabled(settingsMap.get("gateway.running")));
     const providerState = parseProviderState(settingsMap);
-    const selectableProfiles = providerState.profiles.filter(isSelectableProviderProfile);
+    const selectableProfiles = expandProfilesToModelProfiles(providerState.profiles).filter(
+      isSelectableProviderProfile,
+    );
     setProviderProfiles(selectableProfiles);
     if (selectableProfiles.length === 0) {
       setSelectedProfileId("");
@@ -85,22 +82,6 @@ export function ChatLayout() {
       : selectableProfiles[0].id;
     setSelectedProfileId(selectedId);
   }, [client]);
-
-  const applyProviderProfile = useCallback(
-    async (profileId: string) => {
-      const selected = providerProfiles.find((item) => item.id === profileId);
-      if (!selected) return;
-      setSelectedProfileId(profileId);
-      await Promise.all([
-        client.updateSettings("provider.selectedProfileId", selected.id),
-        client.updateSettings("provider.active", selected.provider),
-        client.updateSettings("provider.model", selected.model),
-        client.updateSettings("provider.baseUrl", selected.baseUrl),
-        client.updateSettings("provider.apiKey", selected.apiKey),
-      ]);
-    },
-    [client, providerProfiles],
-  );
 
   const selectedProfile = useMemo(
     () => providerProfiles.find((item) => item.id === selectedProfileId) ?? null,
@@ -127,10 +108,14 @@ export function ChatLayout() {
     try {
       const probe = await client.providerPreflight();
       setProviderReady(probe.ready);
-      setProviderReason(probe.ready ? null : (probe.reason ?? t("chat.guard.provider_unreachable")));
+      setProviderReason(
+        probe.ready ? null : toProviderFriendlyReason(probe.reason, t("chat.guard.provider_unreachable"), t),
+      );
     } catch (err) {
       setProviderReady(false);
-      setProviderReason(toErrorMessage(err, t("chat.guard.provider_unreachable")));
+      setProviderReason(
+        toProviderFriendlyReason(toErrorMessage(err, t("chat.guard.provider_unreachable")), t("chat.guard.provider_unreachable"), t),
+      );
     } finally {
       setProviderChecking(false);
     }
@@ -158,18 +143,13 @@ export function ChatLayout() {
           const text = typeof payload.text === "string" ? payload.text : "";
           const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : "";
           if (text && sessionId) {
-            setMessagesBySession((prev) => {
-              const existing = prev[sessionId] ?? [];
-              const next: MessageView[] = [
-                {
-                  id: `user-${e.eventId}`,
-                  role: "user",
-                  text,
-                },
-                ...existing,
-              ];
-              return { ...prev, [sessionId]: next.slice(0, 200) };
-            });
+            setMessagesBySession((prev) =>
+              prependSessionMessage(prev, sessionId, {
+                id: `user-${e.eventId}`,
+                role: "user",
+                text,
+              }),
+            );
           }
         }
 
@@ -177,18 +157,13 @@ export function ChatLayout() {
           const output = typeof payload.output === "string" ? payload.output : "";
           const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : "";
           if (output && sessionId) {
-            setMessagesBySession((prev) => {
-              const existing = prev[sessionId] ?? [];
-              const next: MessageView[] = [
-                {
-                  id: `assistant-${e.eventId}`,
-                  role: "assistant",
-                  text: output,
-                },
-                ...existing,
-              ];
-              return { ...prev, [sessionId]: next.slice(0, 200) };
-            });
+            setMessagesBySession((prev) =>
+              prependSessionMessage(prev, sessionId, {
+                id: `assistant-${e.eventId}`,
+                role: "assistant",
+                text: output,
+              }),
+            );
           }
         }
 
@@ -215,6 +190,30 @@ export function ChatLayout() {
       unlistenRef.current = null;
     };
   }, [client, loadProviderProfiles, refreshSessions, t]);
+
+  useEffect(() => {
+    if (!activeSessionId) return;
+    let cancelled = false;
+    client
+      .listMessages(activeSessionId, 200)
+      .then((res) => {
+        if (cancelled) return;
+        const next: MessageView[] = res.messages
+          .map((item) => ({
+            id: item.messageId,
+            role: item.role,
+            text: item.content,
+          }))
+          .reverse();
+        setMessagesBySession((prev) => ({ ...prev, [activeSessionId]: next }));
+      })
+      .catch(() => {
+        // keep real-time event path usable even if history load fails
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId, client]);
 
   useEffect(() => {
     void refreshProviderReadiness();
@@ -251,6 +250,8 @@ export function ChatLayout() {
   const messages = useMemo(() => {
     return messagesBySession[activeSessionId] ?? [];
   }, [activeSessionId, messagesBySession]);
+
+  const sendDisabled = sending || composerBlocked || composer.trim().length === 0;
 
   const send = async () => {
     const text = composer.trim();
@@ -329,15 +330,35 @@ export function ChatLayout() {
         data-testid="chat-sessions"
       >
         <section className="flex h-full min-w-0 flex-col p-4">
-          <div className="relative mb-4">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/50" />
-            <input
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              placeholder={t("chat.search.placeholder")}
-              className="h-10 w-full rounded-xl bg-muted/50 pl-9 pr-4 text-sm outline-none transition-colors focus:bg-muted"
-              data-testid="sessions-search"
-            />
+          <div className="mb-4 flex items-center justify-between gap-2">
+            <div className="relative min-w-0 w-full max-w-[220px]">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/50" />
+              <input
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder={t("chat.search.placeholder")}
+                className="h-10 w-full rounded-xl bg-muted/50 pl-9 pr-4 text-sm outline-none transition-colors focus:bg-muted"
+                data-testid="sessions-search"
+              />
+            </div>
+            <ShinyButton
+              type="button"
+              onClick={() => {
+                void createNewSession();
+              }}
+              disabled={sending}
+              className={cn(
+                "h-8 w-8 shrink-0 rounded-xl p-0 text-xs font-medium transition-all",
+                sending
+                  ? "opacity-50 cursor-not-allowed bg-muted text-muted-foreground"
+                  : "bg-primary text-primary-foreground shadow-md hover:translate-y-[-1px]",
+              )}
+              data-testid="chat-new-session"
+              aria-label={t("chat.action.new_session")}
+              title={t("chat.action.new_session")}
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </ShinyButton>
           </div>
           <div className="flex-1 overflow-y-auto pr-1">
             <motion.div layout="position" initial={false} className="flex flex-col gap-1.5">
@@ -370,6 +391,11 @@ export function ChatLayout() {
                     >
                       {getSidebarSessionTitle(s)}
                     </span>
+                    {formatSessionTime(s.updatedAt ?? s.createdAt) ? (
+                      <span className="mt-1 block text-[10px] leading-none text-right text-muted-foreground/70">
+                        {formatSessionTime(s.updatedAt ?? s.createdAt)}
+                      </span>
+                    ) : null}
                   </button>
                   <button
                     type="button"
@@ -391,64 +417,11 @@ export function ChatLayout() {
         </section>
       </MagicCard>
 
-      <MagicCard
-        className="min-w-0 h-full rounded-3xl border border-border/50 bg-background/60 backdrop-blur-xl [&>div:last-child]:h-full"
-        data-testid="chat-stream"
-      >
-        <section className="flex h-full min-h-0 min-w-0 flex-col p-6">
-          <div className="mb-4 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-border/40 pb-4">
-            <div className="flex min-w-0 items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                <MessageSquare className="h-4 w-4" />
-              </div>
-              <div className="truncate text-sm font-semibold tracking-tight">{activeSessionId}</div>
-            </div>
-            <div className="relative justify-self-center">
-              <select
-                value={selectedProfileId}
-                onChange={(e) => {
-                  void applyProviderProfile(e.target.value).catch((err) => {
-                    setError(toErrorMessage(err, t("chat.error.switch_model_failed")));
-                  });
-                }}
-                disabled={providerProfiles.length === 0}
-                className="h-8 min-w-[220px] appearance-none rounded-lg bg-muted/50 pl-3 pr-8 text-center text-xs font-medium text-muted-foreground transition-colors hover:bg-muted focus:outline-none focus:ring-1 focus:ring-primary/20"
-                data-testid="chat-model-select"
-              >
-                {providerProfiles.length === 0 ? (
-                  <option value="">{PROVIDER_PLACEHOLDER}</option>
-                ) : (
-                  providerProfiles.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                    </option>
-                  ))
-                )}
-              </select>
-              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
-            </div>
-            <div className="justify-self-end">
-              <ShinyButton
-                type="button"
-                onClick={() => {
-                  void createNewSession();
-                }}
-                disabled={sending}
-                className={cn(
-                  "h-8 w-8 rounded-xl p-0 text-xs font-medium transition-all",
-                  sending
-                    ? "opacity-50 cursor-not-allowed bg-muted text-muted-foreground"
-                    : "bg-primary text-primary-foreground shadow-md hover:translate-y-[-1px]",
-                )}
-                data-testid="chat-new-session"
-                aria-label={t("chat.action.new_session")}
-                title={t("chat.action.new_session")}
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </ShinyButton>
-            </div>
-          </div>
-
+        <MagicCard
+          className="min-w-0 h-full rounded-3xl border border-border/50 bg-background/60 backdrop-blur-xl [&>div:last-child]:h-full"
+          data-testid="chat-stream"
+        >
+          <section className="flex h-full min-h-0 min-w-0 flex-col p-6">
           <div className="flex-1 overflow-y-auto pr-2 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-muted">
             <StreamingMessages messages={messages} loading={sending} />
           </div>
@@ -482,10 +455,10 @@ export function ChatLayout() {
                 onClick={() => {
                   void send();
                 }}
-                disabled={sending || composerBlocked || composer.trim().length === 0}
+                disabled={sendDisabled}
                 className={cn(
                   "mb-0.5 h-9 shrink-0 rounded-xl px-4 text-sm font-medium transition-all",
-                  sending || composerBlocked || composer.trim().length === 0
+                  sendDisabled
                     ? "opacity-50 cursor-not-allowed bg-muted text-muted-foreground"
                     : "bg-primary text-primary-foreground shadow-md hover:translate-y-[-1px]",
                 )}
@@ -584,6 +557,15 @@ function toPayloadObject(payload: unknown): Record<string, unknown> {
   return {};
 }
 
+function prependSessionMessage(
+  messagesBySession: Record<string, MessageView[]>,
+  sessionId: string,
+  message: MessageView,
+): Record<string, MessageView[]> {
+  const existing = messagesBySession[sessionId] ?? [];
+  return { ...messagesBySession, [sessionId]: [message, ...existing].slice(0, 200) };
+}
+
 function toErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof Error && err.message.trim()) return err.message;
   if (typeof err === "string" && err.trim()) return err;
@@ -600,7 +582,7 @@ function toErrorMessage(err: unknown, fallback: string): string {
   }
 }
 
-function isSelectableProviderProfile(item: ProviderProfile): boolean {
+function isSelectableProviderProfile(item: ProviderModelProfile): boolean {
   return Boolean(item.provider.trim() && item.model.trim() && item.baseUrl.trim());
 }
 
@@ -618,6 +600,16 @@ function clearProviderReadiness(
   setProviderReason(null);
 }
 
+function formatSessionTime(ts?: number): string {
+  if (typeof ts !== "number" || ts <= 0) return "";
+  const normalizedTs = ts < 1_000_000_000_000 ? ts * 1000 : ts;
+  const d = new Date(normalizedTs);
+  if (Number.isNaN(d.getTime())) return "";
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
 function resolveComposerGuardReason(state: ComposerGuardState, t: (key: string) => string): string | null {
   if (!state.gatewayRunning) {
     return t("chat.guard.gateway_required");
@@ -625,11 +617,61 @@ function resolveComposerGuardReason(state: ComposerGuardState, t: (key: string) 
   if (!state.selectedProfileReady) {
     return t("chat.guard.model_required");
   }
-  if (state.providerChecking) {
-    return t("chat.guard.provider_checking");
-  }
-  if (!state.providerReady) {
+  if (!state.providerReady && !state.providerChecking) {
     return state.providerReason ?? t("chat.guard.provider_unreachable");
   }
   return null;
+}
+
+function toProviderFriendlyReason(
+  reason: string | null | undefined,
+  fallback: string,
+  t: (key: string) => string,
+): string {
+  const message = (reason ?? "").trim();
+  if (!message) return fallback;
+
+  const lower = message.toLowerCase();
+  if (lower.includes("auth_invalid")) {
+    return t("chat.guard.provider_error_api_key");
+  }
+  if (lower.includes("model_invalid")) {
+    return t("chat.guard.provider_error_model");
+  }
+  if (lower.includes("permission_denied")) {
+    return t("chat.guard.provider_error_permission");
+  }
+  if (lower.includes("rate_limited")) {
+    return t("chat.guard.provider_error_rate_limit");
+  }
+  if (lower.includes("network_timeout")) {
+    return t("chat.guard.provider_error_timeout");
+  }
+  if (lower.includes("provider_unavailable")) {
+    return t("chat.guard.provider_error_server");
+  }
+  if (containsAny(lower, ["missing api key", "401", "unauthorized"])) {
+    return t("chat.guard.provider_error_api_key");
+  }
+  if (lower.includes("404") || (lower.includes("model") && lower.includes("not found"))) {
+    return t("chat.guard.provider_error_model");
+  }
+  if (containsAny(lower, ["429", "rate", "quota"])) {
+    return t("chat.guard.provider_error_rate_limit");
+  }
+  if (containsAny(lower, ["403", "forbidden", "permission"])) {
+    return t("chat.guard.provider_error_permission");
+  }
+  if (containsAny(lower, ["timeout", "timed out"])) {
+    return t("chat.guard.provider_error_timeout");
+  }
+  if (lower.includes("5") && lower.includes("http")) {
+    return t("chat.guard.provider_error_server");
+  }
+
+  return message;
+}
+
+function containsAny(text: string, keywords: readonly string[]): boolean {
+  return keywords.some((keyword) => text.includes(keyword));
 }

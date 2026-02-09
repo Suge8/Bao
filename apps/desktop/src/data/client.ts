@@ -25,7 +25,14 @@ export type DesktopClient = {
     }[];
   }>;
 
-  listSessions: () => Promise<{ sessions: { id: string; title: string }[] }>;
+  listSessions: () =>
+    Promise<{
+      sessions: { id: string; title?: string | null; createdAt?: number; updatedAt?: number }[];
+    }>;
+  listMessages: (
+    sessionId: string,
+    limit?: number,
+  ) => Promise<{ messages: { messageId: string; role: "user" | "assistant"; content: string; createdAt: number }[] }>;
   createSession: (sessionId: string, title?: string) => Promise<{ ok: true }>;
   deleteSession: (sessionId: string) => Promise<{ ok: true }>;
   sendMessage: (sessionId: string, text: string) => Promise<{ ok: true }>;

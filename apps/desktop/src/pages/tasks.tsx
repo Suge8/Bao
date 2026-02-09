@@ -1,11 +1,18 @@
 import { useI18n } from "@/i18n/i18n";
-import { motion } from "motion/react";
 import { useClient } from "@/data/use-client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { ShinyButton } from "@/components/ui/shiny-button";
 import { MagicCard } from "@/components/ui/magic-card";
 import { Edit, Play, Power } from "lucide-react";
+import {
+  DRAFT_CONFIDENCE_THRESHOLD,
+  buildDeterministicTaskDraft,
+  isDraftReadyForSubmit,
+  getTaskDraftPreview,
+  type TaskDraft,
+  type TaskDraftPreview,
+} from "./tasks-nl-draft";
 
 type TaskItem = {
   taskId: string;
@@ -57,6 +64,7 @@ export default function TasksPage() {
   const [runAtInput, setRunAtInput] = useState("");
   const [intervalMinutesInput, setIntervalMinutesInput] = useState("60");
   const [showForm, setShowForm] = useState(false);
+  const [taskDraft, setTaskDraft] = useState<TaskDraft | null>(null);
 
   const refreshTasks = useCallback(async () => {
     setLoading(true);
@@ -75,6 +83,15 @@ export default function TasksPage() {
     void refreshTasks();
   }, [refreshTasks]);
 
+  useEffect(() => {
+    if (!showForm) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [showForm]);
+
   const items = useMemo(() => {
     return tasks.map((task) => ({
       id: task.taskId,
@@ -90,45 +107,34 @@ export default function TasksPage() {
 
   const submitTask = async () => {
     const nextContent = content.trim();
-    if (!nextContent) {
-      setError(t("tasks.error.content_required"));
+    const draft = buildDeterministicTaskDraft({
+      taskId: editingTaskId ?? generateTaskId(nextContent || "task"),
+      content,
+      enabled,
+      scheduleKind,
+      runAtInput,
+      intervalMinutesInput,
+      defaultToolDimsumId: DEFAULT_TOOL_DIMSUM_ID,
+      defaultToolName: DEFAULT_TOOL_NAME,
+      defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+      defaultMaxRetries: DEFAULT_MAX_RETRIES,
+    });
+    setTaskDraft(draft);
+
+    if (!isDraftReadyForSubmit(draft)) {
+      if (draft.confidence < DRAFT_CONFIDENCE_THRESHOLD) {
+        setError("草案置信度过低，请先完善字段并重新生成草案");
+        return;
+      }
+      setError(`草案校验失败: ${draft.missingFields.join(", ")}`);
       return;
     }
 
-    const id = editingTaskId ?? generateTaskId(nextContent);
-    const runAtTs = runAtInput ? Math.floor(new Date(runAtInput).getTime() / 1000) : undefined;
-    const intervalMinutes = Number(intervalMinutesInput);
-
-    const schedule: Record<string, unknown> = { kind: scheduleKind };
-    if (scheduleKind === "once") {
-      schedule.runAtTs = Number.isFinite(runAtTs) ? runAtTs : Math.floor(Date.now() / 1000);
+    const spec = draft.draftSpec;
+    if (!spec) {
+      setError(t("tasks.error.save_failed"));
+      return;
     }
-    if (scheduleKind === "interval") {
-      if (!Number.isFinite(intervalMinutes) || intervalMinutes < 1) {
-        setError(t("tasks.error.interval_minutes_invalid"));
-        return;
-      }
-      schedule.intervalMs = Math.floor(intervalMinutes * 60_000);
-    }
-
-    const spec = {
-      id,
-      title: nextContent,
-      enabled,
-      schedule,
-      action: {
-        kind: "tool_call",
-        toolCall: {
-          dimsumId: DEFAULT_TOOL_DIMSUM_ID,
-          toolName: DEFAULT_TOOL_NAME,
-          args: buildTaskToolArgs(nextContent),
-        },
-      },
-      policy: {
-        timeoutMs: DEFAULT_TIMEOUT_MS,
-        maxRetries: DEFAULT_MAX_RETRIES,
-      },
-    };
 
     setSaving(true);
     setError(null);
@@ -152,6 +158,29 @@ export default function TasksPage() {
     setScheduleKind("once");
     setRunAtInput("");
     setIntervalMinutesInput("60");
+    setTaskDraft(null);
+  };
+
+  const generateDraft = () => {
+    const draft = buildDeterministicTaskDraft({
+      taskId: editingTaskId ?? generateTaskId(content.trim() || "task"),
+      content,
+      enabled,
+      scheduleKind,
+      runAtInput,
+      intervalMinutesInput,
+      defaultToolDimsumId: DEFAULT_TOOL_DIMSUM_ID,
+      defaultToolName: DEFAULT_TOOL_NAME,
+      defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+      defaultMaxRetries: DEFAULT_MAX_RETRIES,
+    });
+
+    setTaskDraft(draft);
+    if (draft.missingFields.length > 0) {
+      setError(`草案校验失败: ${draft.missingFields.join(", ")}`);
+      return;
+    }
+    setError(null);
   };
 
   const loadTaskForEdit = (id: string) => {
@@ -172,129 +201,20 @@ export default function TasksPage() {
     <div className="mx-auto flex h-full min-h-0 w-full max-w-6xl flex-col overflow-hidden" data-testid="page-tasks">
       <div className="flex items-center justify-between">
         <div className="text-xl font-bold tracking-tight">{t("page.tasks.title")}</div>
-        <ShinyButton 
-          type="button" 
+        <ShinyButton
+          type="button"
           onClick={() => {
             resetForm();
-            setShowForm(!showForm);
+            setError(null);
+            setShowForm(true);
           }}
           className="h-9 rounded-xl px-4 text-sm font-medium"
         >
-          {showForm ? t("tasks.form.cancel") : t("tasks.form.new_task")}
+          {t("tasks.form.new_task")}
         </ShinyButton>
       </div>
 
       <div className="mt-6 min-h-0 flex-1 space-y-6 overflow-y-auto pr-1">
-        <motion.div
-          animate={{ height: showForm ? "auto" : 0, opacity: showForm ? 1 : 0 }}
-          transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-          className="overflow-hidden"
-        >
-        <MagicCard className="rounded-3xl border border-border/50 bg-background/60 backdrop-blur-xl">
-          <div className="p-6">
-            <div className="mb-2 text-sm font-semibold tracking-tight">
-              {editingTaskId ? t("tasks.form.edit_title") : t("tasks.form.create_title")}
-            </div>
-            <div className="mb-4 text-xs text-muted-foreground">{t("tasks.form.helper")}</div>
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              <div className="col-span-full rounded-xl bg-muted/30 p-3 ring-1 ring-border/50 md:col-span-2 lg:col-span-3">
-                <div className="mb-1.5 text-xs font-medium text-muted-foreground">{t("tasks.form.content_label")}</div>
-                <textarea
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  placeholder={t("tasks.form.content_placeholder")}
-                  className="min-h-[92px] w-full resize-y rounded-lg bg-background px-3 py-2 text-sm outline-none ring-1 ring-border/50 focus:ring-primary/30"
-                  data-testid="task-content-input"
-                />
-              </div>
-
-              <SelectField
-                label={t("tasks.form.schedule_type")}
-                value={scheduleKind}
-                onChange={(value) => setScheduleKind(value as ScheduleKind)}
-                options={[
-                  { value: "once", label: t("tasks.form.schedule_once") },
-                  { value: "interval", label: t("tasks.form.schedule_interval") },
-                ]}
-              />
-
-              <div className="space-y-1.5 rounded-xl bg-muted/30 p-3 ring-1 ring-border/50">
-                <div className="text-xs font-medium text-muted-foreground">{t("tasks.form.status")}</div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setEnabled(true)}
-                    className={cn(
-                      "flex-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-all",
-                      enabled ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-muted"
-                    )}
-                    >
-                    {t("tasks.form.enabled")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEnabled(false)}
-                    className={cn(
-                      "flex-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-all",
-                      !enabled ? "bg-muted text-foreground ring-1 ring-border shadow-sm" : "text-muted-foreground hover:bg-muted"
-                    )}
-                    >
-                    {t("tasks.form.disabled")}
-                  </button>
-                </div>
-              </div>
-
-              {scheduleKind === "once" ? (
-                <InputField
-                  label={t("tasks.form.run_at")}
-                  value={runAtInput}
-                  onChange={setRunAtInput}
-                  type="datetime-local"
-                />
-              ) : null}
-              {scheduleKind === "interval" ? (
-                <InputField
-                  label={t("tasks.form.interval_minutes")}
-                  value={intervalMinutesInput}
-                  onChange={setIntervalMinutesInput}
-                  type="number"
-                />
-              ) : null}
-            </div>
-
-            <div className="mt-6 flex items-center justify-end gap-3">
-              {error ? <div className="text-xs font-medium text-destructive">{error}</div> : null}
-              {editingTaskId ? (
-                <ShinyButton
-                  type="button"
-                  onClick={() => {
-                    resetForm();
-                    setShowForm(false);
-                  }}
-                  className="h-9 rounded-xl px-4 text-sm bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
-                >
-                  {t("tasks.form.cancel")}
-                </ShinyButton>
-              ) : null}
-              <ShinyButton
-                type="button"
-                onClick={() => {
-                  void submitTask();
-                }}
-                disabled={saving}
-                className="h-9 rounded-xl px-6 text-sm bg-primary text-primary-foreground hover:bg-primary/90"
-              >
-                {saving
-                  ? t("tasks.form.saving")
-                  : editingTaskId
-                    ? t("tasks.form.update")
-                    : t("tasks.form.create")}
-              </ShinyButton>
-            </div>
-          </div>
-        </MagicCard>
-        </motion.div>
-
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {items.map((it) => (
             <MagicCard key={it.id} className="group overflow-hidden rounded-3xl border border-border/50 bg-background/60 backdrop-blur-sm transition-all hover:shadow-sm" data-testid={`task-item-${it.id}`}>
@@ -390,20 +310,146 @@ export default function TasksPage() {
         ) : null}
         </div>
       </div>
+
+      {showForm ? (
+        <button
+          type="button"
+          className="fixed inset-0 z-50 flex cursor-pointer items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              resetForm();
+              setShowForm(false);
+            }
+          }}
+          data-testid="tasks-create-modal-overlay"
+        >
+          <div className="w-full max-w-3xl cursor-default overflow-hidden rounded-3xl" data-testid="tasks-create-modal">
+            <MagicCard className="rounded-3xl border border-border/50 bg-background/95 backdrop-blur-xl">
+              <div className="max-h-[85vh] overflow-y-auto p-6">
+                <div className="mb-2 text-sm font-semibold tracking-tight">
+                  {editingTaskId ? t("tasks.form.edit_title") : t("tasks.form.create_title")}
+                </div>
+                <div className="mb-4 text-xs text-muted-foreground">{t("tasks.form.helper")}</div>
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                  <div className="col-span-full rounded-xl bg-muted/30 p-3 ring-1 ring-border/50 md:col-span-2 lg:col-span-3">
+                    <div className="mb-1.5 text-xs font-medium text-muted-foreground">{t("tasks.form.content_label")}</div>
+                    <textarea
+                      value={content}
+                      onChange={(e) => setContent(e.target.value)}
+                      placeholder={t("tasks.form.content_placeholder")}
+                      className="min-h-[92px] w-full resize-y rounded-lg bg-background px-3 py-2 text-sm outline-none ring-1 ring-border/50 focus:ring-primary/30"
+                      data-testid="task-content-input"
+                    />
+                  </div>
+
+                  <SelectField
+                    label={t("tasks.form.schedule_type")}
+                    value={scheduleKind}
+                    onChange={(value) => setScheduleKind(value as ScheduleKind)}
+                    options={[
+                      { value: "once", label: t("tasks.form.schedule_once") },
+                      { value: "interval", label: t("tasks.form.schedule_interval") },
+                    ]}
+                  />
+
+                  <div className="space-y-1.5 rounded-xl bg-muted/30 p-3 ring-1 ring-border/50">
+                    <div className="text-xs font-medium text-muted-foreground">{t("tasks.form.status")}</div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setEnabled(true)}
+                        className={cn(
+                          "flex-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-all",
+                          enabled ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-muted"
+                        )}
+                      >
+                        {t("tasks.form.enabled")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEnabled(false)}
+                        className={cn(
+                          "flex-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-all",
+                          !enabled ? "bg-muted text-foreground ring-1 ring-border shadow-sm" : "text-muted-foreground hover:bg-muted"
+                        )}
+                      >
+                        {t("tasks.form.disabled")}
+                      </button>
+                    </div>
+                  </div>
+
+                  {scheduleKind === "once" ? (
+                    <InputField
+                      label={t("tasks.form.run_at")}
+                      value={runAtInput}
+                      onChange={setRunAtInput}
+                      type="datetime-local"
+                    />
+                  ) : null}
+                  {scheduleKind === "interval" ? (
+                    <InputField
+                      label={t("tasks.form.interval_minutes")}
+                      value={intervalMinutesInput}
+                      onChange={setIntervalMinutesInput}
+                      type="number"
+                    />
+                  ) : null}
+                </div>
+
+                <div className="mt-6 flex items-center justify-end gap-3">
+                  <ShinyButton
+                    type="button"
+                    onClick={generateDraft}
+                    className="h-9 rounded-xl px-4 text-sm bg-muted/50 text-foreground hover:bg-muted"
+                    data-testid="tasks-generate-draft"
+                  >
+                    生成草案
+                  </ShinyButton>
+                  {taskDraft ? (
+                    <div className="mr-auto rounded-lg bg-muted/30 px-3 py-2 text-xs text-muted-foreground" data-testid="tasks-draft-state">
+                      <span className="font-medium text-foreground">intent:</span> {taskDraft.intent || "-"} ·{" "}
+                      <span className="font-medium text-foreground">confidence:</span> {taskDraft.confidence.toFixed(2)} ·{" "}
+                      <span className="font-medium text-foreground">missing:</span>{" "}
+                      {taskDraft.missingFields.length > 0 ? taskDraft.missingFields.join(", ") : "none"}
+                    </div>
+                  ) : null}
+                  {error ? <div className="text-xs font-medium text-destructive">{error}</div> : null}
+                  <ShinyButton
+                    type="button"
+                    onClick={() => {
+                      resetForm();
+                      setShowForm(false);
+                    }}
+                    className="h-9 rounded-xl px-4 text-sm bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  >
+                    {t("tasks.form.cancel")}
+                  </ShinyButton>
+                  <ShinyButton
+                    type="button"
+                    onClick={() => {
+                      void submitTask();
+                    }}
+                    disabled={saving}
+                    className="h-9 rounded-xl px-6 text-sm bg-primary text-primary-foreground hover:bg-primary/90"
+                  >
+                    {saving
+                      ? t("tasks.form.saving")
+                      : editingTaskId
+                        ? t("tasks.form.update")
+                        : t("tasks.form.create")}
+                  </ShinyButton>
+                </div>
+              </div>
+            </MagicCard>
+          </div>
+        </button>
+      ) : null}
     </div>
   );
 }
 
-function buildTaskToolArgs(text: string) {
-  const escaped = text
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"')
-    .replace(/\$/g, "\\$")
-    .replace(/`/g, "\\`");
-  return {
-    command: "sh",
-    args: ["-lc", `echo \"${escaped}\"`],
-  };
+    </div>
+  );
 }
 
 function generateTaskId(content: string): string {
@@ -416,6 +462,71 @@ function generateTaskId(content: string): string {
   const base = normalized || "task";
   return `${base}-${Date.now().toString(36)}`;
 }
+
+function ProvenanceBadge({ kind }: { kind: "user" | "ai" | "default" }) {
+  const { t } = useI18n();
+  const styles = {
+    user: "border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-400",
+    ai: "border-purple-500/30 bg-purple-500/10 text-purple-700 dark:text-purple-400",
+    default: "border-border/50 bg-muted text-muted-foreground",
+  };
+  const labels = {
+    user: t("tasks.source.user"),
+    ai: t("tasks.source.ai"),
+    default: t("tasks.source.default"),
+  };
+
+  return (
+    <span className={cn("inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide", styles[kind])}>
+      {labels[kind]}
+    </span>
+  );
+}
+
+function DraftPreviewPanel({ draft }: { draft: TaskDraft }) {
+  const { t } = useI18n();
+  const preview = useMemo(() => getTaskDraftPreview(draft), [draft]);
+  if (!preview) return null;
+
+  const fields = [
+    { key: "title", label: t("tasks.preview.label.title"), ...preview.title, testId: "tasks-source-label-title" },
+    { key: "schedule", label: t("tasks.preview.label.schedule"), ...preview.schedule, testId: "tasks-source-label-schedule" },
+    { key: "tool", label: t("tasks.preview.label.tool"), ...preview.tool, testId: "tasks-source-label-tool" },
+    { key: "policy", label: t("tasks.preview.label.policy"), ...preview.policy, testId: "tasks-source-label-policy" },
+  ];
+
+  return (
+    <div className="mt-6 rounded-xl border border-border/50 bg-muted/20 p-4" data-testid="tasks-draft-preview">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t("tasks.preview.title")}</div>
+        <div className="flex gap-2 text-[10px] text-muted-foreground/60">
+          <div>intent: {draft.intent || "-"}</div>
+          <div>conf: {draft.confidence.toFixed(2)}</div>
+        </div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {fields.map((f) => (
+          <div key={f.key} className="space-y-1 rounded-lg bg-background/50 p-2.5 ring-1 ring-border/30">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[10px] font-medium text-muted-foreground">{f.label}</div>
+              <ProvenanceBadge kind={f.provenance} />
+            </div>
+            <div className="truncate text-sm font-medium" title={f.value} data-testid={f.testId}>
+              {f.value || "-"}
+            </div>
+          </div>
+        ))}
+      </div>
+      {draft.missingFields.length > 0 ? (
+        <div className="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs font-medium text-red-600 dark:text-red-400">
+          Missing: {draft.missingFields.join(", ")}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+
 
 function intervalMsToMinutes(intervalMs?: number | null): number {
   if (!intervalMs || intervalMs < 60_000) return 60;

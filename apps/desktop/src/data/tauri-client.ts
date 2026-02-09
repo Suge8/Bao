@@ -84,7 +84,17 @@ export function createTauriClient(): DesktopClient {
     async listSessions() {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("listSessions");
-      const evt = await api.invoke<{ payload: { sessions: { id: string; title: string }[] } }>(
+      const evt = await api.invoke<{
+        payload: {
+          sessions: {
+            id?: string;
+            sessionId?: string;
+            title?: string | null;
+            createdAt?: number;
+            updatedAt?: number;
+          }[];
+        };
+      }>(
         "list_sessions",
       );
       const sessions = (evt as { payload: { sessions: unknown[] } }).payload.sessions
@@ -93,14 +103,46 @@ export function createTauriClient(): DesktopClient {
             sessionId?: string;
             title?: string | null;
             id?: string;
+            createdAt?: number;
+            updatedAt?: number;
           };
           return {
             id: raw.sessionId ?? raw.id ?? "",
-            title: raw.title ?? raw.sessionId ?? raw.id ?? "",
+            title: raw.title ?? null,
+            createdAt: raw.createdAt,
+            updatedAt: raw.updatedAt,
           };
         })
         .filter((s) => s.id.length > 0);
       return { sessions };
+    },
+
+    async listMessages(sessionId, limit) {
+      const api = await loadTauriInvokeApi();
+      if (!api) throw missingTauriError("listMessages");
+      const evt = await api.invoke<{ payload: { messages: unknown[] } }>("list_messages", {
+        input: { sessionId, limit },
+      });
+      const messages = (evt as { payload: { messages: unknown[] } }).payload.messages
+        .map((item) => {
+          const raw = item as {
+            messageId?: string;
+            role?: string;
+            content?: string;
+            createdAt?: number;
+          };
+          if (!raw.messageId || !raw.content || (raw.role !== "user" && raw.role !== "assistant")) {
+            return null;
+          }
+          return {
+            messageId: raw.messageId,
+            role: raw.role,
+            content: raw.content,
+            createdAt: typeof raw.createdAt === "number" ? raw.createdAt : Date.now(),
+          };
+        })
+        .filter((item): item is { messageId: string; role: "user" | "assistant"; content: string; createdAt: number } => item !== null);
+      return { messages };
     },
 
     async createSession(sessionId, title) {
@@ -192,14 +234,14 @@ export function createTauriClient(): DesktopClient {
     async createTask(spec) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("createTask");
-      await api.invoke("create_task", { spec });
+      await api.invoke("create_task", { input: { spec } });
       return { ok: true };
     },
 
     async updateTask(spec) {
       const api = await loadTauriInvokeApi();
       if (!api) throw missingTauriError("updateTask");
-      await api.invoke("update_task", { spec });
+      await api.invoke("update_task", { input: { spec } });
       return { ok: true };
     },
 

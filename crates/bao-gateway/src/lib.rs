@@ -166,18 +166,40 @@ impl GatewayHandle {
     ) -> Result<BaoEventV1, GatewayError> {
         let ts = now_ts();
         ensure_session_exists(&self.state.sqlite_path, &session_id, ts).await?;
+        let message_id = insert_message_record(
+            &self.state.sqlite_path,
+            &session_id,
+            "user",
+            &text,
+            ts,
+        )
+        .await?;
         let sid = session_id.clone();
-        let payload = serde_json::json!({"sessionId": session_id, "text": text});
+        let payload = serde_json::json!({"sessionId": session_id, "text": text, "messageId": message_id});
         append_and_load_event(
             &self.state,
             ts,
             "message.send",
             Some(sid.as_str()),
-            None,
+            Some(message_id.as_str()),
             None,
             &payload,
         )
         .await
+    }
+
+    pub async fn append_message(
+        &self,
+        session_id: String,
+        role: String,
+        content: String,
+    ) -> Result<String, GatewayError> {
+        if role != "user" && role != "assistant" {
+            return Err(GatewayError::Protocol("invalid message role".to_string()));
+        }
+        let ts = now_ts();
+        ensure_session_exists(&self.state.sqlite_path, &session_id, ts).await?;
+        insert_message_record(&self.state.sqlite_path, &session_id, role.as_str(), &content, ts).await
     }
 
     pub async fn create_session(
@@ -234,6 +256,25 @@ impl GatewayHandle {
             &self.state,
             now_ts(),
             "sessions.list",
+            None,
+            None,
+            None,
+            &payload,
+        )
+        .await
+    }
+
+    pub async fn list_messages(
+        &self,
+        session_id: String,
+        limit: Option<i64>,
+    ) -> Result<BaoEventV1, GatewayError> {
+        let messages = query_messages(&self.state.sqlite_path, &session_id, limit.unwrap_or(200)).await?;
+        let payload = serde_json::json!({"sessionId": session_id, "messages": messages});
+        append_and_load_event(
+            &self.state,
+            now_ts(),
+            "messages.list",
             None,
             None,
             None,
@@ -2564,13 +2605,15 @@ async fn handle_client_command(
         ClientFrameV1::Hello { .. } => Err(GatewayError::Protocol("duplicate hello".to_string())),
         ClientFrameV1::SendMessage { session_id, text } => {
             ensure_session_exists(&state.sqlite_path, &session_id, ts).await?;
-            let payload = serde_json::json!({"sessionId": session_id, "text": text});
+            let message_id =
+                insert_message_record(&state.sqlite_path, &session_id, "user", &text, ts).await?;
+            let payload = serde_json::json!({"sessionId": session_id, "text": text, "messageId": message_id});
             append_and_load_event(
                 state,
                 ts,
                 "message.send",
                 Some(&session_id),
-                None,
+                Some(&message_id),
                 None,
                 &payload,
             )
@@ -2642,6 +2685,39 @@ async fn ensure_session_exists(
     .await
     .map_err(|e| GatewayError::Protocol(format!("join: {e}")))??;
     Ok(())
+}
+
+async fn insert_message_record(
+    sqlite_path: &str,
+    session_id: &str,
+    role: &str,
+    content: &str,
+    ts: i64,
+) -> Result<String, GatewayError> {
+    let sqlite_path = sqlite_path.to_string();
+    let session_id = session_id.to_string();
+    let role = role.to_string();
+    let content = content.to_string();
+    let message_id = format!("m-{}-{}", ts.to_string(), random_token());
+    let message_id_for_insert = message_id.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(sqlite_path)?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.execute(
+            "INSERT INTO messages(message_id, session_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![message_id_for_insert, session_id, role, content, ts],
+        )?;
+        conn.execute(
+            "UPDATE sessions SET updated_at=?2 WHERE session_id=?1",
+            params![session_id, ts],
+        )?;
+        Ok::<_, GatewayError>(())
+    })
+    .await
+    .map_err(|e| GatewayError::Protocol(format!("join: {e}")))??;
+
+    Ok(message_id)
 }
 
 async fn append_and_load_event(
@@ -2773,6 +2849,37 @@ async fn query_sessions(sqlite_path: &str) -> Result<Vec<Value>, GatewayError> {
         let mut out = vec![];
         for r in rows {
             out.push(r?);
+        }
+        Ok::<_, GatewayError>(out)
+    })
+    .await
+    .map_err(|e| GatewayError::Protocol(format!("join: {e}")))?
+}
+
+async fn query_messages(
+    sqlite_path: &str,
+    session_id: &str,
+    limit: i64,
+) -> Result<Vec<Value>, GatewayError> {
+    let sqlite_path = sqlite_path.to_string();
+    let session_id = session_id.to_string();
+    let limit = limit.clamp(1, 500);
+    tokio::task::spawn_blocking(move || {
+        let conn = rusqlite::Connection::open(sqlite_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT message_id, role, content, created_at FROM messages WHERE session_id=?1 ORDER BY created_at DESC, id DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![session_id, limit], |r| {
+            Ok(serde_json::json!({
+                "messageId": r.get::<_, String>(0)?,
+                "role": r.get::<_, String>(1)?,
+                "content": r.get::<_, String>(2)?,
+                "createdAt": r.get::<_, i64>(3)?,
+            }))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
         }
         Ok::<_, GatewayError>(out)
     })
