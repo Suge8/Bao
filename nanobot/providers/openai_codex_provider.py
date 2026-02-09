@@ -12,7 +12,7 @@ import httpx
 from oauth_cli_kit import get_token as get_codex_token
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
-DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api"
+DEFAULT_CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
 DEFAULT_ORIGINATOR = "nanobot"
 
 
@@ -53,7 +53,7 @@ class OpenAICodexProvider(LLMProvider):
         if tools:
             body["tools"] = _convert_tools(tools)
 
-        url = _resolve_codex_url(DEFAULT_CODEX_BASE_URL)
+        url = DEFAULT_CODEX_URL
 
         try:
             try:
@@ -82,15 +82,6 @@ def _strip_model_prefix(model: str) -> str:
     if model.startswith("openai-codex/"):
         return model.split("/", 1)[1]
     return model
-
-
-def _resolve_codex_url(base_url: str) -> str:
-    raw = base_url.rstrip("/")
-    if raw.endswith("/codex/responses"):
-        return raw
-    if raw.endswith("/codex"):
-        return f"{raw}/responses"
-    return f"{raw}/codex/responses"
 
 
 def _build_headers(account_id: str, token: str) -> dict[str, str]:
