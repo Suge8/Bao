@@ -428,13 +428,17 @@ nanobot gateway
 Uses **Socket Mode** — no public URL required.
 
 **1. Create a Slack app**
-- Go to [Slack API](https://api.slack.com/apps) → Create New App
-- **OAuth & Permissions**: Add bot scopes: `chat:write`, `reactions:write`, `app_mentions:read`
-- Install to your workspace and copy the **Bot Token** (`xoxb-...`)
-- **Socket Mode**: Enable it and generate an **App-Level Token** (`xapp-...`) with `connections:write` scope
-- **Event Subscriptions**: Subscribe to `message.im`, `message.channels`, `app_mention`
+- Go to [Slack API](https://api.slack.com/apps) → **Create New App** → "From scratch"
+- Pick a name and select your workspace
 
-**2. Configure**
+**2. Configure the app**
+- **Socket Mode**: Toggle ON → Generate an **App-Level Token** with `connections:write` scope → copy it (`xapp-...`)
+- **OAuth & Permissions**: Add bot scopes: `chat:write`, `reactions:write`, `app_mentions:read`
+- **Event Subscriptions**: Toggle ON → Subscribe to bot events: `message.im`, `message.channels`, `app_mention` → Save Changes
+- **App Home**: Scroll to **Show Tabs** → Enable **Messages Tab** → Check **"Allow users to send Slash commands and messages from the messages tab"**
+- **Install App**: Click **Install to Workspace** → Authorize → copy the **Bot Token** (`xoxb-...`)
+
+**3. Configure nanobot**
 
 ```json
 {
@@ -449,14 +453,17 @@ Uses **Socket Mode** — no public URL required.
 }
 ```
 
-> `groupPolicy`: `"mention"` (respond only when @mentioned), `"open"` (respond to all messages), or `"allowlist"` (restrict to specific channels).
-> DM policy defaults to open. Set `"dm": {"enabled": false}` to disable DMs.
-
-**3. Run**
+**4. Run**
 
 ```bash
 nanobot gateway
 ```
+
+DM the bot directly or @mention it in a channel — it should respond!
+
+> [!TIP]
+> - `groupPolicy`: `"mention"` (default — respond only when @mentioned), `"open"` (respond to all channel messages), or `"allowlist"` (restrict to specific channels).
+> - DM policy defaults to open. Set `"dm": {"enabled": false}` to disable DMs.
 
 </details>
 

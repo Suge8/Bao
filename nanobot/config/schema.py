@@ -92,7 +92,7 @@ class SlackConfig(BaseModel):
     bot_token: str = ""  # xoxb-...
     app_token: str = ""  # xapp-...
     user_token_read_only: bool = True
-    group_policy: str = "open"  # "open", "mention", "allowlist"
+    group_policy: str = "mention"  # "mention", "open", "allowlist"
     group_allow_from: list[str] = Field(default_factory=list)  # Allowed channel IDs if allowlist
     dm: SlackDMConfig = Field(default_factory=SlackDMConfig)
 
