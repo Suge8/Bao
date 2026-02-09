@@ -55,7 +55,8 @@ class EmailChannel(BaseChannel):
         self.config: EmailConfig = config
         self._last_subject_by_chat: dict[str, str] = {}
         self._last_message_id_by_chat: dict[str, str] = {}
-        self._processed_uids: set[str] = set()
+        self._processed_uids: set[str] = set()  # Capped to prevent unbounded growth
+        self._MAX_PROCESSED_UIDS = 100000
 
     async def start(self) -> None:
         """Start polling IMAP for inbound emails."""
@@ -301,6 +302,9 @@ class EmailChannel(BaseChannel):
 
                 if dedupe and uid:
                     self._processed_uids.add(uid)
+                    # mark_seen is the primary dedup; this set is a safety net
+                    if len(self._processed_uids) > self._MAX_PROCESSED_UIDS:
+                        self._processed_uids.clear()
 
                 if mark_seen:
                     client.store(imap_id, "+FLAGS", "\\Seen")

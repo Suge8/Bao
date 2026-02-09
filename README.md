@@ -16,7 +16,7 @@
 
 ⚡️ Delivers core agent functionality in just **~4,000** lines of code — **99% smaller** than Clawdbot's 430k+ lines.
 
-📏 Real-time line count: **3,448 lines** (run `bash core_agent_lines.sh` to verify anytime)
+📏 Real-time line count: **3,479 lines** (run `bash core_agent_lines.sh` to verify anytime)
 
 ## 📢 News
 
@@ -166,7 +166,7 @@ nanobot agent -m "Hello from my local LLM!"
 
 ## 💬 Chat Apps
 
-Talk to your nanobot through Telegram, Discord, WhatsApp, or Feishu — anytime, anywhere.
+Talk to your nanobot through Telegram, Discord, WhatsApp, Feishu, DingTalk, or Email — anytime, anywhere.
 
 | Channel | Setup |
 |---------|-------|
@@ -174,6 +174,8 @@ Talk to your nanobot through Telegram, Discord, WhatsApp, or Feishu — anytime,
 | **Discord** | Easy (bot token + intents) |
 | **WhatsApp** | Medium (scan QR) |
 | **Feishu** | Medium (app credentials) |
+| **DingTalk** | Medium (app credentials) |
+| **Email** | Medium (IMAP/SMTP credentials) |
 
 <details>
 <summary><b>Telegram</b> (Recommended)</summary>
@@ -372,6 +374,55 @@ nanobot gateway
 
 </details>
 
+<details>
+<summary><b>Email</b></summary>
+
+Uses **IMAP** polling for inbound + **SMTP** for outbound. Requires explicit consent before accessing mailbox data.
+
+**1. Get credentials (Gmail example)**
+- Enable 2-Step Verification in Google account security
+- Create an [App Password](https://myaccount.google.com/apppasswords)
+- Use this app password for both IMAP and SMTP
+
+**2. Configure**
+
+> [!TIP]
+> Set `"autoReplyEnabled": false` if you only want to read/analyze emails without sending automatic replies.
+
+```json
+{
+  "channels": {
+    "email": {
+      "enabled": true,
+      "consentGranted": true,
+      "imapHost": "imap.gmail.com",
+      "imapPort": 993,
+      "imapUsername": "you@gmail.com",
+      "imapPassword": "your-app-password",
+      "imapUseSsl": true,
+      "smtpHost": "smtp.gmail.com",
+      "smtpPort": 587,
+      "smtpUsername": "you@gmail.com",
+      "smtpPassword": "your-app-password",
+      "smtpUseTls": true,
+      "fromAddress": "you@gmail.com",
+      "allowFrom": ["trusted@example.com"]
+    }
+  }
+}
+```
+
+> `consentGranted`: Must be `true` to allow mailbox access. Set to `false` to disable reading and sending entirely.
+> `allowFrom`: Leave empty to accept emails from anyone, or restrict to specific sender addresses.
+
+**3. Run**
+
+```bash
+nanobot gateway
+```
+
+</details>
+
 ## ⚙️ Configuration
 
 Config file: `~/.nanobot/config.json`
@@ -542,7 +593,7 @@ PRs welcome! The codebase is intentionally small and readable. 🤗
 - [ ] **Multi-modal** — See and hear (images, voice, video)
 - [ ] **Long-term memory** — Never forget important context
 - [ ] **Better reasoning** — Multi-step planning and reflection
-- [ ] **More integrations** — Discord, Slack, email, calendar
+- [ ] **More integrations** — Slack, calendar, and more
 - [ ] **Self-improvement** — Learn from feedback and mistakes
 
 ### Contributors
