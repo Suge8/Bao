@@ -37,7 +37,13 @@ from nanobot.config.loader import get_data_dir
 from nanobot.utils.helpers import safe_filename
 
 LOGGING_STACK_BASE_DEPTH = 2
+# Typing state lifetime advertised to Matrix clients/servers.
 TYPING_NOTICE_TIMEOUT_MS = 30_000
+# Matrix typing notifications are ephemeral; spec guidance is to keep
+# refreshing while work is ongoing (practically ~20-30s cadence).
+# https://spec.matrix.org/v1.17/client-server-api/#typing-notifications
+# Keepalive interval must stay below TYPING_NOTICE_TIMEOUT_MS so the typing
+# indicator does not expire while the agent is still processing.
 TYPING_KEEPALIVE_INTERVAL_SECONDS = 20.0
 MATRIX_HTML_FORMAT = "org.matrix.custom.html"
 MATRIX_ATTACHMENT_MARKER_TEMPLATE = "[attachment: {}]"
@@ -173,9 +179,9 @@ def _render_markdown_html(text: str) -> str | None:
     return formatted
 
 
-def _build_matrix_text_content(text: str) -> dict[str, Any]:
+def _build_matrix_text_content(text: str) -> dict[str, object]:
     """Build Matrix m.text payload with plaintext fallback and optional HTML."""
-    content: dict[str, Any] = {
+    content: dict[str, object] = {
         "msgtype": "m.text",
         "body": text,
         # Matrix spec recommends always including m.mentions for message
@@ -381,7 +387,7 @@ class MatrixChannel(BaseChannel):
             )
 
     async def _start_typing_keepalive(self, room_id: str) -> None:
-        """Start periodic Matrix typing refresh for a room."""
+        """Start periodic Matrix typing refresh for a room (spec-recommended keepalive)."""
         await self._stop_typing_keepalive(room_id, clear_typing=False)
         await self._set_typing(room_id, True)
         if not self._running:
