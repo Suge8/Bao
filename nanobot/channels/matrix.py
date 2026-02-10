@@ -43,7 +43,8 @@ class MatrixChannel(BaseChannel):
         self.client.add_event_callback(self._on_message, RoomMessageText)
         self.client.add_event_callback(self._on_room_invite, InviteEvent)
 
-        self.client.load_store()
+        if self.config.device_id:
+            self.client.load_store()
 
         self._sync_task = asyncio.create_task(self._sync_loop())
 
@@ -74,9 +75,12 @@ class MatrixChannel(BaseChannel):
             except Exception:
                 await asyncio.sleep(2)
 
-    async def _on_room_invite(self, room: MatrixRoom, event: RoomMessageText) -> None:
-        if event.sender in self.config.allow_from:
-            await self.client.join(room.room_id)
+    async def _on_room_invite(self, room: MatrixRoom, event: InviteEvent) -> None:
+        allow_from = self.config.allow_from or []
+        if allow_from and event.sender not in allow_from:
+            return
+
+        await self.client.join(room.room_id)
 
     async def _on_message(self, room: MatrixRoom, event: RoomMessageText) -> None:
         # Ignore self messages
