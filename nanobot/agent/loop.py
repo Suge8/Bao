@@ -206,7 +206,7 @@ class AgentLoop:
                         "type": "function",
                         "function": {
                             "name": tc.name,
-                            "arguments": json.dumps(tc.arguments)
+                            "arguments": json.dumps(tc.arguments, ensure_ascii=False)
                         }
                     }
                     for tc in response.tool_calls
@@ -387,6 +387,7 @@ class AgentLoop:
             chat_id=origin_chat_id,
         )
         final_content, _ = await self._run_agent_loop(initial_messages)
+
 
         if final_content is None:
             final_content = "Background task completed."
