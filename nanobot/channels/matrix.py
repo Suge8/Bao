@@ -49,9 +49,28 @@ class MatrixChannel(BaseChannel):
         self._sync_task = asyncio.create_task(self._sync_loop())
 
     async def stop(self) -> None:
+        """Stop the Matrix channel with graceful sync shutdown."""
         self._running = False
+
+        if self.client:
+            # Request sync_forever loop to exit cleanly.
+            self.client.stop_sync_forever()
+
         if self._sync_task:
-            self._sync_task.cancel()
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._sync_task),
+                    timeout=self.config.sync_stop_grace_seconds,
+                )
+            except asyncio.TimeoutError:
+                self._sync_task.cancel()
+                try:
+                    await self._sync_task
+                except asyncio.CancelledError:
+                    pass
+            except asyncio.CancelledError:
+                pass
+
         if self.client:
             await self.client.close()
 

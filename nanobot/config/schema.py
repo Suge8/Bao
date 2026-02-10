@@ -27,7 +27,9 @@ class TelegramConfig(Base):
     enabled: bool = False
     token: str = ""  # Bot token from @BotFather
     allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs or usernames
-    proxy: str | None = None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
+    proxy: str | None = (
+        None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
+    )
 
 
 class FeishuConfig(Base):
@@ -68,6 +70,8 @@ class MatrixConfig(Base):
     access_token: str = ""
     user_id: str = ""  # @bot:matrix.org
     device_id: str = ""
+    # Max seconds to wait for sync_forever to stop gracefully before cancellation fallback.
+    sync_stop_grace_seconds: int = 2
     allow_from: list[str] = Field(default_factory=list)
 
 
@@ -95,7 +99,9 @@ class EmailConfig(Base):
     from_address: str = ""
 
     # Behavior
-    auto_reply_enabled: bool = True  # If false, inbound email is read but no automatic reply is sent
+    auto_reply_enabled: bool = (
+        True  # If false, inbound email is read but no automatic reply is sent
+    )
     poll_interval_seconds: int = 30
     mark_seen: bool = True
     max_body_chars: int = 12000
@@ -172,7 +178,9 @@ class QQConfig(Base):
     enabled: bool = False
     app_id: str = ""  # 机器人 ID (AppID) from q.qq.com
     secret: str = ""  # 机器人密钥 (AppSecret) from q.qq.com
-    allow_from: list[str] = Field(default_factory=list)  # Allowed user openids (empty = public access)
+    allow_from: list[str] = Field(
+        default_factory=list
+    )  # Allowed user openids (empty = public access)
 
 
 class ChannelsConfig(Base):
@@ -231,7 +239,9 @@ class ProvidersConfig(Base):
     moonshot: ProviderConfig = Field(default_factory=ProviderConfig)
     minimax: ProviderConfig = Field(default_factory=ProviderConfig)
     aihubmix: ProviderConfig = Field(default_factory=ProviderConfig)  # AiHubMix API gateway
-    siliconflow: ProviderConfig = Field(default_factory=ProviderConfig)  # SiliconFlow (硅基流动) API gateway
+    siliconflow: ProviderConfig = Field(
+        default_factory=ProviderConfig
+    )  # SiliconFlow (硅基流动) API gateway
     openai_codex: ProviderConfig = Field(default_factory=ProviderConfig)  # OpenAI Codex (OAuth)
     github_copilot: ProviderConfig = Field(default_factory=ProviderConfig)  # Github Copilot (OAuth)
 
@@ -294,7 +304,9 @@ class Config(BaseSettings):
         """Get expanded workspace path."""
         return Path(self.agents.defaults.workspace).expanduser()
 
-    def _match_provider(self, model: str | None = None) -> tuple["ProviderConfig | None", str | None]:
+    def _match_provider(
+        self, model: str | None = None
+    ) -> tuple["ProviderConfig | None", str | None]:
         """Match provider config and its registry name. Returns (config, spec_name)."""
         from nanobot.providers.registry import PROVIDERS
 
