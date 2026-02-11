@@ -346,7 +346,7 @@ Uses Matrix sync via `matrix-nio` (including inbound media support).
 > `groupAllowFrom`: Room allowlist used when `groupPolicy` is `allowlist`.
 > `allowRoomMentions`: If `true`, accepts `@room` (`m.mentions.room`) in mention mode.
 > `e2eeEnabled`: Enables Matrix E2EE support (default `true`); set `false` only for plaintext-only setups.
-> `maxInboundMediaBytes`: Max inbound attachment size in bytes (default `20MB`).
+> `maxMediaBytes`: Max attachment size in bytes (default `20MB`) for inbound and outbound media handling; set to `0` to block all inbound and outbound attachment uploads.
 
 > [!NOTE]
 > Matrix E2EE implications:
