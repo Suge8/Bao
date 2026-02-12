@@ -160,6 +160,23 @@ async def test_start_skips_load_store_when_device_id_missing(
 
 
 @pytest.mark.asyncio
+async def test_register_event_callbacks_uses_media_base_filter() -> None:
+    channel = MatrixChannel(_make_config(), MessageBus())
+    client = _FakeAsyncClient("", "", "", None)
+    channel.client = client
+
+    channel._register_event_callbacks()
+
+    assert len(client.callbacks) == 3
+    assert client.callbacks[1][0] == channel._on_media_message
+    assert client.callbacks[1][1] == matrix_module.MATRIX_MEDIA_EVENT_FILTER
+
+
+def test_media_event_filter_does_not_match_text_events() -> None:
+    assert not issubclass(matrix_module.RoomMessageText, matrix_module.MATRIX_MEDIA_EVENT_FILTER)
+
+
+@pytest.mark.asyncio
 async def test_start_disables_e2ee_when_configured(
     monkeypatch, tmp_path
 ) -> None:
