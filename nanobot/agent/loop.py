@@ -21,7 +21,7 @@ from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.subagent import SubagentManager
-from nanobot.session.manager import SessionManager
+from nanobot.session.manager import Session, SessionManager
 
 
 class AgentLoop:
@@ -243,20 +243,31 @@ class AgentLoop:
         # Handle slash commands
         cmd = msg.content.strip().lower()
         if cmd == "/new":
-            await self._consolidate_memory(session, archive_all=True)
+            # Capture messages before clearing (avoid race condition with background task)
+            messages_to_archive = session.messages.copy()
             session.clear()
             self.sessions.save(session)
             # Clear cache to force reload from disk on next request
             self.sessions._cache.pop(session.key, None)
+
+            # Consolidate in background (non-blocking)
+            async def _consolidate_and_cleanup():
+                # Create a temporary session with archived messages
+                temp_session = Session(key=session.key)
+                temp_session.messages = messages_to_archive
+                await self._consolidate_memory(temp_session, archive_all=True)
+
+            asyncio.create_task(_consolidate_and_cleanup())
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content="New session started. Memory consolidated.")
+                                  content="New session started. Memory consolidation in progress.")
         if cmd == "/help":
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="🐈 nanobot commands:\n/new — Start a new conversation\n/help — Show available commands")
         
         # Consolidate memory before processing if session is too large
+        # Run in background to avoid blocking main conversation
         if len(session.messages) > self.memory_window:
-            await self._consolidate_memory(session)
+            asyncio.create_task(self._consolidate_memory(session))
 
         # Update tool contexts
         self._set_tool_context(msg.channel, msg.chat_id)
