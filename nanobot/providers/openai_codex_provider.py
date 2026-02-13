@@ -77,7 +77,6 @@ class OpenAICodexProvider(LLMProvider):
     def get_default_model(self) -> str:
         return self.default_model
 
-
 def _strip_model_prefix(model: str) -> str:
     if model.startswith("openai-codex/"):
         return model.split("/", 1)[1]
@@ -95,7 +94,6 @@ def _build_headers(account_id: str, token: str) -> dict[str, str]:
         "content-type": "application/json",
     }
 
-
 async def _request_codex(
     url: str,
     headers: dict[str, str],
@@ -108,7 +106,6 @@ async def _request_codex(
                 text = await response.aread()
                 raise RuntimeError(_friendly_error(response.status_code, text.decode("utf-8", "ignore")))
             return await _consume_sse(response)
-
 
 def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # Nanobot tool definitions already use the OpenAI function schema.
@@ -139,7 +136,6 @@ def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return converted
-
 
 def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
     system_prompt = ""
@@ -200,7 +196,6 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[st
 
     return system_prompt, input_items
 
-
 def _convert_user_message(content: Any) -> dict[str, Any]:
     if isinstance(content, str):
         return {"role": "user", "content": [{"type": "input_text", "text": content}]}
@@ -234,11 +229,9 @@ def _split_tool_call_id(tool_call_id: Any) -> tuple[str, str | None]:
         return tool_call_id, None
     return "call_0", None
 
-
 def _prompt_cache_key(messages: list[dict[str, Any]]) -> str:
     raw = json.dumps(messages, ensure_ascii=True, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
 
 async def _iter_sse(response: httpx.Response) -> AsyncGenerator[dict[str, Any], None]:
     buffer: list[str] = []
@@ -258,9 +251,6 @@ async def _iter_sse(response: httpx.Response) -> AsyncGenerator[dict[str, Any], 
                     continue
             continue
         buffer.append(line)
-
-
-
 
 async def _consume_sse(response: httpx.Response) -> tuple[str, list[ToolCallRequest], str]:
     content = ""
@@ -318,7 +308,6 @@ async def _consume_sse(response: httpx.Response) -> tuple[str, list[ToolCallRequ
 
     return content, tool_calls, finish_reason
 
-
 def _map_finish_reason(status: str | None) -> str:
     if not status:
         return "stop"
@@ -329,7 +318,6 @@ def _map_finish_reason(status: str | None) -> str:
     if status in {"failed", "cancelled"}:
         return "error"
     return "stop"
-
 
 def _friendly_error(status_code: int, raw: str) -> str:
     if status_code == 429:
