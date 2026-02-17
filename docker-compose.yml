@@ -23,7 +23,6 @@ services:
           memory: 256M
   
   nanobot-cli:
-    container_name: nanobot-cli
     <<: *common-config
     profiles:
       - cli

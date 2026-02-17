@@ -811,40 +811,21 @@ nanobot cron remove <job_id>
 > [!TIP]
 > The `-v ~/.nanobot:/root/.nanobot` flag mounts your local config directory into the container, so your config and workspace persist across container restarts.
 
-### Using Docker Compose (Recommended)
-
-The easiest way to run nanobot with Docker:
+### Docker Compose
 
 ```bash
-# 1. Initialize config (first time only)
-docker compose run --rm nanobot-cli onboard
-
-# 2. Edit config to add API keys
-vim ~/.nanobot/config.json
-
-# 3. Start gateway service
-docker compose up -d nanobot-gateway
-
-# 4. Check logs
-docker compose logs -f nanobot-gateway
-
-# 5. Run CLI commands
-docker compose run --rm nanobot-cli status
-docker compose run --rm nanobot-cli agent -m "Hello!"
-
-# 6. Stop services
-docker compose down
+docker compose run --rm nanobot-cli onboard   # first-time setup
+vim ~/.nanobot/config.json                     # add API keys
+docker compose up -d nanobot-gateway           # start gateway
 ```
 
-**Features:**
-- ✅ Resource limits (1 CPU, 1GB memory)
-- ✅ Auto-restart on failure
-- ✅ Shared configuration using YAML anchors
-- ✅ Separate CLI profile for on-demand commands
+```bash
+docker compose run --rm nanobot-cli agent -m "Hello!"   # run CLI
+docker compose logs -f nanobot-gateway                   # view logs
+docker compose down                                      # stop
+```
 
-### Using Docker directly
-
-Build and run nanobot in a container:
+### Docker
 
 ```bash
 # Build the image
