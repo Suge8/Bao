@@ -922,48 +922,50 @@ provider_app = typer.Typer(help="Manage providers")
 app.add_typer(provider_app, name="provider")
 
 
+_LOGIN_HANDLERS: dict[str, callable] = {}
+
+
+def _register_login(name: str):
+    def decorator(fn):
+        _LOGIN_HANDLERS[name] = fn
+        return fn
+    return decorator
+
+
 @provider_app.command("login")
 def provider_login(
-    provider: str = typer.Argument(..., help="OAuth provider to authenticate with (e.g., 'openai-codex', 'github-copilot')"),
+    provider: str = typer.Argument(..., help="OAuth provider (e.g. 'openai-codex', 'github-copilot')"),
 ):
     """Authenticate with an OAuth provider."""
     from nanobot.providers.registry import PROVIDERS
 
-    # Normalize: "github-copilot" → "github_copilot"
-    provider_key = provider.replace("-", "_")
-
-    # Validate against the registry — only OAuth providers support login
-    spec = None
-    for s in PROVIDERS:
-        if s.name == provider_key and s.is_oauth:
-            spec = s
-            break
+    key = provider.replace("-", "_")
+    spec = next((s for s in PROVIDERS if s.name == key and s.is_oauth), None)
     if not spec:
-        oauth_names = [s.name.replace("_", "-") for s in PROVIDERS if s.is_oauth]
-        console.print(f"[red]Unknown OAuth provider: {provider}[/red]")
-        console.print(f"[yellow]Supported providers: {', '.join(oauth_names)}[/yellow]")
+        names = ", ".join(s.name.replace("_", "-") for s in PROVIDERS if s.is_oauth)
+        console.print(f"[red]Unknown OAuth provider: {provider}[/red]  Supported: {names}")
         raise typer.Exit(1)
 
-    console.print(f"{__logo__} OAuth Login - {spec.display_name}\n")
+    handler = _LOGIN_HANDLERS.get(spec.name)
+    if not handler:
+        console.print(f"[red]Login not implemented for {spec.label}[/red]")
+        raise typer.Exit(1)
 
-    if spec.name == "openai_codex":
-        _login_openai_codex()
-    elif spec.name == "github_copilot":
-        _login_github_copilot()
+    console.print(f"{__logo__} OAuth Login - {spec.label}\n")
+    handler()
 
 
+@_register_login("openai_codex")
 def _login_openai_codex() -> None:
-    """Authenticate with OpenAI Codex via oauth_cli_kit."""
     try:
         from oauth_cli_kit import get_token, login_oauth_interactive
         token = None
         try:
             token = get_token()
         except Exception:
-            token = None
+            pass
         if not (token and token.access):
-            console.print("[cyan]No valid token found. Starting interactive OAuth login...[/cyan]")
-            console.print("A browser window may open for you to authenticate.\n")
+            console.print("[cyan]Starting interactive OAuth login...[/cyan]\n")
             token = login_oauth_interactive(
                 print_fn=lambda s: console.print(s),
                 prompt_fn=lambda s: typer.prompt(s),
@@ -971,45 +973,27 @@ def _login_openai_codex() -> None:
         if not (token and token.access):
             console.print("[red]✗ Authentication failed[/red]")
             raise typer.Exit(1)
-        console.print("[green]✓ Successfully authenticated with OpenAI Codex![/green]")
-        console.print(f"[dim]Account ID: {token.account_id}[/dim]")
+        console.print(f"[green]✓ Authenticated with OpenAI Codex[/green]  [dim]{token.account_id}[/dim]")
     except ImportError:
         console.print("[red]oauth_cli_kit not installed. Run: pip install oauth-cli-kit[/red]")
         raise typer.Exit(1)
-    except Exception as e:
-        console.print(f"[red]Authentication error: {e}[/red]")
-        raise typer.Exit(1)
 
 
+@_register_login("github_copilot")
 def _login_github_copilot() -> None:
-    """Authenticate with GitHub Copilot via LiteLLM's device flow.
-
-    LiteLLM handles the full OAuth device flow (device code → poll → token
-    storage) internally when a github_copilot/ model is first called.
-    We trigger that flow by sending a minimal completion request.
-    """
     import asyncio
 
-    console.print("[cyan]Starting GitHub Copilot device flow via LiteLLM...[/cyan]")
-    console.print("You will be prompted to visit a URL and enter a device code.\n")
+    console.print("[cyan]Starting GitHub Copilot device flow...[/cyan]\n")
 
-    async def _trigger_device_flow() -> None:
+    async def _trigger():
         from litellm import acompletion
-        await acompletion(
-            model="github_copilot/gpt-4o",
-            messages=[{"role": "user", "content": "hi"}],
-            max_tokens=1,
-        )
+        await acompletion(model="github_copilot/gpt-4o", messages=[{"role": "user", "content": "hi"}], max_tokens=1)
 
     try:
-        asyncio.run(_trigger_device_flow())
-        console.print("\n[green]✓ Successfully authenticated with GitHub Copilot![/green]")
+        asyncio.run(_trigger())
+        console.print("[green]✓ Authenticated with GitHub Copilot[/green]")
     except Exception as e:
-        error_msg = str(e)
-        # A successful device flow still returns a valid response;
-        # any exception here means the flow genuinely failed.
-        console.print(f"[red]Authentication error: {error_msg}[/red]")
-        console.print("[yellow]Ensure you have a GitHub Copilot subscription.[/yellow]")
+        console.print(f"[red]Authentication error: {e}[/red]")
         raise typer.Exit(1)
 
 

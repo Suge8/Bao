@@ -300,9 +300,7 @@ class Config(BaseSettings):
             if spec.is_oauth:
                 continue
             p = getattr(self.providers, spec.name, None)
-            if p is None:
-                continue
-            if p.api_key:
+            if p and p.api_key:
                 return p, spec.name
         return None, None
 
