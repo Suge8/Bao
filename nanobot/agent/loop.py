@@ -183,6 +183,7 @@ class AgentLoop:
         iteration = 0
         final_content = None
         tools_used: list[str] = []
+        text_only_retried = False
 
         while iteration < self.max_iterations:
             iteration += 1
@@ -226,6 +227,21 @@ class AgentLoop:
                     )
             else:
                 final_content = self._strip_think(response.content)
+                # Some models (MiniMax, Gemini Flash, GPT-4.1, etc.) send an
+                # interim text response (e.g. "Let me investigate...") before
+                # making tool calls. If no tools have been used yet and we
+                # haven't already retried, forward the text as progress and
+                # give the model one more chance to use tools.
+                if not tools_used and not text_only_retried and final_content:
+                    text_only_retried = True
+                    logger.debug(f"Interim text response (no tools used yet), retrying: {final_content[:80]}")
+                    if on_progress:
+                        await on_progress(final_content)
+                    messages = self.context.add_assistant_message(
+                        messages, response.content,
+                        reasoning_content=response.reasoning_content,
+                    )
+                    continue
                 break
 
         return final_content, tools_used
