@@ -387,21 +387,15 @@ def find_by_model(model: str) -> ProviderSpec | None:
     model_normalized = model_lower.replace("-", "_")
     model_prefix = model_lower.split("/", 1)[0] if "/" in model_lower else ""
     normalized_prefix = model_prefix.replace("-", "_")
+    std_specs = [s for s in PROVIDERS if not s.is_gateway and not s.is_local]
 
-    # Prefer explicit provider prefix in model name.
-    for spec in PROVIDERS:
-        if spec.is_gateway or spec.is_local:
-            continue
+    # Prefer explicit provider prefix — prevents `github-copilot/...codex` matching openai_codex.
+    for spec in std_specs:
         if model_prefix and normalized_prefix == spec.name:
             return spec
 
-    for spec in PROVIDERS:
-        if spec.is_gateway or spec.is_local:
-            continue
-        if any(
-            kw in model_lower or kw.replace("-", "_") in model_normalized
-            for kw in spec.keywords
-        ):
+    for spec in std_specs:
+        if any(kw in model_lower or kw.replace("-", "_") in model_normalized for kw in spec.keywords):
             return spec
     return None
 

@@ -291,30 +291,21 @@ class Config(BaseSettings):
         model_prefix = model_lower.split("/", 1)[0] if "/" in model_lower else ""
         normalized_prefix = model_prefix.replace("-", "_")
 
-        def _matches_model_prefix(spec_name: str) -> bool:
-            if not model_prefix:
-                return False
-            return normalized_prefix == spec_name
+        def _kw_matches(kw: str) -> bool:
+            kw = kw.lower()
+            return kw in model_lower or kw.replace("-", "_") in model_normalized
 
-        def _keyword_matches(keyword: str) -> bool:
-            keyword_lower = keyword.lower()
-            return (
-                keyword_lower in model_lower
-                or keyword_lower.replace("-", "_") in model_normalized
-            )
-
-        # Explicit provider prefix in model name wins over generic keyword matches.
-        # This prevents `github-copilot/...codex` from being treated as OpenAI Codex.
+        # Explicit provider prefix wins — prevents `github-copilot/...codex` matching openai_codex.
         for spec in PROVIDERS:
             p = getattr(self.providers, spec.name, None)
-            if p and _matches_model_prefix(spec.name):
+            if p and model_prefix and normalized_prefix == spec.name:
                 if spec.is_oauth or p.api_key:
                     return p, spec.name
 
         # Match by keyword (order follows PROVIDERS registry)
         for spec in PROVIDERS:
             p = getattr(self.providers, spec.name, None)
-            if p and any(_keyword_matches(kw) for kw in spec.keywords):
+            if p and any(_kw_matches(kw) for kw in spec.keywords):
                 if spec.is_oauth or p.api_key:
                     return p, spec.name
 
