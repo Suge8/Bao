@@ -57,6 +57,9 @@ class ProviderSpec:
     # Direct providers bypass LiteLLM entirely (e.g., CustomProvider)
     is_direct: bool = False
 
+    # Provider supports cache_control on content blocks (e.g. Anthropic prompt caching)
+    supports_prompt_caching: bool = False
+
     @property
     def label(self) -> str:
         return self.display_name or self.name.title()
@@ -155,6 +158,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         default_api_base="",
         strip_model_prefix=False,
         model_overrides=(),
+        supports_prompt_caching=True,
     ),
 
     # OpenAI: LiteLLM recognizes "gpt-*" natively, no prefix needed.
