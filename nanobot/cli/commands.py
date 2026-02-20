@@ -864,11 +864,12 @@ def cron_run(
     force: bool = typer.Option(False, "--force", "-f", help="Run even if disabled"),
 ):
     """Manually run a job."""
+    from loguru import logger
     from nanobot.config.loader import load_config, get_data_dir
     from nanobot.cron.service import CronService
+    from nanobot.cron.types import CronJob
     from nanobot.bus.queue import MessageBus
     from nanobot.agent.loop import AgentLoop
-    from loguru import logger
     logger.disable("nanobot")
 
     config = load_config()
@@ -879,10 +880,14 @@ def cron_run(
         provider=provider,
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
+        temperature=config.agents.defaults.temperature,
+        max_tokens=config.agents.defaults.max_tokens,
         max_iterations=config.agents.defaults.max_tool_iterations,
         memory_window=config.agents.defaults.memory_window,
+        brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
         restrict_to_workspace=config.tools.restrict_to_workspace,
+        mcp_servers=config.tools.mcp_servers,
     )
 
     store_path = get_data_dir() / "cron" / "jobs.json"
@@ -890,7 +895,7 @@ def cron_run(
 
     result_holder = []
 
-    async def on_job(job):
+    async def on_job(job: CronJob) -> str | None:
         response = await agent_loop.process_direct(
             job.payload.message,
             session_key=f"cron:{job.id}",
