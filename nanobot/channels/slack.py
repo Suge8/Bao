@@ -10,6 +10,8 @@ from slack_sdk.socket_mode.request import SocketModeRequest
 from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.web.async_client import AsyncWebClient
 
+from slackify_markdown import slackify_markdown
+
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
@@ -34,7 +36,7 @@ class SlackChannel(BaseChannel):
             logger.error("Slack bot/app token not configured")
             return
         if self.config.mode != "socket":
-            logger.error(f"Unsupported Slack mode: {self.config.mode}")
+            logger.error("Unsupported Slack mode: {}", self.config.mode)
             return
 
         self._running = True
@@ -51,9 +53,9 @@ class SlackChannel(BaseChannel):
         try:
             auth = await self._web_client.auth_test()
             self._bot_user_id = auth.get("user_id")
-            logger.info(f"Slack bot connected as {self._bot_user_id}")
+            logger.info("Slack bot connected as {}", self._bot_user_id)
         except Exception as e:
-            logger.warning(f"Slack auth_test failed: {e}")
+            logger.warning("Slack auth_test failed: {}", e)
 
         logger.info("Starting Slack Socket Mode client...")
         await self._socket_client.connect()
@@ -68,7 +70,7 @@ class SlackChannel(BaseChannel):
             try:
                 await self._socket_client.close()
             except Exception as e:
-                logger.warning(f"Slack socket close failed: {e}")
+                logger.warning("Slack socket close failed: {}", e)
             self._socket_client = None
 
     async def send(self, msg: OutboundMessage) -> None:
@@ -84,11 +86,11 @@ class SlackChannel(BaseChannel):
             use_thread = thread_ts and channel_type != "im"
             await self._web_client.chat_postMessage(
                 channel=msg.chat_id,
-                text=msg.content or "",
+                text=self._to_mrkdwn(msg.content),
                 thread_ts=thread_ts if use_thread else None,
             )
         except Exception as e:
-            logger.error(f"Error sending Slack message: {e}")
+            logger.error("Error sending Slack message: {}", e)
 
     async def _on_socket_request(
         self,
@@ -150,17 +152,19 @@ class SlackChannel(BaseChannel):
 
         text = self._strip_bot_mention(text)
 
-        thread_ts = event.get("thread_ts") or event.get("ts")
+        thread_ts = event.get("thread_ts")
+        if self.config.reply_in_thread and not thread_ts:
+            thread_ts = event.get("ts")
         # Add :eyes: reaction to the triggering message (best-effort)
         try:
             if self._web_client and event.get("ts"):
                 await self._web_client.reactions_add(
                     channel=chat_id,
-                    name="eyes",
+                    name=self.config.react_emoji,
                     timestamp=event.get("ts"),
                 )
         except Exception as e:
-            logger.debug(f"Slack reactions_add failed: {e}")
+            logger.debug("Slack reactions_add failed: {}", e)
 
         await self._handle_message(
             sender_id=sender_id,
@@ -203,3 +207,31 @@ class SlackChannel(BaseChannel):
         if not text or not self._bot_user_id:
             return text
         return re.sub(rf"<@{re.escape(self._bot_user_id)}>\s*", "", text).strip()
+
+    _TABLE_RE = re.compile(r"(?m)^\|.*\|$(?:\n\|[\s:|-]*\|$)(?:\n\|.*\|$)*")
+
+    @classmethod
+    def _to_mrkdwn(cls, text: str) -> str:
+        """Convert Markdown to Slack mrkdwn, including tables."""
+        if not text:
+            return ""
+        text = cls._TABLE_RE.sub(cls._convert_table, text)
+        return slackify_markdown(text)
+
+    @staticmethod
+    def _convert_table(match: re.Match) -> str:
+        """Convert a Markdown table to a Slack-readable list."""
+        lines = [ln.strip() for ln in match.group(0).strip().splitlines() if ln.strip()]
+        if len(lines) < 2:
+            return match.group(0)
+        headers = [h.strip() for h in lines[0].strip("|").split("|")]
+        start = 2 if re.fullmatch(r"[|\s:\-]+", lines[1]) else 1
+        rows: list[str] = []
+        for line in lines[start:]:
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            cells = (cells + [""] * len(headers))[: len(headers)]
+            parts = [f"**{headers[i]}**: {cells[i]}" for i in range(len(headers)) if cells[i]]
+            if parts:
+                rows.append(" · ".join(parts))
+        return "\n".join(rows)
+
