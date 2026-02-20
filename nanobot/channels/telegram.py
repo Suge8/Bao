@@ -224,14 +224,14 @@ class TelegramChannel(BaseChannel):
             logger.error("Invalid chat_id: {}", msg.chat_id)
             return
 
-        # Build reply parameters (Will reply to the message if it exists)
-        reply_to_message_id = msg.metadata.get("message_id")
         reply_params = None
-        if reply_to_message_id:
-            reply_params = ReplyParameters(
-                message_id=reply_to_message_id,
-                allow_sending_without_reply=True
-            )
+        if self.config.reply_to_message:
+            reply_to_message_id = msg.metadata.get("message_id")
+            if reply_to_message_id:
+                reply_params = ReplyParameters(
+                    message_id=reply_to_message_id,
+                    allow_sending_without_reply=True
+                )
 
         # Send media files
         for media_path in (msg.media or []):
