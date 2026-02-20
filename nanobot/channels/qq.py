@@ -34,7 +34,7 @@ def _make_bot_class(channel: "QQChannel") -> "type[botpy.Client]":
             super().__init__(intents=intents)
 
         async def on_ready(self):
-            logger.info(f"QQ bot ready: {self.robot.name}")
+            logger.info("QQ bot ready: {}", self.robot.name)
 
         async def on_c2c_message_create(self, message: "C2CMessage"):
             await channel._on_message(message)

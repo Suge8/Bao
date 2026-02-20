@@ -34,7 +34,7 @@ class WhatsAppChannel(BaseChannel):
         
         bridge_url = self.config.bridge_url
         
-        logger.info(f"Connecting to WhatsApp bridge at {bridge_url}...")
+        logger.info("Connecting to WhatsApp bridge at {}...", bridge_url)
         
         self._running = True
         
@@ -112,11 +112,11 @@ class WhatsAppChannel(BaseChannel):
             # Extract just the phone number or lid as chat_id
             user_id = pn if pn else sender
             sender_id = user_id.split("@")[0] if "@" in user_id else user_id
-            logger.info(f"Sender {sender}")
+            logger.info("Sender {}", sender)
             
             # Handle voice transcription if it's a voice message
             if content == "[Voice Message]":
-                logger.info(f"Voice message received from {sender_id}, but direct download from bridge is not yet supported.")
+                logger.info("Voice message received from {}, but direct download from bridge is not yet supported.", sender_id)
                 content = "[Voice Message: Transcription not available for WhatsApp yet]"
             
             await self._handle_message(
@@ -133,7 +133,7 @@ class WhatsAppChannel(BaseChannel):
         elif msg_type == "status":
             # Connection status update
             status = data.get("status")
-            logger.info(f"WhatsApp status: {status}")
+            logger.info("WhatsApp status: {}", status)
             
             if status == "connected":
                 self._connected = True

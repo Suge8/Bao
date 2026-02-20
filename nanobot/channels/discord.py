@@ -94,7 +94,7 @@ class DiscordChannel(BaseChannel):
                     if response.status_code == 429:
                         data = response.json()
                         retry_after = float(data.get("retry_after", 1.0))
-                        logger.warning(f"Discord rate limited, retrying in {retry_after}s")
+                        logger.warning("Discord rate limited, retrying in {}s", retry_after)
                         await asyncio.sleep(retry_after)
                         continue
                     response.raise_for_status()

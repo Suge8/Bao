@@ -78,7 +78,7 @@ class HeartbeatService:
         
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
-        logger.info(f"Heartbeat started (every {self.interval_s}s)")
+        logger.info("Heartbeat started (every {}s)", self.interval_s)
     
     def stop(self) -> None:
         """Stop the heartbeat service."""
@@ -118,7 +118,7 @@ class HeartbeatService:
                 if HEARTBEAT_OK_TOKEN.replace("_", "") in response.upper().replace("_", ""):
                     logger.info("Heartbeat: OK (no action needed)")
                 else:
-                    logger.info(f"Heartbeat: completed task")
+                    logger.info("Heartbeat: completed task")
                     
             except Exception as e:
                 logger.error("Heartbeat execution failed: {}", e)

@@ -196,7 +196,7 @@ class FeishuChannel(BaseChannel):
             if not response.success():
                 logger.warning("Failed to add reaction: code={}, msg={}", response.code, response.msg)
             else:
-                logger.debug(f"Added {emoji_type} reaction to message {message_id}")
+                logger.debug("Added {} reaction to message {}", emoji_type, message_id)
         except Exception as e:
             logger.warning("Error adding reaction: {}", e)
 
@@ -309,7 +309,7 @@ class FeishuChannel(BaseChannel):
                 response = self._client.im.v1.image.create(request)
                 if response.success():
                     image_key = response.data.image_key
-                    logger.debug(f"Uploaded image {os.path.basename(file_path)}: {image_key}")
+                    logger.debug("Uploaded image {}: {}", os.path.basename(file_path), image_key)
                     return image_key
                 else:
                     logger.error("Failed to upload image: code={}, msg={}", response.code, response.msg)
@@ -336,7 +336,7 @@ class FeishuChannel(BaseChannel):
                 response = self._client.im.v1.file.create(request)
                 if response.success():
                     file_key = response.data.file_key
-                    logger.debug(f"Uploaded file {file_name}: {file_key}")
+                    logger.debug("Uploaded file {}: {}", file_name, file_key)
                     return file_key
                 else:
                     logger.error("Failed to upload file: code={}, msg={}", response.code, response.msg)
@@ -364,7 +364,7 @@ class FeishuChannel(BaseChannel):
                     msg_type, response.code, response.msg, response.get_log_id()
                 )
                 return False
-            logger.debug(f"Feishu {msg_type} message sent to {receive_id}")
+            logger.debug("Feishu {} message sent to {}", msg_type, receive_id)
             return True
         except Exception as e:
             logger.error("Error sending Feishu {} message: {}", msg_type, e)
@@ -382,7 +382,7 @@ class FeishuChannel(BaseChannel):
 
             for file_path in msg.media:
                 if not os.path.isfile(file_path):
-                    logger.warning(f"Media file not found: {file_path}")
+                    logger.warning("Media file not found: {}", file_path)
                     continue
                 ext = os.path.splitext(file_path)[1].lower()
                 if ext in self._IMAGE_EXTS:

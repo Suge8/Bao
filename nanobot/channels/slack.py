@@ -36,7 +36,7 @@ class SlackChannel(BaseChannel):
             logger.error("Slack bot/app token not configured")
             return
         if self.config.mode != "socket":
-            logger.error(f"Unsupported Slack mode: {self.config.mode}")
+            logger.error("Unsupported Slack mode: {}", self.config.mode)
             return
 
         self._running = True
@@ -53,7 +53,7 @@ class SlackChannel(BaseChannel):
         try:
             auth = await self._web_client.auth_test()
             self._bot_user_id = auth.get("user_id")
-            logger.info(f"Slack bot connected as {self._bot_user_id}")
+            logger.info("Slack bot connected as {}", self._bot_user_id)
         except Exception as e:
             logger.warning("Slack auth_test failed: {}", e)
 

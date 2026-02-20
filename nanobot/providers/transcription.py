@@ -35,7 +35,7 @@ class GroqTranscriptionProvider:
         
         path = Path(file_path)
         if not path.exists():
-            logger.error(f"Audio file not found: {file_path}")
+            logger.error("Audio file not found: {}", file_path)
             return ""
         
         try:

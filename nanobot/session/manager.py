@@ -110,7 +110,7 @@ class SessionManager:
             if legacy_path.exists():
                 import shutil
                 shutil.move(str(legacy_path), str(path))
-                logger.info(f"Migrated session {key} from legacy path")
+                logger.info("Migrated session {} from legacy path", key)
 
         if not path.exists():
             return None

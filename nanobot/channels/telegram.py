@@ -165,7 +165,7 @@ class TelegramChannel(BaseChannel):
         
         # Get bot info and register command menu
         bot_info = await self._app.bot.get_me()
-        logger.info(f"Telegram bot @{bot_info.username} connected")
+        logger.info("Telegram bot @{} connected", bot_info.username)
         
         try:
             await self._app.bot.set_my_commands(self.BOT_COMMANDS)
@@ -221,7 +221,7 @@ class TelegramChannel(BaseChannel):
         try:
             chat_id = int(msg.chat_id)
         except ValueError:
-            logger.error(f"Invalid chat_id: {msg.chat_id}")
+            logger.error("Invalid chat_id: {}", msg.chat_id)
             return
 
         # Send media files
@@ -344,14 +344,14 @@ class TelegramChannel(BaseChannel):
                     transcriber = GroqTranscriptionProvider(api_key=self.groq_api_key)
                     transcription = await transcriber.transcribe(file_path)
                     if transcription:
-                        logger.info(f"Transcribed {media_type}: {transcription[:50]}...")
+                        logger.info("Transcribed {}: {}...", media_type, transcription[:50])
                         content_parts.append(f"[transcription: {transcription}]")
                     else:
                         content_parts.append(f"[{media_type}: {file_path}]")
                 else:
                     content_parts.append(f"[{media_type}: {file_path}]")
                     
-                logger.debug(f"Downloaded {media_type} to {file_path}")
+                logger.debug("Downloaded {} to {}", media_type, file_path)
             except Exception as e:
                 logger.error("Failed to download media: {}", e)
                 content_parts.append(f"[{media_type}: download failed]")

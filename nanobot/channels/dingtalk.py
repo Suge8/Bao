@@ -220,7 +220,7 @@ class DingTalkChannel(BaseChannel):
             if resp.status_code != 200:
                 logger.error("DingTalk send failed: {}", resp.text)
             else:
-                logger.debug(f"DingTalk message sent to {msg.chat_id}")
+                logger.debug("DingTalk message sent to {}", msg.chat_id)
         except Exception as e:
             logger.error("Error sending DingTalk message: {}", e)
 

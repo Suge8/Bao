@@ -162,7 +162,7 @@ class EmailChannel(BaseChannel):
             missing.append("smtp_password")
 
         if missing:
-            logger.error(f"Email channel not configured, missing: {', '.join(missing)}")
+            logger.error("Email channel not configured, missing: {}", ', '.join(missing))
             return False
         return True
 
