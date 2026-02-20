@@ -22,6 +22,8 @@ MAX_MESSAGE_LEN = 2000  # Discord message character limit
 
 def _split_message(content: str, max_len: int = MAX_MESSAGE_LEN) -> list[str]:
     """Split content into chunks within max_len, preferring line breaks."""
+    if not content:
+        return []
     if len(content) <= max_len:
         return [content]
     chunks: list[str] = []
@@ -31,9 +33,9 @@ def _split_message(content: str, max_len: int = MAX_MESSAGE_LEN) -> list[str]:
             break
         cut = content[:max_len]
         pos = cut.rfind('\n')
-        if pos == -1:
+        if pos <= 0:
             pos = cut.rfind(' ')
-        if pos == -1:
+        if pos <= 0:
             pos = max_len
         chunks.append(content[:pos])
         content = content[pos:].lstrip()
@@ -104,6 +106,9 @@ class DiscordChannel(BaseChannel):
 
         try:
             chunks = _split_message(msg.content or "")
+            if not chunks:
+                return
+
             for i, chunk in enumerate(chunks):
                 payload: dict[str, Any] = {"content": chunk}
 
@@ -112,14 +117,18 @@ class DiscordChannel(BaseChannel):
                     payload["message_reference"] = {"message_id": msg.reply_to}
                     payload["allowed_mentions"] = {"replied_user": False}
 
-                await self._send_payload(url, headers, payload)
+                if not await self._send_payload(url, headers, payload):
+                    break  # Abort remaining chunks on failure
         finally:
             await self._stop_typing(msg.chat_id)
 
     async def _send_payload(
         self, url: str, headers: dict[str, str], payload: dict[str, Any]
-    ) -> None:
-        """Send a single Discord API payload with retry on rate-limit."""
+    ) -> bool:
+        """Send a single Discord API payload with retry on rate-limit.
+
+        Returns True on success, False if all attempts failed.
+        """
         for attempt in range(3):
             try:
                 response = await self._http.post(url, headers=headers, json=payload)
@@ -130,12 +139,13 @@ class DiscordChannel(BaseChannel):
                     await asyncio.sleep(retry_after)
                     continue
                 response.raise_for_status()
-                return
+                return True
             except Exception as e:
                 if attempt == 2:
                     logger.error("Error sending Discord message: {}", e)
                 else:
                     await asyncio.sleep(1)
+        return False
 
     async def _gateway_loop(self) -> None:
         """Main gateway loop: identify, heartbeat, dispatch events."""
