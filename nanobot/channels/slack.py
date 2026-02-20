@@ -86,7 +86,6 @@ class SlackChannel(BaseChannel):
             use_thread = thread_ts and channel_type != "im"
             thread_ts_param = thread_ts if use_thread else None
 
-            # Send text message if content is present
             if msg.content:
                 await self._web_client.chat_postMessage(
                     channel=msg.chat_id,
@@ -94,7 +93,6 @@ class SlackChannel(BaseChannel):
                     thread_ts=thread_ts_param,
                 )
 
-            # Upload media files if present
             for media_path in msg.media or []:
                 try:
                     await self._web_client.files_upload_v2(
@@ -103,7 +101,7 @@ class SlackChannel(BaseChannel):
                         thread_ts=thread_ts_param,
                     )
                 except Exception as e:
-                    logger.error(f"Failed to upload file {media_path}: {e}")
+                    logger.error("Failed to upload file {}: {}", media_path, e)
         except Exception as e:
             logger.error("Error sending Slack message: {}", e)
 
