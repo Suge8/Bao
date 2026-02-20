@@ -652,13 +652,14 @@ class TestConsolidationDeduplicationGuard:
         release = asyncio.Event()
         archived_count = 0
 
-        async def _fake_consolidate(sess, archive_all: bool = False) -> None:
+        async def _fake_consolidate(sess, archive_all: bool = False) -> bool:
             nonlocal archived_count
             if archive_all:
                 archived_count = len(sess.messages)
-                return
+                return True
             started.set()
             await release.wait()
+            return True
 
         loop._consolidate_memory = _fake_consolidate  # type: ignore[method-assign]
 
@@ -683,7 +684,7 @@ class TestConsolidationDeduplicationGuard:
 
     @pytest.mark.asyncio
     async def test_new_does_not_clear_session_when_archive_fails(self, tmp_path: Path) -> None:
-        """/new keeps session data if archive step fails."""
+        """/new must keep session data if archive step reports failure."""
         from nanobot.agent.loop import AgentLoop
         from nanobot.bus.events import InboundMessage
         from nanobot.bus.queue import MessageBus
@@ -706,9 +707,10 @@ class TestConsolidationDeduplicationGuard:
         loop.sessions.save(session)
         before_count = len(session.messages)
 
-        async def _failing_consolidate(_session, archive_all: bool = False) -> None:
+        async def _failing_consolidate(sess, archive_all: bool = False) -> bool:
             if archive_all:
-                raise RuntimeError("forced archive failure")
+                return False
+            return True
 
         loop._consolidate_memory = _failing_consolidate  # type: ignore[method-assign]
 
