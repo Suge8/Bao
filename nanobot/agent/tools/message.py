@@ -89,11 +89,10 @@ class MessageTool(Tool):
                 if candidate:
                     media_paths.append(candidate)
 
-        msg = OutboundMessage(channel=channel, chat_id=chat_id, content=content, media=media or [])
+        msg = OutboundMessage(channel=channel, chat_id=chat_id, content=content, media=media_paths)
 
         try:
             await self._send_callback(msg)
-            media_info = f" with {len(media)} attachments" if media else ""
-            return f"Message sent to {channel}:{chat_id}{media_info}"
+            return f"Message sent to {channel}:{chat_id}"
         except Exception as e:
             return f"Error sending message: {str(e)}"
