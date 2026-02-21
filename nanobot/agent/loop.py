@@ -9,7 +9,6 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable
 
-import json_repair
 from loguru import logger
 
 from nanobot.agent.context import ContextBuilder
@@ -479,54 +478,58 @@ class AgentLoop:
         conversation = "\n".join(lines)
         current_memory = memory.read_long_term()
 
-        prompt = f"""You are a memory consolidation agent. Process this conversation and return a JSON object with exactly two keys:
-
-1. "history_entry": A paragraph (2-5 sentences) summarizing the key events/decisions/topics. Start with a timestamp like [YYYY-MM-DD HH:MM]. Include enough detail to be useful when found by grep search later.
-
-2. "memory_update": The updated long-term memory content. Add any new facts: user location, preferences, personal info, habits, project context, technical decisions, tools/services used. If nothing new, return the existing content unchanged.
+        prompt = f"""Process this conversation and call the save_memory tool with your consolidation.
 
 ## Current Long-term Memory
 {current_memory or "(empty)"}
 
 ## Conversation to Process
-{conversation}
+{conversation}"""
 
-**IMPORTANT**: Both values MUST be strings, not objects or arrays.
-
-Example:
-{{
-  "history_entry": "[2026-02-14 22:50] User asked about...",
-  "memory_update": "- Host: HARRYBOOK-T14P\n- Name: Nado"
-}}
-
-Respond with ONLY valid JSON, no markdown fences."""
+        save_memory_tool = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "save_memory",
+                    "description": "Save the memory consolidation result to persistent storage.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "history_entry": {
+                                "type": "string",
+                                "description": "A paragraph (2-5 sentences) summarizing key events/decisions/topics. Start with a timestamp like [YYYY-MM-DD HH:MM]. Include enough detail to be useful when found by grep search later.",
+                            },
+                            "memory_update": {
+                                "type": "string",
+                                "description": "The full updated long-term memory content as a markdown string. Include all existing facts plus any new facts: user location, preferences, personal info, habits, project context, technical decisions, tools/services used. If nothing new, return the existing content unchanged.",
+                            },
+                        },
+                        "required": ["history_entry", "memory_update"],
+                    },
+                },
+            }
+        ]
 
         try:
             response = await self.provider.chat(
                 messages=[
-                    {"role": "system", "content": "You are a memory consolidation agent. Respond only with valid JSON."},
+                    {"role": "system", "content": "You are a memory consolidation agent. Call the save_memory tool with your consolidation of the conversation."},
                     {"role": "user", "content": prompt},
                 ],
+                tools=save_memory_tool,
                 model=self.model,
             )
-            text = (response.content or "").strip()
-            if not text:
-                logger.warning("Memory consolidation: LLM returned empty response, skipping")
-                return
-            if text.startswith("```"):
-                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            result = json_repair.loads(text)
-            if not isinstance(result, dict):
-                logger.warning("Memory consolidation: unexpected response type, skipping. Response: {}", text[:200])
+
+            if not response.has_tool_calls:
+                logger.warning("Memory consolidation: LLM did not call save_memory tool, skipping")
                 return
 
-            if entry := result.get("history_entry"):
-                # Defensive: ensure entry is a string (LLM may return dict)
+            args = response.tool_calls[0].arguments
+            if entry := args.get("history_entry"):
                 if not isinstance(entry, str):
                     entry = json.dumps(entry, ensure_ascii=False)
                 memory.append_history(entry)
-            if update := result.get("memory_update"):
-                # Defensive: ensure update is a string
+            if update := args.get("memory_update"):
                 if not isinstance(update, str):
                     update = json.dumps(update, ensure_ascii=False)
                 if update != current_memory:
