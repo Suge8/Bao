@@ -108,9 +108,12 @@ class SessionManager:
         if not path.exists():
             legacy_path = self._get_legacy_session_path(key)
             if legacy_path.exists():
-                import shutil
-                shutil.move(str(legacy_path), str(path))
-                logger.info("Migrated session {} from legacy path", key)
+                try:
+                    import shutil
+                    shutil.move(str(legacy_path), str(path))
+                    logger.info("Migrated session {} from legacy path", key)
+                except Exception as e:
+                    logger.warning("Failed to migrate session {}: {}", key, e)
 
         if not path.exists():
             return None
