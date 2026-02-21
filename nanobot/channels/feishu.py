@@ -28,7 +28,7 @@ try:
         CreateMessageReactionRequestBody,
         Emoji,
         GetFileRequest,
-        GetImageRequest,
+        GetMessageResourceRequest,
         P2ImMessageReceiveV1,
     )
     FEISHU_AVAILABLE = True
@@ -44,6 +44,182 @@ MSG_TYPE_MAP = {
     "file": "[file]",
     "sticker": "[sticker]",
 }
+
+
+def _extract_share_card_content(content_json: dict, msg_type: str) -> str:
+    """Extract content from share cards and interactive messages.
+    
+    Handles:
+    - share_chat: Group share card
+    - share_user: User share card  
+    - interactive: Interactive card (may contain links from external shares)
+    - share_calendar_event: Calendar event share
+    - system: System messages
+    """
+    parts = []
+    
+    if msg_type == "share_chat":
+        # Group share: {"chat_id": "oc_xxx"}
+        chat_id = content_json.get("chat_id", "")
+        parts.append(f"[分享群聊: {chat_id}]")
+        
+    elif msg_type == "share_user":
+        # User share: {"user_id": "ou_xxx"}
+        user_id = content_json.get("user_id", "")
+        parts.append(f"[分享用户: {user_id}]")
+        
+    elif msg_type == "interactive":
+        # Interactive card - extract text and links recursively
+        parts.extend(_extract_interactive_content(content_json))
+        
+    elif msg_type == "share_calendar_event":
+        # Calendar event share
+        event_key = content_json.get("event_key", "")
+        parts.append(f"[分享日程: {event_key}]")
+        
+    elif msg_type == "system":
+        # System message
+        parts.append("[系统消息]")
+        
+    elif msg_type == "merge_forward":
+        # Merged forward messages
+        parts.append("[合并转发消息]")
+        
+    return "\n".join(parts) if parts else f"[{msg_type}]"
+
+
+def _extract_interactive_content(content: dict) -> list[str]:
+    """Recursively extract text and links from interactive card content."""
+    parts = []
+    
+    if isinstance(content, str):
+        # Try to parse as JSON
+        try:
+            content = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return [content] if content.strip() else []
+    
+    if not isinstance(content, dict):
+        return parts
+    
+    # Extract title
+    if "title" in content:
+        title = content["title"]
+        if isinstance(title, dict):
+            title_content = title.get("content", "") or title.get("text", "")
+            if title_content:
+                parts.append(f"标题: {title_content}")
+        elif isinstance(title, str):
+            parts.append(f"标题: {title}")
+    
+    # Extract from elements array
+    elements = content.get("elements", [])
+    if isinstance(elements, list):
+        for element in elements:
+            parts.extend(_extract_element_content(element))
+    
+    # Extract from card config
+    card = content.get("card", {})
+    if card:
+        parts.extend(_extract_interactive_content(card))
+    
+    # Extract header
+    header = content.get("header", {})
+    if header:
+        header_title = header.get("title", {})
+        if isinstance(header_title, dict):
+            header_text = header_title.get("content", "") or header_title.get("text", "")
+            if header_text:
+                parts.append(f"标题: {header_text}")
+    
+    return parts
+
+
+def _extract_element_content(element: dict) -> list[str]:
+    """Extract content from a single card element."""
+    parts = []
+    
+    if not isinstance(element, dict):
+        return parts
+    
+    tag = element.get("tag", "")
+    
+    # Markdown element
+    if tag == "markdown" or tag == "lark_md":
+        content = element.get("content", "")
+        if content:
+            parts.append(content)
+            
+    # Div element
+    elif tag == "div":
+        text = element.get("text", {})
+        if isinstance(text, dict):
+            text_content = text.get("content", "") or text.get("text", "")
+            if text_content:
+                parts.append(text_content)
+        elif isinstance(text, str):
+            parts.append(text)
+        # Check for extra fields
+        fields = element.get("fields", [])
+        for field in fields:
+            if isinstance(field, dict):
+                field_text = field.get("text", {})
+                if isinstance(field_text, dict):
+                    parts.append(field_text.get("content", ""))
+                    
+    # Link/URL element
+    elif tag == "a":
+        href = element.get("href", "")
+        text = element.get("text", "")
+        if href:
+            parts.append(f"链接: {href}")
+        if text:
+            parts.append(text)
+            
+    # Button element (may contain URL)
+    elif tag == "button":
+        text = element.get("text", {})
+        if isinstance(text, dict):
+            parts.append(text.get("content", ""))
+        url = element.get("url", "") or element.get("multi_url", {}).get("url", "")
+        if url:
+            parts.append(f"链接: {url}")
+            
+    # Image element
+    elif tag == "img":
+        alt = element.get("alt", {})
+        if isinstance(alt, dict):
+            parts.append(alt.get("content", "[图片]"))
+        else:
+            parts.append("[图片]")
+            
+    # Note element
+    elif tag == "note":
+        note_elements = element.get("elements", [])
+        for ne in note_elements:
+            parts.extend(_extract_element_content(ne))
+            
+    # Column set
+    elif tag == "column_set":
+        columns = element.get("columns", [])
+        for col in columns:
+            col_elements = col.get("elements", [])
+            for ce in col_elements:
+                parts.extend(_extract_element_content(ce))
+                
+    # Plain text
+    elif tag == "plain_text":
+        content = element.get("content", "")
+        if content:
+            parts.append(content)
+    
+    # Recursively check nested elements
+    nested = element.get("elements", [])
+    if isinstance(nested, list):
+        for ne in nested:
+            parts.extend(_extract_element_content(ne))
+    
+    return parts
 
 
 def _extract_post_text(content_json: dict) -> str:
@@ -347,13 +523,21 @@ class FeishuChannel(BaseChannel):
             logger.error("Error uploading file {}: {}", file_path, e)
             return None
 
-    def _download_image_sync(self, image_key: str) -> tuple[bytes | None, str | None]:
-        """Download an image from Feishu by image_key."""
+    def _download_image_sync(self, message_id: str, image_key: str) -> tuple[bytes | None, str | None]:
+        """Download an image from Feishu message by message_id and image_key."""
         try:
-            request = GetImageRequest.builder().image_key(image_key).build()
-            response = self._client.im.v1.image.get(request)
+            request = GetMessageResourceRequest.builder() \
+                .message_id(message_id) \
+                .file_key(image_key) \
+                .type("image") \
+                .build()
+            response = self._client.im.v1.message_resource.get(request)
             if response.success():
-                return response.file, response.file_name
+                file_data = response.file
+                # GetMessageResourceRequest returns BytesIO, need to read bytes
+                if hasattr(file_data, 'read'):
+                    file_data = file_data.read()
+                return file_data, response.file_name
             else:
                 logger.error("Failed to download image: code={}, msg={}", response.code, response.msg)
                 return None, None
@@ -378,7 +562,8 @@ class FeishuChannel(BaseChannel):
     async def _download_and_save_media(
         self,
         msg_type: str,
-        content_json: dict
+        content_json: dict,
+        message_id: str | None = None
     ) -> tuple[str | None, str]:
         """
         Download media from Feishu and save to local disk.
@@ -396,9 +581,9 @@ class FeishuChannel(BaseChannel):
 
         if msg_type == "image":
             image_key = content_json.get("image_key")
-            if image_key:
+            if image_key and message_id:
                 data, filename = await loop.run_in_executor(
-                    None, self._download_image_sync, image_key
+                    None, self._download_image_sync, message_id, image_key
                 )
                 if not filename:
                     filename = f"{image_key[:16]}.jpg"
@@ -544,10 +729,16 @@ class FeishuChannel(BaseChannel):
                     content_parts.append(text)
 
             elif msg_type in ("image", "audio", "file"):
-                file_path, content_text = await self._download_and_save_media(msg_type, content_json)
+                file_path, content_text = await self._download_and_save_media(msg_type, content_json, message_id)
                 if file_path:
                     media_paths.append(file_path)
                 content_parts.append(content_text)
+
+            elif msg_type in ("share_chat", "share_user", "interactive", "share_calendar_event", "system", "merge_forward"):
+                # Handle share cards and interactive messages
+                text = _extract_share_card_content(content_json, msg_type)
+                if text:
+                    content_parts.append(text)
 
             else:
                 content_parts.append(MSG_TYPE_MAP.get(msg_type, f"[{msg_type}]"))
