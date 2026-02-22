@@ -192,8 +192,8 @@ class SlackChannel(BaseChannel):
                     }
                 },
             )
-        except Exception as e:
-            logger.error("Error handling Slack message from {}: {}", sender_id, e)
+        except Exception:
+            logger.exception("Error handling Slack message from {}", sender_id)
 
     def _is_allowed(self, sender_id: str, chat_id: str, channel_type: str) -> bool:
         if channel_type == "im":
