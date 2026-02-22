@@ -21,7 +21,7 @@ class CustomProvider(LLMProvider):
                    model: str | None = None, max_tokens: int = 4096, temperature: float = 0.7) -> LLMResponse:
         kwargs: dict[str, Any] = {
             "model": model or self.default_model,
-            "messages": self._prevent_empty_text_blocks(messages),
+            "messages": self._sanitize_empty_content(messages),
             "max_tokens": max(1, max_tokens),
             "temperature": temperature,
         }
@@ -50,46 +50,3 @@ class CustomProvider(LLMProvider):
     def get_default_model(self) -> str:
         return self.default_model
 
-    @staticmethod
-    def _prevent_empty_text_blocks(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Filter empty text content blocks that cause provider 400 errors.
-
-        When MCP tools return empty content, messages may contain empty-string
-        text blocks. Most providers (OpenAI-compatible) reject these with 400.
-        This method filters them out before sending to the API.
-        """
-        patched: list[dict[str, Any]] = []
-        for msg in messages:
-            content = msg.get("content")
-
-            # Empty string content
-            if isinstance(content, str) and content == "":
-                clean = dict(msg)
-                if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                    clean["content"] = None
-                else:
-                    clean["content"] = "(empty)"
-                patched.append(clean)
-                continue
-
-            # List content — filter out empty text items
-            if isinstance(content, list):
-                filtered = [
-                    item for item in content
-                    if not (isinstance(item, dict)
-                            and item.get("type") in {"text", "input_text", "output_text"}
-                            and item.get("text") == "")
-                ]
-                if filtered != content:
-                    clean = dict(msg)
-                    if filtered:
-                        clean["content"] = filtered
-                    elif msg.get("role") == "assistant" and msg.get("tool_calls"):
-                        clean["content"] = None
-                    else:
-                        clean["content"] = "(empty)"
-                    patched.append(clean)
-                    continue
-
-            patched.append(msg)
-        return patched
