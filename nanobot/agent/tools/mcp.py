@@ -7,9 +7,6 @@ from typing import Any
 import httpx
 from loguru import logger
 
-# Timeout for individual MCP tool calls (seconds).
-MCP_TOOL_TIMEOUT = 30
-
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.registry import ToolRegistry
 
@@ -17,12 +14,13 @@ from nanobot.agent.tools.registry import ToolRegistry
 class MCPToolWrapper(Tool):
     """Wraps a single MCP server tool as a nanobot Tool."""
 
-    def __init__(self, session, server_name: str, tool_def):
+    def __init__(self, session, server_name: str, tool_def, tool_timeout: int = 30):
         self._session = session
         self._original_name = tool_def.name
         self._name = f"mcp_{server_name}_{tool_def.name}"
         self._description = tool_def.description or tool_def.name
         self._parameters = tool_def.inputSchema or {"type": "object", "properties": {}}
+        self._tool_timeout = tool_timeout
 
     @property
     def name(self) -> str:
@@ -41,11 +39,11 @@ class MCPToolWrapper(Tool):
         try:
             result = await asyncio.wait_for(
                 self._session.call_tool(self._original_name, arguments=kwargs),
-                timeout=MCP_TOOL_TIMEOUT,
+                timeout=self._tool_timeout,
             )
         except asyncio.TimeoutError:
-            logger.warning("MCP tool '{}' timed out after {}s", self._name, MCP_TOOL_TIMEOUT)
-            return f"(MCP tool call timed out after {MCP_TOOL_TIMEOUT}s)"
+            logger.warning("MCP tool '{}' timed out after {}s", self._name, self._tool_timeout)
+            return f"(MCP tool call timed out after {self._tool_timeout}s)"
         parts = []
         for block in result.content:
             if isinstance(block, types.TextContent):
@@ -94,7 +92,7 @@ async def connect_mcp_servers(
 
             tools = await session.list_tools()
             for tool_def in tools.tools:
-                wrapper = MCPToolWrapper(session, name, tool_def)
+                wrapper = MCPToolWrapper(session, name, tool_def, tool_timeout=cfg.tool_timeout)
                 registry.register(wrapper)
                 logger.debug("MCP: registered tool '{}' from server '{}'", wrapper.name, name)
 
