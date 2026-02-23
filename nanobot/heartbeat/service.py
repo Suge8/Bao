@@ -80,6 +80,9 @@ class HeartbeatService:
         if not self.enabled:
             logger.info("Heartbeat disabled")
             return
+        if self._running:
+            logger.warning("Heartbeat already running")
+            return
         
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
