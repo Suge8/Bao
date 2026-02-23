@@ -36,7 +36,6 @@ def _is_heartbeat_empty(content: str | None) -> bool:
     return True
 
 
-
 class HeartbeatService:
     """
     Periodic heartbeat service that wakes the agent to check for tasks.
