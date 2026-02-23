@@ -1,0 +1,33 @@
+# Environment & secrets
+.env
+.env.*
+
+# Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+
+# Testing
+.pytest_cache/
+.ruff_cache/
+
+# Docs (allow SVGs for README)
+docs/*
+!docs/*.svg
+
+# Logs
+botpy.log
+*.log
+
+# IDE & tools
+.ace-tool/
+.assets
