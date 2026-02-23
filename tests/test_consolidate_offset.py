@@ -475,3 +475,63 @@ class TestEmptyAndBoundarySessions:
         expected_count = 60 - KEEP_COUNT - 10
         assert len(old_messages) == expected_count
         assert_messages_content(old_messages, 10, 34)
+
+
+class TestGetHistoryWithConsolidation:
+    """Test get_history respects last_consolidated cursor and user-turn alignment."""
+
+    def test_get_history_respects_last_consolidated(self) -> None:
+        """Messages before last_consolidated should not appear in history."""
+        session = Session(key="test:cursor")
+        for i in range(10):
+            session.add_message("user", f"old{i}")
+            session.add_message("assistant", f"reply{i}")
+        # Mark first 10 messages as consolidated
+        session.last_consolidated = 10
+        # Add new messages after consolidation
+        session.add_message("user", "new0")
+        session.add_message("assistant", "newreply0")
+
+        history = session.get_history(max_messages=500)
+        # Must not contain old messages
+        contents = [m["content"] for m in history]
+        assert "old0" not in contents
+        assert "new0" in contents
+
+    def test_get_history_aligns_to_user_turn(self) -> None:
+        """Result must always start with a user message."""
+        session = Session(key="test:align")
+        # Simulate: last_consolidated points to middle of a tool sequence
+        session.messages = [
+            {"role": "user", "content": "q0", "timestamp": ""},
+            {"role": "assistant", "content": "", "timestamp": "", "tool_calls": [{"id": "c1"}]},
+            {"role": "tool", "content": "result", "timestamp": "", "tool_call_id": "c1"},
+            {"role": "user", "content": "q1", "timestamp": ""},
+            {"role": "assistant", "content": "ans1", "timestamp": ""},
+        ]
+        # last_consolidated=1 means slice starts from index 1 (assistant+tool_calls)
+        session.last_consolidated = 1
+        history = session.get_history(max_messages=500)
+        # First message must be user role
+        assert history[0]["role"] == "user"
+        assert history[0]["content"] == "q1"
+
+    def test_get_history_no_user_returns_empty(self) -> None:
+        """If sliced window has no user message, return []."""
+        session = Session(key="test:nouser")
+        session.messages = [
+            {"role": "assistant", "content": "x", "timestamp": ""},
+            {"role": "tool", "content": "y", "timestamp": "", "tool_call_id": "c1"},
+        ]
+        session.last_consolidated = 0
+        history = session.get_history(max_messages=500)
+        assert history == []
+
+    def test_get_history_last_consolidated_zero_unchanged(self) -> None:
+        """With last_consolidated=0, all messages are considered (within window)."""
+        session = Session(key="test:zero")
+        session.add_message("user", "hello")
+        session.add_message("assistant", "hi")
+        history = session.get_history(max_messages=500)
+        assert len(history) == 2
+        assert history[0]["role"] == "user"

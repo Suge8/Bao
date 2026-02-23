@@ -49,8 +49,21 @@ class Session:
         self.updated_at = datetime.now()
 
     def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
+        # Only look at messages after last consolidation point
+        unconsolidated = self.messages[self.last_consolidated :]
+        sliced = unconsolidated[-max_messages:]
+        # Align to user turn boundary — drop leading non-user messages
+        # to avoid orphaned tool_result / assistant(tool_calls) at start
+        start = 0
+        for i, m in enumerate(sliced):
+            if m.get("role") == "user":
+                start = i
+                break
+        else:
+            # No user message found — return empty to avoid sending orphaned tool msgs
+            return []
         out: list[dict[str, Any]] = []
-        for m in self.messages[-max_messages:]:
+        for m in sliced[start:]:
             entry: dict[str, Any] = {"role": m["role"], "content": m.get("content", "")}
             for k in ("tool_calls", "tool_call_id", "name"):
                 if k in m:
