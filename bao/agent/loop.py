@@ -476,7 +476,6 @@ class AgentLoop:
             lang = "zh" if cmd == "1" else "en"
             apply_persona_language(self.workspace, lang)
             self.context = ContextBuilder(self.workspace, embedding_config=self.embedding_config)
-            self.context = ContextBuilder(self.workspace, embedding_config=self.embedding_config)
             if cmd == "1":
                 prompt = (
                     "你刚刚上线，这是用户第一次使用。"
@@ -493,7 +492,6 @@ class AgentLoop:
                     "Tell them you'll remember these. Keep it brief and natural, not like a form. "
                     "Respond in English."
                 )
-            self.sessions.save(session)
             self.sessions.save(session)
             greeting = await self.process_direct(prompt, session_key=key)
             return self._reply(msg, greeting) if greeting else None
