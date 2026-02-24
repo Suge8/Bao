@@ -86,3 +86,12 @@ async def test_registry_returns_validation_error() -> None:
     reg.register(SampleTool())
     result = await reg.execute("sample", {"query": "hi"})
     assert "Invalid parameters" in result
+
+
+async def test_registry_unknown_tool_shows_available() -> None:
+    reg = ToolRegistry()
+    reg.register(SampleTool())
+    result = await reg.execute("nonexistent_tool", {})
+    assert "Available" in result
+    assert "sample" in result
+    assert "[Analyze the error" in result
