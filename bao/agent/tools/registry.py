@@ -51,15 +51,23 @@ class ToolRegistry:
         """
         tool = self._tools.get(name)
         if not tool:
-            return f"Error: Tool '{name}' not found"
+            available = ", ".join(sorted(self._tools.keys())) or "none"
+            return (
+                f"Error: Tool '{name}' not found. Available tools: {available}."
+                "\n\n[Analyze the error above and try a different approach.]"
+            )
 
         try:
             errors = tool.validate_params(params)
             if errors:
-                return f"Error: Invalid parameters for tool '{name}': " + "; ".join(errors)
+                return (
+                    f"Error: Invalid parameters for tool '{name}': "
+                    + "; ".join(errors)
+                    + "\n\n[Analyze the error above and try a different approach.]"
+                )
             return await tool.execute(**params)
         except Exception as e:
-            return f"Error executing {name}: {str(e)}"
+            return f"Error executing {name}: {str(e)}\n\n[Analyze the error above and try a different approach.]"
     
     @property
     def tool_names(self) -> list[str]:
