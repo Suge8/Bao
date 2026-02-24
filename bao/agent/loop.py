@@ -6,7 +6,7 @@ import json
 import json_repair
 from pathlib import Path
 import re
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
@@ -24,6 +24,11 @@ from bao.agent.tools.cron import CronTool
 from bao.agent.memory import MemoryStore
 from bao.agent.subagent import SubagentManager
 from bao.session.manager import Session, SessionManager
+
+if TYPE_CHECKING:
+    from bao.agent.artifacts import ArtifactStore
+    from bao.config.schema import Config, EmbeddingConfig, ExecToolConfig, WebSearchConfig
+    from bao.cron.service import CronService
 
 
 _ERROR_KEYWORDS = ("error:", "traceback", "failed", "exception", "permission denied")
@@ -46,7 +51,7 @@ class AgentLoop:
         embedding_config: "EmbeddingConfig | None" = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
-        mcp_servers: dict | None = None,
+        mcp_servers: dict[str, Any] | None = None,
         available_models: list[str] | None = None,
         config: "Config | None" = None,
     ):
@@ -74,6 +79,15 @@ class AgentLoop:
         self.context = ContextBuilder(workspace, embedding_config=embedding_config)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
+        # Context management config
+        _cm = config.agents.defaults if config else None
+        self._ctx_mgmt: str = _cm.context_management if _cm else "observe"
+        self._tool_offload_chars: int = _cm.tool_output_offload_chars if _cm else 8000
+        self._tool_preview_chars: int = _cm.tool_output_preview_chars if _cm else 3000
+        self._compact_bytes: int = _cm.context_compact_bytes_est if _cm else 240000
+        self._compact_keep_blocks: int = _cm.context_compact_keep_recent_tool_blocks if _cm else 4
+        self._artifact_retention_days: int = _cm.artifact_retention_days if _cm else 7
+        self._artifact_cleanup_done = False
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -201,8 +215,8 @@ class AgentLoop:
         return True
 
     @staticmethod
-    def _tool_hint(tool_calls: list) -> str:
-        def _fmt(tc):
+    def _tool_hint(tool_calls: list[Any]) -> str:
+        def _fmt(tc: Any) -> str:
             val = next(iter(tc.arguments.values()), None) if tc.arguments else None
             if not isinstance(val, str):
                 return tc.name
@@ -212,7 +226,7 @@ class AgentLoop:
 
     async def _run_agent_loop(
         self,
-        initial_messages: list[dict],
+        initial_messages: list[dict[str, Any]],
         on_progress: Callable[[str], Awaitable[None]] | None = None,
     ) -> tuple[str | None, list[str], list[str], int, list[str]]:
         messages = initial_messages
@@ -233,6 +247,15 @@ class AgentLoop:
                 if m.get("role") == "user" and isinstance(m.get("content"), str)
             ),
             "",
+        )
+
+        # Layer 1: construct artifact store for tool output offloading
+        from bao.agent.artifacts import ArtifactStore, maybe_offload_result
+
+        _artifact_store: ArtifactStore | None = (
+            ArtifactStore(self.workspace, "main_loop", self._artifact_retention_days)
+            if self._ctx_mgmt in ("auto", "aggressive")
+            else None
         )
 
         while iteration < self.max_iterations:
@@ -310,6 +333,15 @@ class AgentLoop:
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    result = maybe_offload_result(
+                        _artifact_store,
+                        tool_call.name,
+                        tool_call.id,
+                        result,
+                        offload_chars=self._tool_offload_chars,
+                        preview_chars=self._tool_preview_chars,
+                        ctx_mgmt=self._ctx_mgmt,
+                    )
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
@@ -367,14 +399,6 @@ class AgentLoop:
                     response = await self._process_message(msg)
                     if response:
                         await self.bus.publish_outbound(response)
-                    elif msg.channel == "cli":
-                        await self.bus.publish_outbound(
-                            OutboundMessage(
-                                channel=msg.channel,
-                                chat_id=msg.chat_id,
-                                content="",
-                            )
-                        )
                 except Exception as e:
                     logger.error("Error processing message: {}", e)
                     await self.bus.publish_outbound(
@@ -411,6 +435,17 @@ class AgentLoop:
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
 
+        # Layer 1/2: one-time stale artifact cleanup per process lifetime
+        if not self._artifact_cleanup_done:
+            self._artifact_cleanup_done = True
+            try:
+                from bao.agent.artifacts import ArtifactStore
+
+                ArtifactStore(
+                    self.workspace, "_stale_", self._artifact_retention_days
+                ).cleanup_stale()
+            except Exception as _e:
+                logger.warning("ctx stale cleanup failed: {}", _e)
         natural_key = session_key or msg.session_key
         active_override = self.sessions.get_active_session_key(natural_key)
         key = active_override or natural_key
@@ -418,7 +453,6 @@ class AgentLoop:
 
         # Handle slash commands
         cmd = msg.content.strip().lower()
-        cmd_raw = msg.content.strip()
         if cmd == "/new":
             if session.messages:
                 old_messages = session.messages.copy()
@@ -469,43 +503,64 @@ class AgentLoop:
             self.sessions.save(session)
             return self._select_session(int(cmd), msg, natural_key)
 
-        # Onboarding: language selection
-        pending_lang = session.metadata.pop("_pending_onboarding_lang", None)
-        if pending_lang and cmd in ("1", "2"):
-            from bao.config.loader import apply_persona_language
-            lang = "zh" if cmd == "1" else "en"
-            apply_persona_language(self.workspace, lang)
-            self.context = ContextBuilder(self.workspace, embedding_config=self.embedding_config)
-            if cmd == "1":
-                prompt = (
-                    "你刚刚上线，这是用户第一次使用。"
-                    "用户还没有自我介绍。引导他们完成初始设置："
-                    "问他们的名字、想怎么称呼你、以及偏好的沟通风格。"
-                    "告诉他们你会记住这些。保持简短自然，不要像填表格。"
-                    "全程使用中文。"
-                )
-            else:
-                prompt = (
-                    "You just came online for the first time. "
-                    "The user hasn't introduced themselves yet. Guide them through initial setup: "
-                    "ask their name, what they'd like to call you, and their preferred communication style. "
-                    "Tell them you'll remember these. Keep it brief and natural, not like a form. "
-                    "Respond in English."
-                )
-            self.sessions.save(session)
-            greeting = await self.process_direct(prompt, session_key=key)
-            return self._reply(msg, greeting) if greeting else None
-        elif pending_lang:
-            # Invalid input — re-prompt
-            session.metadata["_pending_onboarding_lang"] = True
-            self.sessions.save(session)
-            return self._reply(
-                msg,
-                "Please reply 1 or 2 / 请回复 1 或 2\n\n"
-                "1. 中文\n"
-                "2. English",
+        # ── File-driven onboarding state machine ──
+        # Stage detection: no INSTRUCTIONS.md → lang_select
+        #                 no PERSONA.md     → persona_setup
+        #                 both exist        → ready
+        from bao.config.loader import detect_onboarding_stage, infer_language, LANG_PICKER, PERSONA_GREETING
+        onboarding_stage = detect_onboarding_stage(self.workspace) if msg.channel != "system" else "ready"
+        if onboarding_stage == "lang_select":
+            if cmd in ("1", "2"):
+                from bao.config.loader import write_instructions
+                lang = "zh" if cmd == "1" else "en"
+                try:
+                    write_instructions(self.workspace, lang)
+                except Exception as e:
+                    logger.warning("Failed to write instructions template: {}", e)
+                self.context = ContextBuilder(self.workspace, embedding_config=self.embedding_config)
+                greeting = PERSONA_GREETING[lang]
+                session.add_message("assistant", greeting)
+                self.sessions.save(session)
+                return self._reply(msg, greeting)
+            return self._reply(msg, LANG_PICKER)
+        if onboarding_stage == "persona_setup":
+            lang = infer_language(self.workspace)
+            extract_system = (
+                "You extract user profile info from casual text. "
+                "Return ONLY valid JSON with these keys: "
+                "user_name, user_nickname, bot_name, style, role, interests. "
+                "Leave empty string for anything not mentioned."
             )
-
+            extract_prompt = (
+                f"User's reply to onboarding questions:\n\n{msg.content}\n\n"
+                'Return JSON like: {"user_name": "...", "user_nickname": "...", '
+                '"bot_name": "...", "style": "...", "role": "", "interests": ""}'
+            )
+            try:
+                profile = await self._call_utility_llm(extract_system, extract_prompt)
+            except Exception:
+                profile = None
+            if profile:
+                from bao.config.loader import write_persona_profile
+                try:
+                    write_persona_profile(self.workspace, lang, profile)
+                    self.context = ContextBuilder(
+                        self.workspace, embedding_config=self.embedding_config
+                    )
+                except Exception as e:
+                    logger.warning("Failed to write persona profile: {}", e)
+            confirm_hint = {
+                "zh": "[系统：以上信息已自动保存，无需操作文件。]\n\n",
+                "en": "[System: Profile saved automatically. No file operations needed.]\n\n",
+            }[lang]
+            msg = InboundMessage(
+                channel=msg.channel,
+                sender_id=msg.sender_id,
+                chat_id=msg.chat_id,
+                content=f"{confirm_hint}{msg.content}",
+                media=msg.media,
+                metadata=msg.metadata,
+            )
         if len(session.messages) > self.memory_window and session.key not in self._consolidating:
             self._consolidating.add(session.key)
 
@@ -583,6 +638,8 @@ class AgentLoop:
         session.add_message(
             "assistant", final_content, tools_used=tools_used if tools_used else None
         )
+
+
         self.sessions.save(session)
 
         if len(session.messages) == 2 and not session.metadata.get("title"):
@@ -605,7 +662,7 @@ class AgentLoop:
         if ":" in msg.chat_id:
             origin_channel, origin_chat_id = msg.chat_id.split(":", 1)
         else:
-            origin_channel, origin_chat_id = "cli", msg.chat_id
+            origin_channel, origin_chat_id = "gateway", msg.chat_id
 
         session_key = f"{origin_channel}:{origin_chat_id}"
         session = self.sessions.get_or_create(session_key)
@@ -899,7 +956,7 @@ Respond with ONLY valid JSON, no markdown fences."""
             logger.error("Memory consolidation failed: {}", e)
 
     @staticmethod
-    def _parse_llm_json(content: str | None) -> dict | None:
+    def _parse_llm_json(content: str | None) -> dict[str, Any] | None:
         text = (content or "").strip()
         if not text:
             return None
@@ -908,7 +965,7 @@ Respond with ONLY valid JSON, no markdown fences."""
         result = json_repair.loads(text)
         return result if isinstance(result, dict) else None
 
-    async def _call_utility_llm(self, system: str, prompt: str) -> dict | None:
+    async def _call_utility_llm(self, system: str, prompt: str) -> dict[str, Any] | None:
         provider = self._utility_provider or self.provider
         model = self._utility_model or self.model
         response = await provider.chat(
@@ -954,7 +1011,7 @@ Respond with ONLY valid JSON, no markdown fences."""
         except Exception as e:
             logger.debug("Session title generation failed: {}", e)
 
-    async def _call_experience_llm(self, system: str, prompt: str) -> dict | None:
+    async def _call_experience_llm(self, system: str, prompt: str) -> dict[str, Any] | None:
         if self._experience_mode == "main":
             provider, model = self.provider, self.model
         elif self._utility_provider:
@@ -971,6 +1028,60 @@ Respond with ONLY valid JSON, no markdown fences."""
             max_tokens=512,
         )
         return self._parse_llm_json(response.content)
+
+    def _compact_messages(
+        self,
+        messages: list[dict[str, Any]],
+        initial_messages: list[dict[str, Any]],
+        last_state_text: str | None,
+        artifact_store: "ArtifactStore | None",
+    ) -> list[dict[str, Any]]:
+        """Layer 2: 保留最近 N 个 tool 成对消息，归档其余。"""
+        if artifact_store is not None:
+            try:
+                artifact_store.archive_json("evicted_messages", "compacted_context", messages)
+            except Exception as exc:
+                logger.warning("ctx[L2] archive failed: {}", exc)
+        tool_blocks: list[list[dict[str, Any]]] = []
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                tc_ids = {tc["id"] for tc in msg["tool_calls"]}
+                block, j = [msg], i + 1
+                while (
+                    j < len(messages)
+                    and messages[j].get("role") == "tool"
+                    and messages[j].get("tool_call_id") in tc_ids
+                ):
+                    block.append(messages[j])
+                    j += 1
+                tool_blocks.append(block)
+                i = j
+            else:
+                i += 1
+        recent_blocks = tool_blocks[-self._compact_keep_blocks :]
+        recent_msgs = [m for block in recent_blocks for m in block]
+        state_note = (
+            f"\n\n[Compacted context. Previous state:\n{last_state_text}\n]"
+            if last_state_text
+            else "\n\n[Compacted context: older messages archived.]"
+        )
+        system_msgs = [m for m in initial_messages if m.get("role") == "system"]
+        user_msgs = [m for m in initial_messages if m.get("role") == "user"]
+        if user_msgs:
+            user_msgs = [
+                {**user_msgs[0], "content": user_msgs[0]["content"] + state_note},
+                *user_msgs[1:],
+            ]
+        new_messages = system_msgs + user_msgs + recent_msgs
+        logger.debug(
+            "ctx[L2] compacted: {} -> {} msgs, {} blocks",
+            len(messages),
+            len(new_messages),
+            len(recent_blocks),
+        )
+        return new_messages
 
     async def _compress_state(
         self,
@@ -1160,8 +1271,8 @@ Respond with ONLY valid JSON, no markdown fences."""
     async def process_direct(
         self,
         content: str,
-        session_key: str = "cli:direct",
-        channel: str = "cli",
+        session_key: str = "gateway:direct",
+        channel: str = "gateway",
         chat_id: str = "direct",
         on_progress: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
