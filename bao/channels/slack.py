@@ -180,17 +180,21 @@ class SlackChannel(BaseChannel):
             logger.debug("Slack reactions_add failed: {}", e)
 
         try:
+            # For non-DM channel messages with a thread: isolate session per thread
+            meta: dict = {
+                "slack": {
+                    "event": event,
+                    "thread_ts": thread_ts,
+                    "channel_type": channel_type,
+                }
+            }
+            if channel_type != "im" and thread_ts:
+                meta["session_key"] = f"slack:{chat_id}:{thread_ts}"
             await self._handle_message(
                 sender_id=sender_id,
                 chat_id=chat_id,
                 content=text,
-                metadata={
-                    "slack": {
-                        "event": event,
-                        "thread_ts": thread_ts,
-                        "channel_type": channel_type,
-                    }
-                },
+                metadata=meta,
             )
         except Exception:
             logger.exception("Error handling Slack message from {}", sender_id)

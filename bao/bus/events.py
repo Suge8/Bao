@@ -19,7 +19,14 @@ class InboundMessage:
     
     @property
     def session_key(self) -> str:
-        """Unique key for session identification."""
+        """Unique key for session identification.
+
+        If metadata contains a top-level 'session_key' string, use it directly.
+        This allows channels (e.g. Slack) to set thread-scoped session keys.
+        """
+        override = self.metadata.get("session_key")
+        if isinstance(override, str) and override:
+            return override
         return f"{self.channel}:{self.chat_id}"
 
 
