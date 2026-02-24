@@ -21,19 +21,15 @@ _cache: dict[str, Any] | None = None
 
 def _load() -> dict[str, Any]:
     global _cache
-    cache = _cache
-    if cache is None:
+    if _cache is None:
         loaded: dict[str, Any] = {}
         if _CACHE_FILE.exists():
             try:
                 loaded = json.loads(_CACHE_FILE.read_text(encoding="utf-8"))
             except Exception:
-                loaded = {}
-        cache = loaded
-        _cache = cache
-    if cache is None:
-        return {}
-    return cache
+                pass
+        _cache = loaded
+    return _cache
 
 
 def _save() -> None:

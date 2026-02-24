@@ -7,8 +7,7 @@ from bao.providers.base import LLMProvider, LLMResponse
 from bao.providers.openai_provider import OpenAICompatibleProvider
 from bao.providers.anthropic_provider import AnthropicProvider
 from bao.providers.gemini_provider import GeminiProvider
-from bao.providers.openai_codex_provider import OpenAICodexProvider
-from bao.providers.registry import PROVIDERS, ProviderType, find_by_model, find_by_name
+from bao.providers.registry import find_by_model
 
 if TYPE_CHECKING:
     from bao.config.schema import Config
@@ -19,52 +18,53 @@ __all__ = [
     "OpenAICompatibleProvider",
     "AnthropicProvider",
     "GeminiProvider",
-    "OpenAICodexProvider",
     "make_provider",
 ]
 
 
+_VALID_PROVIDER_TYPES = frozenset({"openai", "anthropic", "gemini"})
+
+
 def make_provider(config: "Config", model: str | None = None) -> LLMProvider:
-    """Create the appropriate LLM provider for a given model.
-
-    Routes based on provider type:
-    - openai_codex (OAuth) -> OpenAICodexProvider
-    - anthropic/* -> AnthropicProvider (native SDK)
-    - gemini/* -> GeminiProvider (native SDK)
-    - everything else -> OpenAICompatibleProvider (OpenAI-compatible endpoints)
-    """
+    """Create the appropriate LLM provider based on matched provider config's type field."""
     model = model or config.agents.defaults.model
-    provider_name = config.get_provider_name(model)
-    provider_config = config.get_provider(model)
-
-    # OAuth provider
-    if provider_name == "openai_codex" or model.startswith("openai-codex/"):
-        return OpenAICodexProvider(default_model=model)
-
-    # Find provider spec
-    spec = (find_by_name(provider_name) if provider_name else None) or find_by_model(model)
-    if not spec:
-        raise ValueError(f"Cannot determine provider for model '{model}'")
-
-    # Route to native SDK providers
-    if spec.provider_type in (ProviderType.ANTHROPIC, ProviderType.GEMINI):
-        if not provider_config or not provider_config.api_key:
-            raise ValueError(f"No API key configured for '{provider_name}'")
-        provider_cls = (
-            AnthropicProvider if spec.provider_type == ProviderType.ANTHROPIC else GeminiProvider
+    if not model:
+        raise ValueError(
+            "未配置模型。请在 config.jsonc 中设置 agents.defaults.model\n"
+            "No model configured. Set agents.defaults.model in config.jsonc"
         )
-        return provider_cls(api_key=provider_config.api_key, default_model=model)
-
-    # OpenAI-compatible providers (default)
-    api_base = config.get_api_base(model) or spec.default_api_base
-    api_key = provider_config.api_key if provider_config else None
-    extra_headers = provider_config.extra_headers if provider_config else None
-    api_mode = provider_config.api_mode if provider_config else "auto"
+    provider_config = config.get_provider(model)
+    if not provider_config or not provider_config.api_key:
+        raise ValueError(
+            f"未找到模型 '{model}' 对应的 Provider 或缺少 API Key\n"
+            f"No provider with API key found for model '{model}'"
+        )
+    provider_type = provider_config.type
+    if provider_type not in _VALID_PROVIDER_TYPES:
+        raise ValueError(
+            f"Provider type '{provider_type}' 无效，是否拼写错误？\n"
+            f"有效值 Valid values: {', '.join(sorted(_VALID_PROVIDER_TYPES))}"
+        )
+    spec = find_by_model(model)
+    if provider_type == "anthropic":
+        return AnthropicProvider(
+            api_key=provider_config.api_key,
+            default_model=model,
+            base_url=provider_config.api_base,
+        )
+    if provider_type == "gemini":
+        return GeminiProvider(
+            api_key=provider_config.api_key,
+            default_model=model,
+            base_url=provider_config.api_base,
+        )
+    # openai
+    api_base = provider_config.api_base or (spec.default_api_base if spec else "")
     return OpenAICompatibleProvider(
-        api_key=api_key,
+        api_key=provider_config.api_key,
         api_base=api_base,
         default_model=model,
-        extra_headers=extra_headers,
-        provider_name=provider_name,
-        api_mode=api_mode,
+        extra_headers=provider_config.extra_headers,
+        provider_name=spec.name if spec else "openai",
+        api_mode=provider_config.api_mode,
     )
