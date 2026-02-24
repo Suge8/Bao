@@ -31,3 +31,6 @@ botpy.log
 # IDE & tools
 .ace-tool/
 .assets
+.DS_Store
+.sisyphus/
+update.md
