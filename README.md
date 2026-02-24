@@ -38,10 +38,10 @@ bao 不一样。它**记得住**、**学得会**、**能进化**。
 
 - 每次任务完成 → 自动提取教训、策略和失败模式
 - 遇到类似问题 → 检索相关经验，注入到提示词中
-- **置信度校准** — 追踪每条经验的成功率，动态调整质量分
+- **置信度校准** — Laplace 平滑追踪成功率，避免冷启动偏差，动态调整质量分
 - **冲突检测** — 发现矛盾的教训时自动标记
 - **负面学习** — 过去的失败变成未来的警告
-- **主动遗忘** — 过时和低质量的条目自我清除
+- **主动遗忘** — 按质量分级衰减（高质量保留更久），高价值经验免疫清理
 
 别的 Agent 重复犯错。**bao 从错误中进化。**
 
@@ -56,6 +56,11 @@ bao 不一样。它**记得住**、**学得会**、**能进化**。
 **~5,300 行核心代码。** 运行 `bash core_agent_lines.sh` 自行验证。
 
 启动快、占资源少、源码可读。一个完整的 AI 助手框架，体积只有同类项目的 1%。
+### 上下文不会爆炸
+内置分层上下文管理，长任务不再耗尽 context window：
+- **Layer 1**：tool 输出超过阈值自动外置到本地文件，messages 中只保留预览+指针
+- **Layer 2**：context 过大时自动压实，保留最近 N 对 assistant/tool 消息，严格维护成对完整性
+配置 `contextManagement: "auto"` 即可启用，默认 `observe` 模式零额外开销。
 
 ## 横向对比
 
@@ -127,9 +132,9 @@ bao
 | **钉钉** | App Key + App Secret |
 | **iMessage** | 仅 macOS，零配置 |
 
-## 🤖 3 种 LLM Provider
+## 🤖 LLM Provider
 
-精简为 3 类，覆盖 99% 需求。
+极简 3 类覆盖 99% 需求。
 
 | 类型 | 支持的模型 | 示例 |
 |------|-----------|------|
@@ -137,35 +142,7 @@ bao
 | **Anthropic** | Claude 全系列 | `anthropic/claude-sonnet-4-20250514` |
 | **Gemini** | Gemini 全系列 | `gemini/gemini-2.0-flash-exp` |
 
-```json
-{
-  "providers": {
-    "openaiCompatible": { "apiKey": "sk-..." },
-    "anthropic": { "apiKey": "sk-ant-..." },
-    "gemini": { "apiKey": "AI..." }
-  }
-}
-```
-
-OpenAI 兼容端点支持 **API 模式自动探测**：首次请求自动检测 Responses API，成功则后续直接使用，否则回退 Chat Completions。结果按 endpoint 持久化缓存（7 天 TTL）。
-
-```json
-{
-  "providers": {
-    "openaiCompatible": {
-      "apiKey": "sk-...",
-      "apiBase": "https://your-proxy.com/v1",
-      "apiMode": "auto"
-    }
-  }
-}
-```
-
-| apiMode | 行为 |
-|---------|------|
-| `"auto"` | 默认。首次探测 Responses API，结果缓存到磁盘 |
-| `"responses"` | 强制走 Responses API |
-| `"completions"` | 强制走 Chat Completions |
+Provider 名称可自定义（如 `my-proxy/claude-sonnet-4-6`），前缀自动剥离。所有 Provider 类型均支持第三方代理，SDK 兼容性自动处理。OpenAI 兼容端点额外支持 API 模式自动探测（Responses / Chat Completions）。
 
 ## 🔌 MCP 支持
 
@@ -271,10 +248,10 @@ bao ships with a **closed-loop experience engine**:
 
 - After every task → auto-extracts lessons, strategies, and failure patterns
 - Before similar tasks → retrieves relevant experience and injects it into the prompt
-- **Confidence calibration** — tracks success rate per experience, adjusts quality scores
+- **Confidence calibration** — Laplace-smoothed success tracking, no cold-start bias, dynamic quality adjustment
 - **Conflict detection** — flags contradictory lessons
 - **Negative learning** — past failures become warnings
-- **Active forgetting** — stale and low-quality entries self-prune
+- **Active forgetting** — quality-based retention decay (high-quality lasts longer), high-value experiences immune from cleanup
 
 Other agents repeat mistakes. **bao learns from them.**
 
@@ -289,6 +266,11 @@ Other agents repeat mistakes. **bao learns from them.**
 **~5,300 lines of core code.** Run `bash core_agent_lines.sh` to verify.
 
 Fast startup. Low resource use. Readable source. A complete AI assistant framework at 1% the size of comparable projects.
+### Context That Doesn't Explode
+Built-in layered context management keeps long tasks from exhausting the context window:
+- **Layer 1**: Large tool outputs are offloaded to local files; messages retain only a preview + pointer
+- **Layer 2**: When context grows too large, older assistant/tool pairs are archived, preserving strict pairing integrity
+Set `contextManagement: "auto"` to enable. Default `observe` mode has zero overhead.
 
 ### How It Compares
 
@@ -360,45 +342,16 @@ One config, one command: `bao`
 | **DingTalk** | App Key + App Secret |
 | **iMessage** | macOS only, zero config |
 
-### 🤖 3 LLM Providers
+### 🤖 Easy LLM Providers config
 
-Simplified to 3 types. Covers 99% of what's out there.
+Covers 99% of what's out there.
 
 | Type | Supported Models | Example |
 |------|------------------|---------|
 | **OpenAI Compatible** | OpenAI, OpenRouter, DeepSeek, Groq, SiliconFlow, Volcengine, DashScope, Moonshot, Zhipu, Ollama, LM Studio, vLLM, and more | `openai/gpt-4o`, `deepseek/deepseek-chat` |
 | **Anthropic** | Full Claude lineup | `anthropic/claude-sonnet-4-20250514` |
 | **Gemini** | Full Gemini lineup | `gemini/gemini-2.0-flash-exp` |
-
-```json
-{
-  "providers": {
-    "openaiCompatible": { "apiKey": "sk-..." },
-    "anthropic": { "apiKey": "sk-ant-..." },
-    "gemini": { "apiKey": "AI..." }
-  }
-}
-```
-
-OpenAI-compatible endpoints support **API mode auto-detection**: the first request probes the Responses API — if supported, all subsequent requests use it; otherwise falls back to Chat Completions. Results are cached per endpoint to disk (7-day TTL).
-
-```json
-{
-  "providers": {
-    "openaiCompatible": {
-      "apiKey": "sk-...",
-      "apiBase": "https://your-proxy.com/v1",
-      "apiMode": "auto"
-    }
-  }
-}
-```
-
-| apiMode | Behavior |
-|---------|----------|
-| `"auto"` | Default. Probes Responses API on first request, caches result to disk |
-| `"responses"` | Force Responses API |
-| `"completions"` | Force Chat Completions |
+Provider names are customizable — model prefixes are auto-stripped. All provider types support third-party proxies with automatic SDK compatibility. OpenAI-compatible endpoints also support API mode auto-detection (Responses / Chat Completions).
 
 ### 🔌 MCP Support
 
