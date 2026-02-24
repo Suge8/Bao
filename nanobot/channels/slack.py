@@ -229,6 +229,9 @@ class SlackChannel(BaseChannel):
         return re.sub(rf"<@{re.escape(self._bot_user_id)}>\s*", "", text).strip()
 
     _TABLE_RE = re.compile(r"(?m)^\|.*\|$(?:\n\|[\s:|-]*\|$)(?:\n\|.*\|$)*")
+    _CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")
+    _LEFTOVER_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+    _BARE_URL_RE = re.compile(r"(?<![|<])(https?://\S+)")
 
     @classmethod
     def _to_mrkdwn(cls, text: str) -> str:
@@ -236,7 +239,39 @@ class SlackChannel(BaseChannel):
         if not text:
             return ""
         text = cls._TABLE_RE.sub(cls._convert_table, text)
-        return slackify_markdown(text)
+        text = slackify_markdown(text)
+        text = cls._fixup_mrkdwn(text)
+        return text
+
+    @classmethod
+    def _fixup_mrkdwn(cls, text: str) -> str:
+        """Fix markdown artifacts that slackify_markdown misses.
+
+        Handles: leftover ``**bold**``, ``&amp;`` in bare URLs, and
+        collapsed paragraph spacing.
+        """
+        # Protect code blocks from further processing
+        code_blocks: list[str] = []
+
+        def _save_code(m: re.Match) -> str:
+            code_blocks.append(m.group(0))
+            return f"\x00CB{len(code_blocks) - 1}\x00"
+
+        text = cls._CODE_FENCE_RE.sub(_save_code, text)
+
+        # Fix leftover **bold** the library didn't convert (e.g. **key:**val)
+        text = cls._LEFTOVER_BOLD_RE.sub(r"*\1*", text)
+
+        # Fix &amp; in bare URLs that the library over-escaped
+        text = cls._BARE_URL_RE.sub(
+            lambda m: m.group(0).replace("&amp;", "&"), text
+        )
+
+        # Restore code blocks
+        for i, block in enumerate(code_blocks):
+            text = text.replace(f"\x00CB{i}\x00", block)
+
+        return text
 
     @staticmethod
     def _convert_table(match: re.Match) -> str:
