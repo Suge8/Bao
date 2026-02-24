@@ -6,6 +6,7 @@ import os
 from datetime import datetime
 from math import exp
 from pathlib import Path
+from collections.abc import Sized
 from typing import Any
 
 from loguru import logger
@@ -16,6 +17,9 @@ _SAMPLE = [{"key": "_init_", "content": "", "type": "long_term", "updated_at": "
 
 _ENV_KEY = "BAO_EMBEDDING_API_KEY"
 _ENV_BASE = "BAO_EMBEDDING_BASE_URL"
+
+# Quality -> retention period (days). Higher quality decays slower.
+_RETENTION_DAYS = {5: 365, 4: 180, 3: 90, 2: 30, 1: 14}
 
 
 class MemoryStore:
@@ -37,7 +41,8 @@ class MemoryStore:
             self._embed_fn = registry.get(backend).create(**kwargs)
             # Probe actual dim with a test embedding (some backends report wrong ndims)
             probe = self._embed_fn.compute_source_embeddings(["dim probe"])
-            ndim = len(probe[0])
+            first = probe[0] if probe else None
+            ndim = len(first) if isinstance(first, Sized) else 0
             self._vec_tbl = ensure_table(
                 self._db,
                 "memory_vectors",
@@ -129,17 +134,18 @@ class MemoryStore:
 
     def append_history(self, entry: str) -> None:
         ts = datetime.now().isoformat()
+        cleaned_entry = entry.rstrip()
         self._tbl.add(
             [
                 {
                     "key": f"history_{ts}",
-                    "content": entry.rstrip(),
+                    "content": cleaned_entry,
                     "type": "history",
                     "updated_at": ts,
                 }
             ]
         )
-        self._embed_and_store(entry.rstrip(), "history")
+        self._embed_and_store(cleaned_entry, "history")
 
     def _embed_and_store(self, content: str, type_: str) -> None:
         if not self._embed_fn or not self._vec_tbl or not content.strip():
@@ -193,12 +199,10 @@ class MemoryStore:
     def _confidence(self, content: str) -> float:
         uses = self._parse_int_field(content, "Uses")
         successes = self._parse_int_field(content, "Successes")
-        if uses < 2:
-            return 1.0
-        return successes / uses
+        return (successes + 1) / (uses + 2)  # Laplace smoothing
 
     def search_experience(self, query: str, limit: int = 3) -> list[str]:
-        candidates: list[dict] = []
+        candidates: list[dict[str, Any]] = []
         fetch = limit * 5
         if self._embed_fn and self._vec_tbl:
             try:
@@ -231,7 +235,7 @@ class MemoryStore:
                 continue
             quality = self._parse_quality(content)
             days_old = self._days_since(r.get("updated_at", ""), now)
-            decay = exp(-0.02 * days_old)
+            decay = exp(-days_old / _RETENTION_DAYS.get(quality, 90))
             conf = self._confidence(content)
             score = quality * decay * conf
             outcome = self._parse_field(content, "Outcome")
@@ -309,7 +313,7 @@ class MemoryStore:
         except (ValueError, TypeError):
             return 30.0
 
-    def _update_experience_row(self, r: dict, new_content: str) -> None:
+    def _update_experience_row(self, r: dict[str, Any], new_content: str) -> None:
         if key := r.get("key"):
             self._tbl.delete(f"key = '{key}'")
             self._tbl.add(
@@ -323,7 +327,9 @@ class MemoryStore:
                 ]
             )
 
-    def _match_experience_rows(self, task_desc: str, threshold: float) -> list[tuple[dict, str]]:
+    def _match_experience_rows(
+        self, task_desc: str, threshold: float
+    ) -> list[tuple[dict[str, Any], str]]:
         rows = self._tbl.search().where("type = 'experience'").limit(100).to_list()
         keywords = {w.lower() for w in task_desc.split() if len(w) >= 2}
         if not keywords:
@@ -410,8 +416,14 @@ class MemoryStore:
             for r in rows:
                 content = r.get("content") or ""
                 days_old = self._days_since(r.get("updated_at", ""), now)
-                should_remove = ("[Deprecated]" in content and days_old > max_deprecated_days) or (
-                    self._parse_quality(content) <= 1 and days_old > max_low_quality_days
+                is_deprecated = "[Deprecated]" in content
+                quality = self._parse_quality(content)
+                uses = self._parse_int_field(content, "Uses")
+                is_immune = quality >= 5 and uses >= 3 and not is_deprecated
+                if is_immune:
+                    continue
+                should_remove = (is_deprecated and days_old > max_deprecated_days) or (
+                    quality <= 1 and days_old > max_low_quality_days
                 )
                 if should_remove and (key := r.get("key")):
                     self._tbl.delete(f"key = '{key}'")

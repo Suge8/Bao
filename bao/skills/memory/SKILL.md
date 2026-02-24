@@ -10,6 +10,8 @@ always: true
 
 - Long-term memory and conversation history are persisted in LanceDB.
 - Experience entries are stored and reused automatically for similar tasks.
+- Experience ranking uses quality-based retention (quality 5 = 365 days, 1 = 14 days) with Laplace-smoothed confidence.
+- High-quality, frequently reused experiences (quality ≥ 5, uses ≥ 3) are immune from cleanup unless deprecated.
 
 ## How To Use It
 
