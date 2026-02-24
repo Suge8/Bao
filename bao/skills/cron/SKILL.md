@@ -55,3 +55,46 @@ cron(action="remove", job_id="abc123")
 ## Timezone
 
 Use `tz` with `cron_expr` to schedule in a specific IANA timezone. Without `tz`, the server's local timezone is used.
+
+## 中文示例 / Chinese Examples
+
+固定提醒（每 20 分钟休息一次）：
+```
+cron(action="add", message="该休息一下了！", every_seconds=1200)
+```
+
+每天早上 8 点提醒：
+```
+cron(action="add", message="早安！检查今日待办事项。", cron_expr="0 8 * * *")
+```
+
+工作日下午 6 点提醒下班：
+```
+cron(action="add", message="下班啦！记得关闭工作应用。", cron_expr="0 18 * * 1-5")
+```
+
+定时执行任务（agent 执行并回报）：
+```
+cron(action="add", message="检查 GitHub 新 issue 并汇报", every_seconds=3600)
+```
+
+北京时间每天 9 点：
+```
+cron(action="add", message="早间日报", cron_expr="0 9 * * *", tz="Asia/Shanghai")
+```
+
+## 中文口语 → 参数映射
+
+| 用户说 | 参数 |
+|--------|------|
+| 每 20 分钟 | every_seconds: 1200 |
+| 每小时 | every_seconds: 3600 |
+| 每天早上 8 点 | cron_expr: "0 8 * * *" |
+| 工作日下午 5 点 | cron_expr: "0 17 * * 1-5" |
+| 每天北京时间 9 点 | cron_expr: "0 9 * * *", tz: "Asia/Shanghai" |
+| 指定某个时刻 | at: ISO datetime 字符串（从当前时间计算） |
+
+## 重要：Agent 使用 cron 工具，而非终端命令
+
+- ✅ 正确：调用 `cron` 工具（`action="add"` 等）
+- ❌ 错误：用 `exec` 工具运行 `bao cron add ...`（这是给终端用户的 CLI 命令，不是 agent 的工具调用）
