@@ -58,12 +58,16 @@ class WebSearchTool(Tool):
     }
     
     def __init__(self, api_key: str | None = None, max_results: int = 5):
-        self.api_key = api_key
+        self._init_api_key = api_key
         self.max_results = max_results
 
+    @property
+    def api_key(self) -> str:
+        """Resolve API key at call time so env/config changes are picked up."""
+        return self._init_api_key or os.environ.get("BRAVE_API_KEY", "")
+
     async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
-        api_key = self.api_key or os.environ.get("BRAVE_API_KEY", "")
-        if not api_key:
+        if not self.api_key:
             return (
                 "Error: Brave Search API key not configured. "
                 "Set it in ~/.nanobot/config.json under tools.web.search.apiKey "
