@@ -1,4 +1,5 @@
 import json
+import importlib.resources
 import re
 from pathlib import Path
 from typing import Any
@@ -230,114 +231,15 @@ _JSONC_TEMPLATE = """\
 }
 """
 
-_WORKSPACE_TEMPLATES: dict[str, str] = {
-    "PERSONA.md": """# 人设
-
-## 身份
-
-我是运行在 bao 框架里的一个轻量级全能 AGENT。
-
-- 乐于助人、友善
-- 简洁、切中要点
-- 好奇、乐于学习
-- 准确优先于速度
-- 保护用户隐私和安全
-- 行动透明
-
-## 用户
-
-- **姓名**：（你的名字）
-- **时区**：（你的时区）
-- **语言**：中文
-- **沟通风格**：（随意/正式）
-- **角色**：（你的角色，如开发者、研究员）
-- **兴趣领域**：（你关注的话题）
-
-## 特殊指令
-
-（对助手行为的任何特定指令）
-""",
-    "INSTRUCTIONS.md": """# 指令
-
-## 语言策略
-
-始终使用 `PERSONA.md` 中用户设定的语言进行回复。
-调用工具时，自然语言参数（如搜索关键词）也必须使用用户的语言，除非用户明确要求其他语言。
-
-## 行为准则
-
-- 在执行操作前，简要说明意图（一句话）
-- 请求含糊时主动询问确认
-- 简洁、准确、友善
-- 不要使用纯列表/要点格式堆砌回复
-
-## 工具使用
-
-工具输出是中间数据，不是最终回复。
-- 先提取与用户问题相关的事实
-- 多源信息有冲突时，注明不确定性
-- 综合为简洁的结论后再回复用户
-- 除非用户要求，不要暴露原始 JSON、日志或技术细节
-
-调用工具前先判断：不调用能否可靠回答？能则直接回答。
-
-### 搜索策略
-
-`web_search` 仅在配置了 API key 时可用。如果工具列表中有 `web_search`，优先用它搜索信息；没有则用 `web_fetch` 访问搜索引擎页面。不要用 `exec` + `curl`。不要声称拥有工具列表中不存在的工具。
-
-## 工作区
-
-| 文件 | 用途 |
-|------|------|
-| `PERSONA.md` | 人格、用户档案、特殊指令 |
-| `INSTRUCTIONS.md` | 行为规则（本文件） |
-| `HEARTBEAT.md` | 定期任务，每 30 分钟检查 |
-| `skills/` | 技能定义（`skills/{name}/SKILL.md`） |
-
-### 数据库（LanceDB — 自动管理）
-
-| 表 | 用途 |
-|----|------|
-| `memory` | 长期记忆、对话历史、任务经验 |
-| `memory_vectors` | 语义嵌入（可选） |
-
-记忆自动管理，不要对记忆使用 `read_file`/`write_file`/`edit_file`。
-经验学习自动运行，无需手动操作。
-
-## 身份与偏好持久化
-
-当用户在对话中提到以下内容时，用 `edit_file` 更新 `PERSONA.md`：
-
-- 用户信息（姓名、时区、语言、偏好）→ `## 用户`
-- 助手人格（昵称、风格）→ `## 身份`
-- 行为偏好（如"搜索结果要详细些"）→ `## 特殊指令`
-
-`PERSONA.md` 每次对话开始时加载。不写入就会忘记。
-不要修改 `INSTRUCTIONS.md` — 行为偏好写入 `PERSONA.md` 的特殊指令。
-
-## 定时任务
-
-- 提醒和定时任务用 `cron` 工具创建，不要只写入记忆
-- 定期任务编辑 `HEARTBEAT.md`（每 30 分钟检查一次）
-""",
-    "HEARTBEAT.md": """# 心跳任务
-
-此文件每 30 分钟由 bao agent 自动检查。
-在下方添加你希望 agent 定期执行的任务。
-
-如果此文件没有任务（只有标题和注释），agent 会跳过本次心跳。
-
-## 进行中的任务
-
-<!-- 在此行下方添加你的定期任务 -->
 
 
-## 已完成
-
-<!-- 将已完成的任务移到这里或删除 -->
-
-""",
-}
+def _read_workspace_template(filename: str) -> str:
+    """Read a template from bao/templates/workspace/ via importlib.resources."""
+    return (
+        importlib.resources.files("bao.templates.workspace")
+        .joinpath(filename)
+        .read_text(encoding="utf-8")
+    )
 
 _PERSONA_EN = """# Persona
 
@@ -475,14 +377,14 @@ def infer_language(workspace: Path) -> str:
 
 def write_instructions(workspace: Path, lang: str) -> None:
     """Write INSTRUCTIONS.md in the chosen language (deferred until onboarding)."""
-    tpl = _INSTRUCTIONS_EN if lang == "en" else _WORKSPACE_TEMPLATES["INSTRUCTIONS.md"]
+    tpl = _INSTRUCTIONS_EN if lang == "en" else _read_workspace_template("INSTRUCTIONS.md")
     (workspace / "INSTRUCTIONS.md").write_text(tpl, encoding="utf-8")
 
 
 def write_persona_profile(workspace: Path, lang: str, profile: dict[str, str]) -> None:
     """Write extracted user profile into PERSONA.md, replacing template placeholders."""
     persona = workspace / "PERSONA.md"
-    base = _PERSONA_EN if lang == "en" else _WORKSPACE_TEMPLATES["PERSONA.md"]
+    base = _PERSONA_EN if lang == "en" else _read_workspace_template("PERSONA.md")
     content = base
     user_name = profile.get("user_name", "")
     timezone = profile.get("timezone", "")
@@ -602,12 +504,12 @@ def _ensure_workspace(config: Config) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
 
     _DEFERRED = {"PERSONA.md", "INSTRUCTIONS.md"}
-    for filename, content in _WORKSPACE_TEMPLATES.items():
-        if filename in _DEFERRED:
+    for item in importlib.resources.files("bao.templates.workspace").iterdir():
+        if not item.name.endswith(".md") or item.name in _DEFERRED:
             continue
-        fp = workspace / filename
+        fp = workspace / item.name
         if not fp.exists():
-            fp.write_text(content, encoding="utf-8")
+            fp.write_text(item.read_text(encoding="utf-8"), encoding="utf-8")
 
     (workspace / "skills").mkdir(exist_ok=True)
 
