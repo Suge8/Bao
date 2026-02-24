@@ -1,5 +1,5 @@
-from bao.providers.openai_codex_provider import _strip_model_prefix
 from bao.providers.registry import find_by_model
+from bao.config.schema import Config, ProviderConfig
 
 
 def test_find_by_model_returns_provider_spec():
@@ -15,9 +15,10 @@ def test_find_by_model_openai_compatible():
     spec = find_by_model("openrouter/anthropic/claude-3.5-sonnet")
 
     assert spec is not None
-    assert spec.provider_type.value == "openai_compatible"
+    assert spec.provider_type.value == "openai"
 
 
-def test_openai_codex_strip_prefix_supports_hyphen_and_underscore():
-    assert _strip_model_prefix("openai-codex/gpt-5.1-codex") == "gpt-5.1-codex"
-    assert _strip_model_prefix("openai_codex/gpt-5.1-codex") == "gpt-5.1-codex"
+def test_anthropic_model_does_not_fallback_to_openai_provider():
+    cfg = Config()
+    cfg.providers["openai"] = ProviderConfig(type="openai", api_key="test-key")
+    assert cfg.get_provider("anthropic/claude-sonnet-4-20250514") is None
