@@ -203,14 +203,11 @@ Gateway 启动时自动检测 `PERSONA.md` 是否仍为模板状态。
 `PERSONA.md` 在每次对话开始时加载。如果你不写入，下次就会忘记。
 
 ## 定时提醒
-
-使用 `exec` 通过 `bao cron add` 创建提醒：
+如果已安装 `cron` skill，使用 `cron` 工具创建提醒：
 
 ```
-bao cron add --name "提醒" --message "你的消息" --at "YYYY-MM-DDTHH:MM:SS" --deliver --to "USER_ID" --channel "CHANNEL"
+cron(action="add", message="你的消息", at="<ISO datetime>")
 ```
-
-从当前会话获取 USER_ID 和 CHANNEL（例如，从 `telegram:8281248569` 获取 `8281248569` 和 `telegram`）。
 
 不要只是把提醒写入记忆 — 那不会触发实际通知。
 
@@ -324,17 +321,10 @@ def load_config(config_path: Path | None = None) -> Config:
     save_config(config)
     _ensure_workspace(config)
     actual = get_config_path()
-    print(f"\n✓ 配置文件已创建 / Config created: {actual}")
-    print(f"✓ 工作区已创建 / Workspace created: {config.workspace_path}")
-    print("")
-    print("  下一步 / Next steps:")
-    print(f"  1. 编辑配置文件，填写 API Key / Edit config and add your API key:")
-    print(f"     {actual}")
-    print("  2. 启动 bao / Start bao:")
-    print("     bao")
-    print("     （或直接 CLI 对话 / Or chat directly in CLI:）")
-    print("     bao agent")
-    print("")
+    print(f"\n✓ Config created: {actual}")
+    print(f"✓ Workspace created: {config.workspace_path}")
+    print(f"\n  Edit config and add your API key:\n     {actual}")
+    print("  Then run: bao\n")
     return config
 
 

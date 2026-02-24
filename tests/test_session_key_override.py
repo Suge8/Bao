@@ -1,4 +1,3 @@
-"""Tests for InboundMessage.session_key override via metadata."""
 
 from datetime import datetime
 from bao.bus.events import InboundMessage

@@ -6,11 +6,7 @@ from bao.agent.tools.base import Tool
 
 
 class ToolRegistry:
-    """
-    Registry for agent tools.
-    
-    Allows dynamic registration and execution of tools.
-    """
+    """Registry for agent tools."""
     
     def __init__(self):
         self._tools: dict[str, Tool] = {}
@@ -36,19 +32,7 @@ class ToolRegistry:
         return [tool.to_schema() for tool in self._tools.values()]
     
     async def execute(self, name: str, params: dict[str, Any]) -> str:
-        """
-        Execute a tool by name with given parameters.
-        
-        Args:
-            name: Tool name.
-            params: Tool parameters.
-        
-        Returns:
-            Tool execution result as string.
-        
-        Raises:
-            KeyError: If tool not found.
-        """
+        """Execute a tool by name, returning result or error string."""
         tool = self._tools.get(name)
         if not tool:
             available = ", ".join(sorted(self._tools.keys())) or "none"
