@@ -211,6 +211,8 @@ class AgentDefaults(Base):
     context_compact_bytes_est: int = 240000
     context_compact_keep_recent_tool_blocks: int = 4
     artifact_retention_days: int = 7
+    send_progress: bool = False
+    send_tool_hints: bool = False
 
 
 class AgentsConfig(Base):

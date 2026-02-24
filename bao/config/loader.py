@@ -26,7 +26,12 @@ _JSONC_TEMPLATE = """\
       // 单次对话最大工具调用轮数
       "maxToolIterations": 20,
       // 记忆窗口：保留最近多少条消息在上下文中
-      "memoryWindow": 50
+      "memoryWindow": 50,
+      // 是否向外部渠道（Telegram/Discord 等）发送思考过程进度 / Stream reasoning progress to external channels
+      // 默认关闭，开启后外部渠道可看到 agent 实时思考片段
+      "sendProgress": false,
+      // 是否向外部渠道发送工具调用提示 / Send tool-hint messages to external channels
+      "sendToolHints": false
     }
   },
 
@@ -319,10 +324,17 @@ def load_config(config_path: Path | None = None) -> Config:
     save_config(config)
     _ensure_workspace(config)
     actual = get_config_path()
-    print(f"✓ Created config at {actual}")
-    print(f"✓ Created workspace at {config.workspace_path}")
-    print(f"\n  Next: edit {actual} to add your API key")
-    print("  Then: bao agent\n")
+    print(f"\n✓ 配置文件已创建 / Config created: {actual}")
+    print(f"✓ 工作区已创建 / Workspace created: {config.workspace_path}")
+    print("")
+    print("  下一步 / Next steps:")
+    print(f"  1. 编辑配置文件，填写 API Key / Edit config and add your API key:")
+    print(f"     {actual}")
+    print("  2. 启动 bao / Start bao:")
+    print("     bao")
+    print("     （或直接 CLI 对话 / Or chat directly in CLI:）")
+    print("     bao agent")
+    print("")
     return config
 
 
