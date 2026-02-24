@@ -205,6 +205,12 @@ class AgentDefaults(Base):
     temperature: float = 0.1
     max_tool_iterations: int = 20
     memory_window: int = 50
+    context_management: str = "observe"  # off | observe | auto | aggressive
+    tool_output_preview_chars: int = 3000
+    tool_output_offload_chars: int = 8000
+    context_compact_bytes_est: int = 240000
+    context_compact_keep_recent_tool_blocks: int = 4
+    artifact_retention_days: int = 7
 
 
 class AgentsConfig(Base):
@@ -279,6 +285,7 @@ class MCPServerConfig(Base):
     env: dict[str, str] = Field(default_factory=dict)  # Stdio: extra env vars
     url: str = ""  # HTTP: streamable HTTP endpoint URL
     headers: dict[str, str] = Field(default_factory=dict)  # HTTP: Custom HTTP Headers
+    tool_timeout_seconds: int = 30  # Timeout for individual MCP tool calls
 
 
 class ToolsConfig(Base):
