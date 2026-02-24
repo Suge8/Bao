@@ -6,7 +6,7 @@ from typing import Any
 
 import anthropic
 
-from bao.providers.base import LLMProvider, LLMResponse, ToolCallRequest, normalize_tool_calls
+from bao.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 
 class AnthropicProvider(LLMProvider):
@@ -34,19 +34,30 @@ class AnthropicProvider(LLMProvider):
         self,
         api_key: str | None = None,
         default_model: str = "claude-sonnet-4-20250514",
+        base_url: str | None = None,
     ):
         super().__init__(api_key, None)
         self.default_model = default_model
-
-        self._client = anthropic.AsyncAnthropic(
-            api_key=api_key,
-            max_retries=0,  # Handle retries at the agent level
-        )
+        client_kwargs: dict[str, Any] = {"api_key": api_key, "max_retries": 0}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+            # Some proxies block SDK-identifying headers → override them.
+            client_kwargs["default_headers"] = {
+                "User-Agent": "curl/8.7.1",
+                "X-Stainless-Lang": "",
+                "X-Stainless-Package-Version": "",
+                "X-Stainless-OS": "",
+                "X-Stainless-Arch": "",
+                "X-Stainless-Runtime": "",
+                "X-Stainless-Runtime-Version": "",
+                "X-Stainless-Async": "",
+            }
+        self._client = anthropic.AsyncAnthropic(**client_kwargs)
 
     def _resolve_model(self, model: str) -> str:
-        """Strip 'anthropic/' prefix if present."""
-        if model.lower().startswith("anthropic/"):
-            return model[len("anthropic/") :]
+        """Strip provider prefix (e.g. 'anthropic/', 'custom/') if present."""
+        if "/" in model:
+            return model.split("/", 1)[1]
         return model
 
     def _supports_extended_thinking(self, model: str) -> bool:

@@ -197,7 +197,7 @@ class AgentDefaults(Base):
     """Default agent configuration."""
 
     workspace: str = "~/.bao/workspace"
-    model: str = "anthropic/claude-opus-4-5"
+    model: str = ""
     utility_model: str = ""
     experience_model: str = "utility"  # "utility" | "main" | "none"
     models: list[str] = Field(default_factory=list)
@@ -224,18 +224,11 @@ class AgentsConfig(Base):
 class ProviderConfig(Base):
     """LLM provider configuration."""
 
+    type: str = "openai"  # openai | anthropic | gemini
     api_key: str = ""
     api_base: str | None = None
     extra_headers: dict[str, str] | None = None
-    api_mode: str = "auto"
-
-
-class ProvidersConfig(Base):
-    """Configuration for LLM providers."""
-    openai_compatible: ProviderConfig = Field(default_factory=ProviderConfig)
-    anthropic: ProviderConfig = Field(default_factory=ProviderConfig)
-    gemini: ProviderConfig = Field(default_factory=ProviderConfig)
-    openai_codex: ProviderConfig = Field(default_factory=ProviderConfig)
+    api_mode: str = "auto"  # auto | responses | completions (openai_compatible only)
 
 
 class GatewayConfig(Base):
@@ -305,7 +298,7 @@ class Config(BaseSettings):
 
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
-    providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
+    providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
 
@@ -317,66 +310,31 @@ class Config(BaseSettings):
     def _match_provider(
         self, model: str | None = None
     ) -> tuple["ProviderConfig | None", str | None]:
-        from bao.providers.registry import PROVIDERS, ProviderType
+        from bao.providers.registry import find_by_model
 
         model_str = model or self.agents.defaults.model
-        model_lower = model_str.lower()
-        model_prefix = model_lower.split("/", 1)[0] if "/" in model_lower else ""
-        normalized_prefix = model_prefix.replace("-", "_")
-
-        # Map registry spec names to config field names
-        # The simplified config only has 4 fields: openai_compatible, anthropic, gemini, openai_codex
-        def get_config_field_for_spec(spec_name: str, provider_type: ProviderType) -> str:
-            """Map registry spec name to config field name."""
-            if provider_type == ProviderType.ANTHROPIC:
-                return "anthropic"
-            elif provider_type == ProviderType.GEMINI:
-                return "gemini"
-            elif provider_type == ProviderType.OAUTH:
-                return "openai_codex"
-            else:  # OPENAI_COMPATIBLE
-                # Map specific providers to openai_compatible field
-                # These all use the same config field with different api_base
-                return "openai_compatible"
-
-        # Find provider spec by model
-        spec = None
-        for s in PROVIDERS:
-            if normalized_prefix == s.name:
-                spec = s
-                break
-        if not spec:
-            # Try keyword match
-            for s in PROVIDERS:
-                for kw in s.keywords:
-                    if kw in model_lower or kw.replace("-", "_") in model_lower:
-                        spec = s
-                        break
-                if spec:
-                    break
-        if not spec:
-            spec = next((s for s in PROVIDERS if s.name == "openai"), None)
-
+        if not model_str:
+            return None, None
+        spec = find_by_model(model_str)
         if not spec:
             return None, None
-
-        config_field = get_config_field_for_spec(spec.name, spec.provider_type)
-        p = getattr(self.providers, config_field, None)
-
-        # Priority 1: exact prefix match with api_key
-        if p and p.api_key:
-            return p, spec.name
-
-        # Priority 2: fallback to first available provider with api_key
-        for s in PROVIDERS:
-            if s.provider_type == ProviderType.OAUTH:
-                continue
-            field = get_config_field_for_spec(s.name, s.provider_type)
-            cfg = getattr(self.providers, field, None)
-            if cfg and cfg.api_key:
-                return cfg, s.name
-
-        return p if p else None, spec.name
+        model_prefix = model_str.lower().split("/", 1)[0] if "/" in model_str else ""
+        normalized_prefix = model_prefix.replace("-", "_")
+        expected_type = spec.provider_type.value
+        # Priority 1: config provider name matches model prefix
+        for provider_name, provider in self.providers.items():
+            if provider_name.replace("-", "_") == normalized_prefix and provider.api_key:
+                return provider, spec.name
+        # Priority 2: matching type with api_key
+        for provider in self.providers.values():
+            if provider.type == expected_type and provider.api_key:
+                return provider, spec.name
+        if expected_type != "openai":
+            return None, spec.name
+        for provider in self.providers.values():
+            if provider.api_key:
+                return provider, spec.name
+        return None, spec.name
 
     def get_provider(self, model: str | None = None) -> ProviderConfig | None:
         """Get matched provider config (api_key, api_base, extra_headers). Falls back to first available."""

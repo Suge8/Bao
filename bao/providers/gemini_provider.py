@@ -27,16 +27,19 @@ class GeminiProvider(LLMProvider):
         self,
         api_key: str | None = None,
         default_model: str = "gemini-2.0-flash",
+        base_url: str | None = None,
     ):
         super().__init__(api_key, None)
         self.default_model = default_model
-
-        self._client = genai.Client(api_key=api_key)
+        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        if base_url:
+            client_kwargs["http_options"] = types.HttpOptions(base_url=base_url)
+        self._client = genai.Client(**client_kwargs)
 
     def _resolve_model(self, model: str) -> str:
-        """Strip 'gemini/' prefix if present."""
-        if model.lower().startswith("gemini/"):
-            return model[len("gemini/") :]
+        """Strip provider prefix (e.g. 'gemini/', 'custom/') if present."""
+        if "/" in model:
+            return model.split("/", 1)[1]
         return model
 
     def _convert_messages(self, messages: list[dict[str, Any]]) -> list[types.Content]:

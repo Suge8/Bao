@@ -15,6 +15,7 @@ from bao.providers.responses_compat import (
     parse_responses_json,
 )
 from bao.providers.openai_provider import OpenAICompatibleProvider
+from bao.providers.base import LLMResponse
 
 
 def test_convert_messages_to_responses():
@@ -142,39 +143,129 @@ def test_provider_init_with_api_mode():
 
 
 def test_make_provider_passes_api_mode():
-    from bao.config.schema import Config
+    from bao.config.schema import Config, ProviderConfig
 
     cfg = Config()
-    cfg.providers.openai_compatible.api_key = "test-key"
-    cfg.providers.openai_compatible.api_mode = "responses"
-
+    cfg.providers["openai"] = ProviderConfig(
+        type="openai", api_key="test-key", api_mode="responses"
+    )
     from bao.providers import make_provider
 
     provider = make_provider(cfg, "openai/gpt-4o")
     assert isinstance(provider, OpenAICompatibleProvider)
     assert provider._api_mode == "responses"
-    print("✓ make_provider passes api_mode")
+    print("\u2713 make_provider passes api_mode")
 
 
 def test_utility_model_uses_same_provider_path():
-    from bao.config.schema import Config
+    from bao.config.schema import Config, ProviderConfig
     from bao.providers import make_provider
 
     cfg = Config()
-    cfg.providers.openai_compatible.api_key = "test-key"
-    cfg.providers.openai_compatible.api_base = "https://www.right.codes/codex"
-    cfg.providers.openai_compatible.api_mode = "auto"
-    cfg.agents.defaults.utility_model = "openai/gpt-4o-mini"
-
-    main_provider = make_provider(cfg, cfg.agents.defaults.model)
-    utility_provider = make_provider(cfg, cfg.agents.defaults.utility_model)
-
-    assert isinstance(utility_provider, OpenAICompatibleProvider), (
-        f"Utility model should use OpenAICompatibleProvider, got {type(utility_provider)}"
+    cfg.providers["openai"] = ProviderConfig(
+        type="openai", api_key="test-key", api_base="https://www.right.codes/codex", api_mode="auto"
     )
+    cfg.agents.defaults.model = "openai/gpt-4o"
+    cfg.agents.defaults.utility_model = "openai/gpt-4o-mini"
+    utility_provider = make_provider(cfg, cfg.agents.defaults.utility_model)
+    assert isinstance(utility_provider, OpenAICompatibleProvider)
     assert utility_provider._api_mode == "auto"
-    assert utility_provider._effective_base == "https://www.right.codes/codex"
-    print("✓ utility model uses same OpenAICompatibleProvider with api_mode=auto")
+    assert utility_provider._effective_base == "https://www.right.codes/codex/v1"
+    print("\u2713 utility model uses same provider path")
+
+
+def test_responses_parse_error_falls_back_and_demotes_cache(monkeypatch, tmp_path):
+    import bao.providers.api_mode_cache as cache_mod
+
+    old_cache = cache_mod._cache
+    old_file = cache_mod._CACHE_FILE
+    cache_mod._cache = None
+    cache_mod._CACHE_FILE = tmp_path / "api_mode_cache.json"
+
+    p = OpenAICompatibleProvider(api_key="k", api_base="https://x.com/v1", api_mode="auto")
+
+    class _Resp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, *args, **kwargs):
+            return _Resp()
+
+    async def _fake_chat(*args, **kwargs):
+        return LLMResponse(content="fallback-ok", finish_reason="stop")
+
+    monkeypatch.setattr(
+        "bao.providers.openai_provider.httpx.AsyncClient", lambda timeout: _Client()
+    )
+    monkeypatch.setattr(p, "_chat_completions", _fake_chat)
+
+    try:
+        result = asyncio.run(
+            p._call_responses_api("gpt-4o", [{"role": "user", "content": "hi"}], None, 256, 0.1)
+        )
+
+        assert result.content == "fallback-ok"
+        assert get_cached_mode("https://x.com/v1") == "completions"
+    finally:
+        cache_mod._cache = old_cache
+        cache_mod._CACHE_FILE = old_file
+
+
+def test_responses_non_200_falls_back_and_demotes_cache(monkeypatch, tmp_path):
+    import bao.providers.api_mode_cache as cache_mod
+
+    old_cache = cache_mod._cache
+    old_file = cache_mod._CACHE_FILE
+    cache_mod._cache = None
+    cache_mod._CACHE_FILE = tmp_path / "api_mode_cache.json"
+
+    p = OpenAICompatibleProvider(api_key="k", api_base="https://y.com/v1", api_mode="auto")
+
+    class _Resp:
+        status_code = 500
+        text = "upstream error"
+
+        def json(self):
+            return {}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, *args, **kwargs):
+            return _Resp()
+
+    async def _fake_chat(*args, **kwargs):
+        return LLMResponse(content="fallback-500", finish_reason="stop")
+
+    monkeypatch.setattr(
+        "bao.providers.openai_provider.httpx.AsyncClient", lambda timeout: _Client()
+    )
+    monkeypatch.setattr(p, "_chat_completions", _fake_chat)
+
+    try:
+        result = asyncio.run(
+            p._call_responses_api("gpt-4o", [{"role": "user", "content": "hi"}], None, 256, 0.1)
+        )
+
+        assert result.content == "fallback-500"
+        assert get_cached_mode("https://y.com/v1") == "completions"
+    finally:
+        cache_mod._cache = old_cache
+        cache_mod._CACHE_FILE = old_file
 
 
 if __name__ == "__main__":
