@@ -21,6 +21,14 @@ class ArtifactRef:
     redacted: bool
 
 
+@dataclass
+class ToolOutputBudgetEvent:
+    offloaded: bool = False
+    offloaded_chars: int = 0
+    hard_clipped: bool = False
+    hard_clipped_chars: int = 0
+
+
 class ArtifactStore:
     _KIND_DIRS: dict[str, str] = {
         "tool_output": "outputs",
@@ -126,14 +134,19 @@ class ArtifactStore:
         except ValueError:
             return str(path)
 
+
 def make_preview(text: str, max_chars: int) -> str:
     """生成 head/tail 预览，尽量按行对齐，保留疑似 error 行。"""
     if len(text) <= max_chars:
         return text
     half = max_chars // 2
     error_lines = [
-        line for line in text.splitlines()
-        if any(kw in line.lower() for kw in ("error", "traceback", "exception", "failed", "permission denied"))
+        line
+        for line in text.splitlines()
+        if any(
+            kw in line.lower()
+            for kw in ("error", "traceback", "exception", "failed", "permission denied")
+        )
     ]
 
     head = text[:half].rsplit("\n", 1)[0] if "\n" in text[:half] else text[:half]
@@ -167,3 +180,51 @@ def maybe_offload_result(
     except Exception as exc:
         logger.warning("ctx[L1] offload failed for {}: {}", tool_name, exc)
         return result
+
+
+def hard_clip_tool_result(result: str, tool_name: str, hard_chars: int = 6000) -> tuple[str, int]:
+    limit = max(500, int(hard_chars))
+    if len(result) <= limit:
+        return result, 0
+    omitted = len(result) - limit
+    clipped = result[:limit]
+    suffix = (
+        "\n... "
+        f"(hard-truncated {omitted} chars for context safety from tool '{tool_name}'; "
+        "request details explicitly if needed)"
+    )
+    return clipped + suffix, omitted
+
+
+def apply_tool_output_budget(
+    *,
+    store: "ArtifactStore | None",
+    tool_name: str,
+    tool_call_id: str,
+    result: str,
+    offload_chars: int = 8000,
+    preview_chars: int = 3000,
+    hard_chars: int = 6000,
+    ctx_mgmt: str = "observe",
+) -> tuple[str, ToolOutputBudgetEvent]:
+    event = ToolOutputBudgetEvent()
+    processed = result
+
+    if store is not None and ctx_mgmt in ("auto", "aggressive") and len(processed) >= offload_chars:
+        try:
+            preview = make_preview(processed, preview_chars)
+            ref = store.write_text("tool_output", f"{tool_name}_{tool_call_id}", processed)
+            processed = store.format_pointer(ref, preview)
+            event.offloaded = True
+            event.offloaded_chars = len(result)
+        except Exception as exc:
+            logger.warning("ctx[L1] offload failed for {}: {}", tool_name, exc)
+
+    processed, omitted = hard_clip_tool_result(
+        processed, tool_name=tool_name, hard_chars=hard_chars
+    )
+    if omitted > 0:
+        event.hard_clipped = True
+        event.hard_clipped_chars = omitted
+
+    return processed, event
