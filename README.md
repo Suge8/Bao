@@ -103,14 +103,6 @@ bao
 
 **就这样。2 分钟，一个完整的 AI 助手。**
 
-可选：运行桌面客户端（PySide6）：
-
-```bash
-uv sync --extra desktop
-uv run python app/main.py
-```
-
-桌面端是可选入口，不影响命令行 `bao` 的使用。
 
 可选：配置一个**效用模型**用于后台任务（经验提取、记忆整合、会话标题生成），节省开销：
 
@@ -322,14 +314,6 @@ bao
 
 **That's it. 2 minutes to a working AI assistant.**
 
-Optional: run the desktop client (PySide6):
-
-```bash
-uv sync --extra desktop
-uv run python app/main.py
-```
-
-The desktop client is optional and does not replace the `bao` CLI flow.
 
 Optional: configure a **Utility Model** for background tasks (experience extraction, memory consolidation, session title generation) to save costs:
 
