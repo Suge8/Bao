@@ -407,16 +407,25 @@ class AgentLoop:
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
 
-        preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
-        logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
-
         self._save_turn(session, all_msgs, 1 + len(history))
         self.sessions.save(session)
 
+        suppress_final_reply = False
         if message_tool := self.tools.get("message"):
-            if isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
-                return None
+            if isinstance(message_tool, MessageTool):
+                sent_targets = set(message_tool.get_turn_sends())
+                suppress_final_reply = (msg.channel, msg.chat_id) in sent_targets
 
+        if suppress_final_reply:
+            logger.info(
+                "Skipping final auto-reply because message tool already sent to {}:{} in this turn",
+                msg.channel,
+                msg.chat_id,
+            )
+            return None
+
+        preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
+        logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
         return OutboundMessage(
             channel=msg.channel, chat_id=msg.chat_id, content=final_content,
             metadata=msg.metadata or {},
