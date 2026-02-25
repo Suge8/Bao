@@ -451,6 +451,22 @@ def get_data_dir() -> Path:
     return get_data_path()
 
 
+def ensure_first_run() -> bool:
+    """Create ~/.bao/config.jsonc + workspace if they don't exist yet.
+
+    Returns True if files were created (first run), False if already existed.
+    Does NOT print, does NOT SystemExit — safe for Desktop use.
+    """
+    path = get_config_path()
+    if path.exists():
+        return False
+    config = Config()
+    save_config(config)
+    _ensure_workspace(config)
+    return True
+
+
+
 def load_config(config_path: Path | None = None) -> Config:
     path = config_path or get_config_path()
 
@@ -467,9 +483,7 @@ def load_config(config_path: Path | None = None) -> Config:
         return Config()
 
     # Auto-init: first run — create config + workspace + templates, then exit cleanly
-    config = Config()
-    save_config(config)
-    _ensure_workspace(config)
+    ensure_first_run()
     actual = get_config_path()
     print(
         "\n📁 .bao 配置文件夹已创建 / .bao config folder created"
