@@ -2,7 +2,7 @@
 
 基于 PySide6 + QML 的桌面客户端，**`bao` CLI 的纯 UI 壳子**。
 
-所有核心逻辑（AgentLoop、Channels、Cron、Heartbeat、startup greeting、首次落盘）均来自 `bao/` core，Desktop 不重复实现任何业务逻辑。配置有效时，App 启动后自动拉起网关，桌面聊天窗口作为 `desktop` channel 与 Telegram、iMessage 等其他渠道共存运行。
+所有核心逻辑（AgentLoop、Channels、Cron、Heartbeat、startup greeting、首次落盘）均来自 `bao/` core，Desktop 不重复实现任何业务逻辑。网关需用户手动启动（点击侧边栏 ⏻ 按钮），启动后桌面聊天窗口作为 `desktop` channel 与 Telegram、iMessage 等其他渠道共存运行。
 
 当前窗口外观默认使用系统标题栏；在 Windows 上会尝试调用 DWM 请求原生圆角（Windows 11 效果最佳）。
 
@@ -45,8 +45,28 @@ uv run python app/main.py
 
 ## 当前限制
 
-- 模拟流式输出（非真 token streaming，P1 计划）
 - 配置保存后需手动重启 Gateway（非热重载，by design）
-- 仅支持从源码运行（打包为 P2 计划）
+
+## 启动问候行为
+
+- 启动问候由 `bao/gateway/builder.py:send_startup_greeting` 统一执行，CLI 和 Desktop 共用
+- 每个已启用渠道独立调 LLM 生成问候，写入渠道真实 session（非孤立 system 会话）
+- 跳过 `allow_from ≠ chat_id` 的渠道（discord/slack/mochat）；WhatsApp 自动拼 JID
+- 重复目标自动去重，空 `chat_id` / 空主 ID 会被跳过并记录 warning
+- 生成后从 session 中精确删除注入的英文 prompt，只保留 assistant 问候
+- Desktop 通过 `on_desktop_greeting` 回调接收问候（兼容 sync/async 回调）
+- 所有发送与回调均为"失败隔离"策略：单个渠道异常不打断其他渠道
+- Onboarding 阶段（语言选择/人设设置）广播静态消息，不调 LLM
+
+## 聊天流式渲染说明
+
+- Desktop 使用 provider 增量回调实时更新气泡内容（`gateway.py` 信号桥接到 Qt 主线程）
+- 当一次回复包含多轮迭代（如中途触发工具调用）时，会在下一段真实增量到达时切到新 assistant 气泡，避免"内容先并入上一泡再跳走"的视觉抖动
+
+## 打包
+
+Desktop 打包流程（macOS / Windows）见：
+
+- `docs/desktop-packaging.md`
 
 > 开发细节（架构、测试命令、UI 坑点、技术要点）见 `AGENTS.md`。
