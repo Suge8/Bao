@@ -213,10 +213,10 @@ def _apply_filters(text: str, level: str) -> tuple[str, bool]:
 
 
 class WebSearchTool(Tool):
-    """Search the web using Brave or Tavily API."""
+    """Search the web using Brave, Tavily, or Exa API."""
 
     name = "web_search"
-    description = "Search the web using Tavily/Brave API. ALWAYS use this instead of exec+curl or web_fetch when you need to find information, news, or answers. Returns structured titles, URLs, and snippets."
+    description = "Search the web using Tavily/Brave/Exa API. ALWAYS use this instead of exec+curl or web_fetch when you need to find information, news, or answers. Returns structured titles, URLs, and snippets."
     parameters = {
         "type": "object",
         "properties": {
@@ -240,21 +240,25 @@ class WebSearchTool(Tool):
             search_config.tavily_api_key if search_config else None
         ) or os.environ.get("TAVILY_API_KEY", "")
         self.max_results = search_config.max_results if search_config else 5
+        self.exa_key = (search_config.exa_api_key if search_config else None) or os.environ.get(
+            "EXA_API_KEY", ""
+        )
 
     async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
         n = min(max(count or self.max_results, 1), 10)
-        p = self.provider.lower()
-        if p == "tavily" and self.tavily_key:
-            result = await self._tavily(query, n)
-            if not result.startswith("Error:") or not self.brave_key:
+        p = (self.provider or "").lower()
+        dispatch = {"tavily": self._tavily, "brave": self._brave, "exa": self._exa}
+        keys = {"tavily": self.tavily_key, "brave": self.brave_key, "exa": self.exa_key}
+        # Build try order: explicit provider first, then default priority
+        default_order = [k for k in ("tavily", "brave", "exa") if keys.get(k)]
+        if p in dispatch and keys.get(p):
+            order = [p] + [k for k in default_order if k != p]
+        else:
+            order = default_order
+        for provider in order:
+            result = await dispatch[provider](query, n)
+            if not result.startswith("Error:"):
                 return result
-            return await self._brave(query, n)
-        if p == "brave" and self.brave_key:
-            return await self._brave(query, n)
-        if self.tavily_key:
-            return await self._tavily(query, n)
-        if self.brave_key:
-            return await self._brave(query, n)
         return "Error: No search API key configured (set provider + API key in config)"
 
     async def _brave(self, query: str, n: int) -> str:
@@ -300,6 +304,29 @@ class WebSearchTool(Tool):
             if answer:
                 out = f"AI Answer: {answer}\n\n{out}"
             return out
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def _exa(self, query: str, n: int) -> str:
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.post(
+                    "https://api.exa.ai/search",
+                    json={"query": query, "numResults": n, "contents": {"text": {"maxCharacters": 300}}},
+                    headers={"x-api-key": self.exa_key, "Content-Type": "application/json"},
+                    timeout=15.0,
+                )
+                r.raise_for_status()
+            data = r.json()
+            results = [
+                {
+                    "title": x.get("title", ""),
+                    "url": x.get("url", ""),
+                    "description": x.get("text", ""),
+                }
+                for x in data.get("results", [])
+            ]
+            return self._format(query, results, n)
         except Exception as e:
             return f"Error: {e}"
 

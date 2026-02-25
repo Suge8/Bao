@@ -1,6 +1,7 @@
 """Spawn tool for creating background subagents."""
 
-from typing import Any, TYPE_CHECKING
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Any
 
 from bao.agent.tools.base import Tool
 
@@ -18,13 +19,19 @@ class SpawnTool(Tool):
 
     def __init__(self, manager: "SubagentManager"):
         self._manager = manager
-        self._origin_channel = "gateway"
-        self._origin_chat_id = "direct"
+        self._origin_channel: ContextVar[str] = ContextVar(
+            "spawn_origin_channel", default="gateway"
+        )
+        self._origin_chat_id: ContextVar[str] = ContextVar("spawn_origin_chat_id", default="direct")
+        self._session_key: ContextVar[str] = ContextVar(
+            "spawn_session_key", default="gateway:direct"
+        )
 
     def set_context(self, channel: str, chat_id: str) -> None:
         """Set the origin context for subagent announcements."""
-        self._origin_channel = channel
-        self._origin_chat_id = chat_id
+        self._origin_channel.set(channel)
+        self._origin_chat_id.set(chat_id)
+        self._session_key.set(f"{channel}:{chat_id}")
 
     @property
     def name(self) -> str:
@@ -55,11 +62,18 @@ class SpawnTool(Tool):
             "required": ["task"],
         }
 
-    async def execute(self, task: str, label: str | None = None, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> str:
         """Spawn a subagent to execute the given task."""
+        task = kwargs.get("task")
+        label = kwargs.get("label")
+        if not isinstance(task, str) or not task:
+            return "Error: task is required"
+        if label is not None and not isinstance(label, str):
+            return "Error: label must be a string"
         return await self._manager.spawn(
             task=task,
             label=label,
-            origin_channel=self._origin_channel,
-            origin_chat_id=self._origin_chat_id,
+            origin_channel=self._origin_channel.get(),
+            origin_chat_id=self._origin_chat_id.get(),
+            session_key=self._session_key.get(),
         )

@@ -1,7 +1,6 @@
 """MCP client: connects to MCP servers and wraps their tools as native bao tools."""
 
 import asyncio
-
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -11,16 +10,59 @@ from loguru import logger
 from bao.agent.tools.base import Tool
 from bao.agent.tools.registry import ToolRegistry
 
+_REMOVABLE_SCHEMA_KEYS = {"examples", "example", "default", "title", "$comment"}
+
+
+def _truncate_description(text: str, max_chars: int = 150) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "..."
+
+
+def _slim_schema(schema: Any, max_description_chars: int = 150) -> Any:
+    if isinstance(schema, dict):
+        result: dict[str, Any] = {}
+        for key, value in schema.items():
+            if key in _REMOVABLE_SCHEMA_KEYS:
+                continue
+            if key == "description" and isinstance(value, str):
+                result[key] = _truncate_description(value, max_description_chars)
+                continue
+            result[key] = _slim_schema(value, max_description_chars)
+        return result
+    if isinstance(schema, list):
+        return [_slim_schema(item, max_description_chars) for item in schema]
+    return schema
+
 
 class MCPToolWrapper(Tool):
     """Wraps a single MCP server tool as a bao Tool."""
 
-    def __init__(self, session, server_name: str, tool_def, timeout: int = 30):
+    def __init__(
+        self,
+        session,
+        server_name: str,
+        tool_def,
+        timeout: int = 30,
+        slim_schema: bool = True,
+        name_override: str | None = None,
+    ):
         self._session = session
         self._original_name = tool_def.name
-        self._name = f"mcp_{server_name}_{tool_def.name}"
-        self._description = tool_def.description or tool_def.name
-        self._parameters = tool_def.inputSchema or {"type": "object", "properties": {}}
+        self._name = name_override or f"mcp_{server_name}_{tool_def.name}"
+        description = (
+            tool_def.description if isinstance(tool_def.description, str) else tool_def.name
+        )
+        raw_schema = tool_def.inputSchema
+        parameters = (
+            raw_schema if isinstance(raw_schema, dict) else {"type": "object", "properties": {}}
+        )
+        if slim_schema:
+            self._description = _truncate_description(description)
+            self._parameters = _slim_schema(parameters)
+        else:
+            self._description = description
+            self._parameters = parameters
         self._timeout = timeout
 
     @property
@@ -37,6 +79,7 @@ class MCPToolWrapper(Tool):
 
     async def execute(self, **kwargs: Any) -> str:
         from mcp import types
+
         try:
             result = await asyncio.wait_for(
                 self._session.call_tool(self._original_name, arguments=kwargs),
@@ -54,46 +97,129 @@ class MCPToolWrapper(Tool):
 
 
 async def connect_mcp_servers(
-    mcp_servers: dict, registry: ToolRegistry, stack: AsyncExitStack
-) -> None:
+    mcp_servers: dict[str, Any],
+    registry: ToolRegistry,
+    stack: AsyncExitStack,
+    max_tools: int = 50,
+    slim_schema: bool = True,
+) -> tuple[int, int]:
     """Connect to configured MCP servers and register their tools."""
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
+    tool_limit = max_tools > 0
+    total_registered = 0
+    connected_servers = 0
+
     for name, cfg in mcp_servers.items():
+        if tool_limit and total_registered >= max_tools:
+            logger.warning(
+                "MCP: reached global tool limit ({}), skip remaining servers",
+                max_tools,
+            )
+            break
+        server_stack = AsyncExitStack()
+        await server_stack.__aenter__()
         try:
+            connect_timeout = (
+                cfg.tool_timeout_seconds
+                if isinstance(cfg.tool_timeout_seconds, int) and cfg.tool_timeout_seconds > 0
+                else 30
+            )
             if cfg.command:
                 params = StdioServerParameters(
                     command=cfg.command, args=cfg.args, env=cfg.env or None
                 )
-                read, write = await stack.enter_async_context(stdio_client(params))
+                read, write = await asyncio.wait_for(
+                    server_stack.enter_async_context(stdio_client(params)),
+                    timeout=connect_timeout,
+                )
             elif cfg.url:
                 from mcp.client.streamable_http import streamable_http_client
-                # Always provide an explicit httpx client so MCP HTTP transport does not
-                # inherit httpx's default 5s timeout and preempt the higher-level tool timeout.
-                http_client = await stack.enter_async_context(
+
+                http_client = await server_stack.enter_async_context(
                     httpx.AsyncClient(
                         headers=cfg.headers or None,
                         follow_redirects=True,
                         timeout=None,
                     )
                 )
-                read, write, _ = await stack.enter_async_context(
-                    streamable_http_client(cfg.url, http_client=http_client)
+                read, write, _ = await asyncio.wait_for(
+                    server_stack.enter_async_context(
+                        streamable_http_client(cfg.url, http_client=http_client)
+                    ),
+                    timeout=connect_timeout,
                 )
             else:
                 logger.warning("MCP server '{}': no command or url configured, skipping", name)
+                await server_stack.aclose()
                 continue
 
-            session = await stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
+            session = await server_stack.enter_async_context(ClientSession(read, write))
+            await asyncio.wait_for(session.initialize(), timeout=connect_timeout)
 
-            tools = await session.list_tools()
+            tools = await asyncio.wait_for(session.list_tools(), timeout=connect_timeout)
+            connected_servers += 1
+            server_count = 0
+            pending_names: set[str] = set()
+            pending_wrappers: list[MCPToolWrapper] = []
             for tool_def in tools.tools:
-                wrapper = MCPToolWrapper(session, name, tool_def, timeout=cfg.tool_timeout_seconds)
-                registry.register(wrapper)
-                logger.debug("MCP: registered tool '{}' from server '{}'", wrapper.name, name)
+                if tool_limit and total_registered >= max_tools:
+                    logger.warning(
+                        "MCP: reached global tool limit ({}) while registering server '{}'",
+                        max_tools,
+                        name,
+                    )
+                    break
 
-            logger.info("MCP server '{}': connected, {} tools registered", name, len(tools.tools))
+                base_name = f"mcp_{name}_{tool_def.name}"
+                wrapper_name = base_name
+                collision_index = 1
+                while wrapper_name in pending_names or registry.has(wrapper_name):
+                    wrapper_name = f"{base_name}_{collision_index}"
+                    collision_index += 1
+                pending_names.add(wrapper_name)
+
+                wrapper = MCPToolWrapper(
+                    session,
+                    name,
+                    tool_def,
+                    timeout=cfg.tool_timeout_seconds,
+                    slim_schema=slim_schema,
+                    name_override=wrapper_name,
+                )
+                pending_wrappers.append(wrapper)
+
+            registered_names: list[str] = []
+            try:
+                for wrapper in pending_wrappers:
+                    registry.register(wrapper)
+                    registered_names.append(wrapper.name)
+                    total_registered += 1
+                    server_count += 1
+                    logger.debug("MCP: registered tool '{}' from server '{}'", wrapper.name, name)
+            except Exception:
+                for tool_name in registered_names:
+                    registry.unregister(tool_name)
+                raise
+
+            if server_count > 0:
+                await stack.enter_async_context(server_stack)
+            else:
+                await server_stack.aclose()
+
+            logger.info("MCP server '{}': connected, {} tools registered", name, server_count)
+        except asyncio.CancelledError:
+            try:
+                await server_stack.aclose()
+            except Exception:
+                pass
+            raise
         except Exception as e:
             logger.error("MCP server '{}': failed to connect: {}", name, e)
+            try:
+                await server_stack.aclose()
+            except Exception:
+                pass
+
+    return total_registered, connected_servers
