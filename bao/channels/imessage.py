@@ -14,6 +14,7 @@ from bao.bus.events import OutboundMessage
 from bao.bus.queue import MessageBus
 from bao.channels.base import BaseChannel
 from bao.config.schema import IMessageConfig
+from bao.channels.progress_text import ProgressBuffer
 
 CHAT_DB = Path.home() / "Library" / "Messages" / "chat.db"
 APPLE_EPOCH_OFFSET = 978307200
@@ -27,6 +28,7 @@ class IMessageChannel(BaseChannel):
         self.config: IMessageConfig = config
         self._last_rowid: int = 0
         self._poll_interval: float = config.poll_interval
+        self._progress = ProgressBuffer(self._send_text)
 
     async def start(self) -> None:
         if not CHAT_DB.exists():
@@ -50,16 +52,26 @@ class IMessageChannel(BaseChannel):
             await asyncio.sleep(self._poll_interval)
 
     async def stop(self) -> None:
+        await self._progress.flush_all()
         self._running = False
 
     async def send(self, msg: OutboundMessage) -> None:
-        buddy = msg.chat_id
-        text = (msg.content or "").replace("\\", "\\\\").replace('"', '\\"')
+        meta = msg.metadata or {}
+        await self._progress.handle(
+            msg.chat_id,
+            msg.content or "",
+            is_progress=bool(meta.get("_progress")),
+            is_tool_hint=bool(meta.get("_tool_hint")),
+        )
+
+
+    async def _send_text(self, buddy: str, text: str) -> None:
+        encoded = text.replace("\\", "\\\\").replace('"', '\\"')
         script = (
             f'tell application "Messages"\n'
             f"  set targetService to 1st account whose service type = iMessage\n"
             f'  set targetBuddy to buddy "{buddy}" of targetService\n'
-            f'  send "{text}" to targetBuddy\n'
+            f'  send "{encoded}" to targetBuddy\n'
             f"end tell"
         )
         try:
@@ -102,7 +114,7 @@ class IMessageChannel(BaseChannel):
                 content=text,
             )
 
-    def _query_new(self) -> list[tuple]:
+    def _query_new(self) -> list[tuple[int, str, str, str]]:
         for attempt in range(3):
             try:
                 conn = sqlite3.connect(f"file:{CHAT_DB}?mode=ro", uri=True, timeout=5)
