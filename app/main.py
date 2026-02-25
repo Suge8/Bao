@@ -210,6 +210,11 @@ def main() -> int:
 
     config_service.load()
 
+    # Set UI language on ChatService for localized system messages
+    _cfg_lang = config_service.get("ui.language", "auto")
+    _ui_lang = _cfg_lang if _cfg_lang in ("zh", "en") else detect_system_ui_language()
+    chat_service.setLanguage(_ui_lang)
+
     # Early SessionManager for browsing history without gateway
     from bao.session.manager import SessionManager
 
@@ -254,10 +259,7 @@ def main() -> int:
             )
     _ = root.setProperty("startView", start_view)
 
-    # Auto-start gateway when config is valid (skip in smoke modes)
-    _is_smoke = smoke or smoke_screenshot or smoke_theme_toggle
-    if not _is_smoke and config_service.isValid and not config_service.needsSetup:
-        QTimer.singleShot(0, chat_service.start)
+
     if seed_messages:
         messages_model.append_user("Hello, what can you do?")
         messages_model.append_assistant(

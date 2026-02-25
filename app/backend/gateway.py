@@ -48,6 +48,7 @@ class ChatService(QObject):
         self._session_key = "desktop:local"
         self._send_queue: queue.Queue[str] = queue.Queue()
         self._processing = False
+        self._lang = "en"
         self._lock = threading.Lock()
         self._cron_status: dict[str, Any] = {}
         self._session_manager: Any = None
@@ -76,6 +77,9 @@ class ChatService(QObject):
     # Public slots
     # ------------------------------------------------------------------
 
+    @Slot(str)
+    def setLanguage(self, lang: str) -> None:
+        self._lang = lang if lang in ("zh", "en") else "en"
     @Slot()
     def start(self) -> None:
         if self._state in ("starting", "running"):
@@ -198,14 +202,18 @@ class ChatService(QObject):
             self._set_error(error_msg)
             return
         self._set_state("running")
-        # Build status message (mirrors CLI output)
-        parts = ["✓ Gateway started"]
+        # Build localized status message
+        is_zh = self._lang == "zh"
+        parts = ["✓ 网关已启动" if is_zh else "✓ Gateway started"]
         if channels:
-            parts.append(f"channels: {', '.join(channels)}")
+            lbl = "通道" if is_zh else "channels"
+            parts.append(f"{lbl}: {', '.join(channels)}")
         cron_jobs = self._cron_status.get("jobs", 0)
         if cron_jobs > 0:
-            parts.append(f"cron: {cron_jobs} jobs")
-        parts.append("heartbeat: every 30m")
+            lbl = "定时任务" if is_zh else "cron"
+            parts.append(f"{lbl}: {cron_jobs} {'个' if is_zh else 'jobs'}")
+        hb = "心跳: 每 30 分钟" if is_zh else "heartbeat: every 30m"
+        parts.append(hb)
         self._model.append_system(" — ".join(parts))
         self._session_manager = session_manager
         self.gatewayReady.emit(session_manager, channels)

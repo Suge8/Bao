@@ -42,9 +42,9 @@ _JSONC_TEMPLATE = """\
       // 是否向聊天渠道发送进度文本（默认开启）
       // Whether to send progress text to chat channels (enabled by default)
       "sendProgress": true,
-      // 是否向聊天渠道发送工具调用提示（默认开启）
+      // 是否向聊天渠道发送工具调用提示（默认关闭）
       // Whether to send tool-call hints to chat channels (enabled by default)
-      "sendToolHints": true
+      "sendToolHints": false
     }
   },
   // ───────────────────────────────────────────────────────────────
