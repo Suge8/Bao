@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
 
 from bao import __logo__, __version__
-from bao.config.schema import Config
+
+if TYPE_CHECKING:
+    from bao.config.schema import Config
 
 app = typer.Typer(name="bao", help=f"{__logo__} bao - Gateway", invoke_without_command=True)
 console = Console()

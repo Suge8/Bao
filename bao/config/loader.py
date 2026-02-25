@@ -1,5 +1,5 @@
-import json
 import importlib.resources
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -8,9 +8,6 @@ from bao.config.schema import Config
 
 _JSONC_TEMPLATE = """\
 {
-  // ╔═══════════════════════════════════════════════════════════════╗
-  // ║  bao 配置文件 | bao Configuration                            ║
-  // ╚═══════════════════════════════════════════════════════════════╝
   // ───────────────────────────────────────────────────────────────
   //  🤖 Agent 配置 | Agent Settings
   // ───────────────────────────────────────────────────────────────
@@ -21,7 +18,7 @@ _JSONC_TEMPLATE = """\
       // 格式 Format: "前缀/模型名" e.g. "openai/gpt-5.2", "deepseek/deepseek-chat"
       // 推荐 Recommended:
       //   "anthropic/claude-opus-4-6"
-      //   "zhipu/glm-5"
+      //   "zai/glm-5"
       //   "moonshot/kimi-k2.5"
       //   "openai/gpt-5.2"
       "model": "",
@@ -35,21 +32,20 @@ _JSONC_TEMPLATE = """\
       "experienceModel": "utility",
       // 可切换模型列表，运行时 /model 切换 | Switchable models, use /model at runtime
       "models": [],
-      "maxTokens": 8192,
+      "maxTokens": 16000,
       "temperature": 0.1,
-      "maxToolIterations": 20,
-      "memoryWindow": 50,
+      "maxToolIterations": 50,
+      "memoryWindow": 100,
       // 是否向聊天渠道发送进度文本（默认开启）
       // Whether to send progress text to chat channels (enabled by default)
       "sendProgress": true,
       // 是否向聊天渠道发送工具调用提示（默认关闭）
-      // Whether to send tool-call hints to chat channels (enabled by default)
+      // Whether to send tool-call hints to chat channels (disabled by default)
       "sendToolHints": false
     }
   },
   // ───────────────────────────────────────────────────────────────
   //  🔑 LLM Providers — 取消注释以启用 | Uncomment to enable
-  //
   //  ⚠️  请至少启用一个 | Enable at least one
   //  名称随意，type 决定 SDK | Name freely, type determines SDK
   //  type: "openai" | "anthropic" | "gemini"
@@ -84,12 +80,10 @@ _JSONC_TEMPLATE = """\
   },
   // ───────────────────────────────────────────────────────────────
   //  💬 聊天渠道 — 取消注释以启用 | Chat Channels — Uncomment to enable
-  //  推荐 iMessage（macOS 零配置）| iMessage recommended (macOS, zero config)
   // ───────────────────────────────────────────────────────────────
   "channels": {
     // ── iMessage（推荐 Recommended）─────────────────────────────
     //  仅 macOS | macOS only
-    //
     // "imessage": {
     //   "enabled": true,
     //   "pollInterval": 2.0,
@@ -99,7 +93,6 @@ _JSONC_TEMPLATE = """\
     //
     // ── Telegram ────────────────────────────────────────────────
     //  Token from @BotFather
-    //
     // "telegram": {
     //   "enabled": true,
     //   "token": "123456:ABC-DEF...",
@@ -110,7 +103,6 @@ _JSONC_TEMPLATE = """\
     //
     // ── Discord ─────────────────────────────────────────────────
     //  Bot Token + Message Content Intent
-    //
     // "discord": {
     //   "enabled": true,
     //   "token": "MTIz...",
@@ -119,7 +111,6 @@ _JSONC_TEMPLATE = """\
     //
     // ── WhatsApp ────────────────────────────────────────────────
     //  通过 Bridge 扫码 | Connect via bridge, scan QR
-    //
     // "whatsapp": {
     //   "enabled": true,
     //   "bridgeUrl": "ws://localhost:3001",
@@ -129,7 +120,6 @@ _JSONC_TEMPLATE = """\
     //
     // ── 飞书 Feishu / Lark ──────────────────────────────────────
     //  App ID + App Secret
-    //
     // "feishu": {
     //   "enabled": true,
     //   "appId": "",
@@ -141,7 +131,6 @@ _JSONC_TEMPLATE = """\
     //
     // ── Slack ────────────────────────────────────────────────────
     //  Bot Token (xoxb-...) + App Token (xapp-...)
-    //
     // "slack": {
     //   "enabled": true,
     //   "botToken": "xoxb-...",
@@ -154,7 +143,6 @@ _JSONC_TEMPLATE = """\
     //
     // ── 钉钉 DingTalk ───────────────────────────────────────────
     //  AppKey + AppSecret（Stream 模式 | Stream mode）
-    //
     // "dingtalk": {
     //   "enabled": true,
     //   "clientId": "",
@@ -164,7 +152,6 @@ _JSONC_TEMPLATE = """\
     //
     // ── QQ ───────────────────────────────────────────────────────
     //  App ID + Secret（botpy SDK）
-    //
     // "qq": {
     //   "enabled": true,
     //   "appId": "",
@@ -174,7 +161,6 @@ _JSONC_TEMPLATE = """\
     //
     // ── Email 邮件 ──────────────────────────────────────────────
     //  IMAP 收件 + SMTP 发件 | IMAP receive + SMTP send
-    //
     // "email": {
     //   "enabled": true,
     //   "consentGranted": true,
@@ -192,7 +178,6 @@ _JSONC_TEMPLATE = """\
     //
     // ── Mochat ───────────────────────────────────────────────────
     //  Mochat 客服集成 | Mochat customer service
-    //
     // "mochat": {
     //   "enabled": true,
     //   "baseUrl": "https://mochat.io",
@@ -205,13 +190,13 @@ _JSONC_TEMPLATE = """\
   //  🔧 工具配置 | Tool Settings
   // ───────────────────────────────────────────────────────────────
   "tools": {
-    // 网页搜索：填 Tavily 或 Brave API Key 启用
-    // Web search: fill Tavily or Brave API Key to enable
+    // 网页搜索：填 Tavily / Brave / Exa API Key 启用 | Web search: fill Tavily / Brave / Exa API Key to enable
     "web": {
       "search": {
         "provider": "",
         "tavilyApiKey": "",
         "braveApiKey": ""
+        "exaApiKey": ""
       }
     },
     "exec": {
@@ -223,113 +208,27 @@ _JSONC_TEMPLATE = """\
       "apiKey": "",
       "baseUrl": ""
     },
+    // 将 Agent 的所有文件和命令操作限制在工作区目录内｜Restrict all files and command operations of the Agent within the workspace directory.
     "restrictToWorkspace": false,
-    // MCP 服务器，兼容 Claude Desktop / Cursor
-    // MCP servers, compatible with Claude Desktop / Cursor
+    // MCP tool 注册总上限（0 表示不限）| Global cap for registered MCP tools (0 = unlimited)
+    "mcpMaxTools": 50,
+    // 是否对 MCP schema 做精简（删除冗余元数据）| Slim MCP schema metadata before exposing to LLM
+    "mcpSlimSchema": true,
+    // MCP 服务器，兼容 Claude Desktop / Cursor｜MCP servers, compatible with Claude Desktop / Cursor
     "mcpServers": {}
   }
 }
 """
 
 
-def _read_workspace_template(filename: str) -> str:
-    """Read a template from bao/templates/workspace/ via importlib.resources."""
+def _read_workspace_template(filename: str, lang: str = "zh") -> str:
+    """Read a template from bao/templates/workspace/{lang}/ via importlib.resources."""
     return (
         importlib.resources.files("bao.templates.workspace")
+        .joinpath(lang)
         .joinpath(filename)
         .read_text(encoding="utf-8")
     )
-
-
-_PERSONA_EN = """# Persona
-
-## Identity
-
-I am bao, a lightweight AI assistant.
-
-- Helpful, friendly
-- Concise, to the point
-- Curious, eager to learn
-- Accuracy over speed
-- Protect user privacy and security
-- Transparent in actions
-
-## User
-
-- **Name**: (your name)
-- **Language**: English
-- **Communication style**: (casual/formal)
-- **Role**: (your role, e.g. developer, researcher)
-- **Interests**: (topics you care about)
-
-## Special Instructions
-
-(Any specific instructions for the assistant)
-"""
-
-_INSTRUCTIONS_EN = """# Instructions
-
-## Language Policy
-
-Always reply in the language set in the user's `PERSONA.md`.
-When calling tools, use the user's language for natural-language arguments (e.g. search queries) unless the user explicitly requests otherwise.
-
-## Guidelines
-
-- Briefly state your intent before taking action (one sentence)
-- Ask for clarification when requests are ambiguous
-- Be concise, accurate, and friendly
-- Avoid pure list/bullet-point dumps in responses
-
-## Tool Use
-
-Tool outputs are intermediate data, not final responses.
-- Extract only facts relevant to the user's question
-- Note uncertainty when sources conflict
-- Synthesize into a concise conclusion before replying
-- Do not expose raw JSON, logs, or technical details unless the user asks
-
-Before calling a tool, ask yourself: can I answer reliably without it? If yes, answer directly.
-
-### Search Strategy
-
-If `web_search` is in your tool list, prefer it for information retrieval; otherwise use `web_fetch` to access search engine pages.
-
-## Workspace
-
-| File | Purpose |
-|------|---------|
-| `PERSONA.md` | Personality, user profile, special instructions |
-| `INSTRUCTIONS.md` | Behavior rules (this file) |
-| `HEARTBEAT.md` | Periodic tasks, checked every 30 minutes |
-| `skills/` | Skill definitions (`skills/{name}/SKILL.md`) |
-
-### Database (LanceDB — Auto-managed)
-
-| Table | Purpose |
-|-------|---------|
-| `memory` | Long-term memory, conversation history, task experience |
-| `memory_vectors` | Semantic embeddings (optional) |
-
-Memory is auto-managed. Do not use `read_file`/`write_file`/`edit_file` on memory.
-Experience learning runs automatically — no manual action needed.
-
-## Identity & Preference Persistence
-
-When the user mentions the following in conversation, use `edit_file` to update `PERSONA.md`:
-
-- User info (name, language, preferences) → `## User`
-- Assistant personality (nickname, style) → `## Identity`
-- Behavioral preferences (e.g. "make search results more detailed") → `## Special Instructions`
-
-`PERSONA.md` is loaded at the start of every conversation. If you don't write it, you'll forget.
-Do not modify `INSTRUCTIONS.md` — write behavioral preferences to `PERSONA.md` special instructions.
-
-## Scheduled Tasks
-
-- Use the `cron` tool for reminders and scheduled tasks — don't just write to memory
-- Edit `HEARTBEAT.md` for periodic tasks (checked every 30 minutes)
-"""
 
 
 LANG_PICKER = "嗨 👋 请选择语言 / Pick your language:\n\n1. 中文\n2. English"
@@ -340,13 +239,15 @@ PERSONA_GREETING: dict[str, str] = {
         "1. 给我起个名字呗？\n"
         "2. 你叫啥？怎么称呼你舒服怎么来～\n"
         "3. 平时聊天习惯？随意唠 / 说重点 / 正经点\n\n"
+        "4. 一般喜欢做啥？想我以后帮你什么？\n\n"
     ),
     "en": (
-        "Hey 👋 I'm an AI buddy running on the bao framework — still unnamed tho~\n\n"
+        "Hey 👋 I'm ur AI buddy running on the bao framework — still unnamed tho~\n\n"
         "Before we get rolling, quick intro:\n\n"
         "1. Wanna give me a name?\n"
         "2. What do I call you? Whatever feels right~\n"
         "3. How do you like to chat? Chill / straight to the point / keep it professional\n\n"
+        "4. What do you usually like to do? What do you want me to help you with in the future?\n\n"
     ),
 }
 
@@ -376,14 +277,22 @@ def infer_language(workspace: Path) -> str:
 
 def write_instructions(workspace: Path, lang: str) -> None:
     """Write INSTRUCTIONS.md in the chosen language (deferred until onboarding)."""
-    tpl = _INSTRUCTIONS_EN if lang == "en" else _read_workspace_template("INSTRUCTIONS.md")
+    tpl = _read_workspace_template("INSTRUCTIONS.md", lang)
     (workspace / "INSTRUCTIONS.md").write_text(tpl, encoding="utf-8")
+
+
+def write_heartbeat(workspace: Path, lang: str) -> None:
+    """Write HEARTBEAT.md in the chosen language (deferred until onboarding)."""
+    tpl = _read_workspace_template("HEARTBEAT.md", lang)
+    hp = workspace / "HEARTBEAT.md"
+    if not hp.exists():
+        hp.write_text(tpl, encoding="utf-8")
 
 
 def write_persona_profile(workspace: Path, lang: str, profile: dict[str, str]) -> None:
     """Write extracted user profile into PERSONA.md, replacing template placeholders."""
     persona = workspace / "PERSONA.md"
-    base = _PERSONA_EN if lang == "en" else _read_workspace_template("PERSONA.md")
+    base = _read_workspace_template("PERSONA.md", lang)
     content = base
     user_name = profile.get("user_name", "")
     style = profile.get("style", "")
@@ -466,7 +375,6 @@ def ensure_first_run() -> bool:
     return True
 
 
-
 def load_config(config_path: Path | None = None) -> Config:
     path = config_path or get_config_path()
 
@@ -513,9 +421,9 @@ def _ensure_workspace(config: Config) -> None:
     workspace = config.workspace_path
     workspace.mkdir(parents=True, exist_ok=True)
 
-    _DEFERRED = {"PERSONA.md", "INSTRUCTIONS.md"}
+    _deferred = {"PERSONA.md", "INSTRUCTIONS.md", "HEARTBEAT.md"}
     for item in importlib.resources.files("bao.templates.workspace").iterdir():
-        if not item.name.endswith(".md") or item.name in _DEFERRED:
+        if not item.name.endswith(".md") or item.name in _deferred:
             continue
         fp = workspace / item.name
         if not fp.exists():

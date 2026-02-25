@@ -9,6 +9,9 @@ from loguru import logger
 from bao.utils.db import get_db, ensure_table
 
 
+_RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
+
+
 _META_SAMPLE = [
     {
         "session_key": "_init_",
@@ -64,8 +67,15 @@ class Session:
             return []
         out: list[dict[str, Any]] = []
         for m in sliced[start:]:
+            content = m.get("content", "")
+            if (
+                m.get("role") == "user"
+                and isinstance(content, str)
+                and content.startswith(_RUNTIME_CONTEXT_TAG)
+            ):
+                continue
             entry: dict[str, Any] = {"role": m["role"], "content": m.get("content", "")}
-            for k in ("tool_calls", "tool_call_id", "name"):
+            for k in ("tool_calls", "tool_call_id", "name", "_source"):
                 if k in m:
                     entry[k] = m[k]
             out.append(entry)
@@ -248,6 +258,7 @@ class SessionManager:
         self._cache.pop(key, None)
         try:
             from bao.agent.artifacts import ArtifactStore
+
             ArtifactStore(self.workspace, key, 0).cleanup_session()
         except Exception:
             pass

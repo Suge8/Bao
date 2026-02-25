@@ -1,11 +1,17 @@
-from pathlib import Path
+from __future__ import annotations
 
-import lancedb
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import lancedb
 
 _connections: dict[str, lancedb.DBConnection] = {}
 
 
 def get_db(workspace: Path) -> lancedb.DBConnection:
+    import lancedb
+
     key = str(workspace)
     if key not in _connections:
         db_path = workspace / "lancedb"

@@ -1,7 +1,8 @@
 """Configuration schema using Pydantic."""
 
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
+
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -208,6 +209,7 @@ class AgentDefaults(Base):
     context_management: str = "observe"  # off | observe | auto | aggressive
     tool_output_preview_chars: int = 3000
     tool_output_offload_chars: int = 8000
+    tool_output_hard_chars: int = 6000
     context_compact_bytes_est: int = 240000
     context_compact_keep_recent_tool_blocks: int = 4
     artifact_retention_days: int = 7
@@ -233,6 +235,7 @@ class ProviderConfig(Base):
 
 class HeartbeatConfig(Base):
     """Heartbeat service configuration."""
+
     enabled: bool = True
     interval_s: int = 30 * 60  # 30 minutes
 
@@ -264,6 +267,7 @@ class WebSearchConfig(Base):
     provider: str = ""
     brave_api_key: str = ""
     tavily_api_key: str = ""
+    exa_api_key: str = ""
     max_results: int = 5
 
 
@@ -277,6 +281,7 @@ class ExecToolConfig(Base):
     """Shell exec tool configuration."""
 
     timeout: int = 60
+    path_append: str = ""
 
 
 class MCPServerConfig(Base):
@@ -298,6 +303,8 @@ class ToolsConfig(Base):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
+    mcp_max_tools: int = 50
+    mcp_slim_schema: bool = True
 
 
 class UIConfig(Base):
