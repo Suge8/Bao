@@ -108,8 +108,10 @@ class BigOutputProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.1,
+        on_progress=None,
+        **kwargs: Any,
     ) -> LLMResponse:
-        del tools, model, max_tokens, temperature
+        del tools, model, max_tokens, temperature, on_progress, kwargs
         self.captured_messages.append([m.copy() for m in messages])
         if self.call_index == 0:
             self.call_index += 1

@@ -203,8 +203,10 @@ class _StaticProvider:
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.1,
+        on_progress=None,
+        **kwargs: Any,
     ):
-        del messages, tools, model, max_tokens, temperature
+        del messages, tools, model, max_tokens, temperature, on_progress, kwargs
         from bao.providers.base import LLMResponse
 
         return LLMResponse(content="ok", finish_reason="stop")

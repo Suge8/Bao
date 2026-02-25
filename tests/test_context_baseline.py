@@ -105,8 +105,10 @@ class ScriptedProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.1,
+        on_progress=None,
+        **kwargs: Any,
     ) -> LLMResponse:
-        del tools, model, max_tokens, temperature
+        del tools, model, max_tokens, temperature, on_progress, kwargs
         bytes_est = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
         self.context_bytes_est.append(bytes_est)
 
