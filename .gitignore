@@ -30,7 +30,10 @@ botpy.log
 
 # IDE & tools
 .ace-tool/
+.agent/
+.agents/
 .assets
+.claude/
 .DS_Store
 .sisyphus/
 update.md
