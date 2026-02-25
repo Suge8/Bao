@@ -7,6 +7,7 @@ import json_repair
 from pathlib import Path
 import re
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from urllib.parse import urlsplit
 
 from loguru import logger
 
@@ -125,9 +126,6 @@ class AgentLoop:
             config.agents.defaults.experience_model if config else "utility"
         ).lower()
 
-        self._last_progress_content: dict[str, tuple[str, float]] = {}
-        self._progress_min_interval = 2.0
-
     def _register_default_tools(self) -> None:
         allowed_dir = self.workspace if self.restrict_to_workspace else None
         self.tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
@@ -200,19 +198,38 @@ class AgentLoop:
             return None
         return re.sub(r"<think>[\s\S]*?</think>", "", text).strip() or None
 
-    def _should_send_progress(self, channel: str, chat_id: str, content: str) -> bool:
-        key = f"{channel}:{chat_id}"
-        now = asyncio.get_event_loop().time()
+    @staticmethod
+    def _short_hint_arg(value: str, max_len: int = 72) -> str:
+        text = value.strip().replace("\n", " ")
+        if not text:
+            return ""
 
-        if key in self._last_progress_content:
-            last_content, last_time = self._last_progress_content[key]
-            if content == last_content:
-                return False
-            if now - last_time < self._progress_min_interval:
-                return False
+        if text.startswith(("http://", "https://")):
+            parts = urlsplit(text)
+            host = f"{parts.scheme}://{parts.netloc}"
+            segments = [seg for seg in parts.path.split("/") if seg]
+            if not segments:
+                return host
+            if len(segments) == 1:
+                compact = f"{host}/{segments[0]}"
+            elif len(segments) == 2:
+                compact = f"{host}/{segments[0]}/{segments[1]}"
+            else:
+                compact = f"{host}/{segments[0]}/.../{segments[-1]}"
+            if len(compact) <= max_len:
+                return compact
+            keep = max_len - len(host) - 2
+            keep = max(8, keep)
+            return f"{host}/{segments[0][:keep]}..."
 
-        self._last_progress_content[key] = (content, now)
-        return True
+        if len(text) <= max_len:
+            return text
+
+        cut = text[: max_len - 1]
+        split_at = max(cut.rfind(" "), cut.rfind("/"), cut.rfind("_"), cut.rfind("-"))
+        if split_at >= 16:
+            return f"{cut[:split_at]}..."
+        return f"{cut}..."
 
     @staticmethod
     def _tool_hint(tool_calls: list[Any]) -> str:
@@ -220,7 +237,8 @@ class AgentLoop:
             val = next(iter(tc.arguments.values()), None) if tc.arguments else None
             if not isinstance(val, str):
                 return tc.name
-            return f'{tc.name}("{val[:40]}…")' if len(val) > 40 else f'{tc.name}("{val}")'
+            short = AgentLoop._short_hint_arg(val)
+            return f'{tc.name}("{short}")' if short else tc.name
 
         return ", ".join(_fmt(tc) for tc in tool_calls)
 
@@ -228,6 +246,7 @@ class AgentLoop:
         self,
         initial_messages: list[dict[str, Any]],
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        on_tool_hint: Callable[[str], Awaitable[None]] | None = None,
     ) -> tuple[str | None, list[str], list[str], int, list[str]]:
         messages = initial_messages
         iteration = 0
@@ -291,6 +310,8 @@ class AgentLoop:
                 model=self.model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
+                on_progress=on_progress,
+                source="main",
             )
 
             logger.debug(
@@ -302,12 +323,11 @@ class AgentLoop:
             )
 
             if response.has_tool_calls:
-                if on_progress:
-                    clean = self._strip_think(response.content)
-                    if clean:
-                        reasoning_snippets.append(clean[:200])
-                        await on_progress(clean)
-                    await on_progress(self._tool_hint(response.tool_calls))
+                clean = self._strip_think(response.content)
+                if clean:
+                    reasoning_snippets.append(clean[:200])
+                if on_tool_hint:
+                    await on_tool_hint(self._tool_hint(response.tool_calls))
 
                 tool_call_dicts = [
                     {
@@ -507,17 +527,28 @@ class AgentLoop:
         # Stage detection: no INSTRUCTIONS.md → lang_select
         #                 no PERSONA.md     → persona_setup
         #                 both exist        → ready
-        from bao.config.loader import detect_onboarding_stage, infer_language, LANG_PICKER, PERSONA_GREETING
-        onboarding_stage = detect_onboarding_stage(self.workspace) if msg.channel != "system" else "ready"
+        from bao.config.loader import (
+            detect_onboarding_stage,
+            infer_language,
+            LANG_PICKER,
+            PERSONA_GREETING,
+        )
+
+        onboarding_stage = (
+            detect_onboarding_stage(self.workspace) if msg.channel != "system" else "ready"
+        )
         if onboarding_stage == "lang_select":
             if cmd in ("1", "2"):
                 from bao.config.loader import write_instructions
+
                 lang = "zh" if cmd == "1" else "en"
                 try:
                     write_instructions(self.workspace, lang)
                 except Exception as e:
                     logger.warning("Failed to write instructions template: {}", e)
-                self.context = ContextBuilder(self.workspace, embedding_config=self.embedding_config)
+                self.context = ContextBuilder(
+                    self.workspace, embedding_config=self.embedding_config
+                )
                 greeting = PERSONA_GREETING[lang]
                 session.add_message("assistant", greeting)
                 self.sessions.save(session)
@@ -542,6 +573,7 @@ class AgentLoop:
                 profile = None
             if profile:
                 from bao.config.loader import write_persona_profile
+
                 try:
                     write_persona_profile(self.workspace, lang, profile)
                     self.context = ContextBuilder(
@@ -588,11 +620,22 @@ class AgentLoop:
         )
 
         async def _bus_progress(content: str) -> None:
-            if not self._should_send_progress(msg.channel, msg.chat_id, content):
-                return
-            logger.debug("Progress sent to {}:{}", msg.channel, msg.chat_id)
             meta = dict(msg.metadata or {})
             meta["_progress"] = True
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=content,
+                    metadata=meta,
+                )
+            )
+
+        async def _bus_tool_hint(content: str) -> None:
+            logger.debug("Tool hint sent to {}:{}: {}", msg.channel, msg.chat_id, content)
+            meta = dict(msg.metadata or {})
+            meta["_progress"] = True
+            meta["_tool_hint"] = True
             await self.bus.publish_outbound(
                 OutboundMessage(
                     channel=msg.channel,
@@ -611,6 +654,7 @@ class AgentLoop:
         ) = await self._run_agent_loop(
             initial_messages,
             on_progress=on_progress or _bus_progress,
+            on_tool_hint=_bus_tool_hint,
         )
 
         if final_content is None:
@@ -638,7 +682,6 @@ class AgentLoop:
         session.add_message(
             "assistant", final_content, tools_used=tools_used if tools_used else None
         )
-
 
         self.sessions.save(session)
 
@@ -918,6 +961,7 @@ Respond with ONLY valid JSON, no markdown fences."""
                     {"role": "user", "content": prompt},
                 ],
                 model=model,
+                source="utility",
             )
             text = (response.content or "").strip()
             if not text:
@@ -976,6 +1020,7 @@ Respond with ONLY valid JSON, no markdown fences."""
             model=model,
             temperature=0.3,
             max_tokens=512,
+            source="utility",
         )
         return self._parse_llm_json(response.content)
 
@@ -1026,6 +1071,7 @@ Respond with ONLY valid JSON, no markdown fences."""
             model=model,
             temperature=0.3,
             max_tokens=512,
+            source="utility" if self._experience_mode != "main" else "main",
         )
         return self._parse_llm_json(response.content)
 
