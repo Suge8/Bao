@@ -22,7 +22,8 @@ from app.backend.gateway import ChatService
 
 def make_service():
     model = ChatMessageModel()
-    svc = ChatService(model)
+    runner = MagicMock()
+    svc = ChatService(model, runner)
     return svc, model
 
 
@@ -104,29 +105,104 @@ def test_set_error_changes_state():
     assert "error" in states
 
 
-def test_typewriter_effect_fills_content():
-    """Typewriter should eventually set full content on the model."""
+def test_show_system_response_immediate():
+    """System response should appear immediately when not processing."""
     svc, model = make_service()
-    row = model.append_assistant("", status="typing")
-    full_text = "Hello world"
-
-    # Run the typewriter synchronously by processing Qt events
-    svc._start_typewriter(row, full_text)
-
-    # Process Qt timer events
-    from PySide6.QtCore import QEventLoop, QTimer
-
-    loop = QEventLoop()
-    # Give enough time for all ticks (11 chars / 4 per tick = 3 ticks * 20ms = 60ms + buffer)
-    QTimer.singleShot(200, loop.quit)
-    loop.exec()
-
-    assert model._messages[row]["content"] == full_text
-    assert model._messages[row]["status"] == "done"
+    svc._show_system_response("Task done")
+    assert model.rowCount() == 1
+    assert model._messages[0]["role"] == "assistant"
+    assert model._messages[0]["content"] == "Task done"
+    assert model._messages[0]["status"] == "done"
 
 
-def test_typewriter_empty_text_sets_done():
+def test_system_response_queued_while_processing():
+    """System response should be queued when main streaming is active."""
     svc, model = make_service()
-    row = model.append_assistant("", status="typing")
-    svc._start_typewriter(row, "")
-    assert model._messages[row]["status"] == "done"
+    svc._processing = True
+    svc._handle_system_response("Queued msg")
+    assert model.rowCount() == 0  # not displayed yet
+    assert len(svc._pending_system) == 1
+
+
+def test_system_response_drained_after_send():
+    """Pending system responses should drain after send completes."""
+    svc, model = make_service()
+    svc._processing = True
+    svc._pending_system.append("Deferred")
+    row = model.append_assistant("reply", status="typing")
+    svc._handle_send_result(row, True, "reply")
+    assert model._messages[0]["status"] == "done"
+    # Deferred system response should now be displayed
+    assert model.rowCount() == 2
+    assert model._messages[1]["content"] == "Deferred"
+
+
+def test_system_response_empty_ignored():
+    """Empty system response should be silently ignored."""
+    svc, model = make_service()
+    svc._handle_system_response("")
+    assert model.rowCount() == 0
+
+
+def test_progress_split_creates_new_bubble_on_next_delta():
+    svc, model = make_service()
+    row0 = model.append_assistant("", status="typing")
+    svc._active_streaming_row = row0
+    svc._active_has_content = False
+
+    svc._handle_progress_update(-1, "first")
+    svc._handle_progress_update(-2, "")
+    svc._handle_progress_update(-1, "second")
+
+    assert model.rowCount() == 2
+    assert model._messages[0]["content"] == "first"
+    assert model._messages[0]["status"] == "done"
+    assert model._messages[1]["content"] == "second"
+    assert model._messages[1]["status"] == "typing"
+    assert svc._active_streaming_row == 1
+
+
+def test_pending_split_without_previous_content_does_not_split_mid_iteration():
+    svc, model = make_service()
+    row0 = model.append_assistant("", status="typing")
+    svc._active_streaming_row = row0
+    svc._active_has_content = False
+
+    svc._handle_progress_update(-2, "")
+    svc._handle_progress_update(-1, "a")
+    svc._handle_progress_update(-1, "ab")
+
+    assert model.rowCount() == 1
+    assert model._messages[0]["content"] == "ab"
+    assert model._messages[0]["status"] == "typing"
+    assert svc._pending_split is False
+
+
+def test_send_result_pending_split_with_final_content_creates_new_final_bubble():
+    svc, model = make_service()
+    row0 = model.append_assistant("first", status="typing")
+    svc._active_streaming_row = row0
+    svc._active_has_content = True
+    svc._pending_split = True
+
+    svc._handle_send_result(row0, True, "final")
+
+    assert model.rowCount() == 2
+    assert model._messages[0]["content"] == "first"
+    assert model._messages[0]["status"] == "done"
+    assert model._messages[1]["content"] == "final"
+    assert model._messages[1]["status"] == "done"
+
+
+def test_send_result_pending_split_without_final_content_no_empty_done_bubble():
+    svc, model = make_service()
+    row0 = model.append_assistant("first", status="typing")
+    svc._active_streaming_row = row0
+    svc._active_has_content = True
+    svc._pending_split = True
+
+    svc._handle_send_result(row0, True, "")
+
+    assert model.rowCount() == 1
+    assert model._messages[0]["content"] == "first"
+    assert model._messages[0]["status"] == "done"

@@ -1,19 +1,16 @@
 """Tests for Layer 1: large tool output offloading."""
 
 import asyncio
-import json
-from pathlib import Path
 import sys
 import types
+from pathlib import Path
 from typing import Any
-
-import pytest
 
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 
-def _install_web_tool_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+def _install_web_tool_stub(monkeypatch: Any) -> None:
     module = types.ModuleType("bao.agent.tools.web")
 
     class WebSearchTool:
@@ -99,7 +96,7 @@ class BigOutputProvider(LLMProvider):
     def __init__(self):
         super().__init__(api_key=None, api_base=None)
         self.call_index = 0
-        self.captured_messages: list[list[dict]] = []
+        self.captured_messages: list[list[dict[str, Any]]] = []
 
     async def chat(
         self,
@@ -136,7 +133,7 @@ class BigOutputProvider(LLMProvider):
 BIG_OUTPUT = "x" * 10000  # 10000 chars, exceeds 8000 threshold
 
 
-def test_auto_mode_offloads_large_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_auto_mode_offloads_large_output(tmp_path: Path, monkeypatch: Any) -> None:
     _install_web_tool_stub(monkeypatch)
     from bao.agent.loop import AgentLoop
 
@@ -152,8 +149,8 @@ def test_auto_mode_offloads_large_output(tmp_path: Path, monkeypatch: pytest.Mon
     loop._tool_offload_chars = 8000
     loop._tool_preview_chars = 3000
 
-    async def fake_execute(name: str, args: dict[str, Any]) -> str:
-        del name, args
+    async def fake_execute(name: str, params: dict[str, Any]) -> str:
+        del name, params
         return BIG_OUTPUT
 
     loop.tools.execute = fake_execute
@@ -179,7 +176,7 @@ def test_auto_mode_offloads_large_output(tmp_path: Path, monkeypatch: pytest.Mon
     assert "offloaded" in tool_content or "Full output" in tool_content
 
 
-def test_observe_mode_does_not_offload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_observe_mode_does_not_offload(tmp_path: Path, monkeypatch: Any) -> None:
     _install_web_tool_stub(monkeypatch)
     from bao.agent.loop import AgentLoop
 
@@ -193,8 +190,8 @@ def test_observe_mode_does_not_offload(tmp_path: Path, monkeypatch: pytest.Monke
     )
     loop._ctx_mgmt = "observe"
 
-    async def fake_execute(name: str, args: dict[str, Any]) -> str:
-        del name, args
+    async def fake_execute(name: str, params: dict[str, Any]) -> str:
+        del name, params
         return BIG_OUTPUT
 
     loop.tools.execute = fake_execute
@@ -212,5 +209,5 @@ def test_observe_mode_does_not_offload(tmp_path: Path, monkeypatch: pytest.Monke
     second_call_msgs = provider.captured_messages[1]
     tool_msgs = [m for m in second_call_msgs if m.get("role") == "tool"]
     tool_content = tool_msgs[0].get("content", "")
-    # observe mode should NOT replace content
-    assert tool_content == BIG_OUTPUT
+    assert len(tool_content) < len(BIG_OUTPUT)
+    assert "hard-truncated" in tool_content

@@ -17,6 +17,7 @@ def qt_app():
 
 from app.backend.session import SessionListModel, SessionService
 from app.backend.asyncio_runner import AsyncioRunner
+from bao.session.manager import SessionManager
 
 
 # ── SessionListModel tests ────────────────────────────────────────────────────
@@ -85,22 +86,49 @@ def test_model_invalid_index_returns_none():
 # ── SessionService tests ──────────────────────────────────────────────────────
 
 
-def _make_mock_session_manager(sessions=None, active_key=""):
+def _make_mock_session_manager(sessions=None, active_key="", fail_delete=False):
     sm = MagicMock()
     if sessions is None:
         sessions = []
-    # list_sessions() returns list of dicts (not Session objects)
-    mock_sessions = []
-    for s in sessions:
-        mock_sessions.append(
+    state = {"active": active_key}
+
+    state_sessions = [
+        {
+            "key": s["key"],
+            "updated_at": s.get("updated_at", 0),
+            "metadata": {"title": s.get("title", s["key"])},
+        }
+        for s in sessions
+    ]
+
+    def _list_sessions():
+        return [
             {
                 "key": s["key"],
                 "updated_at": s.get("updated_at", 0),
-                "metadata": {"title": s.get("title", s["key"])},
+                "metadata": dict(s.get("metadata", {})),
             }
-        )
-    sm.list_sessions.return_value = mock_sessions
-    sm.get_active_session_key.return_value = active_key
+            for s in state_sessions
+        ]
+
+    sm.list_sessions.side_effect = _list_sessions
+    sm.get_active_session_key.side_effect = lambda _natural_key: state["active"]
+
+    def _set_active(_natural_key, key):
+        state["active"] = key
+
+    def _clear_active(_natural_key):
+        state["active"] = ""
+
+    def _delete_session(key):
+        if fail_delete:
+            raise RuntimeError("delete failed")
+        nonlocal state_sessions
+        state_sessions = [s for s in state_sessions if s["key"] != key]
+
+    sm.set_active_session_key.side_effect = _set_active
+    sm.clear_active_session_key.side_effect = _clear_active
+    sm.delete_session.side_effect = _delete_session
     return sm
 
 
@@ -133,6 +161,47 @@ def test_service_refresh_populates_model():
         loop.exec()
 
         assert svc.sessionsModel.rowCount() == 1
+        assert svc.activeKey == ""
+        from PySide6.QtCore import Qt
+
+        idx = svc.sessionsModel.index(0)
+        assert svc.sessionsModel.data(idx, Qt.UserRole + 3) is False
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_service_gateway_ready_restores_active_key():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = SessionService(runner)
+        sm = _make_mock_session_manager(
+            sessions=[{"key": "desktop:local::s1", "title": "Chat 1"}],
+            active_key="desktop:local::s1",
+        )
+
+        svc.initialize(sm)
+
+        from PySide6.QtCore import QEventLoop, QTimer
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        assert svc.activeKey == ""
+
+        svc.setGatewayReady()
+        svc.refresh()
+
+        loop2 = QEventLoop()
+        QTimer.singleShot(300, loop2.quit)
+        loop2.exec()
+
+        assert svc.activeKey == "desktop:local::s1"
+        from PySide6.QtCore import Qt
+
+        idx = svc.sessionsModel.index(0)
+        assert svc.sessionsModel.data(idx, Qt.UserRole + 3) is True
     finally:
         runner.shutdown(grace_s=1.0)
 
@@ -166,6 +235,131 @@ def test_service_select_session_updates_active_key():
         loop2.exec()
 
         assert "desktop:local::s2" in keys
+
+        svc.refresh()
+        loop3 = QEventLoop()
+        QTimer.singleShot(300, loop3.quit)
+        loop3.exec()
+
+        assert svc.activeKey == "desktop:local::s2"
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_service_delete_session_updates_model():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = SessionService(runner)
+        sm = _make_mock_session_manager(
+            sessions=[
+                {"key": "desktop:local::s1", "title": "Chat 1"},
+                {"key": "desktop:local::s2", "title": "Chat 2"},
+            ],
+            active_key="desktop:local::s1",
+        )
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        from PySide6.QtCore import QEventLoop, QTimer
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        assert svc.sessionsModel.rowCount() == 2
+
+        events = []
+        svc.deleteCompleted.connect(lambda key, ok, _err: events.append((key, ok)))
+
+        svc.deleteSession("desktop:local::s1")
+        assert svc.sessionsModel.rowCount() == 1
+        assert svc.activeKey == "desktop:local::s2"
+
+        loop2 = QEventLoop()
+        QTimer.singleShot(300, loop2.quit)
+        loop2.exec()
+
+        assert svc.sessionsModel.rowCount() == 1
+        assert svc.activeKey == "desktop:local::s2"
+        assert ("desktop:local::s1", True) in events
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_service_delete_session_persists_in_storage(tmp_path):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = SessionService(runner)
+        sm = SessionManager(tmp_path)
+        s1 = sm.get_or_create("desktop:local::s1")
+        s1.add_message("user", "hello")
+        sm.save(s1)
+        s2 = sm.get_or_create("desktop:local::s2")
+        s2.add_message("user", "world")
+        sm.save(s2)
+        sm.set_active_session_key("desktop:local", "desktop:local::s1")
+
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        from PySide6.QtCore import QEventLoop, QTimer
+
+        loop = QEventLoop()
+        QTimer.singleShot(400, loop.quit)
+        loop.exec()
+
+        assert svc.sessionsModel.rowCount() == 2
+
+        svc.deleteSession("desktop:local::s1")
+
+        loop2 = QEventLoop()
+        QTimer.singleShot(400, loop2.quit)
+        loop2.exec()
+
+        keys = [row["key"] for row in sm.list_sessions()]
+        assert "desktop:local::s1" not in keys
+        assert "desktop:local::s2" in keys
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_service_delete_failure_restores_model():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = SessionService(runner)
+        sm = _make_mock_session_manager(
+            sessions=[
+                {"key": "desktop:local::s1", "title": "Chat 1"},
+                {"key": "desktop:local::s2", "title": "Chat 2"},
+            ],
+            active_key="desktop:local::s1",
+            fail_delete=True,
+        )
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        from PySide6.QtCore import QEventLoop, QTimer
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        events = []
+        svc.deleteCompleted.connect(lambda key, ok, _err: events.append((key, ok)))
+
+        svc.deleteSession("desktop:local::s1")
+        assert svc.sessionsModel.rowCount() == 1
+
+        loop2 = QEventLoop()
+        QTimer.singleShot(300, loop2.quit)
+        loop2.exec()
+
+        assert svc.sessionsModel.rowCount() == 2
+        assert svc.activeKey == "desktop:local::s1"
+        assert ("desktop:local::s1", False) in events
     finally:
         runner.shutdown(grace_s=1.0)
 

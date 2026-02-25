@@ -99,3 +99,26 @@ def test_role_names(qapp):
     assert b"content" in values
     assert b"role" in values
     assert b"status" in values
+
+
+def test_load_history_source_renders_as_system(qapp):
+    """Messages with _source metadata should render as system bubbles, not user."""
+    m = ChatMessageModel()
+    m.load_history([
+        {"role": "user", "content": "[System: subagent] task done", "_source": "subagent"},
+        {"role": "assistant", "content": "summary"},
+        {"role": "user", "content": "[System: cron] scheduled", "_source": "cron"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "normal user msg"},
+    ])
+    assert m.rowCount() == 5
+    # subagent message → system bubble
+    assert m.data(m.index(0), Qt.UserRole + 2) == "system"
+    # assistant stays assistant
+    assert m.data(m.index(1), Qt.UserRole + 2) == "assistant"
+    # cron message → system bubble
+    assert m.data(m.index(2), Qt.UserRole + 2) == "system"
+    # assistant stays assistant
+    assert m.data(m.index(3), Qt.UserRole + 2) == "assistant"
+    # normal user message stays user
+    assert m.data(m.index(4), Qt.UserRole + 2) == "user"

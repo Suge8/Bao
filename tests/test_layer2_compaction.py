@@ -1,26 +1,37 @@
 """Tests for Layer 2: messages compaction."""
 
+import importlib
 import json
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider, LLMResponse
 
+pytest = importlib.import_module("pytest")
+
 
 class DummyProvider(LLMProvider):
-    async def chat(self, messages: list[dict[str, Any]], **kwargs: Any) -> LLMResponse:
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.1,
+        on_progress: Any = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        del messages, tools, model, max_tokens, temperature, on_progress, kwargs
         return LLMResponse(content="done", finish_reason="stop")
 
     def get_default_model(self) -> str:
         return "dummy"
 
 
-def _build_messages_with_tool_pairs(n_pairs: int) -> list[dict]:
+def _build_messages_with_tool_pairs(n_pairs: int) -> list[dict[str, Any]]:
     """构造包含 n_pairs 个 assistant+tool 成对消息的 messages 列表。"""
-    msgs: list[dict] = [
+    msgs: list[dict[str, Any]] = [
         {"role": "system", "content": "test system"},
         {"role": "user", "content": "test request"},
     ]
@@ -50,7 +61,7 @@ def _build_messages_with_tool_pairs(n_pairs: int) -> list[dict]:
     return msgs
 
 
-def _make_loop(tmp_path: Path) -> "AgentLoop":
+def _make_loop(tmp_path: Path) -> Any:
     from bao.agent.loop import AgentLoop
 
     loop = AgentLoop(
@@ -153,3 +164,34 @@ def test_compact_messages_includes_state_note(tmp_path: Path) -> None:
     assert len(user_msgs) >= 1
     assert state_text in user_msgs[0]["content"]
     assert "Compacted context" in user_msgs[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_loop_triggers_layer2_compaction_when_over_budget(
+    tmp_path: Path, monkeypatch
+) -> None:
+    loop = _make_loop(tmp_path)
+    loop._compact_bytes = 1
+    called = {"hit": False}
+
+    original = loop._compact_messages
+
+    def _spy_compact(
+        messages: list[dict[str, Any]],
+        initial_messages: list[dict[str, Any]],
+        last_state_text: str | None,
+        artifact_store: Any,
+    ) -> list[dict[str, Any]]:
+        called["hit"] = True
+        return original(messages, initial_messages, last_state_text, artifact_store)
+
+    monkeypatch.setattr(loop, "_compact_messages", _spy_compact)
+
+    initial = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "req"},
+        *_build_messages_with_tool_pairs(8)[2:],
+    ]
+
+    await loop._run_agent_loop(initial, artifact_session_key="gateway:c")
+    assert called["hit"] is True
