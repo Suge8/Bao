@@ -1,29 +1,32 @@
 """Agent loop: the core processing engine."""
 
 import asyncio
-from contextlib import AsyncExitStack
 import json
-import json_repair
-from pathlib import Path
 import re
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+import shutil
+from contextlib import AsyncExitStack
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 from urllib.parse import urlsplit
 
+import json_repair
 from loguru import logger
 
+from bao.agent.context import ContextBuilder
+from bao.agent.subagent import SubagentManager
+from bao.agent.tools.coding_agent_base import BaseCodingAgentTool, BaseCodingDetailsTool
+from bao.agent.tools.cron import CronTool
+from bao.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from bao.agent.tools.memory import ForgetTool, RememberTool, UpdateMemoryTool
+from bao.agent.tools.message import MessageTool
+from bao.agent.tools.registry import ToolRegistry
+from bao.agent.tools.shell import ExecTool
+from bao.agent.tools.spawn import SpawnTool
+from bao.agent.tools.task_status import CancelTaskTool, CheckTasksTool
+from bao.agent.tools.web import WebFetchTool, WebSearchTool
 from bao.bus.events import InboundMessage, OutboundMessage
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider
-from bao.agent.context import ContextBuilder
-from bao.agent.tools.registry import ToolRegistry
-from bao.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
-from bao.agent.tools.shell import ExecTool
-from bao.agent.tools.web import WebSearchTool, WebFetchTool
-from bao.agent.tools.message import MessageTool
-from bao.agent.tools.spawn import SpawnTool
-from bao.agent.tools.cron import CronTool
-from bao.agent.memory import MemoryStore
-from bao.agent.subagent import SubagentManager
 from bao.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
@@ -57,7 +60,6 @@ class AgentLoop:
         config: "Config | None" = None,
     ):
         from bao.config.schema import ExecToolConfig
-        from bao.cron.service import CronService
 
         self.bus = bus
         self.provider = provider
@@ -85,6 +87,7 @@ class AgentLoop:
         self._ctx_mgmt: str = _cm.context_management if _cm else "observe"
         self._tool_offload_chars: int = _cm.tool_output_offload_chars if _cm else 8000
         self._tool_preview_chars: int = _cm.tool_output_preview_chars if _cm else 3000
+        self._tool_hard_chars: int = _cm.tool_output_hard_chars if _cm else 6000
         self._compact_bytes: int = _cm.context_compact_bytes_est if _cm else 240000
         self._compact_keep_blocks: int = _cm.context_compact_keep_recent_tool_blocks if _cm else 4
         self._artifact_retention_days: int = _cm.artifact_retention_days if _cm else 7
@@ -99,14 +102,36 @@ class AgentLoop:
             search_config=search_config,
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
+            tool_output_hard_chars=self._tool_hard_chars,
         )
 
         self._running = False
         self._mcp_servers = mcp_servers or {}
+        tools_cfg = getattr(config, "tools", None) if config else None
+        raw_mcp_max_tools = getattr(tools_cfg, "mcp_max_tools", 50)
+        self._mcp_max_tools = (
+            max(raw_mcp_max_tools, 0)
+            if (isinstance(raw_mcp_max_tools, int) and not isinstance(raw_mcp_max_tools, bool))
+            else 50
+        )
+        raw_mcp_slim_schema = getattr(tools_cfg, "mcp_slim_schema", True)
+        self._mcp_slim_schema = (
+            raw_mcp_slim_schema if isinstance(raw_mcp_slim_schema, bool) else True
+        )
         self._mcp_stack: AsyncExitStack | None = None
         self._mcp_connected = False
+        self._mcp_connect_succeeded = False
         self._mcp_connecting = False
         self._consolidating: set[str] = set()  # Session keys with consolidation in progress
+        self._active_tasks: dict[str, list[asyncio.Task[None]]] = {}  # session_key -> tasks
+        self._session_locks: dict[str, asyncio.Lock] = {}
+        self._session_generations: dict[str, int] = {}
+        self._last_tool_budget: dict[str, int] = {
+            "offloaded_count": 0,
+            "offloaded_chars": 0,
+            "clipped_count": 0,
+            "clipped_chars": 0,
+        }
         self._register_default_tools()
 
         self._utility_model: str | None = None
@@ -126,6 +151,10 @@ class AgentLoop:
             config.agents.defaults.experience_model if config else "utility"
         ).lower()
 
+        # Callback for system message responses (subagent completion, etc.)
+        # Desktop/CLI can register this to receive async notifications.
+        self.on_system_response: Callable[[OutboundMessage], Awaitable[None]] | None = None
+
     def _register_default_tools(self) -> None:
         allowed_dir = self.workspace if self.restrict_to_workspace else None
         self.tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
@@ -137,13 +166,34 @@ class AgentLoop:
                 working_dir=str(self.workspace),
                 timeout=self.exec_config.timeout,
                 restrict_to_workspace=self.restrict_to_workspace,
+                path_append=self.exec_config.path_append,
             )
         )
+        if shutil.which("opencode"):
+            from bao.agent.tools.opencode import OpenCodeDetailsTool, OpenCodeTool
+
+            self.tools.register(OpenCodeTool(workspace=self.workspace, allowed_dir=allowed_dir))
+            self.tools.register(OpenCodeDetailsTool())
+        if shutil.which("codex"):
+            from bao.agent.tools.codex import CodexDetailsTool, CodexTool
+
+            self.tools.register(CodexTool(workspace=self.workspace, allowed_dir=allowed_dir))
+            self.tools.register(CodexDetailsTool())
+        if shutil.which("claude"):
+            from bao.agent.tools.claudecode import ClaudeCodeDetailsTool, ClaudeCodeTool
+
+            self.tools.register(ClaudeCodeTool(workspace=self.workspace, allowed_dir=allowed_dir))
+            self.tools.register(ClaudeCodeDetailsTool())
         search_tool = WebSearchTool(search_config=self.search_config)
         has_brave = bool(search_tool.brave_key)
         has_tavily = bool(search_tool.tavily_key)
-        if has_brave or has_tavily:
-            providers = [p for p, ok in [("tavily", has_tavily), ("brave", has_brave)] if ok]
+        has_exa = bool(search_tool.exa_key)
+        if has_brave or has_tavily or has_exa:
+            providers = [
+                p
+                for p, ok in [("tavily", has_tavily), ("brave", has_brave), ("exa", has_exa)]
+                if ok
+            ]
             logger.info("web_search enabled ({})", ", ".join(providers))
             self.tools.register(search_tool)
             self.context.tool_hints.append(
@@ -158,12 +208,28 @@ class AgentLoop:
             )
         self.tools.register(WebFetchTool())
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
+        self.context.tool_hints.append(
+            "IMPORTANT: When responding to direct questions or conversations, reply directly with text. "
+            "Only use the 'message' tool when you need to send a message to a specific chat channel. "
+            "For normal conversation, just respond with text — do not call the message tool."
+        )
         self.tools.register(SpawnTool(manager=self.subagents))
+        self.tools.register(CheckTasksTool(manager=self.subagents))
+        self.tools.register(CancelTaskTool(manager=self.subagents))
+        mem = self.context.memory
+        self.tools.register(RememberTool(memory=mem))
+        self.tools.register(ForgetTool(memory=mem))
+        self.tools.register(UpdateMemoryTool(memory=mem))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
 
     async def _connect_mcp(self) -> None:
-        if self._mcp_connected or self._mcp_connecting or not self._mcp_servers:
+        if (
+            self._mcp_connected
+            or self._mcp_connect_succeeded
+            or self._mcp_connecting
+            or not self._mcp_servers
+        ):
             return
         self._mcp_connecting = True
         from bao.agent.tools.mcp import connect_mcp_servers
@@ -171,10 +237,22 @@ class AgentLoop:
         try:
             self._mcp_stack = AsyncExitStack()
             await self._mcp_stack.__aenter__()
-            await connect_mcp_servers(self._mcp_servers, self.tools, self._mcp_stack)
-            self._mcp_connected = True
+            registered, connected_servers = await connect_mcp_servers(
+                self._mcp_servers,
+                self.tools,
+                self._mcp_stack,
+                max_tools=self._mcp_max_tools,
+                slim_schema=self._mcp_slim_schema,
+            )
+            self._mcp_connect_succeeded = connected_servers > 0
+            self._mcp_connected = registered > 0
+            if not self._mcp_connected and self._mcp_stack:
+                await self._mcp_stack.aclose()
+                self._mcp_stack = None
         except Exception as e:
             logger.error("Failed to connect MCP servers (will retry next message): {}", e)
+            self._mcp_connect_succeeded = False
+            self._mcp_connected = False
             if self._mcp_stack:
                 try:
                     await self._mcp_stack.aclose()
@@ -191,6 +269,17 @@ class AgentLoop:
             t.set_context(channel, chat_id)
         if (t := self.tools.get("cron")) and isinstance(t, CronTool):
             t.set_context(channel, chat_id)
+        for name in (
+            "opencode",
+            "opencode_details",
+            "codex",
+            "codex_details",
+            "claudecode",
+            "claudecode_details",
+        ):
+            t = self.tools.get(name)
+            if t and isinstance(t, (BaseCodingAgentTool, BaseCodingDetailsTool)):
+                t.set_context(channel, chat_id)
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
@@ -247,8 +336,9 @@ class AgentLoop:
         initial_messages: list[dict[str, Any]],
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         on_tool_hint: Callable[[str], Awaitable[None]] | None = None,
+        artifact_session_key: str | None = None,
     ) -> tuple[str | None, list[str], list[str], int, list[str]]:
-        messages = initial_messages
+        messages = list(initial_messages)
         iteration = 0
         final_content = None
         tools_used: list[str] = []
@@ -269,13 +359,23 @@ class AgentLoop:
         )
 
         # Layer 1: construct artifact store for tool output offloading
-        from bao.agent.artifacts import ArtifactStore, maybe_offload_result
+        from bao.agent.artifacts import ArtifactStore, apply_tool_output_budget
 
         _artifact_store: ArtifactStore | None = (
-            ArtifactStore(self.workspace, "main_loop", self._artifact_retention_days)
+            ArtifactStore(
+                self.workspace,
+                artifact_session_key or "main_loop",
+                self._artifact_retention_days,
+            )
             if self._ctx_mgmt in ("auto", "aggressive")
             else None
         )
+        tool_budget = {
+            "offloaded_count": 0,
+            "offloaded_chars": 0,
+            "clipped_count": 0,
+            "clipped_chars": 0,
+        }
 
         while iteration < self.max_iterations:
             iteration += 1
@@ -303,6 +403,23 @@ class AgentLoop:
                             "content": "You now have sufficient information. Provide your final answer.",
                         }
                     )
+
+            if self._ctx_mgmt in ("auto", "aggressive"):
+                try:
+                    approx_bytes = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
+                except Exception:
+                    approx_bytes = 0
+                if approx_bytes >= self._compact_bytes:
+                    messages = self._compact_messages(
+                        messages=messages,
+                        initial_messages=initial_messages,
+                        last_state_text=last_state_text,
+                        artifact_store=_artifact_store,
+                    )
+
+            # Signal new iteration to desktop UI so it can split bubbles
+            if iteration > 1 and on_progress:
+                await on_progress("\x00")
 
             response = await self.provider.chat(
                 messages=messages,
@@ -352,16 +469,24 @@ class AgentLoop:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
-                    result = maybe_offload_result(
-                        _artifact_store,
-                        tool_call.name,
-                        tool_call.id,
-                        result,
+                    raw_result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    result_text = raw_result if isinstance(raw_result, str) else str(raw_result)
+                    result, budget_event = apply_tool_output_budget(
+                        store=_artifact_store,
+                        tool_name=tool_call.name,
+                        tool_call_id=tool_call.id,
+                        result=result_text,
                         offload_chars=self._tool_offload_chars,
                         preview_chars=self._tool_preview_chars,
+                        hard_chars=self._tool_hard_chars,
                         ctx_mgmt=self._ctx_mgmt,
                     )
+                    if budget_event.offloaded:
+                        tool_budget["offloaded_count"] += 1
+                        tool_budget["offloaded_chars"] += budget_event.offloaded_chars
+                    if budget_event.hard_clipped:
+                        tool_budget["clipped_count"] += 1
+                        tool_budget["clipped_chars"] += budget_event.hard_clipped_chars
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
@@ -405,9 +530,11 @@ class AgentLoop:
                 final_content = self._strip_think(response.content)
                 break
 
+        self._last_tool_budget = tool_budget
         return final_content, tools_used, tool_trace, total_errors, reasoning_snippets
 
     async def run(self) -> None:
+        """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
         await self._connect_mcp()
         logger.debug("Agent loop started")
@@ -415,21 +542,86 @@ class AgentLoop:
         while self._running:
             try:
                 msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
-                try:
-                    response = await self._process_message(msg)
-                    if response:
-                        await self.bus.publish_outbound(response)
-                except Exception as e:
-                    logger.error("Error processing message: {}", e)
-                    await self.bus.publish_outbound(
-                        OutboundMessage(
-                            channel=msg.channel,
-                            chat_id=msg.chat_id,
-                            content=f"Sorry, I encountered an error: {str(e)}",
-                        )
-                    )
             except asyncio.TimeoutError:
                 continue
+
+            if (msg.content or "").strip().lower() == "/stop":
+                await self._handle_stop(msg)
+            else:
+                session_key = msg.session_key
+                task_gen = self._session_generations.get(session_key, 0)
+                task = asyncio.create_task(self._dispatch(msg, task_generation=task_gen))
+                self._active_tasks.setdefault(session_key, []).append(task)
+                self._session_locks.setdefault(session_key, asyncio.Lock())
+
+                def _on_done(t: asyncio.Task[None], k: str = session_key) -> None:
+                    task_list = self._active_tasks.get(k)
+                    if not task_list:
+                        return
+                    try:
+                        task_list.remove(t)
+                    except ValueError:
+                        return
+                    if not task_list:
+                        self._active_tasks.pop(k, None)
+                        self._session_locks.pop(k, None)
+
+                task.add_done_callback(_on_done)
+
+    async def _handle_stop(self, msg: InboundMessage) -> None:
+        """Cancel all active tasks and subagents for the session (fire-and-forget)."""
+        self._session_generations[msg.session_key] = (
+            self._session_generations.get(msg.session_key, 0) + 1
+        )
+
+        tasks = self._active_tasks.pop(msg.session_key, [])
+        cancelled = sum(1 for t in tasks if not t.done() and t.cancel())
+        sub_cancelled = await cast(Any, self.subagents).cancel_by_session(
+            msg.session_key, wait=False
+        )
+        total = cancelled + sub_cancelled
+        content = f"\u23f9 Stopped {total} task(s)." if total else "No active task to stop."
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=content,
+            )
+        )
+
+    async def _dispatch(self, msg: InboundMessage, *, task_generation: int) -> None:
+        lock = self._session_locks.setdefault(msg.session_key, asyncio.Lock())
+        async with lock:
+            try:
+                response = await self._process_message(msg)
+                if response:
+                    if self._session_generations.get(msg.session_key, 0) != task_generation:
+                        logger.info(
+                            "Dropping stale response for session {} after /stop", msg.session_key
+                        )
+                        return
+                    # Notify callback for system messages (subagent completion)
+                    if msg.channel == "system" and self.on_system_response:
+                        try:
+                            await self.on_system_response(response)
+                        except Exception as cb_err:
+                            logger.warning("on_system_response callback failed: {}", cb_err)
+                    await self.bus.publish_outbound(response)
+            except asyncio.CancelledError:
+                logger.info("Task cancelled for session {}", msg.session_key)
+                raise
+            except Exception as e:
+                logger.error("Error processing message: {}", e)
+                if self._session_generations.get(msg.session_key, 0) != task_generation:
+                    logger.info("Suppressing stale error response for session {}", msg.session_key)
+                    return
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content=f"Sorry, I encountered an error: {str(e)}",
+                    )
+                )
 
     async def close_mcp(self) -> None:
         if self._mcp_stack:
@@ -438,6 +630,8 @@ class AgentLoop:
             except (RuntimeError, BaseExceptionGroup):
                 pass  # MCP SDK cancel scope cleanup is noisy but harmless
             self._mcp_stack = None
+        self._mcp_connect_succeeded = False
+        self._mcp_connected = False
 
     def stop(self) -> None:
         self._running = False
@@ -503,6 +697,7 @@ class AgentLoop:
                 msg,
                 "🐈 bao commands:\n"
                 "/new — Start a new conversation\n"
+                "/stop — Stop the current task\n"
                 "/session — Switch between conversations\n"
                 "/delete — Delete current conversation\n"
                 "/model — Switch model\n"
@@ -528,10 +723,10 @@ class AgentLoop:
         #                 no PERSONA.md     → persona_setup
         #                 both exist        → ready
         from bao.config.loader import (
-            detect_onboarding_stage,
-            infer_language,
             LANG_PICKER,
             PERSONA_GREETING,
+            detect_onboarding_stage,
+            infer_language,
         )
 
         onboarding_stage = (
@@ -539,13 +734,17 @@ class AgentLoop:
         )
         if onboarding_stage == "lang_select":
             if cmd in ("1", "2"):
-                from bao.config.loader import write_instructions
+                from bao.config.loader import write_heartbeat, write_instructions
 
                 lang = "zh" if cmd == "1" else "en"
                 try:
                     write_instructions(self.workspace, lang)
                 except Exception as e:
                     logger.warning("Failed to write instructions template: {}", e)
+                try:
+                    write_heartbeat(self.workspace, lang)
+                except Exception as e:
+                    logger.warning("Failed to write heartbeat template: {}", e)
                 self.context = ContextBuilder(
                     self.workspace, embedding_config=self.embedding_config
                 )
@@ -607,8 +806,13 @@ class AgentLoop:
         self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
         if (t := self.tools.get("message")) and isinstance(t, MessageTool):
             t.start_turn()
-        related = await asyncio.to_thread(self.context.memory.search_memory, msg.content)
-        experience = await asyncio.to_thread(self.context.memory.search_experience, msg.content)
+        _results = await asyncio.gather(
+            asyncio.to_thread(self.context.memory.search_memory, msg.content),
+            asyncio.to_thread(self.context.memory.search_experience, msg.content),
+            return_exceptions=True,
+        )
+        related = _results[0] if not isinstance(_results[0], BaseException) else []
+        experience = _results[1] if not isinstance(_results[1], BaseException) else []
         initial_messages = self.context.build_messages(
             history=session.get_history(max_messages=self.memory_window),
             current_message=msg.content,
@@ -617,9 +821,12 @@ class AgentLoop:
             chat_id=msg.chat_id,
             related_memory=related or None,
             related_experience=experience or None,
+            model=self.model,
         )
 
         async def _bus_progress(content: str) -> None:
+            if content == "\x00":
+                return
             meta = dict(msg.metadata or {})
             meta["_progress"] = True
             await self.bus.publish_outbound(
@@ -655,6 +862,7 @@ class AgentLoop:
             initial_messages,
             on_progress=on_progress or _bus_progress,
             on_tool_hint=_bus_tool_hint,
+            artifact_session_key=session.key,
         )
 
         if final_content is None:
@@ -691,12 +899,15 @@ class AgentLoop:
         if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
             return None
 
+        out_meta = dict(msg.metadata or {})
+        if any(self._last_tool_budget.values()):
+            out_meta["_tool_budget"] = dict(self._last_tool_budget)
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=final_content,
-            metadata=msg.metadata
-            or {},  # Pass through for channel-specific needs (e.g. Slack thread_ts)
+            metadata=out_meta,
         )
 
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
@@ -710,8 +921,13 @@ class AgentLoop:
         session_key = f"{origin_channel}:{origin_chat_id}"
         session = self.sessions.get_or_create(session_key)
         self._set_tool_context(origin_channel, origin_chat_id)
-        related = await asyncio.to_thread(self.context.memory.search_memory, msg.content)
-        experience = await asyncio.to_thread(self.context.memory.search_experience, msg.content)
+        _results = await asyncio.gather(
+            asyncio.to_thread(self.context.memory.search_memory, msg.content),
+            asyncio.to_thread(self.context.memory.search_experience, msg.content),
+            return_exceptions=True,
+        )
+        related = _results[0] if not isinstance(_results[0], BaseException) else []
+        experience = _results[1] if not isinstance(_results[1], BaseException) else []
         initial_messages = self.context.build_messages(
             history=session.get_history(max_messages=self.memory_window),
             current_message=msg.content,
@@ -719,6 +935,7 @@ class AgentLoop:
             chat_id=origin_chat_id,
             related_memory=related or None,
             related_experience=experience or None,
+            model=self.model,
         )
         (
             final_content,
@@ -726,7 +943,7 @@ class AgentLoop:
             tool_trace,
             total_errors,
             reasoning_snippets,
-        ) = await self._run_agent_loop(initial_messages)
+        ) = await self._run_agent_loop(initial_messages, artifact_session_key=session.key)
 
         if final_content is None:
             final_content = "Background task completed."
@@ -747,12 +964,21 @@ class AgentLoop:
         if len(session.messages) % 10 == 0:
             asyncio.create_task(self._merge_and_cleanup_experiences())
 
-        session.add_message("user", f"[System: {msg.sender_id}] {msg.content}")
+        session.add_message(
+            "user", f"[System: {msg.sender_id}] {msg.content}", _source=msg.sender_id
+        )
         session.add_message("assistant", final_content)
         self.sessions.save(session)
 
+        out_meta: dict[str, Any] = {}
+        if any(self._last_tool_budget.values()):
+            out_meta["_tool_budget"] = dict(self._last_tool_budget)
+
         return OutboundMessage(
-            channel=origin_channel, chat_id=origin_chat_id, content=final_content
+            channel=origin_channel,
+            chat_id=origin_chat_id,
+            content=final_content,
+            metadata=out_meta,
         )
 
     def _handle_model_command(
@@ -937,9 +1163,13 @@ class AgentLoop:
 
         prompt = f"""You are a memory consolidation agent. Process this conversation and return a JSON object with exactly two keys:
 
-1. "history_entry": A paragraph (2-5 sentences) summarizing the key events/decisions/topics. Start with a timestamp like [YYYY-MM-DD HH:MM]. Include enough detail to be useful when found by grep search later.
+1. "history_entry": A paragraph (2-5 sentences) summarizing the key events/decisions/topics. Start with a timestamp like [YYYY-MM-DD HH:MM].
 
-2. "memory_update": The updated long-term memory content. Add any new facts: user location, preferences, personal info, habits, project context, technical decisions, tools/services used. If nothing new, return the existing content unchanged.
+2. "memory_updates": An object with categorized memory updates. Keys are categories, values are the updated content for that category. Only include categories that have content. Available categories:
+   - "preference": User preferences, habits, communication style, likes/dislikes
+   - "personal": User identity, location, relationships, personal facts
+   - "project": Project context, technical decisions, tools/services, codebase info
+   - "general": Other durable facts that don't fit above categories
 
 ## Current Long-term Memory
 {current_memory or "(empty)"}
@@ -981,7 +1211,11 @@ Respond with ONLY valid JSON, no markdown fences."""
                 if not isinstance(entry, str):
                     entry = json.dumps(entry, ensure_ascii=False)
                 memory.append_history(entry)
-            if update := result.get("memory_update"):
+            # Handle categorized memory updates (new) or single update (legacy)
+            if updates := result.get("memory_updates"):
+                if isinstance(updates, dict):
+                    memory.write_categorized_memory(updates)
+            elif update := result.get("memory_update"):
                 if not isinstance(update, str):
                     update = json.dumps(update, ensure_ascii=False)
                 if update != current_memory:
@@ -1116,8 +1350,11 @@ Respond with ONLY valid JSON, no markdown fences."""
         system_msgs = [m for m in initial_messages if m.get("role") == "system"]
         user_msgs = [m for m in initial_messages if m.get("role") == "user"]
         if user_msgs:
+            original_content = str(user_msgs[0].get("content", ""))
+            if "[Compacted context" in original_content:
+                state_note = ""
             user_msgs = [
-                {**user_msgs[0], "content": user_msgs[0]["content"] + state_note},
+                {**user_msgs[0], "content": original_content + state_note},
                 *user_msgs[1:],
             ]
         new_messages = system_msgs + user_msgs + recent_msgs
@@ -1152,11 +1389,16 @@ Respond with ONLY valid JSON, no markdown fences."""
             if previous_state
             else ""
         )
-        prompt = f"""Compress this agent execution state into a structured summary. Return JSON with exactly 3 keys:
+        has_failures = len(failed_directions) >= 2
+        key_count = "4" if has_failures else "3"
+        audit_section = ""
+        if has_failures:
+            audit_section = '\n4. "audit": 1-2 actionable corrections — what specific mistake to avoid and what concrete action to take instead (NOT vague self-criticism). Omit if no clear correction exists.'
+        prompt = f"""Compress this agent execution state into a structured summary. Return JSON with exactly {key_count} keys:
 
 1. "conclusions": What has been established so far — key findings, partial answers, verified facts (2-3 sentences)
 2. "evidence": Sources consulted, tools used successfully, data gathered (1-2 sentences)
-3. "unexplored": Branches mentioned but NOT yet executed, open questions, alternative approaches to try next (1-3 bullet points as a single string)
+3. "unexplored": Branches mentioned but NOT yet executed, open questions, alternative approaches to try next (1-3 bullet points as a single string){audit_section}
 
 ## Execution Trace
 {trace_str}
@@ -1181,6 +1423,8 @@ Respond with ONLY valid JSON."""
                 parts.append(f"[Evidence] {e}")
             if u := result.get("unexplored"):
                 parts.append(f"[Unexplored branches — prioritize these next] {u}")
+            if a := result.get("audit"):
+                parts.append(f"[Audit — correct these mistakes] {a}")
             return "\n".join(parts) if parts else None
         except Exception as e:
             logger.debug("State compression skipped: {}", e)
@@ -1309,8 +1553,10 @@ Respond with ONLY valid JSON, no markdown fences."""
                     continue
                 quality = max(1, min(5, int(result.get("quality", 5))))
                 category = result.get("category", "general")
-                merged = f"[Task] {task}\n[Outcome] success\n[Category] {category}\n[Quality] {quality}\n[Lessons] {lessons}"
-                await asyncio.to_thread(memory.replace_merged, entries[:6], merged)
+                merged = f"Task: {task}\nLessons: {lessons}"
+                await asyncio.to_thread(
+                    memory.replace_merged, entries[:6], merged, category=category, quality=quality
+                )
             except Exception as e:
                 logger.debug("Experience merge skipped: {}", e)
 
