@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
-from nanobot.agent.commands import get_help_text, is_immediate_command, parse_command
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.subagent import SubagentManager
@@ -100,9 +99,8 @@ class AgentLoop:
         self._consolidating: set[str] = set()  # Session keys with consolidation in progress
         self._consolidation_tasks: set[asyncio.Task] = set()  # Strong refs to in-flight tasks
         self._consolidation_locks: dict[str, asyncio.Lock] = {}
-        self._active_tasks: dict[str, asyncio.Task] = {}  # session_key -> running task
-        self._pending_tasks: set[asyncio.Task] = set()  # Strong refs until dispatch starts
-        self._processing_lock = asyncio.Lock()  # Serialize message processing
+        self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
+        self._processing_lock = asyncio.Lock()
         self._register_default_tools()
 
     def _register_default_tools(self) -> None:
@@ -243,97 +241,61 @@ class AgentLoop:
         return final_content, tools_used, messages
 
     async def run(self) -> None:
-        """Run the agent loop, processing messages from the bus.
-
-        Regular messages are dispatched as asyncio tasks so the loop stays
-        responsive to immediate commands like /stop.  A global processing
-        lock serializes message handling to avoid shared-state races.
-        """
+        """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
         await self._connect_mcp()
         logger.info("Agent loop started")
 
         while self._running:
             try:
-                msg = await asyncio.wait_for(
-                    self.bus.consume_inbound(),
-                    timeout=1.0
-                )
-
-                # Immediate commands (/stop) are handled inline
-                cmd = parse_command(msg.content)
-                if cmd and is_immediate_command(cmd):
-                    await self._handle_immediate_command(cmd, msg)
-                    continue
-
-                # Regular messages (including non-immediate commands) are
-                # dispatched as tasks so the loop keeps consuming.
-                task = asyncio.create_task(self._dispatch(msg))
-                self._pending_tasks.add(task)
-                task.add_done_callback(self._pending_tasks.discard)
-
+                msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
 
-    async def _handle_immediate_command(self, cmd: str, msg: InboundMessage) -> None:
-        """Handle a command that must be processed while the agent may be busy."""
-        if cmd == "/stop":
-            task = self._active_tasks.get(msg.session_key)
-            sub_cancelled = await self.subagents.cancel_by_session(msg.session_key)
-            if task and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
-                parts = ["⏹ Task stopped."]
-                if sub_cancelled:
-                    parts.append(f"Also stopped {sub_cancelled} background task(s).")
-                await self.bus.publish_outbound(OutboundMessage(
-                    channel=msg.channel, chat_id=msg.chat_id,
-                    content=" ".join(parts),
-                ))
-            elif sub_cancelled:
-                await self.bus.publish_outbound(OutboundMessage(
-                    channel=msg.channel, chat_id=msg.chat_id,
-                    content=f"⏹ Stopped {sub_cancelled} background task(s).",
-                ))
+            if msg.content.strip().lower() == "/stop":
+                await self._handle_stop(msg)
             else:
-                await self.bus.publish_outbound(OutboundMessage(
-                    channel=msg.channel, chat_id=msg.chat_id,
-                    content="No active task to stop.",
-                ))
+                task = asyncio.create_task(self._dispatch(msg))
+                self._active_tasks.setdefault(msg.session_key, []).append(task)
+                task.add_done_callback(lambda t, k=msg.session_key: self._active_tasks.get(k, []) and self._active_tasks[k].remove(t) if t in self._active_tasks.get(k, []) else None)
+
+    async def _handle_stop(self, msg: InboundMessage) -> None:
+        """Cancel all active tasks and subagents for the session."""
+        tasks = self._active_tasks.pop(msg.session_key, [])
+        cancelled = sum(1 for t in tasks if not t.done() and t.cancel())
+        for t in tasks:
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+        sub_cancelled = await self.subagents.cancel_by_session(msg.session_key)
+        total = cancelled + sub_cancelled
+        content = f"⏹ Stopped {total} task(s)." if total else "No active task to stop."
+        await self.bus.publish_outbound(OutboundMessage(
+            channel=msg.channel, chat_id=msg.chat_id, content=content,
+        ))
 
     async def _dispatch(self, msg: InboundMessage) -> None:
-        """Dispatch a message for processing under the global lock.
-
-        The task is registered in _active_tasks *before* acquiring the lock
-        so that /stop can find (and cancel) tasks that are still queued.
-        """
-        self._active_tasks[msg.session_key] = asyncio.current_task()  # type: ignore[arg-type]
-        try:
-            async with self._processing_lock:
-                try:
-                    response = await self._process_message(msg)
-                    if response is not None:
-                        await self.bus.publish_outbound(response)
-                    elif msg.channel == "cli":
-                        await self.bus.publish_outbound(OutboundMessage(
-                            channel=msg.channel, chat_id=msg.chat_id,
-                            content="", metadata=msg.metadata or {},
-                        ))
-                except asyncio.CancelledError:
-                    logger.info("Task cancelled for session {}", msg.session_key)
-                    # Response already sent by _handle_immediate_command
-                except Exception as e:
-                    logger.error("Error processing message: {}", e)
+        """Process a message under the global lock."""
+        async with self._processing_lock:
+            try:
+                response = await self._process_message(msg)
+                if response is not None:
+                    await self.bus.publish_outbound(response)
+                elif msg.channel == "cli":
                     await self.bus.publish_outbound(OutboundMessage(
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
-                        content=f"Sorry, I encountered an error: {str(e)}"
+                        channel=msg.channel, chat_id=msg.chat_id,
+                        content="", metadata=msg.metadata or {},
                     ))
-        finally:
-            self._active_tasks.pop(msg.session_key, None)
+            except asyncio.CancelledError:
+                logger.info("Task cancelled for session {}", msg.session_key)
+                raise
+            except Exception:
+                logger.exception("Error processing message for session {}", msg.session_key)
+                await self.bus.publish_outbound(OutboundMessage(
+                    channel=msg.channel, chat_id=msg.chat_id,
+                    content="Sorry, I encountered an error.",
+                ))
 
     async def close_mcp(self) -> None:
         """Close MCP connections."""
@@ -426,7 +388,7 @@ class AgentLoop:
                                   content="New session started.")
         if cmd == "/help":
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content=get_help_text())
+                                  content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
 
         unconsolidated = len(session.messages) - session.last_consolidated
         if (unconsolidated >= self.memory_window and session.key not in self._consolidating):
