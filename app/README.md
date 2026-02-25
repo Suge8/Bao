@@ -1,8 +1,8 @@
 # bao Desktop App (实验性)
 
-基于 PySide6 + QML 的桌面客户端，**CLI `bao` 命令的 GUI 替代品**。
+基于 PySide6 + QML 的桌面客户端，**`bao` CLI 的纯 UI 壳子**。
 
-点击 Start Gateway 即可启动完整网关：AgentLoop + 全部已启用 Channels + Cron + Heartbeat，功能与 `bao` CLI 完全一致。桌面聊天窗口本身作为 `desktop` channel 与 Telegram、iMessage 等其他渠道共存。
+所有核心逻辑（AgentLoop、Channels、Cron、Heartbeat、startup greeting、首次落盘）均来自 `bao/` core，Desktop 不重复实现任何业务逻辑。点击 Start Gateway 后，桌面聊天窗口作为 `desktop` channel 与 Telegram、iMessage 等其他渠道共存运行。
 
 > **⚠️ 实验性功能**：桌面端处于早期开发阶段，API 和行为可能随时变更。
 
@@ -87,7 +87,7 @@ app/
 ├── backend/
 │   ├── asyncio_runner.py   # 独立线程 asyncio 事件循环
 │   ├── chat.py             # ChatMessageModel (QAbstractListModel)
-│   ├── gateway.py          # ChatService：完整网关生命周期（= CLI run_gateway）
+│   ├── gateway.py          # ChatService：Qt 线程胶水层，网关构建委托给 bao/gateway/builder.py
 │   ├── session.py          # SessionService + SessionListModel
 │   ├── config.py           # ConfigService：JSONC 读取/校验/保存
 │   └── jsonc_patch.py      # JSONC 无损 patch 写回（保留注释）
@@ -108,7 +108,7 @@ app/
 
 ## 技术要点
 
-- **完整网关**：Gateway 启动时创建 AgentLoop + ChannelManager + CronService + HeartbeatService，与 CLI `bao` 命令功能完全一致
+- **共享 core**：网关构建（AgentLoop + ChannelManager + CronService + HeartbeatService）、startup greeting、首次落盘均由 `bao/gateway/builder.py` 和 `bao/config/loader.py` 提供，Desktop 不重复实现
 - **多 Channel 共存**：桌面聊天窗口作为 `desktop` channel，与 Telegram、iMessage、Discord 等配置中启用的渠道同时运行
 - **线程模型**：Qt 主线程负责 UI，AsyncioRunner 在独立线程运行 asyncio 事件循环，agent.run() 和 channels.start_all() 作为后台 Task 并发执行
 - **Signal 跨线程**：所有 asyncio→Qt 回调通过内部 Signal 自动 marshal 到主线程，杜绝 QTimer 跨线程警告
