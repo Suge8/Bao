@@ -6,56 +6,52 @@ Item {
     id: root
 
     property string label: ""
-    property string placeholder: ""
     property string dotpath: ""
-    property bool isSecret: false
-    property string inputType: "text"
+    property string placeholder: ""
     property string description: ""
+    property string separator: ","
 
-    property var currentValue: _loaded ? fieldValue() : undefined
+    // For collectFields() — returns array or undefined
+    property var currentValue: _loaded ? _getList() : undefined
     property bool _loaded: false
     property bool _dirty: false
 
     Layout.fillWidth: true
     implicitHeight: col.implicitHeight
 
-    function fieldValue() {
+    function _getList() {
         var t = field.text.trim()
-        if (inputType === "bool") {
-            if (t === "") return _dirty ? false : undefined
-            var lowered = t.toLowerCase()
-            if (lowered === "true" || lowered === "1" || lowered === "yes" || lowered === "on") return true
-            if (lowered === "false" || lowered === "0" || lowered === "no" || lowered === "off") return false
-            return undefined
+        if (t === "") return _dirty ? [] : undefined
+        var parts = t.split(separator)
+        var result = []
+        for (var i = 0; i < parts.length; i++) {
+            var s = parts[i].trim()
+            if (s !== "") result.push(s)
         }
-        if (t === "") return _dirty ? "" : undefined
-        if (inputType === "number") {
-            var n = parseFloat(t)
-            return isNaN(n) ? undefined : n
-        }
-        return t
+        return result.length > 0 ? result : undefined
     }
 
     function presetText(val) {
-        if (val !== undefined && val !== null && String(val) !== "") {
-            field.text = String(val)
+        if (val !== undefined && val !== null) {
+            if (Array.isArray(val)) {
+                field.text = val.join(separator + " ")
+            } else if (String(val) !== "") {
+                field.text = String(val)
+            }
         }
     }
 
     Component.onCompleted: {
         if (configService && dotpath) {
             var v = configService.getValue(dotpath)
-            if (v !== undefined && v !== null) {
-                field.text = String(v)
-            }
+            presetText(v)
         }
         _loaded = true
     }
 
     Column {
         id: col
-        anchors.left: parent.left
-        anchors.right: parent.right
+        anchors { left: parent.left; right: parent.right }
         spacing: 6
 
         Text {
@@ -91,16 +87,13 @@ Item {
             TextField {
                 id: field
                 anchors.fill: parent
-                leftPadding: 14
-                rightPadding: 14
-                topPadding: 0
-                bottomPadding: 0
+                leftPadding: 14; rightPadding: 14
+                topPadding: 0; bottomPadding: 0
                 placeholderText: root.placeholder
                 placeholderTextColor: textPlaceholder
                 color: textPrimary
                 background: null
                 font.pixelSize: 14
-                echoMode: root.isSecret ? TextInput.Password : TextInput.Normal
                 verticalAlignment: TextInput.AlignVCenter
                 onTextEdited: root._dirty = true
             }
@@ -113,6 +106,16 @@ Item {
                 cursorShape: Qt.IBeamCursor
                 acceptedButtons: Qt.NoButton
             }
+        }
+
+        Text {
+            text: root.separator === ","
+                  ? (isZh ? "多个值用逗号分隔" : "Separate multiple values with commas")
+                  : (isZh ? "多个值用 " + root.separator + " 分隔" : "Separate with " + root.separator)
+            color: textTertiary
+            font.pixelSize: 11
+            font.italic: true
+            visible: root.placeholder !== ""
         }
     }
 }

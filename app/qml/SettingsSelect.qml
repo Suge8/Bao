@@ -7,6 +7,7 @@ Item {
 
     property string label: ""
     property string dotpath: ""
+    property string description: ""
 
     // Array of { label: string, value: any }
     property var options: []
@@ -18,7 +19,7 @@ Item {
     signal valueChanged(var value)
 
     Layout.fillWidth: true
-    implicitHeight: 66
+    implicitHeight: col.implicitHeight
 
     function valueForIndex(i) {
         if (!options || options.length === undefined) return undefined
@@ -48,7 +49,9 @@ Item {
     }
 
     Column {
-        anchors.fill: parent
+        id: col
+        anchors.left: parent.left
+        anchors.right: parent.right
         spacing: 6
 
         Text {
@@ -57,6 +60,15 @@ Item {
             font.pixelSize: 13
             font.weight: Font.Medium
             font.letterSpacing: 0.2
+        }
+        Text {
+            visible: root.description !== ""
+            text: root.description
+            color: textTertiary
+            font.pixelSize: 11
+            font.italic: true
+            wrapMode: Text.Wrap
+            width: parent.width
         }
 
         Rectangle {
@@ -114,6 +126,7 @@ Item {
                 id: hover
                 anchors.fill: parent
                 hoverEnabled: true
+                scrollGestureEnabled: false
                 cursorShape: Qt.PointingHandCursor
                 acceptedButtons: Qt.NoButton
             }

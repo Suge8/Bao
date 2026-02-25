@@ -8,7 +8,7 @@ ApplicationWindow {
     visible: true
     width: 1100
     height: 720
-    title: "bao"
+    title: ""
     property bool useNativeTitleBar: true
     readonly property bool useMacTransparentTitleBar: useNativeTitleBar && Qt.platform.os === "osx"
     flags: useNativeTitleBar
@@ -52,9 +52,12 @@ ApplicationWindow {
         "chat_placeholder": "给 bao 发消息…",
         "section_app": "应用",
         "section_agent_defaults": "代理默认设置",
-        "section_provider": "提供商",
+        "section_provider": "LLM 提供商",
         "section_channels": "渠道",
         "section_tools": "工具",
+        "section_gateway": "网关",
+        "section_provider_add": "添加 LLM 提供商",
+        "section_provider_remove": "删除",
         "ui_language": "界面语言",
         "ui_language_auto": "自动（跟随系统）",
         "ui_language_zh": "中文",
@@ -69,7 +72,31 @@ ApplicationWindow {
         "empty_error_hint": "网关启动失败",
         "empty_error_btn": "重试",
         "empty_chat_title": "准备就绪",
-        "empty_chat_hint": "在下方输入消息开始对话"
+        "empty_chat_hint": "在下方输入消息开始对话",
+        "empty_idle_title": "网关未启动",
+        "empty_idle_hint": "点击左侧 ⏻ 按钮启动网关",
+        "session_delete_ok": "会话已删除",
+        "session_delete_fail": "删除失败",
+        "channel_desktop": "桌面",
+        "channel_system": "系统",
+        "channel_heartbeat": "心跳",
+        "channel_cron": "定时任务",
+        "channel_telegram": "Telegram",
+        "channel_discord": "Discord",
+        "channel_whatsapp": "WhatsApp",
+        "channel_feishu": "飞书",
+        "channel_slack": "Slack",
+        "channel_email": "邮件",
+        "channel_qq": "QQ",
+        "channel_dingtalk": "钉钉",
+        "channel_imessage": "iMessage",
+        "channel_other": "其他",
+        "bubble_0": "有什么需要帮忙的吗？",
+        "bubble_1": "今天也要加油鸭 ᐢ.ˬ.ᐢ",
+        "bubble_2": "点我进入设置~",
+        "bubble_3": "嘿！你好呀 (◕ᴗ◕)",
+        "bubble_4": "我在这里等你哦~",
+        "copied_ok": "已复制",
     })
 
     readonly property var stringsEn: ({
@@ -91,9 +118,12 @@ ApplicationWindow {
         "chat_placeholder": "Message bao\u2026",
         "section_app": "App",
         "section_agent_defaults": "Agent Defaults",
-        "section_provider": "Provider",
+        "section_provider": "LLM Provider",
         "section_channels": "Channels",
         "section_tools": "Tools",
+        "section_gateway": "Gateway",
+        "section_provider_add": "Add LLM Provider",
+        "section_provider_remove": "Remove",
         "ui_language": "UI Language",
         "ui_language_auto": "Auto (System)",
         "ui_language_zh": "Chinese",
@@ -108,7 +138,31 @@ ApplicationWindow {
         "empty_error_hint": "Gateway failed to start",
         "empty_error_btn": "Retry",
         "empty_chat_title": "Ready to go",
-        "empty_chat_hint": "Type a message below to start chatting"
+        "empty_chat_hint": "Type a message below to start chatting",
+        "empty_idle_title": "Gateway not started",
+        "empty_idle_hint": "Click the ⏻ button in the sidebar to start",
+        "session_delete_ok": "Session deleted",
+        "session_delete_fail": "Delete failed",
+        "channel_desktop": "Desktop",
+        "channel_system": "System",
+        "channel_heartbeat": "Heartbeat",
+        "channel_cron": "Cron",
+        "channel_telegram": "Telegram",
+        "channel_discord": "Discord",
+        "channel_whatsapp": "WhatsApp",
+        "channel_feishu": "Feishu",
+        "channel_slack": "Slack",
+        "channel_email": "Email",
+        "channel_qq": "QQ",
+        "channel_dingtalk": "DingTalk",
+        "channel_imessage": "iMessage",
+        "channel_other": "Other",
+        "bubble_0": "Need any help?",
+        "bubble_1": "Let's get things done!",
+        "bubble_2": "Click me for settings~",
+        "bubble_3": "Hey there! (◕ᴗ◕)",
+        "bubble_4": "I'm here for you~",
+        "copied_ok": "Copied",
     })
 
     readonly property var strings: (
@@ -122,12 +176,25 @@ ApplicationWindow {
         var v = configService.getValue("ui.language")
         if (v === "auto" || v === "zh" || v === "en") uiLanguage = v
     }
+    // Resolved language for backend (never "auto")
+    readonly property string effectiveLang: {
+        if (uiLanguage === "zh" || uiLanguage === "en") return uiLanguage
+        return autoLanguage
+    }
+    onEffectiveLangChanged: if (chatService) chatService.setLanguage(effectiveLang)
 
     Component.onCompleted: _applyUiLanguageFromConfig()
 
     Connections {
         target: configService
         function onConfigLoaded() { root._applyUiLanguageFromConfig() }
+    }
+
+    Connections {
+        target: sessionService
+        function onDeleteCompleted(_key, ok, error) {
+            globalToast.show(ok ? strings.session_delete_ok : (strings.session_delete_fail + (error ? (": " + error) : "")), ok)
+        }
     }
 
     // ── Design Tokens ─────────────────────────────────────────────────
@@ -287,85 +354,6 @@ ApplicationWindow {
                     opacity: 0.7
                 }
 
-                Item { Layout.fillWidth: true }
-
-                // ── Gateway status pill (right side of title bar) ──
-                Row {
-                    spacing: 6
-                    Layout.alignment: Qt.AlignVCenter
-
-                    // Status dot + label
-                    Row {
-                        spacing: 5
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: chatService !== null
-                        Rectangle {
-                            width: 7; height: 7; radius: 3.5
-                            anchors.verticalCenter: parent.verticalCenter
-                            color: {
-                                if (!chatService) return textTertiary
-                                switch (chatService.state) {
-                                    case "running":  return statusSuccess
-                                    case "starting": return statusWarning
-                                    case "error":    return statusError
-                                    default:         return textTertiary
-                                }
-                            }
-                            Behavior on color { ColorAnimation { duration: 200 } }
-                        }
-                        Text {
-                            text: {
-                                if (!chatService) return strings.gateway_idle
-                                switch (chatService.state) {
-                                    case "running":  return strings.gateway_running
-                                    case "starting": return strings.gateway_starting
-                                    case "error":    return strings.gateway_error
-                                    case "stopped":  return strings.gateway_stopped
-                                    default:         return strings.gateway_idle
-                                }
-                            }
-                            color: textTertiary
-                            font.pixelSize: 11
-                            font.weight: Font.Medium
-                            font.letterSpacing: 0.3
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                    }
-
-                    // Stop/Start action button
-                    Rectangle {
-                        width: 28; height: 28; radius: 14
-                        visible: chatService !== null
-                        property bool isRunning: chatService && chatService.state === "running"
-                        property bool isStarting: chatService && chatService.state === "starting"
-                        color: gwActionHover.containsMouse
-                              ? (isDark ? "#18FFFFFF" : "#10000000")
-                              : "transparent"
-                        opacity: isStarting ? 0.4 : 1.0
-                        Behavior on color { ColorAnimation { duration: 120 } }
-                        Behavior on opacity { NumberAnimation { duration: 200 } }
-                        Image {
-                            anchors.centerIn: parent
-                            source: parent.isRunning
-                                    ? "../resources/icons/stop.svg"
-                                    : "../resources/icons/power.svg"
-                            sourceSize: Qt.size(14, 14)
-                            width: 14; height: 14
-                            opacity: 0.7
-                        }
-                        MouseArea {
-                            id: gwActionHover
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: parent.isStarting ? Qt.ArrowCursor : Qt.PointingHandCursor
-                            onClicked: {
-                                if (parent.isStarting) return
-                                if (parent.isRunning) chatService.stop()
-                                else chatService.start()
-                            }
-                        }
-                    }
-                }
             }
         }
 
@@ -419,6 +407,7 @@ ApplicationWindow {
                                 stack.currentIndex = 1
                                 sidebar.currentView = "settings"
                             }
+                            onMessageCopied: globalToast.show(strings.copied_ok, true)
                         }
 
                         SettingsView {
@@ -429,8 +418,22 @@ ApplicationWindow {
                 }
             }
         }
+
     }
 
 
     // Window drag is handled inside titleBar to avoid blocking traffic lights.
+
+    AppToast {
+        id: globalToast
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.topMargin: 14
+        anchors.rightMargin: 14
+        z: 999
+        successBg: isDark ? "#1F7A4D" : "#16A34A"
+        errorBg: isDark ? "#B84040" : "#DC2626"
+        textColor: "#FFFFFF"
+        duration: 2200
+    }
 }

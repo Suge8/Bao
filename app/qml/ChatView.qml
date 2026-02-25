@@ -8,6 +8,7 @@ Rectangle {
 
     // Signal to request switching to settings page
     signal openSettings()
+    signal messageCopied()
 
     ColumnLayout {
         anchors.fill: parent
@@ -37,6 +38,7 @@ Rectangle {
                 role: model.role ?? "user"
                 content: model.content ?? ""
                 status: model.status ?? "done"
+                toastFunc: function() { root.messageCopied() }
             }
 
             // ── Empty state — multi-state onboarding cards ──────────
@@ -248,7 +250,7 @@ Rectangle {
                         }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
-                            text: strings.empty_chat_title
+            text: strings.empty_idle_title
                             color: textPrimary
                             font.pixelSize: 20
                             font.weight: Font.DemiBold
@@ -256,14 +258,14 @@ Rectangle {
                         }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
-                            text: strings.empty_chat_hint
+            text: strings.empty_idle_hint
                             color: textTertiary
                             font.pixelSize: 14
                     }
                 }
             }
         }
-
+        }
         // ── Input bar ────────────────────────────────────────────────────
         Rectangle {
             Layout.fillWidth: true
@@ -330,12 +332,13 @@ Rectangle {
                            : (canSend ? accent : (isDark ? "#1A1A26" : "#E5E7EB"))
                     Behavior on color { ColorAnimation { duration: 150 } }
 
-                    Text {
+                    Image {
                         anchors.centerIn: parent
-                        text: "↑"
-                        color: parent.canSend ? "#FFFFFF" : textTertiary
-                        font.pixelSize: 20
-                        font.weight: Font.Bold
+                        source: "../resources/icons/send.svg"
+                        width: 18; height: 18
+                        sourceSize: Qt.size(18, 18)
+                        opacity: parent.canSend ? 1.0 : 0.3
+                        Behavior on opacity { NumberAnimation { duration: 150 } }
                     }
 
                     MouseArea {
@@ -357,5 +360,4 @@ Rectangle {
         chatService.sendMessage(text)
         messageInput.text = ""
     }
-}
 }

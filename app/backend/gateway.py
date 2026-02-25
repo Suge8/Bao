@@ -33,6 +33,8 @@ class ChatService(QObject):
     _initResult = Signal(bool, str, object, list)  # ok, err, session_mgr, channels
     _sendResult = Signal(int, bool, str)  # row, ok, content_or_error
     _historyResult = Signal(bool, str, object)  # ok, error, messages_list
+    _progressUpdate = Signal(int, str)  # row, accumulated_content (asyncio → Qt)
+    _systemResponse = Signal(str)  # subagent completion content (asyncio → Qt)
 
     def __init__(self, model: ChatMessageModel, runner: AsyncioRunner, parent: Any = None) -> None:
         super().__init__(parent)
@@ -46,16 +48,23 @@ class ChatService(QObject):
         self._heartbeat: Any = None
         self._background_tasks: list[asyncio.Task[Any]] = []
         self._session_key = "desktop:local"
+        self._history_initialized = False
         self._send_queue: queue.Queue[str] = queue.Queue()
         self._processing = False
         self._lang = "en"
         self._lock = threading.Lock()
         self._cron_status: dict[str, Any] = {}
         self._session_manager: Any = None
+        self._pending_system: list[str] = []
+        self._active_streaming_row: int = -1
+        self._active_has_content = False
+        self._pending_split = False
 
         self._initResult.connect(self._handle_init_result)
         self._sendResult.connect(self._handle_send_result)
         self._historyResult.connect(self._handle_history_result)
+        self._progressUpdate.connect(self._handle_progress_update)
+        self._systemResponse.connect(self._handle_system_response)
 
     # ------------------------------------------------------------------
     # Qt properties
@@ -80,6 +89,7 @@ class ChatService(QObject):
     @Slot(str)
     def setLanguage(self, lang: str) -> None:
         self._lang = lang if lang in ("zh", "en") else "en"
+
     @Slot()
     def start(self) -> None:
         if self._state in ("starting", "running"):
@@ -98,12 +108,20 @@ class ChatService(QObject):
                 self._runner.submit(self._shutdown_gateway())
             except RuntimeError:
                 pass
-        self._runner.shutdown(grace_s=5.0)
+        # NOTE: Do NOT shutdown the runner here.
+        # The runner is shared with SessionService for history browsing.
+        # Final shutdown is handled by main.py on app exit.
 
     @Slot()
     def restart(self) -> None:
         self.stop()
         QTimer.singleShot(300, self.start)
+
+    @Slot(object)
+    def setSessionManager(self, sm: Any) -> None:
+        """Allow history browsing before gateway starts."""
+        if self._session_manager is None:
+            self._session_manager = sm
 
     @Slot(str)
     def sendMessage(self, text: str) -> None:
@@ -116,9 +134,12 @@ class ChatService(QObject):
     @Slot(str)
     def setSessionKey(self, key: str) -> None:
         """Called when SessionService switches active session. Loads history."""
-        if not key or key == self._session_key:
+        if not key:
+            return
+        if key == self._session_key and self._history_initialized:
             return
         self._session_key = key
+        self._pending_system.clear()
         if self._session_manager is None:
             return
         fut = self._runner.submit(self._load_history(key))
@@ -141,6 +162,7 @@ class ChatService(QObject):
         """Runs on Qt main thread — fills ChatMessageModel with history."""
         if not ok:
             return
+        self._history_initialized = True
         self._model.load_history(messages or [])
 
     # ------------------------------------------------------------------
@@ -172,6 +194,12 @@ class ChatService(QObject):
         self._cron = stack.cron
         self._heartbeat = stack.heartbeat
 
+        # Register callback for subagent completion notifications
+        async def _on_system_response(msg: Any) -> None:
+            if msg.content and msg.channel == "desktop":
+                self._systemResponse.emit(msg.content)
+
+        stack.agent.on_system_response = _on_system_response
         # --- start background services on the asyncio loop ---
         loop = asyncio.get_running_loop()
         await stack.cron.start()
@@ -180,7 +208,10 @@ class ChatService(QObject):
         self._background_tasks = [
             loop.create_task(stack.agent.run()),
             loop.create_task(stack.channels.start_all()),
-            loop.create_task(send_startup_greeting(stack.agent, stack.bus, stack.config)),
+            loop.create_task(send_startup_greeting(
+                stack.agent, stack.bus, stack.config,
+                on_desktop_greeting=lambda t: self._systemResponse.emit(t),
+            )),
         ]
 
         return stack.session_manager, stack.channels.enabled_channels
@@ -239,9 +270,12 @@ class ChatService(QObject):
             self._processing = True
 
         assistant_row = self._model.append_assistant("", status="typing")
+        self._active_streaming_row = assistant_row
+        self._active_has_content = False
+        self._pending_split = False
         self.messageAppended.emit(assistant_row)
 
-        fut = self._runner.submit(self._call_agent(text, assistant_row))
+        fut = self._runner.submit(self._call_agent(text))
         fut.add_done_callback(lambda f: self._on_send_done(f, assistant_row))
 
     def _on_send_done(self, future: Any, row: int) -> None:
@@ -252,51 +286,92 @@ class ChatService(QObject):
         else:
             self._sendResult.emit(row, True, future.result() or "")
 
-    def _handle_send_result(self, row: int, ok: bool, content: str) -> None:
-        """Runs on Qt main thread."""
+    def _handle_send_result(self, _row: int, ok: bool, content: str) -> None:
+        """Runs on Qt main thread. Finalizes the active streaming bubble."""
+        active = self._active_streaming_row if self._active_streaming_row >= 0 else _row
+        if ok and self._pending_split and self._active_has_content and content:
+            self._model.set_status(active, "done")
+            active = self._model.append_assistant("", status="typing")
+            self._active_streaming_row = active
+            self._active_has_content = False
+            self.messageAppended.emit(active)
         if not ok:
-            self._model.update_content(row, content)
-            self._model.set_status(row, "error")
+            self._model.update_content(active, content)
+            self._model.set_status(active, "error")
         else:
-            self._start_typewriter(row, content)
-
+            if content:
+                self._model.update_content(active, content)
+                self._active_has_content = True
+            self._model.set_status(active, "done")
+        self._active_streaming_row = -1
+        self._active_has_content = False
+        self._pending_split = False
+        # Drain pending system responses before releasing lock
+        pending: list[str] = []
         with self._lock:
             self._processing = False
-        self._drain_queue()
+            pending = self._pending_system[:]
+            self._pending_system.clear()
+        for msg in pending:
+            self._show_system_response(msg)
 
-    async def _call_agent(self, text: str, _row: int) -> str:
+    async def _call_agent(self, text: str) -> str:
         if self._agent is None:
             raise RuntimeError("Agent not initialized")
-        return await self._agent.process_direct(
+
+        accumulated = [""]
+
+        async def _on_progress(delta: str) -> None:
+            if delta == "\x00":
+                self._progressUpdate.emit(-2, "")
+                accumulated[0] = ""
+                return
+            accumulated[0] += delta
+            self._progressUpdate.emit(-1, accumulated[0])
+
+        result = await self._agent.process_direct(
             text,
             session_key=self._session_key,
             channel="desktop",
             chat_id="local",
+            on_progress=_on_progress,
         )
+        return result
 
-    # ------------------------------------------------------------------
-    # Typewriter effect (runs on Qt main thread)
-    # ------------------------------------------------------------------
-
-    def _start_typewriter(self, row: int, full_text: str) -> None:
-        if not full_text:
-            self._model.set_status(row, "done")
+    def _handle_progress_update(self, row: int, content: str) -> None:
+        """Runs on Qt main thread. Routes streaming content to active bubble."""
+        if row == -2:
+            self._pending_split = True
             return
+        if row == -1 and self._pending_split:
+            if self._active_has_content:
+                cur = self._active_streaming_row
+                if cur >= 0:
+                    self._model.set_status(cur, "done")
+                new_row = self._model.append_assistant("", status="typing")
+                self._active_streaming_row = new_row
+                self._active_has_content = False
+                self.messageAppended.emit(new_row)
+            self._pending_split = False
+        target = self._active_streaming_row if row == -1 else row
+        if target >= 0:
+            self._model.update_content(target, content)
+            self._active_has_content = bool(content)
 
-        chunk_size = 4
-        interval_ms = 20
-        pos = [0]
+    def _handle_system_response(self, content: str) -> None:
+        """Runs on Qt main thread. Queue if streaming, else show immediately."""
+        if not content:
+            return
+        with self._lock:
+            if self._processing:
+                self._pending_system.append(content)
+                return
+        self._show_system_response(content)
 
-        def tick() -> None:
-            end = min(pos[0] + chunk_size, len(full_text))
-            self._model.update_content(row, full_text[:end])
-            pos[0] = end
-            if pos[0] >= len(full_text):
-                self._model.set_status(row, "done")
-            else:
-                QTimer.singleShot(interval_ms, tick)
-
-        QTimer.singleShot(interval_ms, tick)
+    def _show_system_response(self, content: str) -> None:
+        """Display subagent completion as assistant message (no typewriter)."""
+        row = self._model.append_assistant(content, status="done")
+        self.messageAppended.emit(row)
 
     # ------------------------------------------------------------------
     # Helpers
