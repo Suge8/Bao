@@ -72,23 +72,28 @@ class SessionService(QObject):
     sessionsChanged = Signal()
     activeKeyChanged = Signal(str)
     errorOccurred = Signal(str)
+    deleteCompleted = Signal(str, bool, str)
 
     # Internal signals: asyncio thread → Qt main thread
     _listResult = Signal(bool, str, object)  # ok, error, (sessions, active)
     _selectResult = Signal(bool, str, str)  # ok, error, key
     _mutateResult = Signal(bool, str)  # ok, error (for create/delete)
+    _deleteResult = Signal(str, bool, str)
 
     def __init__(self, runner: AsyncioRunner, parent: Any = None) -> None:
         super().__init__(parent)
         self._runner = runner
         self._session_manager: Any = None
         self._natural_key = "desktop:local"
+        self._allow_active_selection = False
         self._active_key = ""
         self._model = SessionListModel()
+        self._pending_deletes: dict[str, tuple[list[dict[str, Any]], str]] = {}
 
         self._listResult.connect(self._handle_list_result)
         self._selectResult.connect(self._handle_select_result)
         self._mutateResult.connect(self._handle_mutate_result)
+        self._deleteResult.connect(self._handle_delete_result)
 
     @Property(QObject, constant=True)
     def sessionsModel(self) -> SessionListModel:
@@ -114,6 +119,10 @@ class SessionService(QObject):
         fut = self._runner.submit(self._list_sessions())
         fut.add_done_callback(self._on_list_done)
 
+    @Slot()
+    def setGatewayReady(self) -> None:
+        self._allow_active_selection = True
+
     @Slot(str)
     def newSession(self, name: str = "") -> None:
         fut = self._runner.submit(self._create_session(name))
@@ -126,8 +135,31 @@ class SessionService(QObject):
 
     @Slot(str)
     def deleteSession(self, key: str) -> None:
+        if not key or self._session_manager is None or key in self._pending_deletes:
+            return
+        sessions_before = [dict(s) for s in self._model._sessions]
+        active_before = self._active_key
+        sessions_after = [s for s in sessions_before if s.get("key") != key]
+        if len(sessions_after) == len(sessions_before):
+            return
+
+        new_active = active_before
+        if active_before == key:
+            if sessions_after:
+                desktop = [s for s in sessions_after if s.get("channel") == "desktop"]
+                pick = desktop[0] if desktop else sessions_after[0]
+                new_active = str(pick.get("key", ""))
+            else:
+                new_active = ""
+
+        self._pending_deletes[key] = (sessions_before, active_before)
+        self._active_key = new_active
+        self._model.reset_sessions(sessions_after, new_active)
+        self.sessionsChanged.emit()
+        self.activeKeyChanged.emit(new_active)
+
         fut = self._runner.submit(self._delete_session(key))
-        fut.add_done_callback(self._on_mutate_done)
+        fut.add_done_callback(lambda future, k=key: self._on_delete_done(k, future))
 
     # ------------------------------------------------------------------
     # Async helpers (run on asyncio thread)
@@ -140,7 +172,7 @@ class SessionService(QObject):
         result = []
         for s in sessions:
             key = s["key"]
-            channel = key.split(":")[0] if ":" in key else "other"
+            channel = key.split(":")[0] if ":" in key else (key if key == "heartbeat" else "other")
             result.append(
                 {
                     "key": key,
@@ -159,6 +191,9 @@ class SessionService(QObject):
             import time
 
             key = f"{self._natural_key}::session-{int(time.time())}"
+        # Create session in storage so it appears in list_sessions immediately
+        session = sm.get_or_create(key)
+        sm.save(session)
         sm.set_active_session_key(self._natural_key, key)
         return key
 
@@ -167,8 +202,9 @@ class SessionService(QObject):
         return key
 
     async def _delete_session(self, key: str) -> None:
+        was_active = self._session_manager.get_active_session_key(self._natural_key) == key
         self._session_manager.delete_session(key)
-        if self._active_key == key:
+        if was_active:
             self._session_manager.clear_active_session_key(self._natural_key)
 
     # ------------------------------------------------------------------
@@ -196,6 +232,13 @@ class SessionService(QObject):
         else:
             self._mutateResult.emit(True, "")
 
+    def _on_delete_done(self, key: str, future: Any) -> None:
+        exc = future.exception()
+        if exc:
+            self._deleteResult.emit(key, False, str(exc))
+        else:
+            self._deleteResult.emit(key, True, "")
+
     # ------------------------------------------------------------------
     # Main-thread handlers (connected via signals)
     # ------------------------------------------------------------------
@@ -205,8 +248,9 @@ class SessionService(QObject):
             self.errorOccurred.emit(error)
             return
         sessions, active = data
-        # Auto-select first desktop session when no active key
-        if not active and sessions:
+        if not self._allow_active_selection:
+            active = ""
+        elif not active and sessions:
             desktop = [s for s in sessions if s.get("channel") == "desktop"]
             pick = desktop[0] if desktop else sessions[0]
             active = pick["key"]
@@ -222,6 +266,7 @@ class SessionService(QObject):
         if not ok:
             self.errorOccurred.emit(error)
             return
+        self._allow_active_selection = True
         self._active_key = key
         self._model.set_active(key)
         self.activeKeyChanged.emit(key)
@@ -231,3 +276,18 @@ class SessionService(QObject):
             self.errorOccurred.emit(error)
             return
         self.refresh()
+
+    def _handle_delete_result(self, key: str, ok: bool, error: str) -> None:
+        snapshot = self._pending_deletes.pop(key, None)
+        if not ok:
+            if snapshot is not None:
+                sessions_before, active_before = snapshot
+                self._active_key = active_before
+                self._model.reset_sessions(sessions_before, active_before)
+                self.sessionsChanged.emit()
+                self.activeKeyChanged.emit(active_before)
+            self.errorOccurred.emit(error)
+            self.deleteCompleted.emit(key, False, error)
+            return
+        self.refresh()
+        self.deleteCompleted.emit(key, True, "")

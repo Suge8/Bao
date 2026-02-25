@@ -7,8 +7,19 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QLocale, QObject, QTimer, Signal, Slot, Property
-from PySide6.QtGui import QColor, QGuiApplication, QSurfaceFormat
+from PySide6.QtCore import QLocale, QObject, Property, QRectF, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import (
+    QColor,
+    QGuiApplication,
+    QIcon,
+    QImage,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QSurfaceFormat,
+)
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtQuickControls2 import QQuickStyle
@@ -53,7 +64,140 @@ def parse_args() -> tuple[bool, str | None, bool, str, bool, str | None]:
 def resolve_qml_path(qml_arg: str | None) -> Path:
     if qml_arg:
         return Path(qml_arg).expanduser().resolve()
-    return (Path(__file__).resolve().parent / "qml" / "Main.qml").resolve()
+
+    candidates: list[Path] = []
+    src_base = Path(__file__).resolve().parent
+    candidates.append(src_base / "qml" / "Main.qml")
+
+    if getattr(sys, "frozen", False):
+        exe = Path(sys.executable).resolve()
+        meipass = getattr(sys, "_MEIPASS", "")
+        frozen_roots = [
+            Path(meipass) if meipass else None,
+            exe.parent,
+            exe.parent.parent / "Resources",
+            exe.parent.parent / "Resources" / "app",
+            exe.parent.parent / "Frameworks",
+        ]
+        for root in frozen_roots:
+            if root is None:
+                continue
+            candidates.append(root / "qml" / "Main.qml")
+            candidates.append(root / "app" / "qml" / "Main.qml")
+
+    for path in candidates:
+        if path.exists():
+            return path.resolve()
+
+    return candidates[0].resolve()
+
+
+def resolve_logo_path() -> Path | None:
+    candidates: list[Path] = []
+    src_root = Path(__file__).resolve().parent.parent
+    candidates.extend(
+        [
+            src_root / "assets" / "logo.jpg",
+            src_root / "assets" / "logo.jpeg",
+            src_root / "assets" / "logo.png",
+        ]
+    )
+
+    if getattr(sys, "frozen", False):
+        exe = Path(sys.executable).resolve()
+        meipass = getattr(sys, "_MEIPASS", "")
+        frozen_roots = [
+            Path(meipass) if meipass else None,
+            exe.parent,
+            exe.parent.parent / "Resources",
+        ]
+        for root in frozen_roots:
+            if root is None:
+                continue
+            candidates.extend(
+                [
+                    root / "assets" / "logo.jpg",
+                    root / "assets" / "logo.jpeg",
+                    root / "assets" / "logo.png",
+                ]
+            )
+
+    for path in candidates:
+        if path.exists():
+            return path.resolve()
+    return None
+
+
+def build_rounded_icon(image_path: Path) -> QIcon | None:
+    image = QImage(str(image_path))
+    if image.isNull():
+        return None
+
+    side = min(image.width(), image.height())
+    x = (image.width() - side) // 2
+    y = (image.height() - side) // 2
+    square = image.copy(x, y, side, side)
+
+    icon = QIcon()
+    for px in (16, 20, 24, 32, 48, 64, 128, 256, 512):
+        canvas = QPixmap(px, px)
+        canvas.fill(Qt.GlobalColor.transparent)
+
+        inset = max(1.0, px * 0.06)
+        target = QRectF(inset, inset, px - inset * 2, px - inset * 2)
+        radius = target.width() * 0.24
+
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+        shadow_path = QPainterPath()
+        shadow_rect = QRectF(
+            target.x(), target.y() + max(1.0, px * 0.02), target.width(), target.height()
+        )
+        shadow_path.addRoundedRect(shadow_rect, radius, radius)
+        painter.fillPath(shadow_path, QColor(0, 0, 0, 34 if px >= 64 else 22))
+
+        clip = QPainterPath()
+        clip.addRoundedRect(target, radius, radius)
+        painter.setClipPath(clip)
+        painter.drawImage(target, square)
+
+        top_gloss = QLinearGradient(target.left(), target.top(), target.left(), target.bottom())
+        top_gloss.setColorAt(0.0, QColor(255, 255, 255, 85 if px >= 64 else 55))
+        top_gloss.setColorAt(0.35, QColor(255, 255, 255, 26 if px >= 64 else 18))
+        top_gloss.setColorAt(0.65, QColor(255, 255, 255, 0))
+        painter.fillPath(clip, top_gloss)
+
+        bottom_tone = QLinearGradient(target.left(), target.top(), target.left(), target.bottom())
+        bottom_tone.setColorAt(0.55, QColor(0, 0, 0, 0))
+        bottom_tone.setColorAt(1.0, QColor(0, 0, 0, 28 if px >= 64 else 16))
+        painter.fillPath(clip, bottom_tone)
+
+        painter.setClipping(False)
+        stroke_width = max(1.0, px * 0.012)
+        stroke_rect = target.adjusted(
+            stroke_width / 2, stroke_width / 2, -stroke_width / 2, -stroke_width / 2
+        )
+        stroke_pen = QPen(QColor(255, 255, 255, 95 if px >= 64 else 70), stroke_width)
+        painter.setPen(stroke_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(
+            stroke_rect, max(1.0, radius - stroke_width / 2), max(1.0, radius - stroke_width / 2)
+        )
+
+        inner_pen = QPen(QColor(0, 0, 0, 26 if px >= 64 else 14), max(1.0, px * 0.005))
+        painter.setPen(inner_pen)
+        inner_rect = stroke_rect.adjusted(1, 1, -1, -1)
+        painter.drawRoundedRect(
+            inner_rect, max(1.0, radius - stroke_width), max(1.0, radius - stroke_width)
+        )
+
+        painter.end()
+
+        icon.addPixmap(canvas)
+
+    return icon
 
 
 def detect_system_ui_language() -> str:
@@ -188,6 +332,12 @@ def main() -> int:
     QSurfaceFormat.setDefaultFormat(fmt)
 
     app = QGuiApplication(sys.argv)
+    logo_path = resolve_logo_path()
+    logo_icon: QIcon | None = None
+    if logo_path:
+        logo_icon = build_rounded_icon(logo_path) or QIcon(str(logo_path))
+    if logo_icon:
+        app.setWindowIcon(logo_icon)
     engine = QQmlApplicationEngine()
 
     from app.backend.chat import ChatMessageModel
@@ -220,10 +370,15 @@ def main() -> int:
 
     _ws = Path(config_service.get("agents.defaults.workspace", "~/.bao/workspace")).expanduser()
     _ws.mkdir(parents=True, exist_ok=True)
-    session_service.initialize(SessionManager(_ws))
+    _early_sm = SessionManager(_ws)
+    session_service.initialize(_early_sm)
+    chat_service.setSessionManager(_early_sm)
 
-    # Wire gateway → session: when gateway is ready, initialize session service
-    chat_service.gatewayReady.connect(lambda sm, _ch: session_service.initialize(sm))
+    def _on_gateway_ready(sm, _ch):
+        session_service.setGatewayReady()
+        session_service.initialize(sm)
+
+    chat_service.gatewayReady.connect(_on_gateway_ready)
     # Wire session → gateway: when active session changes, update gateway session key
     session_service.activeKeyChanged.connect(chat_service.setSessionKey)
 
@@ -241,6 +396,8 @@ def main() -> int:
         return 1
 
     root = engine.rootObjects()[0]
+    if logo_icon and isinstance(root, QQuickWindow):
+        root.setIcon(logo_icon)
     use_native_title_bar = True
     _ = root.setProperty("useNativeTitleBar", use_native_title_bar)
     if isinstance(root, QQuickWindow):
@@ -258,7 +415,6 @@ def main() -> int:
                 ),
             )
     _ = root.setProperty("startView", start_view)
-
 
     if seed_messages:
         messages_model.append_user("Hello, what can you do?")

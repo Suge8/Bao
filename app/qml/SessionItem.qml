@@ -7,6 +7,7 @@ Rectangle {
     property string sessionKey: ""
     property string sessionTitle: ""
     property bool isActive: false
+    property bool dimmed: false
     signal selected()
     signal deleteRequested()
 
@@ -15,14 +16,16 @@ Rectangle {
     color: isActive
            ? accentMuted
            : (hoverArea.containsMouse ? (isDark ? "#08FFFFFF" : "#06000000") : "transparent")
+    opacity: dimmed ? (isActive ? 0.9 : 0.6) : 1.0
 
     Behavior on color { ColorAnimation { duration: 150 } }
+    Behavior on opacity { NumberAnimation { duration: 150 } }
 
     Row {
         anchors {
             verticalCenter: parent.verticalCenter
             left: parent.left; right: deleteBtn.left
-            leftMargin: 12; rightMargin: 6
+            leftMargin: 12; rightMargin: 10
         }
         spacing: 8
 
@@ -62,17 +65,22 @@ Rectangle {
     // Delete button — only visible on hover
     Rectangle {
         id: deleteBtn
+        z: 2
         anchors { right: parent.right; verticalCenter: parent.verticalCenter; rightMargin: 8 }
-        width: 24; height: 24; radius: 6
-        color: deleteHover.containsMouse ? "#20F87171" : "transparent"
+        width: 30; height: 30; radius: 9
+        color: deleteHover.containsMouse ? (isDark ? "#28F87171" : "#22F87171") : (isDark ? "#14FFFFFF" : "#10000000")
+        border.width: 1
+        border.color: deleteHover.containsMouse ? "#66F87171" : (isDark ? "#2AFFFFFF" : "#23000000")
+        scale: deleteHover.containsMouse ? 1.04 : 1.0
         visible: hoverArea.containsMouse || deleteHover.containsMouse
         Behavior on color { ColorAnimation { duration: 120 } }
+        Behavior on scale { NumberAnimation { duration: 120 } }
 
         Text {
             anchors.centerIn: parent
             text: "✕"
             color: isDark ? "#F87171" : "#DC2626"
-            font.pixelSize: 10
+            font.pixelSize: 12
             font.weight: Font.Medium
         }
 
@@ -90,6 +98,7 @@ Rectangle {
 
     MouseArea {
         id: hoverArea
+        z: 1
         anchors.fill: parent
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor

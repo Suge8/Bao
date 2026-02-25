@@ -7,6 +7,9 @@ Item {
     property string content: ""
     property string status: "done"
 
+    // Toast callback — set by parent (ChatView)
+    property var toastFunc: null
+
     property bool isUser: role === "user"
     property bool isSystem: role === "system"
 
@@ -29,6 +32,15 @@ Item {
         lineHeight: 1.4
     }
 
+    // ── Hidden metrics text (no anchors to bubble → breaks binding loop) ──
+    Text {
+        id: contentMetrics
+        text: root.content
+        font.pixelSize: 15
+        textFormat: Text.MarkdownText
+        visible: false
+    }
+
     // ── Chat bubble (user / assistant) ────────────────────────────
     Rectangle {
         id: bubble
@@ -41,44 +53,105 @@ Item {
             top: parent.top
             topMargin: 5
         }
-        width: Math.min(contentText.implicitWidth + 32, root.width * 0.75)
-        height: contentText.height + 28
+        property bool isTyping: root.status === "typing" && root.content === ""
+        width: isTyping ? 72 : Math.min(contentMetrics.implicitWidth + 32, root.width * 0.75)
+        height: isTyping ? 42 : contentText.contentHeight + 28
         radius: 18
+        scale: 1.0
+        transformOrigin: Item.Center
 
-        color: isUser
-               ? accent
-               : bgCard
+        color: {
+            if (isUser) return hoverHandler.hovered ? accentHover : accent
+            return hoverHandler.hovered ? bgCardHover : bgCard
+        }
 
         border.color: isUser ? "transparent" : borderSubtle
         border.width: isUser ? 0 : 1
 
-        // Typing indicator dots
+        Behavior on color { ColorAnimation { duration: 150 } }
+
+        // ── Hover detection (non-blocking) ───────────────────────
+        HoverHandler {
+            id: hoverHandler
+        }
+
+        // ── Padding click area (behind TextEdit — only receives clicks on margins) ──
+        MouseArea {
+            id: paddingClickArea
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            hoverEnabled: true
+            onClicked: {
+                if (bubble.isTyping || root.content === "") return
+                clipHelper.text = root.content
+                clipHelper.selectAll()
+                clipHelper.copy()
+                clipHelper.deselect()
+                clickAnim.start()
+                if (root.toastFunc) root.toastFunc()
+            }
+        }
+
+        // Hidden TextEdit for clipboard access
+        TextEdit {
+            id: clipHelper
+            visible: false
+        }
+
+        // ── Click animation — subtle scale pulse ─────────────────
+        SequentialAnimation {
+            id: clickAnim
+            NumberAnimation {
+                target: bubble; property: "scale"
+                to: 0.97; duration: 80
+                easing.type: Easing.OutQuad
+            }
+            NumberAnimation {
+                target: bubble; property: "scale"
+                to: 1.0; duration: 200
+                easing.type: Easing.OutBack
+            }
+        }
+
+        // ── Typing indicator — elastic pulse dots ──────────────────
         Row {
             anchors.centerIn: parent
-            spacing: 6
-            visible: root.status === "typing" && root.content === ""
+            spacing: 5
+            visible: bubble.isTyping
 
             Repeater {
                 model: 3
                 delegate: Rectangle {
-                    width: 7; height: 7; radius: 4
-                    color: accent
-                    opacity: 0.4
+                    id: dot
+                    width: 6; height: 6; radius: 3
+                    color: isDark ? "#8A8AA0" : "#9CA3AF"
+                    opacity: 0.45
+                    scale: 1.0
+                    transformOrigin: Item.Center
+
+                    SequentialAnimation on scale {
+                        running: bubble.isTyping
+                        loops: Animation.Infinite
+                        PauseAnimation { duration: index * 160 }
+                        NumberAnimation { to: 1.5; duration: 320; easing.type: Easing.OutBack }
+                        NumberAnimation { to: 1.0; duration: 280; easing.type: Easing.InOutQuad }
+                        PauseAnimation { duration: (2 - index) * 160 + 400 }
+                    }
 
                     SequentialAnimation on opacity {
-                        running: root.status === "typing" && root.content === ""
+                        running: bubble.isTyping
                         loops: Animation.Infinite
-                        PauseAnimation { duration: index * 200 }
-                        NumberAnimation { to: 1.0; duration: 350; easing.type: Easing.OutCubic }
-                        NumberAnimation { to: 0.3; duration: 350; easing.type: Easing.InCubic }
-                        PauseAnimation { duration: (2 - index) * 200 }
+                        PauseAnimation { duration: index * 160 }
+                        NumberAnimation { to: 1.0; duration: 320; easing.type: Easing.OutCubic }
+                        NumberAnimation { to: 0.45; duration: 280; easing.type: Easing.InCubic }
+                        PauseAnimation { duration: (2 - index) * 160 + 400 }
                     }
                 }
             }
         }
 
-        // Message text
-        Text {
+        // ── Message text (selectable + clickable links) ──────────
+        TextEdit {
             id: contentText
             anchors {
                 top: parent.top; topMargin: 14
@@ -88,10 +161,19 @@ Item {
             text: root.content
             visible: root.content !== ""
             color: root.isUser ? "#FFFFFF" : textPrimary
+            selectedTextColor: root.isUser ? accent : "#FFFFFF"
+            selectionColor: root.isUser ? "#FFFFFF" : accent
             font.pixelSize: 15
-            wrapMode: Text.Wrap
-            textFormat: Text.MarkdownText
-            lineHeight: 1.5
+            wrapMode: TextEdit.Wrap
+            textFormat: TextEdit.MarkdownText
+            readOnly: true
+            selectByMouse: true
+            activeFocusOnPress: true
+
+            onLinkActivated: function(link) {
+                Qt.openUrlExternally(link)
+            }
+
         }
 
         // Error tint

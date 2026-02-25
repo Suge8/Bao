@@ -16,8 +16,10 @@ Algorithm:
 Limitations (by design):
   - Does not uncomment commented-out blocks.
   - Does not reorder keys.
-  - Does not delete keys.
   - On parse failure for a given path, returns a structured error.
+
+Deletion:
+  Pass value = _DELETE_SENTINEL for a dotpath to remove that key entirely.
 """
 
 from __future__ import annotations
@@ -26,6 +28,9 @@ import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
+
+# Sentinel value for key deletion
+_DELETE_SENTINEL = object()
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +98,7 @@ class _ObjNode:
 
     children: dict[str, "_ObjNode | _Span"] = field(default_factory=dict)
     close_brace: int = -1  # offset of '}'
+    open_brace: int = -1   # offset of '{'
     # offset just before '}' where we can insert new keys
     insert_before: int = -1
 
@@ -129,6 +135,7 @@ class _Parser:
     def _parse_object(self) -> _ObjNode:
         open_tok = self._consume("LBRACE")
         node = _ObjNode()
+        node.open_brace = open_tok.start
         last_value_end = open_tok.end
 
         while True:
@@ -268,8 +275,7 @@ def _collect_patch(
         elif isinstance(child, _ObjNode):
             # Replace entire object value
             close = child.close_brace + 1
-            # Find open brace: scan backwards from close_brace in text
-            open_pos = text.rfind("{", 0, child.close_brace)
+            open_pos = child.open_brace
             if open_pos == -1:
                 return f"Cannot locate open brace for object at key {key!r}"
             replacement = json.dumps(value, ensure_ascii=False, indent=2)
