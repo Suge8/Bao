@@ -3,9 +3,9 @@
 <br>
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/hero.svg" />
-  <source media="(prefers-color-scheme: light)" srcset="docs/hero.svg" />
-  <img alt="bao" src="docs/hero.svg" width="800" />
+  <source media="(prefers-color-scheme: dark)" srcset="assets/hero.svg" />
+  <source media="(prefers-color-scheme: light)" srcset="assets/hero.svg" />
+  <img alt="bao" src="assets/hero.svg" width="800" />
 </picture>
 
 <br>
@@ -24,7 +24,7 @@
 
 bao 不一样。它**记得住**、**学得会**、**能进化**。
 
-<p align="center"><img src="docs/features.svg" width="800" alt="核心特性"></p>
+<p align="center"><img src="assets/features.svg" width="800" alt="核心特性"></p>
 
 ### 记忆不会消失
 
@@ -74,7 +74,7 @@ bao 不一样。它**记得住**、**学得会**、**能进化**。
 | 开放问题 | 8,400+ | **稳定且专注** |
 | 上手时间 | 复杂引导 | **2 分钟** |
 
-<p align="center"><img src="docs/architecture.svg" width="800" alt="架构"></p>
+<p align="center"><img src="assets/architecture.svg" width="800" alt="架构"></p>
 
 ## 🚀 快速开始
 
@@ -189,6 +189,16 @@ docker compose up -d bao-gateway
 |------|------|
 | `bao` | 启动所有平台通道（首次运行自动初始化） |
 
+## 🖥️ Desktop App (实验性)
+
+基于 PySide6 + QML 的桌面客户端，`bao` CLI 的纯 UI 壳子。核心逻辑（AgentLoop、Channels、Cron、Heartbeat）全部复用 `bao/` core，不重复实现。
+
+```bash
+uv sync --extra desktop
+uv run python app/main.py
+```
+
+首次启动自动创建 `~/.bao/config.jsonc` 与 workspace；未配置 Provider/Model 时自动跳转 Settings。详见 [`app/README.md`](app/README.md)。
 ## 📁 项目结构
 
 ```
@@ -216,9 +226,9 @@ bao/
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/hero-en.svg" />
-  <source media="(prefers-color-scheme: light)" srcset="docs/hero-en.svg" />
-  <img alt="bao" src="docs/hero-en.svg" width="800" />
+  <source media="(prefers-color-scheme: dark)" srcset="assets/hero-en.svg" />
+  <source media="(prefers-color-scheme: light)" srcset="assets/hero-en.svg" />
+  <img alt="bao" src="assets/hero-en.svg" width="800" />
 </picture>
 
 <br>
@@ -235,7 +245,7 @@ Most AI assistants have amnesia. Every conversation starts from zero. They repea
 
 bao is different. It **remembers**, **reflects**, and **evolves**.
 
-<p align="center"><img src="docs/features-en.svg" width="800" alt="Core Features"></p>
+<p align="center"><img src="assets/features-en.svg" width="800" alt="Core Features"></p>
 
 #### Memory That Stays
 
@@ -285,7 +295,7 @@ Set `contextManagement: "auto"` to enable. Default `observe` mode has zero overh
 | Open issues | 8,400+ | **Stable & focused** |
 | Setup time | Complex wizard | **2 minutes** |
 
-<p align="center"><img src="docs/architecture-en.svg" width="800" alt="Architecture"></p>
+<p align="center"><img src="assets/architecture-en.svg" width="800" alt="Architecture"></p>
 
 ### 🚀 Quick Start
 
@@ -399,6 +409,13 @@ After the first exchange, bao auto-generates a short session title using a light
 |---------|-------------|
 | `bao` | Start all platform channels (auto-initializes on first run) |
 
+### 🖥️ Desktop App (experimental)
+PySide6 + QML desktop client — a pure UI shell for `bao`. All core logic (AgentLoop, Channels, Cron, Heartbeat) reuses `bao/` core, no duplication.
+```bash
+uv sync --extra desktop
+uv run python app/main.py
+```
+First launch auto-creates `~/.bao/config.jsonc` and workspace; redirects to Settings if Provider/Model is not configured. See [`app/README.md`](app/README.md).
 ### 📁 Project Structure
 
 ```
