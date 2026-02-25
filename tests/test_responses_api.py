@@ -211,11 +211,11 @@ def test_responses_parse_error_falls_back_and_demotes_cache(monkeypatch, tmp_pat
 
     try:
         result = asyncio.run(
-            p._call_responses_api("gpt-4o", [{"role": "user", "content": "hi"}], None, 256, 0.1)
+            p._chat_with_probe("gpt-4o", [{"role": "user", "content": "hi"}], None, 256, 0.1)
         )
 
         assert result.content == "fallback-ok"
-        assert get_cached_mode("https://x.com/v1") == "completions"
+        assert get_cached_mode("https://x.com/v1") == "responses"
     finally:
         cache_mod._cache = old_cache
         cache_mod._CACHE_FILE = old_file
@@ -258,11 +258,11 @@ def test_responses_non_200_falls_back_and_demotes_cache(monkeypatch, tmp_path):
 
     try:
         result = asyncio.run(
-            p._call_responses_api("gpt-4o", [{"role": "user", "content": "hi"}], None, 256, 0.1)
+            p._chat_with_probe("gpt-4o", [{"role": "user", "content": "hi"}], None, 256, 0.1)
         )
 
         assert result.content == "fallback-500"
-        assert get_cached_mode("https://y.com/v1") == "completions"
+        assert get_cached_mode("https://y.com/v1") is None
     finally:
         cache_mod._cache = old_cache
         cache_mod._CACHE_FILE = old_file
