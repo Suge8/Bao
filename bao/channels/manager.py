@@ -27,7 +27,7 @@ class ChannelManager:
         self.config = config
         self.bus = bus
         self.channels: dict[str, BaseChannel] = {}
-        self._dispatch_task: asyncio.Task | None = None
+        self._dispatch_task: asyncio.Task[None] | None = None
 
         self._init_channels()
 
@@ -39,10 +39,11 @@ class ChannelManager:
             try:
                 from bao.channels.telegram import TelegramChannel
 
+                groq_cfg = self.config.providers.get("groq")
                 self.channels["telegram"] = TelegramChannel(
                     self.config.channels.telegram,
                     self.bus,
-                    groq_api_key=self.config.providers.groq.api_key,
+                    groq_api_key=groq_cfg.api_key if groq_cfg else "",
                 )
                 logger.debug("Telegram channel enabled")
             except ImportError as e:
@@ -196,21 +197,33 @@ class ChannelManager:
         while True:
             try:
                 msg = await asyncio.wait_for(self.bus.consume_outbound(), timeout=1.0)
-                # Gate: drop progress / tool-hint messages unless config opts in
+                channel = self.channels.get(msg.channel)
+                if not channel:
+                    logger.warning("Unknown channel: {}", msg.channel)
+                    continue
                 if msg.metadata.get("_progress"):
                     is_tool_hint = msg.metadata.get("_tool_hint", False)
-                    if is_tool_hint and not defaults.send_tool_hints:
+                    allow_tool_hints = defaults.send_tool_hints
+                    allow_progress = defaults.send_progress
+                    if is_tool_hint and not allow_tool_hints:
+                        if not allow_progress:
+                            continue
+                        suppressed_meta = dict(msg.metadata)
+                        suppressed_meta["_tool_hint_suppressed"] = True
+                        msg = OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content="",
+                            reply_to=msg.reply_to,
+                            media=msg.media,
+                            metadata=suppressed_meta,
+                        )
+                    if not is_tool_hint and not allow_progress:
                         continue
-                    if not is_tool_hint and not defaults.send_progress:
-                        continue
-                channel = self.channels.get(msg.channel)
-                if channel:
-                    try:
-                        await channel.send(msg)
-                    except Exception as e:
-                        logger.error("Error sending to {}: {}", msg.channel, e)
-                else:
-                    logger.warning("Unknown channel: {}", msg.channel)
+                try:
+                    await channel.send(msg)
+                except Exception as e:
+                    logger.error("Error sending to {}: {}", msg.channel, e)
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
