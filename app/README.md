@@ -20,11 +20,11 @@ uv sync --extra desktop
 uv run python app/main.py
 ```
 
-首次运行自动创建 `~/.bao/config.jsonc`。配置缺失或无效时 App 自动跳转 Settings 页面。
+首次运行自动创建 `~/.bao/config.jsonc` 与默认 workspace（`~/.bao/workspace/`），无需手动初始化。若 `agents.defaults.model` 为空或 providers 中未配置 apiKey，App 自动跳转 Settings 页面引导完成配置。
 
 ### 3. 使用流程
 
-1. 打开 App → Settings 页面填写配置（Provider、Channels、Tools 等，与 `~/.bao/config.jsonc` 一一对应）
+1. 打开 App → 若首次使用且未配置 Provider/Model，会自动跳转 Settings 页面；填写配置（Provider、Channels、Tools 等，与 `~/.bao/config.jsonc` 一一对应）
 2. 点击 Save → 切换到 Chat 页面 → 点击 **Start Gateway**
 3. Gateway 启动后，桌面聊天 + 所有已启用 Channels（Telegram、iMessage 等）同时运行
 4. 修改配置后点击 Save → **Restart** 即可应用
