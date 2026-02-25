@@ -125,6 +125,9 @@ def main() -> int:
     session_service = SessionService(runner)
     theme_manager = ThemeManager()
 
+    from bao.config.loader import ensure_first_run
+    ensure_first_run()
+
     config_service.load()
 
     # Wire gateway → session: when gateway is ready, initialize session service

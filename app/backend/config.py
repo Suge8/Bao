@@ -31,6 +31,22 @@ class ConfigService(QObject):
     def isValid(self) -> bool:
         return self._valid
 
+    @Property(bool, constant=False)
+    def needsSetup(self) -> bool:
+        """True if config exists but is not fully configured (no model or no apiKey)."""
+        if not self._valid:
+            return True
+        model = self.get("agents.defaults.model", "")
+        if not model:
+            return True
+        providers = self._data.get("providers", {})
+        if not isinstance(providers, dict):
+            return True
+        for p in providers.values():
+            if isinstance(p, dict) and p.get("apiKey", ""):
+                return False
+        return True
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
