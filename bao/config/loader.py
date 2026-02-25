@@ -39,12 +39,12 @@ _JSONC_TEMPLATE = """\
       "temperature": 0.1,
       "maxToolIterations": 20,
       "memoryWindow": 50,
-      // 是否向聊天渠道发送进度消息（如"正在处理…"）
-      // Whether to send progress messages to chat channels
-      "sendProgress": false,
-      // 是否向聊天渠道发送工具调用提示（如 web_search("...")）
-      // Whether to send tool-call hints to chat channels
-      "sendToolHints": false
+      // 是否向聊天渠道发送进度文本（默认开启）
+      // Whether to send progress text to chat channels (enabled by default)
+      "sendProgress": true,
+      // 是否向聊天渠道发送工具调用提示（默认开启）
+      // Whether to send tool-call hints to chat channels (enabled by default)
+      "sendToolHints": true
     }
   },
   // ───────────────────────────────────────────────────────────────
@@ -232,7 +232,6 @@ _JSONC_TEMPLATE = """\
 """
 
 
-
 def _read_workspace_template(filename: str) -> str:
     """Read a template from bao/templates/workspace/ via importlib.resources."""
     return (
@@ -240,6 +239,7 @@ def _read_workspace_template(filename: str) -> str:
         .joinpath(filename)
         .read_text(encoding="utf-8")
     )
+
 
 _PERSONA_EN = """# Persona
 
@@ -257,7 +257,6 @@ I am bao, a lightweight AI assistant.
 ## User
 
 - **Name**: (your name)
-- **Timezone**: (your timezone)
 - **Language**: English
 - **Communication style**: (casual/formal)
 - **Role**: (your role, e.g. developer, researcher)
@@ -319,7 +318,7 @@ Experience learning runs automatically — no manual action needed.
 
 When the user mentions the following in conversation, use `edit_file` to update `PERSONA.md`:
 
-- User info (name, timezone, language, preferences) → `## User`
+- User info (name, language, preferences) → `## User`
 - Assistant personality (nickname, style) → `## Identity`
 - Behavioral preferences (e.g. "make search results more detailed") → `## Special Instructions`
 
@@ -387,7 +386,6 @@ def write_persona_profile(workspace: Path, lang: str, profile: dict[str, str]) -
     base = _PERSONA_EN if lang == "en" else _read_workspace_template("PERSONA.md")
     content = base
     user_name = profile.get("user_name", "")
-    timezone = profile.get("timezone", "")
     style = profile.get("style", "")
     role = profile.get("role", "")
     interests = profile.get("interests", "")
@@ -397,7 +395,6 @@ def write_persona_profile(workspace: Path, lang: str, profile: dict[str, str]) -
     if lang == "zh":
         replacements = {
             "（你的名字）": user_name,
-            "（你的时区）": timezone,
             "（随意/正式）": style,
             "（你的角色，如开发者、研究员）": role,
             "（你关注的话题）": interests,
@@ -405,7 +402,6 @@ def write_persona_profile(workspace: Path, lang: str, profile: dict[str, str]) -
     else:
         replacements = {
             "(your name)": user_name,
-            "(your timezone)": timezone,
             "(casual/formal)": style,
             "(your role, e.g. developer, researcher)": role,
             "(topics you care about)": interests,

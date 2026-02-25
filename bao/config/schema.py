@@ -211,8 +211,8 @@ class AgentDefaults(Base):
     context_compact_bytes_est: int = 240000
     context_compact_keep_recent_tool_blocks: int = 4
     artifact_retention_days: int = 7
-    send_progress: bool = False
-    send_tool_hints: bool = False
+    send_progress: bool = True
+    send_tool_hints: bool = True
 
 
 class AgentsConfig(Base):
@@ -293,6 +293,10 @@ class ToolsConfig(Base):
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
+class UIConfig(Base):
+    language: str = "auto"
+
+
 class Config(BaseSettings):
     """Root configuration for bao."""
 
@@ -301,6 +305,7 @@ class Config(BaseSettings):
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    ui: UIConfig = Field(default_factory=UIConfig)
 
     @property
     def workspace_path(self) -> Path:
