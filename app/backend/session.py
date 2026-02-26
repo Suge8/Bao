@@ -87,6 +87,7 @@ class SessionService(QObject):
         self._natural_key = "desktop:local"
         self._allow_active_selection = False
         self._active_key = ""
+        self._pending_select_key: str | None = None
         self._model = SessionListModel()
         self._pending_deletes: dict[str, tuple[list[dict[str, Any]], str]] = {}
 
@@ -130,6 +131,14 @@ class SessionService(QObject):
 
     @Slot(str)
     def selectSession(self, key: str) -> None:
+        if not key:
+            return
+        self._pending_select_key = key
+        if self._active_key != key:
+            self._allow_active_selection = True
+            self._active_key = key
+            self._model.set_active(key)
+            self.activeKeyChanged.emit(key)
         fut = self._runner.submit(self._select_session(key))
         fut.add_done_callback(self._on_select_done)
 
@@ -263,13 +272,18 @@ class SessionService(QObject):
             self.activeKeyChanged.emit(active)
 
     def _handle_select_result(self, ok: bool, error: str, key: str) -> None:
+        if self._pending_select_key is not None and key != self._pending_select_key:
+            return
+        self._pending_select_key = None
         if not ok:
             self.errorOccurred.emit(error)
+            self.refresh()
             return
         self._allow_active_selection = True
-        self._active_key = key
-        self._model.set_active(key)
-        self.activeKeyChanged.emit(key)
+        if self._active_key != key:
+            self._active_key = key
+            self._model.set_active(key)
+            self.activeKeyChanged.emit(key)
 
     def _handle_mutate_result(self, ok: bool, error: str) -> None:
         if not ok:
@@ -289,5 +303,6 @@ class SessionService(QObject):
             self.errorOccurred.emit(error)
             self.deleteCompleted.emit(key, False, error)
             return
-        self.refresh()
+        # Optimistic update already reflects correct state — skip refresh
+        # to avoid a redundant full rebuild that causes list flicker.
         self.deleteCompleted.emit(key, True, "")

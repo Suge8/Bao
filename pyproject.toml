@@ -49,7 +49,12 @@ dependencies = [
 
 [project.optional-dependencies]
 desktop = [
-    "PySide6>=6.7.0,<7.0.0",
+    "PySide6-Essentials>=6.7.0,<7.0.0",
+]
+desktop-automation = [
+    "mss>=9.0.0",
+    "pyautogui>=0.9.54",
+    "pillow>=10.0.0",
 ]
 dev = [
     "pytest>=9.0.0,<10.0.0",
@@ -101,3 +106,10 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "nuitka>=4.0.1",
+    "ordered-set>=4.1.0",
+    "zstandard>=0.25.0",
+]

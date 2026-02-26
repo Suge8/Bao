@@ -1,6 +1,7 @@
 """Shell execution tool."""
 
 import asyncio
+import logging
 import os
 import re
 from pathlib import Path
@@ -8,9 +9,27 @@ from typing import Any
 
 from bao.agent.tools.base import Tool
 
+logger = logging.getLogger(__name__)
+
 
 class ExecTool(Tool):
     """Tool to execute shell commands."""
+
+    _READ_ONLY_ALLOW_PATTERNS: list[str] = [
+        r"^\s*(cat|ls|find|grep|head|tail|wc|file|stat|echo|pwd|which|env|printenv|less|more|tree|du|diff|basename|dirname|realpath)\b",
+    ]
+
+    _DEFAULT_DENY_PATTERNS: list[str] = [
+        r"\brm\s+-[rf]{1,2}\b",  # rm -r, rm -rf, rm -fr
+        r"\bdel\s+/[fq]\b",  # del /f, del /q
+        r"\brmdir\s+/s\b",  # rmdir /s
+        r"(?:^|[;&|]\s*)format\b",  # format (as standalone command only)
+        r"\b(mkfs|diskpart)\b",  # disk operations
+        r"\bdd\s+if=",  # dd
+        r">\s*/dev/sd",  # write to disk
+        r"\b(shutdown|reboot|poweroff)\b",  # system power
+        r":\(\)\s*\{.*\};\s*:",  # fork bomb
+    ]
 
     def __init__(
         self,
@@ -20,23 +39,29 @@ class ExecTool(Tool):
         allow_patterns: list[str] | None = None,
         restrict_to_workspace: bool = False,
         path_append: str = "",
+        sandbox_mode: str = "semi-auto",
     ):
         self.timeout = timeout
         self.working_dir = working_dir
-        self.deny_patterns = deny_patterns or [
-            r"\brm\s+-[rf]{1,2}\b",  # rm -r, rm -rf, rm -fr
-            r"\bdel\s+/[fq]\b",  # del /f, del /q
-            r"\brmdir\s+/s\b",  # rmdir /s
-            r"(?:^|[;&|]\s*)format\b",  # format (as standalone command only)
-            r"\b(mkfs|diskpart)\b",  # disk operations
-            r"\bdd\s+if=",  # dd
-            r">\s*/dev/sd",  # write to disk
-            r"\b(shutdown|reboot|poweroff)\b",  # system power
-            r":\(\)\s*\{.*\};\s*:",  # fork bomb
-        ]
-        self.allow_patterns = allow_patterns or []
-        self.restrict_to_workspace = restrict_to_workspace
         self.path_append = path_append
+
+        if sandbox_mode == "full-auto":
+            self.deny_patterns: list[str] = []
+            self.allow_patterns: list[str] = []
+            self.restrict_to_workspace = False
+        elif sandbox_mode == "read-only":
+            self.deny_patterns = deny_patterns or list(self._DEFAULT_DENY_PATTERNS)
+            self.allow_patterns = list(self._READ_ONLY_ALLOW_PATTERNS)
+            self.restrict_to_workspace = True
+        else:
+            if sandbox_mode != "semi-auto":
+                logger.warning(
+                    "Unknown sandbox_mode %r, falling back to semi-auto",
+                    sandbox_mode,
+                )
+            self.deny_patterns = deny_patterns or list(self._DEFAULT_DENY_PATTERNS)
+            self.allow_patterns = allow_patterns or []
+            self.restrict_to_workspace = restrict_to_workspace
 
     @property
     def name(self) -> str:

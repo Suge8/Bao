@@ -9,6 +9,8 @@ from loguru import logger
 from bao.utils.db import get_db, ensure_table
 
 
+# legacy safety net — runtime context is no longer injected as user message,
+# but keep filtering in case old sessions contain such entries.
 _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
 
 
@@ -46,7 +48,15 @@ class Session:
     metadata: dict[str, Any] = field(default_factory=dict)
     last_consolidated: int = 0
 
-    def add_message(self, role: str, content: str, **kwargs: Any) -> None:
+    def add_message(self, role: str, content: str | list[dict[str, Any]], **kwargs: Any) -> None:
+        if role == "user" and isinstance(content, list):
+            content = [
+                {"type": "text", "text": "[image]"}
+                if c.get("type") == "image_url"
+                and c.get("image_url", {}).get("url", "").startswith("data:image/")
+                else c
+                for c in content
+            ]
         msg = {"role": role, "content": content, "timestamp": datetime.now().isoformat(), **kwargs}
         self.messages.append(msg)
         self.updated_at = datetime.now()
@@ -68,6 +78,27 @@ class Session:
         out: list[dict[str, Any]] = []
         for m in sliced[start:]:
             content = m.get("content", "")
+            # legacy safety net: filter old runtime context user messages
+            if (
+                m.get("role") == "user"
+                and isinstance(content, str)
+                and content.startswith(_RUNTIME_CONTEXT_TAG)
+            ):
+                continue
+            entry: dict[str, Any] = {"role": m["role"], "content": m.get("content", "")}
+            for k in ("tool_calls", "tool_call_id", "name", "_source"):
+                if k in m:
+                    entry[k] = m[k]
+            out.append(entry)
+        return out
+
+    def get_display_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
+        unconsolidated = self.messages[self.last_consolidated :]
+        sliced = unconsolidated[-max_messages:]
+        out: list[dict[str, Any]] = []
+        for m in sliced:
+            content = m.get("content", "")
+            # legacy safety net: filter old runtime context user messages
             if (
                 m.get("role") == "user"
                 and isinstance(content, str)
@@ -94,6 +125,7 @@ class SessionManager:
         self._meta_tbl = ensure_table(self._db, "session_meta", _META_SAMPLE)
         self._msg_tbl = ensure_table(self._db, "session_messages", _MSG_SAMPLE)
         self._cache: dict[str, Session] = {}
+        self._active_cache: dict[str, str] = {}
         self._migrate_legacy(workspace)
 
     def _migrate_legacy(self, workspace: Path) -> None:
@@ -160,6 +192,12 @@ class SessionManager:
             session = Session(key=key)
         self._cache[key] = session
         return session
+
+    def session_exists(self, key: str) -> bool:
+        """Check if a session exists (cache-first, then DB)."""
+        if key in self._cache:
+            return True
+        return self._load(key) is not None
 
     def _load(self, key: str) -> "Session | None":
         safe = _escape(key)
@@ -256,6 +294,10 @@ class SessionManager:
         except Exception:
             pass
         self._cache.pop(key, None)
+        # Defensive: clear _active_cache if it points to the deleted session
+        for nk, ak in list(self._active_cache.items()):
+            if ak == key:
+                self._active_cache.pop(nk, None)
         try:
             from bao.agent.artifacts import ArtifactStore
 
@@ -265,16 +307,22 @@ class SessionManager:
         return True
 
     def get_active_session_key(self, natural_key: str) -> str | None:
+        if natural_key in self._active_cache:
+            return self._active_cache[natural_key]
         safe = _escape(f"_active:{natural_key}")
         try:
             rows = self._meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
             if rows:
-                return json.loads(rows[0].get("metadata_json") or "{}").get("active_key")
+                val = json.loads(rows[0].get("metadata_json") or "{}").get("active_key")
+                if val:
+                    self._active_cache[natural_key] = val
+                return val
         except Exception:
             pass
         return None
 
     def set_active_session_key(self, natural_key: str, session_key: str) -> None:
+        self._active_cache[natural_key] = session_key
         marker = f"_active:{natural_key}"
         self._delete_meta_row(marker)
         now = datetime.now().isoformat()
@@ -291,6 +339,7 @@ class SessionManager:
         )
 
     def clear_active_session_key(self, natural_key: str) -> None:
+        self._active_cache.pop(natural_key, None)
         self._delete_meta_row(f"_active:{natural_key}")
 
     def list_sessions(self) -> list[dict[str, Any]]:

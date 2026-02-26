@@ -21,6 +21,7 @@ def convert_messages_to_responses(
     """
     system_prompt = ""
     input_items: list[dict[str, Any]] = []
+    pending_images: list[str] = []
 
     for idx, msg in enumerate(messages):
         role = msg.get("role")
@@ -29,6 +30,20 @@ def convert_messages_to_responses(
         if role == "system":
             system_prompt = content if isinstance(content, str) else ""
             continue
+
+        # Flush pending screenshot images before non-tool message
+        if role != "tool" and pending_images:
+            img_content: list[dict[str, Any]] = [
+                {"type": "input_text", "text": "[screenshot from tool above]"},
+            ]
+            for ib64 in pending_images:
+                img_content.append({
+                    "type": "input_image",
+                    "image_url": f"data:image/jpeg;base64,{ib64}",
+                    "detail": "auto",
+                })
+            input_items.append({"role": "user", "content": img_content})
+            pending_images = []
 
         if role == "user":
             input_items.append(_convert_user_message(content))
@@ -73,7 +88,23 @@ def convert_messages_to_responses(
                     "output": output_text,
                 }
             )
+            img_b64 = msg.get("_image")
+            if img_b64:
+                pending_images.append(img_b64)
             continue
+
+    # Flush any remaining images at end
+    if pending_images:
+        img_content = [
+            {"type": "input_text", "text": "[screenshot from tool above]"},
+        ]
+        for ib64 in pending_images:
+            img_content.append({
+                "type": "input_image",
+                "image_url": f"data:image/jpeg;base64,{ib64}",
+                "detail": "auto",
+            })
+        input_items.append({"role": "user", "content": img_content})
 
     return system_prompt, input_items
 

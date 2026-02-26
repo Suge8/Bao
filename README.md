@@ -10,7 +10,7 @@
 
 <br>
 
-**~7,000 行核心代码** · 记忆永不消失 · 经验持续积累 · 智能不断进化
+**~8,500 行核心代码** · 记忆永不消失 · 经验持续积累 · 智能不断进化
 
 [🇨🇳 中文](#为什么选-bao) · [🇺🇸 English](#-english)
 
@@ -45,11 +45,10 @@ bao 不一样。它**记得住**、**学得会**、**能进化**。
 
 别的 Agent 重复犯错。**bao 从错误中进化。**
 
-### 思考更有深度
+### 出错能改，工具不乱
 
-- **Thinking Protocol** — 深度推理协议内置于系统提示词。零额外 API 调用，回答质量显著提升
-- **Retry with Reflection** — 自动检测工具报错并重试。连续 3 次失败后，升级为完整的策略反思
-- **Dynamic Tool Hints** — 根据实际可用性动态启停工具提示。杜绝幻觉工具调用
+- **Retry with Reflection** — 工具报错自动重试。连续 3 次失败后，不是盲目重来，而是反思策略、换条路走
+- **Dynamic Tool Hints** — 工具提示跟着实际能力走。装了什么用什么，没装的绝不提。编程代理、搜索、MCP 工具全部按需注入，杜绝幻觉调用
 
 ### 复杂任务不阻塞
 
@@ -58,34 +57,51 @@ bao 不一样。它**记得住**、**学得会**、**能进化**。
 - **后台执行** — 子代理独立运行，主代理随时响应你的新消息
 - **进度可查** — 主代理调用 `check_tasks` 即可查看子代理当前阶段、已用工具数、迭代轮次
 - **里程碑推送** — 子代理每 5 轮自动汇报一次进展，不刷屏，关键节点不遗漏
+- **长任务增强** — 子代理同步支持轨迹压缩 + 充分性检查 + 上下文压实，复杂任务更不易跑偏
 - **随时取消** — 任务跑偏了？`cancel_task` 一键终止
 - **卡死检测** — 超过 2 分钟无更新自动标记警告，不会悄悄挂住
+- **模板策略对齐** — workspace `INSTRUCTIONS.md` 内置“协调者优先 + 委派触发 + 完成定义（DoD）”，并与 core 规则对齐（`check_tasks` 仅按需查询）
 
 一个助手，同时处理多件事。**你问进度，它答得上来。**
 
-### ⌨️ 原生 OpenCode + Codex + Claude Code 编程代理
+### ⌨️ 原生编程代理集成
 
-想让 bao 直接帮你写代码、改代码、排错代码？现在开箱即用：
+bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），**有什么用什么，没装不注入**。主代理和子代理同步生效。
 
-- **`opencode` 工具** — 一句话委托编程，支持会话续接、重试与超时保护，复杂任务也能稳步推进
-- **`opencode_details` 工具** — 默认结果简洁省 token；需要排错细节时，按 `request_id` 一键拉取完整 stdout/stderr
-- **`opencode` skill** — 内置可复用编程流程（需求澄清 → 实现 → 验证），上手更快、成功率更高
-- **`codex` 工具** — 非交互执行编程任务，支持会话续接与输出预算控制，适合连续迭代开发
-- **`codex_details` 工具** — 默认回复保持精简，需要深度排错时按 `request_id` 拉取完整详情
-- **`codex` skill** — 标准化 Codex 编程工作流（执行 → 续写 → 详情回查），降低误操作并提升交付稳定性
-- **`claudecode` 工具** — 基于 `claude -p` 非交互执行编程任务，按官方 JSON `session_id` 稳定续接（`session_id` / `resume`）并返回结构化输出
-- **`claudecode_details` 工具** — 默认输出精简，按 `request_id` 或 `session_id` 拉取原始 JSON stdout + stderr 详情
+- **一句话委托** — 把编程任务交给专业代理，支持会话续接、重试与超时保护
+- **结果分级** — 默认返回精简摘要省 token；需要排错时按 ID 拉取完整输出
+- **内置 Skill** — 每个代理配套标准化工作流（需求澄清 → 实现 → 验证），降低误操作
+- **子代理同步** — 后台子代理也能调用编程工具，复杂项目多线程推进
+
+### 🎨 AI 图像生成
+
+一句话描述，bao 帮你画出来。基于 Gemini 图像生成 API，文字变图片，生成后直接发送到聊天。
+
+- **文字即画笔** — `generate_image(prompt="...")` 一个工具搞定，支持自定义宽高比
+- **即生即发** — 生成的图片自动保存为本地文件，通过 `message(media=[path])` 直接发送到任意聊天平台
+- **内置 Skill** — 自动识别"画一张""生成图片"等意图，无需手动调用工具
+- **配置即启用** — 填入 API Key 即可使用，不填则完全不注入工具，零噪音
+
+### 🖥️ 桌面自动化
+
+让 AI 看见你的屏幕，操作你的电脑。不依赖 Anthropic Computer Use，任何视觉模型都能用。
+
+- **7 个原子工具** — 截屏、点击、输入文字、按键、滚动、拖拽、获取屏幕信息，覆盖日常桌面操作
+- **模型无关** — 不绑定任何特定 Provider，OpenAI、Gemini、Anthropic、DeepSeek 等任何支持视觉的模型都能驱动
+- **Retina/HiDPI 自适应** — 截图空间与操作空间自动坐标映射，高分屏点哪到哪
+- **轻量依赖** — 仅需 `mss` + `pyautogui` + `Pillow`，通过 `uv sync --extra desktop-automation` 安装
+- **安全默认关闭** — `config.tools.desktop.enabled: false`，显式开启才注册工具
 
 ### 极致轻量
 
-**~7,000 行核心代码。** 运行 `bash core_agent_lines.sh` 自行验证。
+**~8,500 行核心代码。** 运行 `bash core_agent_lines.sh` 自行验证。
 
 启动快、占资源少、源码可读。一个完整的 AI 助手框架，体积只有同类项目的 1%。
 ### 上下文不会爆炸
 内置分层上下文管理，长任务不再耗尽 context window：
 - **Layer 1**：tool 输出超过阈值自动外置到本地文件，messages 中只保留预览+指针
 - **Layer 2**：context 过大时自动压实，保留最近 N 对 assistant/tool 消息，严格维护成对完整性
-配置 `contextManagement: "auto"` 即可启用，默认 `observe` 模式零额外开销。
+默认 `auto` 模式，大输出自动外置、长对话自动压实。设为 `"off"` 可关闭。
 ### 长任务越跑越稳
 
 别的 Agent 跑长任务时越跑越迷。bao 越跑越清醒。
@@ -101,13 +117,15 @@ bao 不一样。它**记得住**、**学得会**、**能进化**。
 | | OpenClaw | **bao** |
 |---|---|---|
 | 语言 | TypeScript | **Python** |
-| 核心代码 | 430,000+ 行 | **~7,000 行** |
+| 核心代码 | 430,000+ 行 | **~8,500 行** |
 | 记忆 | 仅会话内 | **LanceDB（向量 + 关键词）** |
 | 经验学习 | — | **ExperienceLoop** |
-| 自我反思 | — | **Thinking Protocol + Retry** |
+| 自我反思 | — | **Retry with Reflection** |
 | 开放问题 | 8,400+ | **稳定且专注** |
 | 后台任务 | — | **子代理 + 进度追踪 + 里程碑推送** |
 | 长任务引擎 | — | **轨迹压缩 + 自我纠错 + 充分性检查** |
+| 图像生成 | — | **Gemini API 文生图 + 多平台发送** |
+| 桌面自动化 | — | **7 工具 · 模型无关 · HiDPI 自适应** |
 | 上手时间 | 复杂引导 | **2 分钟** |
 
 <p align="center"><img src="assets/architecture.svg" width="800" alt="架构"></p>
@@ -218,12 +236,14 @@ docker compose up -d bao-gateway
 | 命令 | 说明 |
 |------|------|
 | `/new` | 新建对话（旧对话自动保留） |
+| `/stop` | 停止当前任务（同会话硬中断，抑制过期响应） |
 | `/session` | 列出所有对话，按编号选择（含自动标题） |
 | `/delete` | 删除当前对话 |
 | `/model` | 切换模型 |
 | `/help` | 显示可用命令 |
 
 首轮对话后，bao 自动生成简短的会话标题，跟随用户语言。
+同会话新消息默认走工具边界软中断（优先处理新消息）；`/stop` 保留为硬中断。
 
 ## 🖥️ CLI
 
@@ -246,11 +266,11 @@ uv run python app/main.py
 ```
 bao/
 ├── agent/          # 核心 Agent 逻辑
-│   ├── loop.py     # Agent 循环（思考 + 重试 + 经验）
+│   ├── loop.py     # Agent 循环（重试 + 纠错 + 经验）
 │   ├── context.py  # 提示词组装 + 经验注入
 │   ├── memory.py   # LanceDB 持久记忆
 │   ├── subagent.py # 后台任务执行
-│   └── tools/      # 内置工具（Shell、文件、Web、OpenCode、Codex、Claude Code、MCP）
+│   └── tools/      # 内置工具（Shell、文件、Web、图像生成、桌面自动化、编程代理、MCP）
 ├── skills/         # 可扩展技能系统
 ├── channels/       # 9 大平台集成
 ├── providers/      # 3 种 LLM Provider
@@ -275,7 +295,7 @@ bao/
 
 <br>
 
-**~7,000 lines of core code** · Memory that persists · Experience that compounds · Intelligence that evolves
+**~8,500 lines of core code** · Memory that persists · Experience that compounds · Intelligence that evolves
 
 </div>
 
@@ -308,44 +328,60 @@ bao ships with a **closed-loop experience engine**:
 
 Other agents repeat mistakes. **bao learns from them.**
 
-#### Thinking That Goes Deep
+#### Self-Correcting, Never Hallucinating
 
-- **Thinking Protocol** — deep reasoning baked into the system prompt. Zero extra API calls, measurably better answers
-- **Retry with Reflection** — auto-detects tool errors. After 3 consecutive failures, escalates to a full strategy pivot
-- **Dynamic Tool Hints** — enables and disables tool suggestions based on actual availability. No hallucinated tool calls
+- **Retry with Reflection** — auto-retries on tool errors. After 3 consecutive failures, it doesn't just retry blindly — it rethinks the strategy and tries a different approach
+- **Dynamic Tool Hints** — tool suggestions follow actual capabilities. Only installed tools get surfaced. Coding agents, search, MCP tools — all injected on demand. Zero hallucinated tool calls
 
 #### Complex Tasks, Zero Blocking
 Hand off time-consuming work to a subagent. Keep chatting. No waiting, no window-switching.
 - **Background execution** — subagents run independently while the main agent stays responsive to you
 - **Progress on demand** — the main agent calls `check_tasks` to see current phase, tool count, and iteration progress
 - **Milestone updates** — subagents auto-report every 5 iterations. No spam, no missed beats
+- **Long-task engine parity** — subagents now support trajectory compression + sufficiency checks + context compaction for steadier long runs
 - **Cancel anytime** — task going sideways? `cancel_task` kills it instantly
 - **Stall detection** — flags a warning if no update in 2+ minutes. Nothing hangs silently
+- **Template policy alignment** — workspace `INSTRUCTIONS.md` now encodes coordinator-first delegation triggers + Definition of Done, aligned with core rule (`check_tasks` is on-demand only)
 One assistant, multiple jobs in flight. **Ask about progress — it always has an answer.**
 
-#### ⌨️ Built-in OpenCode + Codex + Claude Code Coding Agents
+#### ⌨️ Built-in Coding Agent Integration
 
-Want bao to actually write, refactor, and debug code for you? It ships ready-to-use:
+bao auto-detects installed coding CLIs (OpenCode, Codex, Claude Code) — **use what's there, skip what's not**. Works for both the main agent and subagents.
 
-- **`opencode` tool** — delegate coding in one line, with session continuity, retries, and timeout safety
-- **`opencode_details` tool** — keep default replies compact, then pull full stdout/stderr by `request_id` when needed
-- **`opencode` skill** — reusable coding playbook (clarify → implement → verify) for faster, safer execution
-- **`codex` tool** — non-interactive coding execution with session continuity and output-budget guardrails
-- **`codex_details` tool** — keep default replies concise, then fetch full details by `request_id` when needed
-- **`codex` skill** — Codex-first workflow (execute → continue → inspect details) for reliable iterative coding
-- **`claudecode` tool** — non-interactive coding execution via `claude -p`, resuming with canonical `session_id` from official JSON output (`session_id` / resume)
-- **`claudecode_details` tool** — keep default replies concise, then fetch raw JSON stdout + stderr details by `request_id` or `session_id`
+- **One-line delegation** — hand off coding tasks to specialized agents with session continuity, retries, and timeout safety
+- **Tiered output** — compact summaries by default to save tokens; pull full stdout/stderr by ID when debugging
+- **Built-in Skills** — each agent comes with a standardized workflow (clarify → implement → verify) for reliable execution
+- **Subagent parity** — background subagents can also invoke coding tools for parallel multi-track development
+
+#### 🎨 AI Image Generation
+
+Describe it, bao draws it. Powered by Gemini's image generation API — text in, image out, delivered straight to your chat.
+
+- **Text-to-image** — `generate_image(prompt="...")` with optional aspect ratio control
+- **Generate and send** — images save locally, then ship to any chat platform via `message(media=[path])`
+- **Built-in Skill** — auto-triggers on "draw me", "generate an image" — no manual tool calls needed
+- **Config-gated** — add your API Key to enable; leave it blank and the tool stays invisible
+
+#### 🖥️ Desktop Automation
+
+Let AI see your screen and operate your computer. No Anthropic Computer Use required — works with any vision-capable model.
+
+- **7 atomic tools** — screenshot, click, type text, key press, scroll, drag, get screen info. Covers everyday desktop operations
+- **Model-agnostic** — not locked to any provider. OpenAI, Gemini, Anthropic, DeepSeek — any model with vision can drive it
+- **Retina/HiDPI aware** — automatic coordinate mapping between screenshot space and input space. Pixel-perfect on high-DPI displays
+- **Lightweight deps** — just `mss` + `pyautogui` + `Pillow`, installed via `uv sync --extra desktop-automation`
+- **Off by default** — `config.tools.desktop.enabled: false`. Explicit opt-in only
 
 #### Ultra Lightweight
 
-**~7,000 lines of core code.** Run `bash core_agent_lines.sh` to verify.
+**~8,500 lines of core code.** Run `bash core_agent_lines.sh` to verify.
 
 Fast startup. Low resource use. Readable source. A complete AI assistant framework at 1% the size of comparable projects.
 ### Context That Doesn't Explode
 Built-in layered context management keeps long tasks from exhausting the context window:
 - **Layer 1**: Large tool outputs are offloaded to local files; messages retain only a preview + pointer
 - **Layer 2**: When context grows too large, older assistant/tool pairs are archived, preserving strict pairing integrity
-Set `contextManagement: "auto"` to enable. Default `observe` mode has zero overhead.
+Default `auto` mode auto-offloads large outputs and compacts long conversations. Set `"off"` to disable.
 ### Long Tasks That Stay on Track
 Other agents lose the plot on long tasks. bao gets sharper with every step.
 - **Trajectory compression** — Every 5 steps, execution state is auto-compressed into conclusions, evidence, and unexplored branches. No drifting, no forgetting
@@ -358,13 +394,15 @@ Same task, other agents start going in circles at step 10. **bao compresses stat
 | | OpenClaw | **bao** |
 |---|---|---|
 | Language | TypeScript | **Python** |
-| Core code | 430,000+ lines | **~7,000 lines** |
+| Core code | 430,000+ lines | **~8,500 lines** |
 | Memory | Session-only | **LanceDB (vector + keyword)** |
 | Experience learning | — | **ExperienceLoop** |
-| Self-reflection | — | **Thinking Protocol + Retry** |
+| Self-reflection | — | **Retry with Reflection** |
 | Open issues | 8,400+ | **Stable & focused** |
 | Background tasks | — | **Subagent + progress tracking + milestone push** |
 | Long-task engine | — | **Trajectory compression + self-correction + sufficiency check** |
+| Image generation | — | **Gemini API text-to-image + multi-platform delivery** |
+| Desktop automation | — | **7 tools · model-agnostic · HiDPI-aware** |
 | Setup time | Complex wizard | **2 minutes** |
 
 <p align="center"><img src="assets/architecture-en.svg" width="800" alt="Architecture"></p>
@@ -473,12 +511,14 @@ Available across all platforms:
 | Command | What it does |
 |---------|-------------|
 | `/new` | Start a new conversation (old one is preserved) |
+| `/stop` | Stop the current task (hard interrupt for the current session, stale responses suppressed) |
 | `/session` | List all conversations with auto-generated titles, pick by number |
 | `/delete` | Delete current conversation |
 | `/model` | Switch model |
 | `/help` | Show available commands |
 
 After the first exchange, bao auto-generates a short session title using a lightweight model, matching the user's language.
+New messages in the same session use tool-boundary soft interruption by default; `/stop` remains a hard interrupt.
 
 ### 🖥️ CLI
 
@@ -498,11 +538,11 @@ First launch auto-creates `~/.bao/config.jsonc` and workspace; redirects to Sett
 ```
 bao/
 ├── agent/          # Core agent logic
-│   ├── loop.py     # Agent loop (thinking + retry + experience)
+│   ├── loop.py     # Agent loop (retry + self-correction + experience)
 │   ├── context.py  # Prompt assembly + experience injection
 │   ├── memory.py   # LanceDB persistent memory
 │   ├── subagent.py # Background task execution
-│   └── tools/      # Built-in tools (shell, files, web, OpenCode, Codex, Claude Code, MCP)
+│   └── tools/      # Built-in tools (shell, files, web, image gen, desktop automation, coding agents, MCP)
 ├── skills/         # Extensible skill system
 ├── channels/       # 9 platform integrations
 ├── providers/      # 3 LLM provider types

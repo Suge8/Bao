@@ -118,6 +118,21 @@ class TestSessionImmutableHistory:
         assert len(history) == 5
         assert history[0]["content"] == "msg0"
 
+    def test_get_display_history_keeps_assistant_only_tail(self) -> None:
+        session = Session(key="test:display-tail")
+        session.add_message("user", "u0")
+        session.add_message("assistant", "a0")
+        session.add_message("assistant", "a1")
+        session.last_consolidated = 1
+
+        assert session.get_history(max_messages=10) == []
+
+        display = session.get_display_history(max_messages=10)
+        assert len(display) == 2
+        assert display[0]["role"] == "assistant"
+        assert display[0]["content"] == "a0"
+        assert display[1]["content"] == "a1"
+
     def test_get_history_stable_for_same_session(self) -> None:
         """Test that get_history returns same content for same max_messages."""
         session = create_session_with_messages("test:stable", 20)

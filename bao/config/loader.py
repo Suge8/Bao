@@ -36,6 +36,12 @@ _JSONC_TEMPLATE = """\
       "temperature": 0.1,
       "maxToolIterations": 50,
       "memoryWindow": 100,
+      // 上下文管理策略 | Context management strategy
+      //   "off"        — 关闭，不做任何自动处理 | Disabled, no automatic handling
+      //   "auto"       — 自动管理：大输出外置+上下文压实(推荐) | Auto: offload large outputs + compact context (recommended)
+      //   "observe"    — 仅观察，零开销 | Observe only, zero overhead
+      //   "aggressive" — 更激进的裁剪 | More aggressive trimming
+      "contextManagement": "auto",
       // 是否向聊天渠道发送进度文本（默认开启）
       // Whether to send progress text to chat channels (enabled by default)
       "sendProgress": true,
@@ -200,7 +206,12 @@ _JSONC_TEMPLATE = """\
       }
     },
     "exec": {
-      "timeout": 60
+      "timeout": 60,
+      // 沙箱模式 | Sandbox mode
+      //   "full-auto"  — 不拦任何命令 | No restrictions
+      //   "semi-auto"  — 危险命令拦截+工作区限制(默认) | Deny dangerous commands + workspace restriction (default)
+      //   "read-only"  — 只允许读操作 | Read-only commands only
+      "sandboxMode": "semi-auto"
     },
     // 向量嵌入（可选）| Embedding (optional)
     "embedding": {
@@ -210,6 +221,16 @@ _JSONC_TEMPLATE = """\
     },
     // 将 Agent 的所有文件和命令操作限制在工作区目录内｜Restrict all files and command operations of the Agent within the workspace directory.
     "restrictToWorkspace": false,
+    // 图像生成：填 API Key 启用 | Image generation: fill API Key to enable
+    "imageGeneration": {
+      "apiKey": "",
+      "model": "",
+      "baseUrl": ""
+    },
+    // 桌面自动化：截屏/点击/输入等（需安装 desktop-automation 依赖）| Desktop automation (requires desktop-automation deps)
+    "desktop": {
+      "enabled": false
+    },
     // MCP tool 注册总上限（0 表示不限）| Global cap for registered MCP tools (0 = unlimited)
     "mcpMaxTools": 50,
     // 是否对 MCP schema 做精简（删除冗余元数据）| Slim MCP schema metadata before exposing to LLM

@@ -44,18 +44,31 @@ class GeminiProvider(LLMProvider):
 
     def _convert_messages(self, messages: list[dict[str, Any]]) -> list[types.Content]:
         """Convert OpenAI-style messages to Gemini format (Content objects)."""
+        import base64 as _b64mod
+
         contents: list[types.Content] = []
+        pending_images: list[str] = []
 
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content")
 
             # Map OpenAI roles to Gemini roles
-            # user -> user, assistant -> model, system -> user (handled separately)
             if role == "system":
-                continue  # System prompt handled separately
+                continue
 
             gemini_role = "user" if role in ("user", "system") else "model"
+
+            # Flush pending screenshot images before non-tool message
+            if role != "tool" and pending_images:
+                img_parts = [types.Part(text="[screenshot from tool above]")]
+                for ib64 in pending_images:
+                    img_parts.append(types.Part(inline_data=types.Blob(
+                        mime_type="image/jpeg",
+                        data=_b64mod.b64decode(ib64),
+                    )))
+                contents.append(types.Content(role="user", parts=img_parts))
+                pending_images = []
 
             # Handle content
             if isinstance(content, str):
@@ -69,7 +82,6 @@ class GeminiProvider(LLMProvider):
                     if item_type == "text":
                         parts.append(types.Part(text=item.get("text", "")))
                     elif item_type == "image_url":
-                        # Handle image
                         url_data = item.get("image_url") or {}
                         url = url_data.get("url", "")
                         # For now, skip image handling - would need to fetch
@@ -92,6 +104,20 @@ class GeminiProvider(LLMProvider):
 
             if parts:
                 contents.append(types.Content(role=gemini_role, parts=parts))
+                # Collect screenshot image for deferred injection
+                img_b64 = msg.get("_image")
+                if img_b64 and role == "tool":
+                    pending_images.append(img_b64)
+
+        # Flush any remaining images at end
+        if pending_images:
+            img_parts = [types.Part(text="[screenshot from tool above]")]
+            for ib64 in pending_images:
+                img_parts.append(types.Part(inline_data=types.Blob(
+                    mime_type="image/jpeg",
+                    data=_b64mod.b64decode(ib64),
+                )))
+            contents.append(types.Content(role="user", parts=img_parts))
 
         return contents
 

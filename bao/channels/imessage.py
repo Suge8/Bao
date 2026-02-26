@@ -63,7 +63,11 @@ class IMessageChannel(BaseChannel):
             is_progress=bool(meta.get("_progress")),
             is_tool_hint=bool(meta.get("_tool_hint")),
         )
-
+        for file_path in msg.media or []:
+            if Path(file_path).is_file():
+                await self._send_file(msg.chat_id, file_path)
+            else:
+                logger.warning("iMessage media file not found: {}", file_path)
 
     async def _send_text(self, buddy: str, text: str) -> None:
         encoded = text.replace("\\", "\\\\").replace('"', '\\"')
@@ -88,6 +92,30 @@ class IMessageChannel(BaseChannel):
         except Exception as e:
             logger.error("iMessage send error: {}", e)
 
+    async def _send_file(self, buddy: str, file_path: str) -> None:
+        """Send a file (image/doc) via AppleScript POSIX file."""
+        escaped = file_path.replace('\\', '\\\\').replace('"', '\\"')
+        script = (
+            f'tell application "Messages"\n'
+            f"  set targetService to 1st account whose service type = iMessage\n"
+            f'  set targetBuddy to buddy "{buddy}" of targetService\n'
+            f'  send POSIX file "{escaped}" to targetBuddy\n'
+            f"end tell"
+        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "osascript",
+                "-e",
+                script,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.error("AppleScript send file failed: {}", stderr.decode().strip())
+        except Exception as e:
+            logger.error("iMessage send file error: {}", e)
+
     # ---- internal ----
 
     def _get_max_rowid(self) -> int:
@@ -102,16 +130,22 @@ class IMessageChannel(BaseChannel):
 
     async def _poll(self) -> None:
         rows = await asyncio.to_thread(self._query_new)
+        if not rows:
+            return
+        rowids = [r[0] for r in rows]
+        attachments = await asyncio.to_thread(self._query_attachments, rowids)
         for rowid, text, sender, chat_id in rows:
-            if not text:
+            self._last_rowid = max(self._last_rowid, rowid)
+            media = attachments.get(rowid, [])
+            if not text and not media:
                 continue
             if not self.is_allowed(sender):
                 continue
-            self._last_rowid = max(self._last_rowid, rowid)
             await self._handle_message(
                 sender_id=sender,
                 chat_id=chat_id,
-                content=text,
+                content=text or "",
+                media=media or None,
             )
 
     def _query_new(self) -> list[tuple[int, str, str, str]]:
@@ -125,7 +159,8 @@ class IMessageChannel(BaseChannel):
                     LEFT JOIN handle h ON m.handle_id = h.ROWID
                     LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
                     LEFT JOIN chat c ON cmj.chat_id = c.ROWID
-                    WHERE m.ROWID > ? AND m.is_from_me = 0 AND m.text IS NOT NULL
+                    WHERE m.ROWID > ? AND m.is_from_me = 0
+                      AND (m.text IS NOT NULL OR m.cache_has_attachments = 1)
                     ORDER BY m.ROWID ASC
                     """,
                     (self._last_rowid,),
@@ -137,3 +172,31 @@ class IMessageChannel(BaseChannel):
                 if attempt < 2:
                     time.sleep(0.5)
         return []
+
+    def _query_attachments(self, rowids: list[int]) -> dict[int, list[str]]:
+        """Batch-query attachment file paths for a list of message ROWIDs."""
+        if not rowids:
+            return {}
+        try:
+            conn = sqlite3.connect(f"file:{CHAT_DB}?mode=ro", uri=True, timeout=5)
+            placeholders = ",".join("?" * len(rowids))
+            cur = conn.execute(
+                f"""
+                SELECT maj.message_id, a.filename
+                FROM message_attachment_join maj
+                JOIN attachment a ON maj.attachment_id = a.ROWID
+                WHERE maj.message_id IN ({placeholders})
+                  AND a.filename IS NOT NULL
+                """,
+                rowids,
+            )
+            result: dict[int, list[str]] = {}
+            home = str(Path.home())
+            for msg_id, filename in cur.fetchall():
+                path = Path(filename.replace("~", home, 1))
+                if path.is_file():
+                    result.setdefault(msg_id, []).append(str(path))
+            conn.close()
+            return result
+        except Exception:
+            return {}

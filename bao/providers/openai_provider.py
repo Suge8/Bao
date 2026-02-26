@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Awaitable, Callable
 
@@ -16,10 +17,24 @@ from bao.providers.responses_compat import (
     convert_tools_to_responses,
     parse_responses_json,
 )
+from bao.providers.retry import (
+    DEFAULT_BASE_DELAY,
+    DEFAULT_MAX_RETRIES,
+    ProgressCallbackError,
+    compute_retry_delay,
+    emit_progress,
+    emit_progress_reset,
+    safe_error_text,
+    should_retry_exception,
+)
 
-_ALLOWED_MSG_KEYS = frozenset({"role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content"})
+_ALLOWED_MSG_KEYS = frozenset(
+    {"role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content"}
+)
 
 _PROBE_FALLBACK_CODES = frozenset({404, 405, 501})
+_MAX_RETRIES = DEFAULT_MAX_RETRIES
+_BASE_DELAY = DEFAULT_BASE_DELAY
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -121,12 +136,35 @@ class OpenAICompatibleProvider(LLMProvider):
 
     @staticmethod
     def _sanitize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        sanitized = []
+        sanitized: list[dict[str, Any]] = []
+        pending_images: list[str] = []
         for msg in messages:
+            img_b64 = msg.get("_image")
             clean = {k: v for k, v in msg.items() if k in _ALLOWED_MSG_KEYS}
             if clean.get("role") == "assistant" and "content" not in clean:
                 clean["content"] = None
+            # Flush pending screenshot images before non-tool message
+            if clean.get("role") != "tool" and pending_images:
+                parts: list[dict[str, Any]] = [{"type": "text", "text": "[screenshot from tool above]"}]
+                for ib64 in pending_images:
+                    parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{ib64}"},
+                    })
+                sanitized.append({"role": "user", "content": parts})
+                pending_images = []
             sanitized.append(clean)
+            if img_b64 and clean.get("role") == "tool":
+                pending_images.append(img_b64)
+        # Flush any remaining images at end of messages
+        if pending_images:
+            parts = [{"type": "text", "text": "[screenshot from tool above]"}]
+            for ib64 in pending_images:
+                parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{ib64}"},
+                })
+            sanitized.append({"role": "user", "content": parts})
         return sanitized
 
     def _resolve_effective_mode(self) -> str:
@@ -233,77 +271,119 @@ class OpenAICompatibleProvider(LLMProvider):
             params["tools"] = tools
             params["tool_choice"] = "auto"
 
-        try:
-            stream = await self._client.chat.completions.create(**params)
-            content = ""
-            tool_calls_acc: dict[int, dict[str, Any]] = {}
-            finish_reason = "stop"
-            usage: dict[str, int] = {}
-            reasoning_content: str | None = None
+        last_err: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                stream = await self._client.chat.completions.create(**params)
+                content = ""
+                tool_calls_acc: dict[int, dict[str, Any]] = {}
+                finish_reason = "stop"
+                usage: dict[str, int] = {}
+                reasoning_content: str | None = None
 
-            async for chunk in stream:
-                if not chunk.choices:
-                    # usage-only chunk (stream_options)
-                    if hasattr(chunk, "usage") and chunk.usage:
-                        usage = {
-                            "prompt_tokens": chunk.usage.prompt_tokens or 0,
-                            "completion_tokens": chunk.usage.completion_tokens or 0,
-                            "total_tokens": chunk.usage.total_tokens or 0,
-                        }
-                    continue
-                delta = chunk.choices[0].delta
-                # Text delta
-                if delta.content:
-                    content += delta.content
-                    if on_progress:
-                        await on_progress(delta.content)
-                # Reasoning delta (DeepSeek-R1 etc.)
-                rc = getattr(delta, "reasoning_content", None)
-                if rc:
-                    if reasoning_content is None:
-                        reasoning_content = ""
-                    reasoning_content += rc
-                # Tool call delta
-                if delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        idx = tc.index
-                        if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {
-                                "id": tc.id or "",
-                                "name": tc.function.name or "",
-                                "args": "",
+                async for chunk in stream:
+                    if not chunk.choices:
+                        if hasattr(chunk, "usage") and chunk.usage:
+                            usage = {
+                                "prompt_tokens": chunk.usage.prompt_tokens or 0,
+                                "completion_tokens": chunk.usage.completion_tokens or 0,
+                                "total_tokens": chunk.usage.total_tokens or 0,
                             }
-                        if tc.function and tc.function.arguments:
-                            tool_calls_acc[idx]["args"] += tc.function.arguments
-                        if tc.id:
-                            tool_calls_acc[idx]["id"] = tc.id
-                        if tc.function and tc.function.name:
-                            tool_calls_acc[idx]["name"] = tc.function.name
-                # Finish reason
-                if chunk.choices[0].finish_reason:
-                    finish_reason = chunk.choices[0].finish_reason
+                        continue
+                    delta = chunk.choices[0].delta
+                    if delta.content:
+                        content += delta.content
+                        await emit_progress(on_progress, delta.content)
+                    rc = getattr(delta, "reasoning_content", None)
+                    if rc:
+                        if reasoning_content is None:
+                            reasoning_content = ""
+                        reasoning_content += rc
+                    if delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            idx = tc.index
+                            if idx not in tool_calls_acc:
+                                tool_calls_acc[idx] = {
+                                    "id": tc.id or "",
+                                    "name": tc.function.name or "",
+                                    "args": "",
+                                }
+                            if tc.function and tc.function.arguments:
+                                tool_calls_acc[idx]["args"] += tc.function.arguments
+                            if tc.id:
+                                tool_calls_acc[idx]["id"] = tc.id
+                            if tc.function and tc.function.name:
+                                tool_calls_acc[idx]["name"] = tc.function.name
+                    if chunk.choices[0].finish_reason:
+                        finish_reason = chunk.choices[0].finish_reason
 
-            # Parse accumulated tool calls
-            from bao.providers.base import ToolCallRequest
-            import json_repair
+                import json_repair
 
-            parsed_tools = []
-            for idx in sorted(tool_calls_acc):
-                tc = tool_calls_acc[idx]
-                args = json_repair.loads(tc["args"]) if tc["args"] else {}
-                if not isinstance(args, dict):
-                    args = {}
-                parsed_tools.append(ToolCallRequest(id=tc["id"], name=tc["name"], arguments=args))
+                from bao.providers.base import ToolCallRequest
 
-            return LLMResponse(
-                content=content or None,
-                tool_calls=parsed_tools,
-                finish_reason=finish_reason,
-                usage=usage,
-                reasoning_content=reasoning_content,
-            )
-        except Exception as e:
-            return LLMResponse(content=f"Error calling LLM: {e}", finish_reason="error")
+                parsed_tools = []
+                for idx in sorted(tool_calls_acc):
+                    tc = tool_calls_acc[idx]
+                    try:
+                        args = json_repair.loads(tc["args"]) if tc["args"] else {}
+                    except Exception as exc:
+                        raise RuntimeError("incomplete tool json in stream") from exc
+                    if not isinstance(args, dict):
+                        args = {}
+                    parsed_tools.append(
+                        ToolCallRequest(id=tc["id"], name=tc["name"], arguments=args)
+                    )
+
+                return LLMResponse(
+                    content=content or None,
+                    tool_calls=parsed_tools,
+                    finish_reason=finish_reason,
+                    usage=usage,
+                    reasoning_content=reasoning_content,
+                )
+            except asyncio.CancelledError:
+                raise
+            except ProgressCallbackError as exc:
+                cause = exc.__cause__ or exc
+                return LLMResponse(
+                    content=f"Error calling LLM progress callback: {safe_error_text(cause)}",
+                    finish_reason="error",
+                )
+            except Exception as e:
+                last_err = e
+                is_retryable = should_retry_exception(e)
+                if is_retryable and attempt < _MAX_RETRIES:
+                    try:
+                        await emit_progress_reset(on_progress)
+                    except ProgressCallbackError as exc:
+                        cause = exc.__cause__ or exc
+                        return LLMResponse(
+                            content=f"Error calling LLM progress callback: {safe_error_text(cause)}",
+                            finish_reason="error",
+                        )
+
+                    delay = compute_retry_delay(e, attempt, base_delay=_BASE_DELAY)
+                    logger.warning(
+                        "LLM transient error (attempt {}/{}), retrying in {:.1f}s: {}",
+                        attempt + 1,
+                        _MAX_RETRIES + 1,
+                        delay,
+                        safe_error_text(e),
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                if attempt > 0:
+                    logger.error(
+                        "LLM failed after {} attempts: {}", attempt + 1, safe_error_text(e)
+                    )
+                return LLMResponse(
+                    content=f"Error calling LLM: {safe_error_text(e)}",
+                    finish_reason="error",
+                )
+        return LLMResponse(
+            content=f"Error calling LLM: {safe_error_text(last_err or RuntimeError('unknown error'))}",
+            finish_reason="error",
+        )
 
     def _build_responses_body(
         self,
@@ -346,19 +426,162 @@ class OpenAICompatibleProvider(LLMProvider):
         source: str = "main",
     ) -> LLMResponse:
         del on_progress
-        del source
+
+        allow_fallback = self._api_mode == "auto"
         body = self._build_responses_body(model, messages, tools, max_tokens, temperature)
         url = f"{self._effective_base.rstrip('/')}/responses"
         headers = self._build_responses_headers()
 
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                resp = await client.post(url, headers=headers, json=body)
-            if resp.status_code != 200:
-                raise RuntimeError(f"Responses API HTTP {resp.status_code}: {resp.text[:500]}")
-            return self._build_responses_result(self._decode_responses_payload(resp))
-        except Exception as e:
-            return LLMResponse(content=f"Error calling Responses API: {e}", finish_reason="error")
+        last_err: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    resp = await client.post(url, headers=headers, json=body)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_err = exc
+                if should_retry_exception(exc) and attempt < _MAX_RETRIES:
+                    delay = compute_retry_delay(exc, attempt, base_delay=_BASE_DELAY)
+                    logger.warning(
+                        "[{}] Responses API transient error (attempt {}/{}), retrying in {:.1f}s: {}",
+                        source,
+                        attempt + 1,
+                        _MAX_RETRIES + 1,
+                        delay,
+                        safe_error_text(exc),
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                if allow_fallback:
+                    logger.warning(
+                        "[{}] Responses API request failed for model={} base={} ({}), trying Chat Completions",
+                        source,
+                        model,
+                        self._effective_base,
+                        safe_error_text(exc),
+                    )
+                    return await self._chat_completions(
+                        model,
+                        messages,
+                        tools,
+                        max_tokens,
+                        temperature,
+                        None,
+                        source,
+                    )
+
+                return LLMResponse(
+                    content=f"Error calling Responses API: {safe_error_text(exc)}",
+                    finish_reason="error",
+                )
+
+            if resp.status_code == 200:
+                try:
+                    return self._build_responses_result(self._decode_responses_payload(resp))
+                except Exception as exc:
+                    parse_err = RuntimeError("incomplete responses payload")
+                    parse_err.__cause__ = exc
+                    last_err = parse_err
+                    if attempt < _MAX_RETRIES:
+                        delay = compute_retry_delay(parse_err, attempt, base_delay=_BASE_DELAY)
+                        logger.warning(
+                            "[{}] Responses payload parse failed (attempt {}/{}), retrying in {:.1f}s: {}",
+                            source,
+                            attempt + 1,
+                            _MAX_RETRIES + 1,
+                            delay,
+                            safe_error_text(exc),
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+
+                    if allow_fallback:
+                        logger.warning(
+                            "[{}] Responses payload parse failed for model={} base={} ({}), trying Chat Completions",
+                            source,
+                            model,
+                            self._effective_base,
+                            safe_error_text(exc),
+                        )
+                        return await self._chat_completions(
+                            model,
+                            messages,
+                            tools,
+                            max_tokens,
+                            temperature,
+                            None,
+                            source,
+                        )
+
+                    return LLMResponse(
+                        content=f"Error calling Responses API: {safe_error_text(parse_err)}",
+                        finish_reason="error",
+                    )
+
+            status_err = RuntimeError(f"Responses API HTTP {resp.status_code}: {resp.text[:500]}")
+            last_err = status_err
+            if resp.status_code in _PROBE_FALLBACK_CODES and allow_fallback:
+                logger.info(
+                    "[{}] Responses API unsupported ({}), falling back to Chat Completions",
+                    source,
+                    resp.status_code,
+                )
+                set_cached_mode(self._effective_base, "completions")
+                return await self._chat_completions(
+                    model,
+                    messages,
+                    tools,
+                    max_tokens,
+                    temperature,
+                    None,
+                    source,
+                )
+
+            if should_retry_exception(status_err) and attempt < _MAX_RETRIES:
+                delay = compute_retry_delay(status_err, attempt, base_delay=_BASE_DELAY)
+                logger.warning(
+                    "[{}] Responses API transient HTTP {} (attempt {}/{}), retrying in {:.1f}s",
+                    source,
+                    resp.status_code,
+                    attempt + 1,
+                    _MAX_RETRIES + 1,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+
+            if allow_fallback:
+                logger.warning(
+                    "[{}] Responses API returned {} for model={} base={}, trying Chat Completions",
+                    source,
+                    resp.status_code,
+                    model,
+                    self._effective_base,
+                )
+                return await self._chat_completions(
+                    model,
+                    messages,
+                    tools,
+                    max_tokens,
+                    temperature,
+                    None,
+                    source,
+                )
+
+            return LLMResponse(
+                content=f"Error calling Responses API: {safe_error_text(status_err)}",
+                finish_reason="error",
+            )
+
+        return LLMResponse(
+            content=(
+                "Error calling Responses API: "
+                f"{safe_error_text(last_err or RuntimeError('unknown error'))}"
+            ),
+            finish_reason="error",
+        )
 
     async def _chat_with_probe(
         self,
@@ -405,6 +628,8 @@ class OpenAICompatibleProvider(LLMProvider):
                 model, messages, tools, max_tokens, temperature, on_progress, source
             )
 
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.warning(
                 "[{}] Responses API probe failed for model={} base={} ({}) trying Chat Completions",

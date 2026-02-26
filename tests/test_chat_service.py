@@ -206,3 +206,129 @@ def test_send_result_pending_split_without_final_content_no_empty_done_bubble():
     assert model.rowCount() == 1
     assert model._messages[0]["content"] == "first"
     assert model._messages[0]["status"] == "done"
+
+
+def test_sync_active_history_requests_reload_when_idle():
+    svc, _ = make_service()
+    svc._session_manager = object()
+    svc._history_initialized = True
+    called = []
+    svc._request_history_load = lambda key: called.append(key)
+
+    svc._sync_active_history()
+
+    assert called == [svc._session_key]
+
+
+def test_sync_active_history_skips_while_processing():
+    svc, _ = make_service()
+    svc._session_manager = object()
+    svc._history_initialized = True
+    svc._processing = True
+    called = []
+    svc._request_history_load = lambda key: called.append(key)
+
+    svc._sync_active_history()
+
+    assert called == []
+
+
+def test_handle_history_result_ignores_stale_session_payload():
+    svc, model = make_service()
+    svc._session_key = "imessage:active"
+
+    svc._handle_history_result(
+        True,
+        "",
+        ("imessage:other", [{"role": "user", "content": "hello", "timestamp": "t"}]),
+    )
+
+    assert model.rowCount() == 0
+
+
+def test_handle_history_result_skips_reload_when_signature_unchanged():
+    svc, model = make_service()
+    svc._session_key = "imessage:active"
+    payload = ("imessage:active", [{"role": "user", "content": "hello", "timestamp": "t"}])
+
+    with patch.object(model, "load_history", wraps=model.load_history) as mocked:
+        svc._handle_history_result(True, "", payload)
+        svc._handle_history_result(True, "", payload)
+
+    assert mocked.call_count == 1
+
+
+def test_set_session_key_deferred_while_processing():
+    svc, model = make_service()
+    svc._processing = True
+    row = model.append_assistant("", status="typing")
+    svc._active_streaming_row = row
+
+    with patch.object(svc, "_apply_session_key") as mocked_apply:
+        svc.setSessionKey("imessage:new")
+        assert svc._pending_session_key == "imessage:new"
+        svc._handle_send_result(row, True, "done")
+
+    mocked_apply.assert_called_once_with("imessage:new")
+
+
+def test_handle_history_result_defers_when_streaming():
+    svc, model = make_service()
+    svc._session_key = "imessage:active"
+    svc._processing = True
+    row = model.append_assistant("", status="typing")
+    svc._active_streaming_row = row
+    svc._history_latest_seq = 1
+    called = []
+    svc._request_history_load = lambda key: called.append(key)
+
+    svc._handle_history_result(
+        True,
+        "",
+        ("imessage:active", 1, [{"role": "user", "content": "hello", "timestamp": "t"}]),
+    )
+    assert svc._pending_history_refresh is True
+
+    svc._handle_send_result(row, True, "done")
+
+    assert called == ["imessage:active"]
+
+
+def test_set_session_key_same_key_still_loads_when_history_not_initialized():
+    svc, model = make_service()
+    svc._session_key = "desktop:local"
+    svc._history_initialized = False
+    svc._processing = True
+    row = model.append_assistant("", status="typing")
+    svc._active_streaming_row = row
+
+    with patch.object(svc, "_apply_session_key") as mocked_apply:
+        svc.setSessionKey("desktop:local")
+        assert svc._pending_session_key == "desktop:local"
+        svc._handle_send_result(row, True, "done")
+
+    mocked_apply.assert_called_once_with("desktop:local")
+
+
+def test_load_history_uses_display_history_for_ui_model():
+    svc, _ = make_service()
+    session = MagicMock()
+    session.get_display_history.return_value = [{"role": "assistant", "content": "a1"}]
+    svc._session_manager = MagicMock()
+    svc._session_manager.get_or_create.return_value = session
+
+    payload = asyncio.run(svc._load_history("desktop:local", 3))
+
+    assert payload[0] == "desktop:local"
+    assert payload[1] == 3
+    assert payload[3] == [
+        {
+            "id": 1,
+            "createdat": 0,
+            "role": "assistant",
+            "content": "a1",
+            "format": "markdown",
+            "status": "done",
+        }
+    ]
+    session.get_display_history.assert_called_once()

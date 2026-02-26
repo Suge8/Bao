@@ -12,9 +12,27 @@ Item {
 
     property bool isUser: role === "user"
     property bool isSystem: role === "system"
+    property bool _entrancePlayed: false
 
     height: isSystem ? systemText.height + 16 : bubble.height + 10
     width: parent ? parent.width : 600
+
+    function playEntranceIfAllowed() {
+        if (_entrancePlayed) return
+        var view = ListView.view
+        if (isSystem) return
+        if (!view) return
+        if (view.suspendEntranceAnimations) return
+        if (!view.autoFollow) return
+        if (view.dragging || view.flicking || view.moving) return
+        if (typeof index === "number" && index !== view.count - 1) return
+        _entrancePlayed = true
+        bubble.opacity = 0.0
+        enterTranslate.y = 10
+        entranceAnim.start()
+    }
+
+    Component.onCompleted: Qt.callLater(playEntranceIfAllowed)
 
     // ── System message (centered, no bubble) ──────────────────────
     Text {
@@ -57,8 +75,8 @@ Item {
         width: isTyping ? 72 : Math.min(contentMetrics.implicitWidth + 32, root.width * 0.75)
         height: isTyping ? 42 : contentText.contentHeight + 28
         radius: 18
-        scale: 1.0
-        transformOrigin: Item.Center
+        opacity: 1.0
+        transform: Translate { id: enterTranslate; y: 0 }
 
         color: {
             if (isUser) return hoverHandler.hovered ? accentHover : accent
@@ -70,46 +88,88 @@ Item {
 
         Behavior on color { ColorAnimation { duration: 150 } }
 
-        // ── Hover detection (non-blocking) ───────────────────────
+        // ── Hover + pointer cursor ───────────────────────
         HoverHandler {
             id: hoverHandler
-        }
-
-        // ── Padding click area (behind TextEdit — only receives clicks on margins) ──
-        MouseArea {
-            id: paddingClickArea
-            anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
-            hoverEnabled: true
-            onClicked: {
-                if (bubble.isTyping || root.content === "") return
-                clipHelper.text = root.content
-                clipHelper.selectAll()
-                clipHelper.copy()
-                clipHelper.deselect()
-                clickAnim.start()
-                if (root.toastFunc) root.toastFunc()
-            }
         }
 
-        // Hidden TextEdit for clipboard access
+        // ── Hidden TextEdit for clipboard (pure QML, no Python call) ──
         TextEdit {
             id: clipHelper
             visible: false
         }
+        // ── Click to copy (z:10 covers Text to block MarkdownText press) ──
+        MouseArea {
+            id: clickArea
+            anchors.fill: parent
+            z: 10
+            preventStealing: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: function(mouse) {
+                if (bubble.isTyping || root.content === "") return
+                // Check if click hit a link
+                var localPt = clickArea.mapToItem(contentText, mouse.x, mouse.y)
+                var link = contentText.linkAt(localPt.x, localPt.y)
+                if (link) {
+                    Qt.openUrlExternally(link)
+                    return
+                }
+                // Copy content via hidden TextEdit
+                clipHelper.text = root.content
+                clipHelper.selectAll()
+                clipHelper.copy()
+                clipHelper.deselect()
+                copyFlash.opacity = 0.0
+                copyFlashAnim.restart()
+                if (root.toastFunc) root.toastFunc()
+            }
+        }
 
-        // ── Click animation — subtle scale pulse ─────────────────
+        // ── Copy animation — non-geometric flash (no layout shift) ─────
+        Rectangle {
+            id: copyFlash
+            anchors.fill: parent
+            radius: parent.radius
+            z: 1
+            color: root.isUser ? "#40FFFFFF" : accentGlow
+            opacity: 0.0
+        }
+
         SequentialAnimation {
-            id: clickAnim
+            id: copyFlashAnim
             NumberAnimation {
-                target: bubble; property: "scale"
-                to: 0.97; duration: 80
-                easing.type: Easing.OutQuad
+                target: copyFlash
+                property: "opacity"
+                from: 0.0
+                to: 0.32
+                duration: 90
+                easing.type: Easing.OutCubic
             }
             NumberAnimation {
-                target: bubble; property: "scale"
-                to: 1.0; duration: 200
-                easing.type: Easing.OutBack
+                target: copyFlash
+                property: "opacity"
+                to: 0.0
+                duration: 180
+                easing.type: Easing.OutCubic
+            }
+        }
+        // ── Entrance animation — fade + slight slide up ────────
+        ParallelAnimation {
+            id: entranceAnim
+            NumberAnimation {
+                target: bubble
+                property: "opacity"
+                to: 1.0
+                duration: 160
+                easing.type: Easing.OutCubic
+            }
+            NumberAnimation {
+                target: enterTranslate
+                property: "y"
+                to: 0
+                duration: 220
+                easing.type: Easing.OutCubic
             }
         }
 
@@ -150,8 +210,8 @@ Item {
             }
         }
 
-        // ── Message text (selectable + clickable links) ──────────
-        TextEdit {
+        // ── Message text (read-only display, no mouse handling) ──
+        Text {
             id: contentText
             anchors {
                 top: parent.top; topMargin: 14
@@ -161,19 +221,10 @@ Item {
             text: root.content
             visible: root.content !== ""
             color: root.isUser ? "#FFFFFF" : textPrimary
-            selectedTextColor: root.isUser ? accent : "#FFFFFF"
-            selectionColor: root.isUser ? "#FFFFFF" : accent
             font.pixelSize: 15
-            wrapMode: TextEdit.Wrap
-            textFormat: TextEdit.MarkdownText
-            readOnly: true
-            selectByMouse: true
-            activeFocusOnPress: true
-
-            onLinkActivated: function(link) {
-                Qt.openUrlExternally(link)
-            }
-
+            wrapMode: Text.Wrap
+            textFormat: Text.MarkdownText
+            lineHeight: 1.4
         }
 
         // Error tint

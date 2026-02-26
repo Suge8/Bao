@@ -24,8 +24,10 @@ Rectangle {
     Row {
         anchors {
             verticalCenter: parent.verticalCenter
-            left: parent.left; right: deleteBtn.left
-            leftMargin: 12; rightMargin: 10
+            left: parent.left
+            right: deleteBtn.left
+            leftMargin: 12
+            rightMargin: 10
         }
         spacing: 8
 
@@ -62,12 +64,15 @@ Rectangle {
         }
     }
 
-    // Delete button — only visible on hover
     Rectangle {
         id: deleteBtn
         z: 2
-        anchors { right: parent.right; verticalCenter: parent.verticalCenter; rightMargin: 8 }
-        width: 30; height: 30; radius: 9
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.rightMargin: 8
+        width: 30
+        height: 30
+        radius: 9
         color: deleteHover.containsMouse ? (isDark ? "#28F87171" : "#22F87171") : (isDark ? "#14FFFFFF" : "#10000000")
         border.width: 1
         border.color: deleteHover.containsMouse ? "#66F87171" : (isDark ? "#2AFFFFFF" : "#23000000")
@@ -100,6 +105,7 @@ Rectangle {
         id: hoverArea
         z: 1
         anchors.fill: parent
+        anchors.margins: -2
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         onClicked: root.selected()

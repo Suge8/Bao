@@ -83,12 +83,14 @@ class MessageTool(Tool):
         chat_id = chat_id or self._default_chat_id
         message_id = message_id or self._default_message_id
 
+        if not content or not content.strip():
+            return "Error: message content is empty. Provide non-empty content to send."
+
         if not channel or not chat_id:
             return "Error: No target channel/chat specified"
 
         if not self._send_callback:
             return "Error: Message sending not configured"
-
         msg = OutboundMessage(
             channel=channel,
             chat_id=chat_id,
@@ -102,7 +104,10 @@ class MessageTool(Tool):
         try:
             await self._send_callback(msg)
             self._sent_in_turn = True
-            media_info = f" with {len(media)} attachments" if media else ""
-            return f"Message sent to {channel}:{chat_id}{media_info}"
+            media_info = f" +{len(media)} files" if media else ""
+            preview = content[:60].replace("\n", " ").replace("\r", "")
+            if len(content) > 60:
+                preview += "..."
+            return f"Sent({channel}:{chat_id}{media_info}): {preview}"
         except Exception as e:
             return f"Error sending message: {str(e)}"

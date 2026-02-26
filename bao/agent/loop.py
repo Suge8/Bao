@@ -1,12 +1,13 @@
 """Agent loop: the core processing engine."""
 
 import asyncio
+import inspect
 import json
 import re
 import shutil
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, cast, overload
 from urllib.parse import urlsplit
 
 import json_repair
@@ -92,6 +93,13 @@ class AgentLoop:
         self._compact_keep_blocks: int = _cm.context_compact_keep_recent_tool_blocks if _cm else 4
         self._artifact_retention_days: int = _cm.artifact_retention_days if _cm else 7
         self._artifact_cleanup_done = False
+        _tools_cfg = getattr(config, "tools", None) if config else None
+        self._image_generation_config = (
+            getattr(_tools_cfg, "image_generation", None) if _tools_cfg else None
+        )
+        self._desktop_config = (
+            getattr(_tools_cfg, "desktop", None) if _tools_cfg else None
+        )
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -102,12 +110,22 @@ class AgentLoop:
             search_config=search_config,
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
+            max_iterations=self.max_iterations,
+            context_management=self._ctx_mgmt,
+            tool_output_offload_chars=self._tool_offload_chars,
+            tool_output_preview_chars=self._tool_preview_chars,
             tool_output_hard_chars=self._tool_hard_chars,
+            context_compact_bytes_est=self._compact_bytes,
+            context_compact_keep_recent_tool_blocks=self._compact_keep_blocks,
+            artifact_retention_days=self._artifact_retention_days,
+            memory_store=self.context.memory,
+            image_generation_config=self._image_generation_config,
+            desktop_config=self._desktop_config,
         )
 
         self._running = False
         self._mcp_servers = mcp_servers or {}
-        tools_cfg = getattr(config, "tools", None) if config else None
+        tools_cfg = _tools_cfg
         raw_mcp_max_tools = getattr(tools_cfg, "mcp_max_tools", 50)
         self._mcp_max_tools = (
             max(raw_mcp_max_tools, 0)
@@ -126,6 +144,8 @@ class AgentLoop:
         self._active_tasks: dict[str, list[asyncio.Task[None]]] = {}  # session_key -> tasks
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_generations: dict[str, int] = {}
+        self._session_running_task: dict[str, asyncio.Task[None]] = {}
+        self._interrupted_task_ids: set[int] = set()
         self._last_tool_budget: dict[str, int] = {
             "offloaded_count": 0,
             "offloaded_chars": 0,
@@ -148,8 +168,13 @@ class AgentLoop:
                 logger.warning("Utility model init failed, falling back to main model: {}", e)
 
         self._experience_mode = (
-            config.agents.defaults.experience_model if config else "utility"
+            config.agents.defaults.experience_model if config else "none"
         ).lower()
+        self.subagents.set_aux_runtime(
+            utility_provider=self._utility_provider,
+            utility_model=self._utility_model,
+            experience_mode=self._experience_mode,
+        )
 
         # Callback for system message responses (subagent completion, etc.)
         # Desktop/CLI can register this to receive async notifications.
@@ -167,23 +192,48 @@ class AgentLoop:
                 timeout=self.exec_config.timeout,
                 restrict_to_workspace=self.restrict_to_workspace,
                 path_append=self.exec_config.path_append,
+                sandbox_mode=self.exec_config.sandbox_mode,
             )
         )
+        coding_agents: list[str] = []
         if shutil.which("opencode"):
             from bao.agent.tools.opencode import OpenCodeDetailsTool, OpenCodeTool
 
             self.tools.register(OpenCodeTool(workspace=self.workspace, allowed_dir=allowed_dir))
             self.tools.register(OpenCodeDetailsTool())
+            coding_agents.append("`opencode`")
         if shutil.which("codex"):
             from bao.agent.tools.codex import CodexDetailsTool, CodexTool
 
             self.tools.register(CodexTool(workspace=self.workspace, allowed_dir=allowed_dir))
             self.tools.register(CodexDetailsTool())
+            coding_agents.append("`codex`")
         if shutil.which("claude"):
             from bao.agent.tools.claudecode import ClaudeCodeDetailsTool, ClaudeCodeTool
 
             self.tools.register(ClaudeCodeTool(workspace=self.workspace, allowed_dir=allowed_dir))
             self.tools.register(ClaudeCodeDetailsTool())
+            coding_agents.append("`claudecode`")
+        if coding_agents:
+            names = ", ".join(coding_agents)
+            self.context.tool_hints.append(
+                f"- Coding agents ({names}): AST-aware code search/explore/edit/debug. "
+                "Route via `spawn` (non-blocking; subagents have access). "
+                "Skills: skills/<tool>/SKILL.md"
+            )
+        # Image generation (conditional: only when API key is configured)
+        if self._image_generation_config and self._image_generation_config.api_key:
+            from bao.agent.tools.image_gen import ImageGenTool
+
+            self.tools.register(ImageGenTool(
+                api_key=self._image_generation_config.api_key,
+                model=self._image_generation_config.model,
+                base_url=self._image_generation_config.base_url,
+            ))
+            self.context.tool_hints.append(
+                "- generate_image: create images from text. "
+                "Send result via message(media=[path])."
+            )
         search_tool = WebSearchTool(search_config=self.search_config)
         has_brave = bool(search_tool.brave_key)
         has_tavily = bool(search_tool.tavily_key)
@@ -197,31 +247,56 @@ class AgentLoop:
             logger.info("web_search enabled ({})", ", ".join(providers))
             self.tools.register(search_tool)
             self.context.tool_hints.append(
-                "You have `web_search` — PREFER it over `web_fetch` for finding information, news, or answers. "
-                "`web_fetch` is only for reading a specific known URL. Never scrape multiple sites when a single search would suffice."
-            )
-        else:
-            self.context.tool_hints.append(
-                "You do NOT have `web_search` (no search API key configured). "
-                "Do NOT mention or attempt to use `web_search`. "
-                "To search for information, use `web_fetch` to access a search engine URL instead."
+                "- web_search: prefer over web_fetch for finding information. web_fetch only for known URLs."
             )
         self.tools.register(WebFetchTool())
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.context.tool_hints.append(
-            "IMPORTANT: When responding to direct questions or conversations, reply directly with text. "
-            "Only use the 'message' tool when you need to send a message to a specific chat channel. "
-            "For normal conversation, just respond with text — do not call the message tool."
+            "- message: cross-channel delivery only. Normal replies use direct text."
         )
         self.tools.register(SpawnTool(manager=self.subagents))
         self.tools.register(CheckTasksTool(manager=self.subagents))
         self.tools.register(CancelTaskTool(manager=self.subagents))
+        self.context.tool_hints.append(
+            "- spawn: delegate multi-step, cross-file, or time-consuming work. Keep main loop short."
+        )
         mem = self.context.memory
         self.tools.register(RememberTool(memory=mem))
         self.tools.register(ForgetTool(memory=mem))
         self.tools.register(UpdateMemoryTool(memory=mem))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+        # Desktop automation (conditional: enabled in config + deps available)
+        if self._desktop_config and self._desktop_config.enabled:
+            try:
+                from bao.agent.tools.desktop import (
+                    ClickTool,
+                    DragTool,
+                    GetScreenInfoTool,
+                    KeyPressTool,
+                    ScreenshotTool,
+                    ScrollTool,
+                    TypeTextTool,
+                )
+
+                self.tools.register(ScreenshotTool())
+                self.tools.register(ClickTool())
+                self.tools.register(TypeTextTool())
+                self.tools.register(KeyPressTool())
+                self.tools.register(ScrollTool())
+                self.tools.register(DragTool())
+                self.tools.register(GetScreenInfoTool())
+                self.context.tool_hints.append(
+                    "- Desktop automation (screenshot/click/type_text/key_press/scroll/drag/"
+                    "get_screen_info): control the desktop. Use screenshot+get_screen_info "
+                    "first to see the screen, then click/type to interact."
+                )
+                logger.info("desktop automation tools enabled")
+            except ImportError:
+                logger.warning(
+                    "desktop automation enabled but deps missing. "
+                    "Install: uv sync --extra desktop-automation"
+                )
 
     async def _connect_mcp(self) -> None:
         if (
@@ -262,11 +337,17 @@ class AgentLoop:
         finally:
             self._mcp_connecting = False
 
-    def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
+    def _set_tool_context(
+        self,
+        channel: str,
+        chat_id: str,
+        message_id: str | None = None,
+        session_key: str | None = None,
+    ) -> None:
         if (t := self.tools.get("message")) and isinstance(t, MessageTool):
             t.set_context(channel, chat_id, message_id)
         if (t := self.tools.get("spawn")) and isinstance(t, SpawnTool):
-            t.set_context(channel, chat_id)
+            t.set_context(channel, chat_id, session_key=session_key)
         if (t := self.tools.get("cron")) and isinstance(t, CronTool):
             t.set_context(channel, chat_id)
         for name in (
@@ -279,7 +360,7 @@ class AgentLoop:
         ):
             t = self.tools.get(name)
             if t and isinstance(t, (BaseCodingAgentTool, BaseCodingDetailsTool)):
-                t.set_context(channel, chat_id)
+                t.set_context(channel, chat_id, session_key=session_key)
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
@@ -331,24 +412,51 @@ class AgentLoop:
 
         return ", ".join(_fmt(tc) for tc in tool_calls)
 
+    @overload
     async def _run_agent_loop(
         self,
         initial_messages: list[dict[str, Any]],
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         on_tool_hint: Callable[[str], Awaitable[None]] | None = None,
         artifact_session_key: str | None = None,
-    ) -> tuple[str | None, list[str], list[str], int, list[str]]:
+        return_interrupt: Literal[False] = False,
+    ) -> tuple[str | None, list[str], list[str], int, list[str]]: ...
+
+    @overload
+    async def _run_agent_loop(
+        self,
+        initial_messages: list[dict[str, Any]],
+        on_progress: Callable[[str], Awaitable[None]] | None = None,
+        on_tool_hint: Callable[[str], Awaitable[None]] | None = None,
+        artifact_session_key: str | None = None,
+        return_interrupt: Literal[True] = True,
+    ) -> tuple[str | None, list[str], list[str], int, list[str], bool]: ...
+
+    async def _run_agent_loop(
+        self,
+        initial_messages: list[dict[str, Any]],
+        on_progress: Callable[[str], Awaitable[None]] | None = None,
+        on_tool_hint: Callable[[str], Awaitable[None]] | None = None,
+        artifact_session_key: str | None = None,
+        return_interrupt: bool = False,
+    ) -> (
+        tuple[str | None, list[str], list[str], int, list[str]]
+        | tuple[str | None, list[str], list[str], int, list[str], bool]
+    ):
         messages = list(initial_messages)
         iteration = 0
         final_content = None
         tools_used: list[str] = []
         tool_trace: list[str] = []
         reasoning_snippets: list[str] = []
+        interrupted = False
         consecutive_errors = 0
         total_errors = 0
         failed_directions: list[str] = []
-        last_state_at = 0
+        last_state_attempt_at = 0
         last_state_text: str | None = None
+        current_task = asyncio.current_task()
+        current_task_id = id(current_task) if current_task else None
         user_request = next(
             (
                 m["content"]
@@ -380,11 +488,16 @@ class AgentLoop:
         while iteration < self.max_iterations:
             iteration += 1
 
-            steps_since_state = len(tool_trace) - last_state_at
-            if steps_since_state >= 5 and len(tool_trace) >= 5:
+            if current_task_id is not None and current_task_id in self._interrupted_task_ids:
+                interrupted = True
+                break
+
+            steps_since_attempt = len(tool_trace) - last_state_attempt_at
+            if steps_since_attempt >= 5 and len(tool_trace) >= 5:
                 state = await self._compress_state(
                     tool_trace, reasoning_snippets, failed_directions, last_state_text
                 )
+                last_state_attempt_at = len(tool_trace)
                 if state:
                     messages.append(
                         {
@@ -392,7 +505,6 @@ class AgentLoop:
                             "content": f"[State after {len(tool_trace)} steps]\n{state}\n\nUse this state freely — adopt useful parts, ignore irrelevant ones, and prioritize unexplored branches.",
                         }
                     )
-                    last_state_at = len(tool_trace)
                     last_state_text = state
 
             if len(tool_trace) >= 8 and len(tool_trace) % 4 == 0:
@@ -430,6 +542,9 @@ class AgentLoop:
                 on_progress=on_progress,
                 source="main",
             )
+            # Strip _image base64 from messages after provider has processed them
+            for _m in messages:
+                _m.pop("_image", None)
 
             logger.debug(
                 "LLM response: model={}, has_tool_calls={}, tool_count={}, finish_reason={}",
@@ -487,12 +602,27 @@ class AgentLoop:
                     if budget_event.hard_clipped:
                         tool_budget["clipped_count"] += 1
                         tool_budget["clipped_chars"] += budget_event.hard_clipped_chars
+                    # Detect screenshot image marker → inject as multimodal
+                    _screenshot_image_b64: str | None = None
+                    if isinstance(result, str) and result.startswith("__SCREENSHOT__:"):
+                        _ss_path = result[len("__SCREENSHOT__:"):].strip()
+                        try:
+                            import base64 as _b64mod
+                            with open(_ss_path, "rb") as _sf:
+                                _screenshot_image_b64 = _b64mod.b64encode(_sf.read()).decode()
+                            result = "[screenshot captured]"
+                            import os
+                            os.unlink(_ss_path)
+                        except Exception as _ss_err:
+                            logger.warning("failed to read screenshot {}: {}", _ss_path, _ss_err)
                     messages = self.context.add_tool_result(
-                        messages, tool_call.id, tool_call.name, result
+                        messages, tool_call.id, tool_call.name, result,
+                        image_base64=_screenshot_image_b64,
                     )
 
-                    has_error = isinstance(result, str) and any(
-                        kw in result.lower() for kw in _ERROR_KEYWORDS
+                    result_lower = result.lower() if isinstance(result, str) else ""
+                    has_error = bool(result_lower) and any(
+                        kw in result_lower for kw in _ERROR_KEYWORDS
                     )
 
                     tool_trace.append(
@@ -511,6 +641,17 @@ class AgentLoop:
                     else:
                         consecutive_errors = 0
 
+                    # Interrupt: yield to pending user message at tool boundary
+                    if (
+                        current_task_id is not None
+                        and current_task_id in self._interrupted_task_ids
+                    ):
+                        logger.info(
+                            "Interrupted at tool boundary in session {}", artifact_session_key
+                        )
+                        interrupted = True
+                        break
+
                 if consecutive_errors >= 3:
                     error_feedback = (
                         "Multiple tool errors occurred. STOP retrying the same approach.\n"
@@ -526,12 +667,40 @@ class AgentLoop:
                     error_feedback = f"The tool returned an error. Analyze what went wrong and try a different approach.{failed_hint}"
                 if error_feedback:
                     messages.append({"role": "user", "content": error_feedback})
+                # Break outer loop if interrupted at tool boundary
+                if current_task_id is not None and current_task_id in self._interrupted_task_ids:
+                    interrupted = True
+                    break
             else:
+                if current_task_id is not None and current_task_id in self._interrupted_task_ids:
+                    interrupted = True
+                    break
                 final_content = self._strip_think(response.content)
                 break
 
         self._last_tool_budget = tool_budget
+        if return_interrupt:
+            return (
+                final_content,
+                tools_used,
+                tool_trace,
+                total_errors,
+                reasoning_snippets,
+                interrupted,
+            )
         return final_content, tools_used, tool_trace, total_errors, reasoning_snippets
+
+    @staticmethod
+    def _dispatch_session_key(msg: InboundMessage) -> str:
+        override = msg.metadata.get("session_key")
+        if isinstance(override, str) and override:
+            return override
+        if msg.channel == "system":
+            if ":" in msg.chat_id:
+                origin_channel, origin_chat_id = msg.chat_id.split(":", 1)
+                return f"{origin_channel}:{origin_chat_id}"
+            return f"gateway:{msg.chat_id}"
+        return msg.session_key
 
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
@@ -548,37 +717,87 @@ class AgentLoop:
             if (msg.content or "").strip().lower() == "/stop":
                 await self._handle_stop(msg)
             else:
-                session_key = msg.session_key
+                session_key = self._dispatch_session_key(msg)
+
+                task_list = self._active_tasks.get(session_key, [])
+                busy_tasks = [t for t in task_list if not t.done()]
+                if busy_tasks:
+                    self._session_generations[session_key] = (
+                        self._session_generations.get(session_key, 0) + 1
+                    )
+                    for t in busy_tasks:
+                        self._interrupted_task_ids.add(id(t))
+
+                    running_task = self._session_running_task.get(session_key)
+                    if running_task and not running_task.done():
+                        self._interrupted_task_ids.add(id(running_task))
+
+                    cmd = (msg.content or "").strip().lower()
+                    if msg.channel != "system" and not cmd.startswith("/"):
+                        natural_key = msg.session_key
+                        active_override = self.sessions.get_active_session_key(natural_key)
+                        key = active_override or natural_key
+                        session = self.sessions.get_or_create(key)
+                        session.add_message("user", msg.content)
+                        self.sessions.save(session)
+                        msg.metadata["_pre_saved"] = True
+
+                    logger.info("Soft interrupt requested for busy session {}", session_key)
+
                 task_gen = self._session_generations.get(session_key, 0)
-                task = asyncio.create_task(self._dispatch(msg, task_generation=task_gen))
+                task = asyncio.create_task(
+                    self._dispatch(msg, task_generation=task_gen, dispatch_key=session_key)
+                )
                 self._active_tasks.setdefault(session_key, []).append(task)
                 self._session_locks.setdefault(session_key, asyncio.Lock())
 
                 def _on_done(t: asyncio.Task[None], k: str = session_key) -> None:
                     task_list = self._active_tasks.get(k)
                     if not task_list:
+                        self._interrupted_task_ids.discard(id(t))
                         return
                     try:
                         task_list.remove(t)
                     except ValueError:
+                        self._interrupted_task_ids.discard(id(t))
                         return
+                    self._interrupted_task_ids.discard(id(t))
                     if not task_list:
                         self._active_tasks.pop(k, None)
                         self._session_locks.pop(k, None)
+                        self._session_running_task.pop(k, None)
 
                 task.add_done_callback(_on_done)
 
     async def _handle_stop(self, msg: InboundMessage) -> None:
         """Cancel all active tasks and subagents for the session (fire-and-forget)."""
-        self._session_generations[msg.session_key] = (
-            self._session_generations.get(msg.session_key, 0) + 1
-        )
+        natural_key = self._dispatch_session_key(msg)
+        active_key = self.sessions.get_active_session_key(natural_key)
+        target_keys = [natural_key]
+        if active_key and active_key != natural_key:
+            target_keys.append(active_key)
 
-        tasks = self._active_tasks.pop(msg.session_key, [])
-        cancelled = sum(1 for t in tasks if not t.done() and t.cancel())
-        sub_cancelled = await cast(Any, self.subagents).cancel_by_session(
-            msg.session_key, wait=False
-        )
+        cancelled = 0
+        sub_cancelled = 0
+        for target_key in target_keys:
+            self._session_generations[target_key] = self._session_generations.get(target_key, 0) + 1
+
+            running_task = self._session_running_task.pop(target_key, None)
+            if running_task:
+                self._interrupted_task_ids.discard(id(running_task))
+
+            tasks = self._active_tasks.get(target_key, [])
+            for t in tasks:
+                self._interrupted_task_ids.discard(id(t))
+            cancelled += sum(1 for t in tasks if not t.done() and t.cancel())
+            if not any(not t.done() for t in tasks):
+                self._active_tasks.pop(target_key, None)
+                self._session_locks.pop(target_key, None)
+
+            sub_cancelled += await cast(Any, self.subagents).cancel_by_session(
+                target_key, wait=False
+            )
+
         total = cancelled + sub_cancelled
         content = f"\u23f9 Stopped {total} task(s)." if total else "No active task to stop."
         await self.bus.publish_outbound(
@@ -589,15 +808,26 @@ class AgentLoop:
             )
         )
 
-    async def _dispatch(self, msg: InboundMessage, *, task_generation: int) -> None:
-        lock = self._session_locks.setdefault(msg.session_key, asyncio.Lock())
+    async def _dispatch(
+        self, msg: InboundMessage, *, task_generation: int, dispatch_key: str
+    ) -> None:
+        lock = self._session_locks.setdefault(dispatch_key, asyncio.Lock())
         async with lock:
+            current_task = asyncio.current_task()
+            if current_task:
+                self._session_running_task[dispatch_key] = current_task
             try:
-                response = await self._process_message(msg)
+                sig = inspect.signature(self._process_message).parameters
+                kwargs: dict[str, Any] = {}
+                if "expected_generation" in sig:
+                    kwargs["expected_generation"] = task_generation
+                if "expected_generation_key" in sig:
+                    kwargs["expected_generation_key"] = dispatch_key
+                response = await self._process_message(msg, **kwargs)
                 if response:
-                    if self._session_generations.get(msg.session_key, 0) != task_generation:
+                    if self._session_generations.get(dispatch_key, 0) != task_generation:
                         logger.info(
-                            "Dropping stale response for session {} after /stop", msg.session_key
+                            "Dropping stale response for session {} after /stop", dispatch_key
                         )
                         return
                     # Notify callback for system messages (subagent completion)
@@ -608,12 +838,12 @@ class AgentLoop:
                             logger.warning("on_system_response callback failed: {}", cb_err)
                     await self.bus.publish_outbound(response)
             except asyncio.CancelledError:
-                logger.info("Task cancelled for session {}", msg.session_key)
+                logger.info("Task cancelled for session {}", dispatch_key)
                 raise
             except Exception as e:
                 logger.error("Error processing message: {}", e)
-                if self._session_generations.get(msg.session_key, 0) != task_generation:
-                    logger.info("Suppressing stale error response for session {}", msg.session_key)
+                if self._session_generations.get(dispatch_key, 0) != task_generation:
+                    logger.info("Suppressing stale error response for session {}", dispatch_key)
                     return
                 await self.bus.publish_outbound(
                     OutboundMessage(
@@ -622,6 +852,11 @@ class AgentLoop:
                         content=f"Sorry, I encountered an error: {str(e)}",
                     )
                 )
+            finally:
+                if current_task:
+                    self._interrupted_task_ids.discard(id(current_task))
+                    if self._session_running_task.get(dispatch_key) is current_task:
+                        self._session_running_task.pop(dispatch_key, None)
 
     async def close_mcp(self) -> None:
         if self._mcp_stack:
@@ -642,6 +877,8 @@ class AgentLoop:
         msg: InboundMessage,
         session_key: str | None = None,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        expected_generation: int | None = None,
+        expected_generation_key: str | None = None,
     ) -> OutboundMessage | None:
         if msg.channel == "system":
             return await self._process_system_message(msg)
@@ -678,7 +915,11 @@ class AgentLoop:
                     await self._consolidate_memory(temp, archive_all=True)
 
                 asyncio.create_task(_consolidate_old())
-            name = f"s{len(self.sessions.list_sessions_for(natural_key)) + 1}"
+            idx = len(self.sessions.list_sessions_for(natural_key)) + 1
+            name = f"s{idx}"
+            while self.sessions.session_exists(f"{natural_key}::{name}"):
+                idx += 1
+                name = f"s{idx}"
             self._create_and_switch(natural_key, name)
             return self._reply(msg, f"好的，新对话开始啦「{name}」 🐱")
         if cmd == "/delete":
@@ -803,7 +1044,12 @@ class AgentLoop:
 
             asyncio.create_task(_consolidate_and_unlock())
 
-        self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
+        self._set_tool_context(
+            msg.channel,
+            msg.chat_id,
+            msg.metadata.get("message_id"),
+            session_key=key,
+        )
         if (t := self.tools.get("message")) and isinstance(t, MessageTool):
             t.start_turn()
         _results = await asyncio.gather(
@@ -823,6 +1069,10 @@ class AgentLoop:
             related_experience=experience or None,
             model=self.model,
         )
+
+        if not msg.metadata.get("_pre_saved") and not msg.metadata.get("_ephemeral"):
+            session.add_message("user", msg.content)
+            self.sessions.save(session)
 
         async def _bus_progress(content: str) -> None:
             if content == "\x00":
@@ -858,15 +1108,40 @@ class AgentLoop:
             tool_trace,
             total_errors,
             reasoning_snippets,
+            interrupted,
         ) = await self._run_agent_loop(
             initial_messages,
             on_progress=on_progress or _bus_progress,
             on_tool_hint=_bus_tool_hint,
             artifact_session_key=session.key,
+            return_interrupt=True,
         )
+
+        if interrupted:
+            logger.info("Interrupted response dropped for session {}", msg.session_key)
+            return None
+
+        generation_key = expected_generation_key or msg.session_key
+        if (
+            expected_generation is not None
+            and self._session_generations.get(generation_key, 0) != expected_generation
+        ):
+            logger.info(
+                "Suppressing stale completion before persistence for session {}", generation_key
+            )
+            return None
 
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
+
+        if (
+            expected_generation is not None
+            and self._session_generations.get(generation_key, 0) != expected_generation
+        ):
+            logger.info(
+                "Suppressing stale side-effects before persistence for session {}", generation_key
+            )
+            return None
 
         if len(tools_used) >= 2 or total_errors > 0:
             asyncio.create_task(
@@ -886,7 +1161,6 @@ class AgentLoop:
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
 
-        session.add_message("user", msg.content)
         session.add_message(
             "assistant", final_content, tools_used=tools_used if tools_used else None
         )
@@ -918,9 +1192,11 @@ class AgentLoop:
         else:
             origin_channel, origin_chat_id = "gateway", msg.chat_id
 
-        session_key = f"{origin_channel}:{origin_chat_id}"
+        session_key = self._dispatch_session_key(msg)
         session = self.sessions.get_or_create(session_key)
-        self._set_tool_context(origin_channel, origin_chat_id)
+        self._set_tool_context(origin_channel, origin_chat_id, session_key=session_key)
+        if (t := self.tools.get("message")) and isinstance(t, MessageTool):
+            t.start_turn()
         _results = await asyncio.gather(
             asyncio.to_thread(self.context.memory.search_memory, msg.content),
             asyncio.to_thread(self.context.memory.search_experience, msg.content),
@@ -970,7 +1246,12 @@ class AgentLoop:
         session.add_message("assistant", final_content)
         self.sessions.save(session)
 
-        out_meta: dict[str, Any] = {}
+        # If message tool already sent content, suppress duplicate outbound
+        if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
+            return None
+
+        out_meta: dict[str, Any] = dict(msg.metadata or {})
+        out_meta["session_key"] = session_key
         if any(self._last_tool_budget.values()):
             out_meta["_tool_budget"] = dict(self._last_tool_budget)
 
@@ -1291,12 +1572,24 @@ Respond with ONLY valid JSON, no markdown fences."""
             logger.debug("Session title generation failed: {}", e)
 
     async def _call_experience_llm(self, system: str, prompt: str) -> dict[str, Any] | None:
-        if self._experience_mode == "main":
-            provider, model = self.provider, self.model
-        elif self._utility_provider:
+        mode = (self._experience_mode or "utility").lower()
+        if mode == "none":
+            return None
+
+        use_utility = False
+        if mode == "main":
+            use_utility = False
+        elif mode == "utility":
+            use_utility = self._utility_provider is not None
+        else:
+            use_utility = self._utility_provider is not None
+
+        source = "main" if mode == "main" else "utility"
+        if use_utility and self._utility_provider is not None:
             provider, model = self._utility_provider, self._utility_model or self.model
         else:
-            return None
+            provider, model = self.provider, self.model
+
         response = await provider.chat(
             messages=[
                 {"role": "system", "content": system},
@@ -1305,7 +1598,7 @@ Respond with ONLY valid JSON, no markdown fences."""
             model=model,
             temperature=0.3,
             max_tokens=512,
-            source="utility" if self._experience_mode != "main" else "main",
+            source=source,
         )
         return self._parse_llm_json(response.content)
 
@@ -1567,9 +1860,12 @@ Respond with ONLY valid JSON, no markdown fences."""
         channel: str = "gateway",
         chat_id: str = "direct",
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        ephemeral: bool = False,
     ) -> str:
         await self._connect_mcp()
         msg = InboundMessage(channel=channel, sender_id="user", chat_id=chat_id, content=content)
+        if ephemeral:
+            msg.metadata["_ephemeral"] = True
 
         response = await self._process_message(
             msg, session_key=session_key, on_progress=on_progress

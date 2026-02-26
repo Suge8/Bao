@@ -68,6 +68,11 @@ Rectangle {
                 root.expandedGroups[ch] = (ch === "desktop")
         }
 
+        // Detach model from ListView during rebuild to prevent
+        // intermediate states (clear → re-add) causing flicker.
+        var savedY = sessionList.contentY
+        var wasNearEnd = sessionList.contentY >= Math.max(0, sessionList.contentHeight - sessionList.height - 8)
+        sessionList.model = null
         groupModel.clear()
         for (var gi = 0; gi < order.length; gi++) {
             var grp = order[gi]
@@ -81,6 +86,13 @@ Rectangle {
                                      itemKey: s.key, itemTitle: s.title, isActive: s.isActive,
                                      itemVisible: exp })
             }
+        }
+        sessionList.model = groupModel
+        if (wasNearEnd) {
+            sessionList.positionViewAtEnd()
+        } else {
+            var maxY = Math.max(0, sessionList.contentHeight - sessionList.height)
+            sessionList.contentY = Math.min(savedY, maxY)
         }
     }
 
@@ -409,6 +421,7 @@ Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
+            boundsBehavior: Flickable.StopAtBounds
             model: groupModel
             spacing: 0
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
@@ -447,6 +460,7 @@ Rectangle {
 
                     MouseArea {
                         anchors.fill: parent
+                        hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.toggleGroup(model.channel)
                     }

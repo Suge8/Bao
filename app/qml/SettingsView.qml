@@ -633,6 +633,25 @@ Rectangle {
 
                         SettingsField { label: tr("搜索最大结果数", "Web Search Max Results"); dotpath: "tools.web.search.maxResults"; placeholder: "5"; inputType: "number" }
                         SettingsField { label: tr("嵌入维度", "Embedding Dim"); dotpath: "tools.embedding.dim"; placeholder: "0"; inputType: "number" }
+
+                        Text {
+                            text: tr("图像生成", "Image Generation")
+                            color: textSecondary
+                            font.pixelSize: 13
+                            font.weight: Font.DemiBold
+                            Layout.topMargin: 8
+                        }
+                        SettingsField { label: tr("API 密钥", "API Key"); dotpath: "tools.imageGeneration.apiKey"; placeholder: "AIza..."; isSecret: true }
+                        SettingsField { label: tr("模型", "Model"); dotpath: "tools.imageGeneration.model"; placeholder: "gemini-2.0-flash-exp-image-generation" }
+                        SettingsField { label: tr("基础地址", "Base URL"); dotpath: "tools.imageGeneration.baseUrl"; placeholder: "https://generativelanguage.googleapis.com/v1beta" }
+                        Text {
+                            text: tr("桌面自动化", "Desktop Automation")
+                            color: textSecondary
+                            font.pixelSize: 13
+                            font.weight: Font.DemiBold
+                            Layout.topMargin: 8
+                        }
+                        SettingsToggle { label: tr("启用桌面操作", "Enable Desktop Control"); dotpath: "tools.desktop.enabled" }
                         SettingsToggle { label: tr("限制到工作区", "Restrict To Workspace"); dotpath: "tools.restrictToWorkspace" }
                     }
                 }

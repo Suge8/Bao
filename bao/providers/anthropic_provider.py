@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Any, Awaitable, Callable
 
 import anthropic
-import json
+from loguru import logger
 
 from bao.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from bao.providers.retry import (
+    DEFAULT_BASE_DELAY,
+    DEFAULT_MAX_RETRIES,
+    ProgressCallbackError,
+    compute_retry_delay,
+    emit_progress,
+    emit_progress_reset,
+    safe_error_text,
+    should_retry_exception,
+)
+
+_MAX_RETRIES = DEFAULT_MAX_RETRIES
+_BASE_DELAY = DEFAULT_BASE_DELAY
 
 
 class AnthropicProvider(LLMProvider):
@@ -116,8 +131,22 @@ class AnthropicProvider(LLMProvider):
                 if parts:
                     anthropic_messages.append({"role": "assistant", "content": parts})
             elif role == "tool":
-                # Tool result
+                # Tool result (with optional screenshot image)
                 tool_content = content if isinstance(content, str) else str(content)
+                tool_result_content: Any = tool_content
+                img_b64 = msg.get("_image")
+                if img_b64:
+                    tool_result_content = [
+                        {"type": "text", "text": tool_content},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": img_b64,
+                            },
+                        },
+                    ]
                 anthropic_messages.append(
                     {
                         "role": "user",
@@ -125,7 +154,7 @@ class AnthropicProvider(LLMProvider):
                             {
                                 "type": "tool_result",
                                 "tool_use_id": msg.get("tool_call_id", "unknown"),
-                                "content": tool_content,
+                                "content": tool_result_content,
                             }
                         ],
                     }
@@ -212,7 +241,9 @@ class AnthropicProvider(LLMProvider):
         system_prompt: str | None,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
-    ) -> tuple[str | None, list[dict[str, Any]], list[dict[str, Any]] | None]:
+    ) -> tuple[
+        str | list[dict[str, Any]] | None, list[dict[str, Any]], list[dict[str, Any]] | None
+    ]:
         """Apply cache_control for prompt caching support."""
         new_system = system_prompt
         if system_prompt:
@@ -305,78 +336,132 @@ class AnthropicProvider(LLMProvider):
         if thinking:
             request_kwargs["thinking"] = thinking
 
-        try:
-            content = ""
-            tool_calls: list[ToolCallRequest] = []
-            reasoning_content: str | None = None
-            current_tool_id: str | None = None
-            current_tool_name: str | None = None
-            partial_json = ""
+        last_err: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                content = ""
+                tool_calls: list[ToolCallRequest] = []
+                reasoning_content: str | None = None
+                current_tool_id: str | None = None
+                current_tool_name: str | None = None
+                partial_json = ""
 
-            async with self._client.messages.stream(**request_kwargs) as stream:
-                async for event in stream:
-                    if event.type == "content_block_start":
-                        if hasattr(event.content_block, "type"):
-                            if event.content_block.type == "tool_use":
-                                current_tool_id = event.content_block.id
-                                current_tool_name = event.content_block.name
+                async with self._client.messages.stream(**request_kwargs) as stream:
+                    async for event in stream:
+                        if event.type == "content_block_start":
+                            if hasattr(event.content_block, "type"):
+                                if event.content_block.type == "tool_use":
+                                    current_tool_id = event.content_block.id
+                                    current_tool_name = event.content_block.name
+                                    partial_json = ""
+                        elif event.type == "content_block_delta":
+                            delta = event.delta
+                            if delta.type == "text_delta":
+                                content += delta.text
+                                await emit_progress(on_progress, delta.text)
+                            elif delta.type == "input_json_delta":
+                                partial_json += delta.partial_json
+                            elif delta.type == "thinking_delta":
+                                if reasoning_content is None:
+                                    reasoning_content = ""
+                                reasoning_content += delta.thinking
+                        elif event.type == "content_block_stop":
+                            if current_tool_id and current_tool_name:
+                                try:
+                                    args = json.loads(partial_json) if partial_json else {}
+                                except json.JSONDecodeError as exc:
+                                    raise RuntimeError("incomplete tool json in stream") from exc
+                                tool_calls.append(
+                                    ToolCallRequest(
+                                        id=current_tool_id,
+                                        name=current_tool_name,
+                                        arguments=args,
+                                    )
+                                )
+                                current_tool_id = None
+                                current_tool_name = None
                                 partial_json = ""
-                    elif event.type == "content_block_delta":
-                        delta = event.delta
-                        if delta.type == "text_delta":
-                            content += delta.text
-                            if on_progress:
-                                await on_progress(delta.text)
-                        elif delta.type == "input_json_delta":
-                            partial_json += delta.partial_json
-                        elif delta.type == "thinking_delta":
-                            if reasoning_content is None:
-                                reasoning_content = ""
-                            reasoning_content += delta.thinking
-                    elif event.type == "content_block_stop":
-                        if current_tool_id and current_tool_name:
-                            args = json.loads(partial_json) if partial_json else {}
-                            tool_calls.append(ToolCallRequest(
-                                id=current_tool_id,
-                                name=current_tool_name,
-                                arguments=args,
-                            ))
-                            current_tool_id = None
-                            current_tool_name = None
-                            partial_json = ""
 
-                final_msg = await stream.get_final_message()
+                    final_msg = await stream.get_final_message()
 
-            # Usage from final message
-            usage = {
-                "prompt_tokens": final_msg.usage.input_tokens,
-                "completion_tokens": final_msg.usage.output_tokens,
-                "total_tokens": final_msg.usage.input_tokens + final_msg.usage.output_tokens,
-            }
+                # Usage from final message
+                usage = {
+                    "prompt_tokens": final_msg.usage.input_tokens,
+                    "completion_tokens": final_msg.usage.output_tokens,
+                    "total_tokens": final_msg.usage.input_tokens + final_msg.usage.output_tokens,
+                }
 
-            # Map finish reason
-            stop = final_msg.stop_reason
-            if stop == "end_turn":
-                finish_reason = "stop"
-            elif stop == "max_tokens":
-                finish_reason = "length"
-            elif stop == "tool_use":
-                finish_reason = "tool_calls"
-            else:
-                finish_reason = stop or "stop"
+                # Map finish reason
+                stop = final_msg.stop_reason
+                if stop == "end_turn":
+                    finish_reason = "stop"
+                elif stop == "max_tokens":
+                    finish_reason = "length"
+                elif stop == "tool_use":
+                    finish_reason = "tool_calls"
+                else:
+                    finish_reason = stop or "stop"
 
-            return LLMResponse(
-                content=content or None,
-                tool_calls=tool_calls,
-                finish_reason=finish_reason,
-                usage=usage,
-                reasoning_content=reasoning_content,
-            )
-        except Exception as e:
-            return LLMResponse(
-                content=f"Error calling Anthropic: {str(e)}",
-                finish_reason="error",
-            )
+                return LLMResponse(
+                    content=content or None,
+                    tool_calls=tool_calls,
+                    finish_reason=finish_reason,
+                    usage=usage,
+                    reasoning_content=reasoning_content,
+                )
+            except asyncio.CancelledError:
+                raise
+            except ProgressCallbackError as exc:
+                cause = exc.__cause__ or exc
+                return LLMResponse(
+                    content=f"Error calling Anthropic progress callback: {safe_error_text(cause)}",
+                    finish_reason="error",
+                )
+            except Exception as e:
+                last_err = e
+                is_retryable = should_retry_exception(e)
+
+                if is_retryable and attempt < _MAX_RETRIES:
+                    try:
+                        await emit_progress_reset(on_progress)
+                    except ProgressCallbackError as exc:
+                        cause = exc.__cause__ or exc
+                        return LLMResponse(
+                            content=(
+                                f"Error calling Anthropic progress callback: "
+                                f"{safe_error_text(cause)}"
+                            ),
+                            finish_reason="error",
+                        )
+
+                    delay = compute_retry_delay(e, attempt, base_delay=_BASE_DELAY)
+                    logger.warning(
+                        "Anthropic transient error (attempt {}/{}), retrying in {:.1f}s: {}",
+                        attempt + 1,
+                        _MAX_RETRIES + 1,
+                        delay,
+                        safe_error_text(e),
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                # Non-retryable or retries exhausted
+                if attempt > 0:
+                    logger.error(
+                        "Anthropic failed after {} attempts: {}",
+                        attempt + 1,
+                        safe_error_text(e),
+                    )
+                return LLMResponse(
+                    content=f"Error calling Anthropic: {safe_error_text(e)}",
+                    finish_reason="error",
+                )
+
+        # Should not reach here, but safety net
+        return LLMResponse(
+            content=f"Error calling Anthropic: {safe_error_text(last_err or RuntimeError('unknown error'))}",
+            finish_reason="error",
+        )
 
     def _parse_response(self, response: Any) -> LLMResponse:
         """Parse Anthropic response into LLMResponse."""

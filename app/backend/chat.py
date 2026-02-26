@@ -107,6 +107,77 @@ class ChatMessageModel(QAbstractListModel):
         self._messages.clear()
         self.endRemoveRows()
 
+    @staticmethod
+    def prepare_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        prepared: list[dict[str, Any]] = []
+        for i, m in enumerate(messages):
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            if role == "assistant":
+                prepared.append(
+                    {
+                        "id": i + 1,
+                        "createdat": 0,
+                        "role": "assistant",
+                        "content": content,
+                        "format": "markdown",
+                        "status": "done",
+                    }
+                )
+            elif role == "system":
+                prepared.append(
+                    {
+                        "id": i + 1,
+                        "createdat": 0,
+                        "role": "system",
+                        "content": content,
+                        "format": "plain",
+                        "status": "done",
+                    }
+                )
+            elif role == "user":
+                if m.get("_source"):
+                    prepared.append(
+                        {
+                            "id": i + 1,
+                            "createdat": 0,
+                            "role": "system",
+                            "content": content,
+                            "format": "plain",
+                            "status": "done",
+                        }
+                    )
+                else:
+                    prepared.append(
+                        {
+                            "id": i + 1,
+                            "createdat": 0,
+                            "role": "user",
+                            "content": content,
+                            "format": "plain",
+                            "status": "done",
+                        }
+                    )
+            elif role in ("tool", "tool_calls"):
+                label = "\U0001f527 " + (content if isinstance(content, str) else str(content))
+                prepared.append(
+                    {
+                        "id": i + 1,
+                        "createdat": 0,
+                        "role": "system",
+                        "content": label,
+                        "format": "plain",
+                        "status": "done",
+                    }
+                )
+        return prepared
+
+    def load_prepared(self, prepared_messages: list[dict[str, Any]]) -> None:
+        self.beginResetModel()
+        self._messages = prepared_messages
+        self._next_id = len(prepared_messages) + 1
+        self.endResetModel()
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -123,21 +194,7 @@ class ChatMessageModel(QAbstractListModel):
         self._messages.append(msg)
         self.endInsertRows()
         return row
+
     def load_history(self, messages: list[dict[str, Any]]) -> None:
         """Replace all messages with session history from SessionManager."""
-        self.clear()
-        for m in messages:
-            role = m.get("role", "user")
-            content = m.get("content", "")
-            if role == "assistant":
-                self._append({"role": "assistant", "content": content, "format": "markdown", "status": "done"})
-            elif role == "system":
-                self._append({"role": "system", "content": content, "format": "plain", "status": "done"})
-            elif role == "user":
-                if m.get("_source"):
-                    self._append({"role": "system", "content": content, "format": "plain", "status": "done"})
-                else:
-                    self._append({"role": "user", "content": content, "format": "plain", "status": "done"})
-            elif role in ("tool", "tool_calls"):
-                label = "\U0001f527 " + (content if isinstance(content, str) else str(content))
-                self._append({"role": "system", "content": label, "format": "plain", "status": "done"})
+        self.load_prepared(self.prepare_history(messages))

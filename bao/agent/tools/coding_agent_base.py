@@ -2,12 +2,15 @@
 
 import asyncio
 import json
+import os
 import shlex
 import shutil
+import signal
 import time
 import uuid
 from abc import ABC
 from collections import deque
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -163,15 +166,19 @@ class BaseCodingAgentTool(Tool, ABC):
         self.workspace: Path = Path(workspace).resolve()
         self.allowed_dir: Path | None = Path(allowed_dir).resolve() if allowed_dir else None
         self.default_timeout_seconds: int = max(30, int(default_timeout_seconds))
-        self._channel: str = "gateway"
-        self._chat_id: str = "direct"
+        self._channel: ContextVar[str] = ContextVar("coding_channel", default="gateway")
+        self._chat_id: ContextVar[str] = ContextVar("coding_chat_id", default="direct")
+        self._context_key: ContextVar[str] = ContextVar(
+            "coding_context_key", default="gateway:direct"
+        )
         self._session_by_context: dict[str, str] = {}
         self._lock: asyncio.Lock = asyncio.Lock()
         self.detail_cache: DetailCache = detail_cache or DetailCache()
 
-    def set_context(self, channel: str, chat_id: str) -> None:
-        self._channel = channel
-        self._chat_id = chat_id
+    def set_context(self, channel: str, chat_id: str, session_key: str | None = None) -> None:
+        self._channel.set(channel)
+        self._chat_id.set(chat_id)
+        self._context_key.set(session_key or f"{channel}:{chat_id}")
 
     # -- abstract properties (subclass MUST override) --
 
@@ -324,7 +331,7 @@ class BaseCodingAgentTool(Tool, ABC):
             return extra_err
 
         request_id = uuid.uuid4().hex
-        context_key = f"{self._channel}:{self._chat_id}"
+        context_key = self._context_key.get()
         timeout = max(30, min(int(timeout_raw or self.default_timeout_seconds), 1800))
         extra_params = kwargs  # subclass reads its own extras from here
 
@@ -731,7 +738,22 @@ class BaseCodingAgentTool(Tool, ABC):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(cwd),
+            start_new_session=True,
         )
+
+        def _kill_process_tree() -> None:
+            if process.returncode is not None:
+                return
+            try:
+                if hasattr(os, "killpg"):
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except ProcessLookupError:
+                pass
+            except Exception:
+                process.kill()
+
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
             return {
@@ -741,12 +763,19 @@ class BaseCodingAgentTool(Tool, ABC):
                 "stderr": stderr.decode("utf-8", errors="replace"),
             }
         except asyncio.TimeoutError:
-            process.kill()
+            _kill_process_tree()
             try:
                 await asyncio.wait_for(process.wait(), timeout=5.0)
             except asyncio.TimeoutError:
                 pass
             return {"timed_out": True, "returncode": None, "stdout": "", "stderr": ""}
+        except asyncio.CancelledError:
+            _kill_process_tree()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+            raise
 
     @staticmethod
     def _summarize_output(stdout_text: str, stderr_text: str, max_chars: int = 1600) -> str:
@@ -854,12 +883,16 @@ class BaseCodingDetailsTool(Tool, ABC):
     def __init__(self, *, detail_cache: DetailCache, default_max_chars: int = 12000):
         self.detail_cache = detail_cache
         self.default_max_chars = max(200, int(default_max_chars))
-        self._channel = "gateway"
-        self._chat_id = "direct"
+        self._channel: ContextVar[str] = ContextVar("coding_details_channel", default="gateway")
+        self._chat_id: ContextVar[str] = ContextVar("coding_details_chat_id", default="direct")
+        self._context_key: ContextVar[str] = ContextVar(
+            "coding_details_context_key", default="gateway:direct"
+        )
 
-    def set_context(self, channel: str, chat_id: str) -> None:
-        self._channel = channel
-        self._chat_id = chat_id
+    def set_context(self, channel: str, chat_id: str, session_key: str | None = None) -> None:
+        self._channel.set(channel)
+        self._chat_id.set(chat_id)
+        self._context_key.set(session_key or f"{channel}:{chat_id}")
 
     # -- abstract properties (subclass MUST override) --
 
@@ -926,7 +959,7 @@ class BaseCodingDetailsTool(Tool, ABC):
         if response_format not in ("hybrid", "json", "text"):
             return "Error: response_format must be one of: hybrid, json, text"
 
-        context_key = f"{self._channel}:{self._chat_id}"
+        context_key = self._context_key.get()
         record = self.detail_cache.lookup(
             request_id=request_id, session_id=session_id, context_key=context_key
         )

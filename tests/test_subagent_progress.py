@@ -2,13 +2,16 @@
 
 import asyncio
 import importlib
+import pathlib
+import tempfile
 import time
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 from bao.agent.subagent import SubagentManager, TaskStatus
 from bao.agent.tools.task_status import CancelTaskTool, CheckTasksTool, _format_status
 from bao.bus.events import OutboundMessage
 from bao.bus.queue import MessageBus
+from bao.providers.base import LLMResponse
 
 pytest = importlib.import_module("pytest")
 
@@ -49,7 +52,7 @@ def test_task_status_defaults():
     )
     assert st.status == "running"
     assert st.iteration == 0
-    assert st.max_iterations == 15
+    assert st.max_iterations == 20
     assert st.tool_steps == 0
     assert st.phase == "starting"
     assert st.result_summary is None
@@ -59,6 +62,99 @@ def test_task_status_defaults():
     assert st.clipped_chars == 0
     assert st.started_at > 0
     assert st.updated_at > 0
+
+
+@pytest.mark.asyncio
+async def test_spawn_uses_configured_max_iterations(bus, tmp_path):
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    manager = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=bus,
+        model="test-model",
+        max_iterations=7,
+    )
+    await manager.spawn(task="Do work", label="w")
+    st = manager.get_all_statuses()[0]
+    assert st.max_iterations == 7
+
+
+def test_build_subagent_prompt_includes_memory_sections(manager):
+    prompt = manager._build_subagent_prompt(
+        "task",
+        channel="telegram",
+        has_search=True,
+        related_memory=["pref: use concise replies"],
+        related_experience=["lesson: verify with tests"],
+    )
+    assert "## Related Memory" in prompt
+    assert "## Past Experience" in prompt
+
+
+@pytest.mark.asyncio
+async def test_call_experience_llm_utility_mode_falls_back_to_main(bus, tmp_path):
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    provider.chat = AsyncMock(return_value=LLMResponse(content='{"ok": true}'))
+    manager = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=bus,
+        model="test-model",
+        experience_mode="utility",
+    )
+
+    result = await manager._call_experience_llm("system", "prompt")
+    assert result == {"ok": True}
+    provider.chat.assert_awaited_once()
+    assert provider.chat.await_args.kwargs["source"] == "utility"
+
+
+def test_subagent_error_detection_avoids_no_errors_false_positive():
+    assert not SubagentManager._has_tool_error("All checks passed, no errors found.")
+    assert SubagentManager._has_tool_error("Error: permission denied")
+
+
+def test_is_protected_write_path(manager):
+    assert manager._is_protected_write_path("lancedb/data.arrow")
+    assert manager._is_protected_write_path("memory/MEMORY.md")
+    assert manager._is_protected_write_path(".bao/context/trace.txt")
+    assert not manager._is_protected_write_path("src/main.py")
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_keeps_artifacts_after_completion(bus, tmp_path, monkeypatch):
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    provider.chat = AsyncMock(return_value=LLMResponse(content="done"))
+    manager = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=bus,
+        model="test-model",
+        context_management="auto",
+    )
+    manager._task_statuses["t1"] = TaskStatus(
+        task_id="t1",
+        label="check",
+        task_description="d",
+        origin={"channel": "tg", "chat_id": "1"},
+    )
+
+    cleanup_called = False
+
+    def _mark_cleanup(_self):
+        nonlocal cleanup_called
+        cleanup_called = True
+
+    monkeypatch.setattr("bao.agent.artifacts.ArtifactStore.cleanup_session", _mark_cleanup)
+    await manager._run_subagent("t1", "simple task", "check", {"channel": "tg", "chat_id": "1"})
+
+    assert cleanup_called is False
+    status = manager.get_task_status("t1")
+    assert status is not None
+    assert status.status == "completed"
 
 
 # ---------------------------------------------------------------------------
@@ -208,14 +304,16 @@ async def test_push_milestone_publishes_outbound(manager, bus):
 
     bus.publish_outbound = _capture
 
-    await manager._push_milestone("t1", "research", 3, 15, {"channel": "tg", "chat_id": "1"})
+    await manager._push_milestone(
+        "t1", "research", 3, manager.max_iterations, {"channel": "tg", "chat_id": "1"}
+    )
 
     assert len(collected) == 1
     msg = collected[0]
     assert msg.channel == "tg"
     assert msg.chat_id == "1"
     assert "research" in msg.content
-    assert "3/15" in msg.content
+    assert f"3/{manager.max_iterations}" in msg.content
     assert msg.metadata.get("_progress") is True
     assert msg.metadata.get("_subagent_progress") is True
     assert msg.metadata.get("task_id") == "t1"
@@ -237,7 +335,7 @@ def test_format_status_basic():
     out = _format_status(st)
     assert "t1" in out
     assert "research" in out
-    assert "5/15" in out
+    assert "5/20" in out
     assert "3 tools" in out
     assert "tool:web_fetch" in out
 
@@ -490,7 +588,9 @@ async def test_push_milestone_includes_tool_steps(manager, bus):
         await original_publish(msg)
 
     bus.publish_outbound = _capture
-    await manager._push_milestone("t1", "research", 6, 15, {"channel": "tg", "chat_id": "1"})
+    await manager._push_milestone(
+        "t1", "research", 6, manager.max_iterations, {"channel": "tg", "chat_id": "1"}
+    )
     assert len(collected) == 1
     assert "5 tools" in collected[0].content
     assert "tool:web_fetch" in collected[0].content
@@ -513,7 +613,9 @@ async def test_spawn_empty_task_gets_fallback_label(manager):
 def test_task_status_recent_actions_default():
     """recent_actions should default to empty list."""
     st = TaskStatus(
-        task_id="t1", label="test", task_description="d",
+        task_id="t1",
+        label="test",
+        task_description="d",
         origin={"channel": "tg", "chat_id": "1"},
     )
     assert st.recent_actions == []
@@ -522,7 +624,9 @@ def test_task_status_recent_actions_default():
 def test_update_status_appends_action(manager):
     """_update_status with action= should append to recent_actions."""
     manager._task_statuses["t1"] = TaskStatus(
-        task_id="t1", label="test", task_description="d",
+        task_id="t1",
+        label="test",
+        task_description="d",
         origin={"channel": "tg", "chat_id": "1"},
     )
     manager._update_status("t1", action="web_search(weather)")
@@ -536,7 +640,9 @@ def test_update_status_appends_action(manager):
 def test_update_status_truncates_recent_actions(manager):
     """recent_actions should be capped at _MAX_RECENT_ACTIONS."""
     manager._task_statuses["t1"] = TaskStatus(
-        task_id="t1", label="test", task_description="d",
+        task_id="t1",
+        label="test",
+        task_description="d",
         origin={"channel": "tg", "chat_id": "1"},
     )
     for i in range(10):
@@ -555,7 +661,9 @@ def test_update_status_truncates_recent_actions(manager):
 async def test_push_milestone_includes_recent_actions(manager, bus):
     """_push_milestone should include last 3 recent_actions in content."""
     manager._task_statuses["t1"] = TaskStatus(
-        task_id="t1", label="research", task_description="d",
+        task_id="t1",
+        label="research",
+        task_description="d",
         origin={"channel": "tg", "chat_id": "1"},
     )
     # Add 4 actions — milestone should only show last 3
@@ -563,7 +671,9 @@ async def test_push_milestone_includes_recent_actions(manager, bus):
         manager._update_status("t1", action=name)
     manager._update_status("t1", iteration=3, phase="tool:exec")
 
-    await manager._push_milestone("t1", "research", 3, 15, {"channel": "tg", "chat_id": "1"})
+    await manager._push_milestone(
+        "t1", "research", 3, manager.max_iterations, {"channel": "tg", "chat_id": "1"}
+    )
 
     msg = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
     assert "web_fetch(url1)" in msg.content
@@ -579,7 +689,9 @@ async def test_push_milestone_includes_recent_actions(manager, bus):
 def test_format_status_shows_recent_actions_for_running():
     """_format_status should show '→ recent:' line for running tasks with actions."""
     st = TaskStatus(
-        task_id="t1", label="research", task_description="d",
+        task_id="t1",
+        label="research",
+        task_description="d",
         origin={"channel": "tg", "chat_id": "1"},
         status="running",
     )
@@ -596,7 +708,9 @@ def test_format_status_shows_recent_actions_for_running():
 def test_format_status_no_recent_actions_for_running():
     """_format_status should NOT show '→ recent:' line when recent_actions is empty."""
     st = TaskStatus(
-        task_id="t1", label="test", task_description="d",
+        task_id="t1",
+        label="test",
+        task_description="d",
         origin={"channel": "tg", "chat_id": "1"},
         status="running",
     )
@@ -616,11 +730,12 @@ async def test_on_system_response_fires_for_system_messages():
     loop_bus = MessageBus()
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
-    import tempfile, pathlib
     with tempfile.TemporaryDirectory() as td:
         loop = AgentLoop(
-            bus=loop_bus, provider=provider,
-            workspace=pathlib.Path(td), model="test-model",
+            bus=loop_bus,
+            provider=provider,
+            workspace=pathlib.Path(td),
+            model="test-model",
         )
 
         # Track callback invocations
@@ -633,22 +748,31 @@ async def test_on_system_response_fires_for_system_messages():
 
         # Mock _process_message to return a response for system messages
         fake_response = OutboundMessage(
-            channel="tg", chat_id="1",
-            content="Subagent finished the research task."
+            channel="tg", chat_id="1", content="Subagent finished the research task."
         )
 
-        async def fake_process(msg):
+        async def fake_process(
+            msg,
+            session_key=None,
+            on_progress=None,
+            expected_generation=None,
+            expected_generation_key=None,
+        ):
             return fake_response
 
         loop._process_message = fake_process
-        async def _noop_mcp(): pass
+
+        async def _noop_mcp():
+            pass
+
         loop._connect_mcp = _noop_mcp
 
         # Publish a system inbound message
-        await loop_bus.publish_inbound(InboundMessage(
-            channel="system", sender_id="subagent",
-            chat_id="tg:1", content="task done"
-        ))
+        await loop_bus.publish_inbound(
+            InboundMessage(
+                channel="system", sender_id="subagent", chat_id="tg:1", content="task done"
+            )
+        )
 
         # Run loop briefly — it should process the message then timeout
         loop._running = True
@@ -663,3 +787,111 @@ async def test_on_system_response_fires_for_system_messages():
         # Callback should have been called exactly once
         assert len(captured) == 1
         assert captured[0].content == "Subagent finished the research task."
+
+
+@pytest.mark.asyncio
+async def test_system_response_preserves_session_key_metadata():
+    from bao.agent.loop import AgentLoop
+    from bao.bus.events import InboundMessage, OutboundMessage
+
+    loop_bus = MessageBus()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    with tempfile.TemporaryDirectory() as td:
+        loop = AgentLoop(
+            bus=loop_bus,
+            provider=provider,
+            workspace=pathlib.Path(td),
+            model="test-model",
+        )
+
+        captured: list[OutboundMessage] = []
+
+        async def fake_callback(msg: OutboundMessage):
+            captured.append(msg)
+
+        loop.on_system_response = fake_callback
+
+        async def fake_run_agent_loop(*args, **kwargs):
+            del args, kwargs
+            return "done", [], [], 0, []
+
+        setattr(loop, "_run_agent_loop", fake_run_agent_loop)
+
+        def _search_memory(query: str, limit: int = 5) -> list[str]:
+            del query, limit
+            return []
+
+        def _search_experience(query: str, limit: int = 3) -> list[str]:
+            del query, limit
+            return []
+
+        loop.context.memory.search_memory = _search_memory
+        loop.context.memory.search_experience = _search_experience
+
+        async def _noop_mcp():
+            pass
+
+        loop._connect_mcp = _noop_mcp
+
+        await loop_bus.publish_inbound(
+            InboundMessage(
+                channel="system",
+                sender_id="subagent",
+                chat_id="tg:1",
+                content="task done",
+                metadata={"session_key": "tg:1::s2", "origin": "test"},
+            )
+        )
+
+        loop._running = True
+
+        async def stop_after_processing():
+            await asyncio.sleep(0.2)
+            loop._running = False
+
+        asyncio.create_task(stop_after_processing())
+        await loop.run()
+
+        assert len(captured) == 1
+        assert captured[0].metadata.get("session_key") == "tg:1::s2"
+        assert captured[0].metadata.get("origin") == "test"
+
+
+@pytest.mark.asyncio
+async def test_handle_stop_cancels_natural_and_active_session_subagents():
+    from bao.agent.loop import AgentLoop
+    from bao.bus.events import InboundMessage
+
+    loop_bus = MessageBus()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    with tempfile.TemporaryDirectory() as td:
+        loop = AgentLoop(
+            bus=loop_bus,
+            provider=provider,
+            workspace=pathlib.Path(td),
+            model="test-model",
+        )
+
+        natural_key = "telegram:1"
+        active_key = "telegram:1::s2"
+        loop.sessions.set_active_session_key(natural_key, active_key)
+
+        loop.subagents.cancel_by_session = AsyncMock(return_value=0)
+
+        await loop._handle_stop(
+            InboundMessage(
+                channel="telegram",
+                sender_id="user",
+                chat_id="1",
+                content="/stop",
+            )
+        )
+
+        assert loop.subagents.cancel_by_session.await_args_list == [
+            call(natural_key, wait=False),
+            call(active_key, wait=False),
+        ]

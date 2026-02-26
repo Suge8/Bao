@@ -42,6 +42,14 @@ class ThemeManager(QObject):
         self.isDarkChanged.emit()
 
 
+class ClipboardService(QObject):
+    @Slot(str, name="copyText")
+    def copy_text(self, text: str) -> None:
+        clipboard = QGuiApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(text or "")
+
+
 def parse_args() -> tuple[bool, str | None, bool, str, bool, str | None]:
     p = argparse.ArgumentParser()
     p.add_argument("--smoke", action="store_true")
@@ -353,6 +361,7 @@ def main() -> int:
     config_service = ConfigService()
     session_service = SessionService(runner)
     theme_manager = ThemeManager()
+    clipboard_service = ClipboardService()
 
     from bao.config.loader import ensure_first_run
 
@@ -387,6 +396,7 @@ def main() -> int:
     context.setContextProperty("configService", config_service)
     context.setContextProperty("sessionService", session_service)
     context.setContextProperty("themeManager", theme_manager)
+    context.setContextProperty("clipboardService", clipboard_service)
     context.setContextProperty("messagesModel", messages_model)
     context.setContextProperty("systemUiLanguage", detect_system_ui_language())
 

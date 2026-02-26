@@ -255,6 +255,7 @@ async def send_startup_greeting(
                 session_key=resolved,
                 channel=channel,
                 chat_id=chat_id,
+                ephemeral=True,
             )
         except Exception as e:
             logger.warning("Startup greeting to {}:{} failed: {}", channel, chat_id, e)

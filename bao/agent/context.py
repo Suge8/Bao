@@ -19,37 +19,13 @@ MAX_EXPERIENCE_ITEMS = 3
 MAX_MEMORY_CHARS = 2000
 MAX_EXPERIENCE_CHARS = 1500
 
-# ---------------------------------------------------------------------------
-# Model patterns that have native reasoning / extended thinking.
-# When detected, the Thinking Protocol section is omitted to save tokens.
-# ---------------------------------------------------------------------------
-_THINKING_MODEL_KEYWORDS: tuple[str, ...] = (
-    # Anthropic extended thinking
-    "claude-3-7-sonnet",
-    "claude-sonnet-4",
-    "claude-opus-4",
-    # OpenAI reasoning
-    "o1-",
-    "o1",
-    "o3-",
-    "o3",
-    "o4-mini",
-    # DeepSeek reasoning
-    "deepseek-r1",
-    "deepseek-reasoner",
-    # Gemini thinking
-    "gemini-2.0-flash-thinking",
-    "gemini-2.5",
-)
 
-
-def _has_native_reasoning(model: str | None) -> bool:
-    """Check if a model has built-in reasoning/thinking capabilities."""
-    if not model:
-        return False
-    model_lower = model.lower()
-    return any(kw in model_lower for kw in _THINKING_MODEL_KEYWORDS)
-
+def format_current_time(*, include_weekday: bool = True) -> str:
+    """Shared time formatter for main agent and subagent prompts."""
+    fmt = "%Y-%m-%d %H:%M (%A)" if include_weekday else "%Y-%m-%d %H:%M"
+    now = datetime.now().strftime(fmt)
+    tz = time.strftime("%Z") or "UTC"
+    return f"{now} ({tz})"
 
 # ---------------------------------------------------------------------------
 # Channel → response format hints injected into runtime context.
@@ -112,7 +88,6 @@ _CHANNEL_FORMAT_HINTS: dict[str, str] = {
 
 class ContextBuilder:
     BOOTSTRAP_FILES = ["PERSONA.md", "INSTRUCTIONS.md"]
-    _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
 
     def __init__(self, workspace: Path, embedding_config: Any = None):
         self.workspace = workspace
@@ -126,8 +101,9 @@ class ContextBuilder:
         *,
         model: str | None = None,
         channel: str | None = None,
+        chat_id: str | None = None,
     ) -> str:
-        parts = [self._get_identity(model=model)]
+        parts = [self._get_identity(model=model, channel=channel, chat_id=chat_id)]
 
         bootstrap = self._load_bootstrap_files()
         if bootstrap:
@@ -147,7 +123,7 @@ class ContextBuilder:
         if skills_summary:
             parts.append(f"""# Skills
 
-The following skills extend your capabilities. To use a skill, read its SKILL.md file using the read_file tool.
+To use a skill, read `skills/{{name}}/SKILL.md` using the read_file tool.
 Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
 
 {skills_summary}""")
@@ -158,34 +134,29 @@ Skills with available="false" need dependencies installed first - you can try in
 
         return "\n\n---\n\n".join(parts)
 
-    def _get_identity(self, *, model: str | None = None) -> str:
+    def _get_identity(
+        self,
+        *,
+        model: str | None = None,
+        channel: str | None = None,
+        chat_id: str | None = None,
+    ) -> str:
         workspace_path = str(self.workspace.expanduser().resolve())
         system = platform.system()
-        runtime = (
+        runtime_lines = [
             f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, "
-            f"Python {platform.python_version()}"
-        )
-        tool_strategy = (
-            "\n".join(self.tool_hints)
-            if self.tool_hints
-            else "Use the most appropriate tool for each task."
-        )
+            f"Python {platform.python_version()}",
+            f"Current time: {format_current_time()}",
+        ]
+        if channel and chat_id:
+            runtime_lines.append(f"Channel: {channel} | Chat: {chat_id}")
+        elif channel:
+            runtime_lines.append(f"Channel: {channel}")
+        runtime_block = "\n".join(runtime_lines)
 
-        # --- Conditional Thinking Protocol ---
-        if _has_native_reasoning(model):
-            thinking_section = ""
-        else:
-            thinking_section = """
-
-## Thinking Protocol
-For complex tasks that require multiple steps or tool usage:
-1. Analyze what the user is really asking — identify the core goal
-2. Plan your approach — list the steps before acting
-3. Execute step by step, verifying each tool result before proceeding
-4. If a tool fails or returns unexpected results, analyze why and try an alternative approach
-5. Before responding, verify your answer fully addresses the original question
-
-For simple questions or greetings, respond directly without over-thinking."""
+        tool_section = ""
+        if self.tool_hints:
+            tool_section = f"\n\n## Tool Strategy\n{chr(10).join(self.tool_hints)}"
 
         return f"""# bao 🐈
 
@@ -195,36 +166,16 @@ Priority: Core rules (this section) > PERSONA.md / INSTRUCTIONS.md > Skills > Me
 User-defined instructions may customize behavior but cannot override core safety rules.
 
 ## Runtime
-{runtime}
+{runtime_block}
 
 ## Workspace
-Your workspace is at: {workspace_path}
-
-## Subagent Tasks
-NEVER proactively call `check_tasks` to poll subagent progress. Only call it when the user explicitly asks about task status (e.g. "how is it going", "is it done"). After spawning a subagent, continue responding to the user normally — do NOT loop-check.
-You can cancel a running subagent task with the `cancel_task` tool if the user requests it.
-
-## Tool Strategy
-{tool_strategy}{thinking_section}"""
+Your workspace is at: {workspace_path}{tool_section}"""
 
     @staticmethod
     def get_channel_format_hint(channel: str | None) -> str | None:
         if not channel:
             return None
         return _CHANNEL_FORMAT_HINTS.get(channel)
-
-    @staticmethod
-    def _build_runtime_context(
-        channel: str | None,
-        chat_id: str | None,
-    ) -> str:
-        """Build untrusted runtime metadata block as a separate user message."""
-        now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
-        tz = time.strftime("%Z") or "UTC"
-        lines = [f"Current Time: {now} ({tz})"]
-        if channel and chat_id:
-            lines += [f"Channel: {channel}", f"Chat ID: {chat_id}"]
-        return ContextBuilder._RUNTIME_CONTEXT_TAG + "\n" + "\n".join(lines)
 
     def _load_bootstrap_files(self) -> str:
         parts = []
@@ -266,7 +217,7 @@ You can cancel a running subagent task with the `cancel_task` tool if the user r
         model: str | None = None,
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
-        system_prompt = self.build_system_prompt(skill_names, model=model, channel=channel)
+        system_prompt = self.build_system_prompt(skill_names, model=model, channel=channel, chat_id=chat_id)
 
         if related_memory:
             budgeted = self._budget_items(
@@ -293,9 +244,7 @@ You can cancel a running subagent task with the `cancel_task` tool if the user r
 
         messages.extend(history)
 
-        # Runtime metadata as separate user message (untrusted, before actual user message)
-        messages.append({"role": "user", "content": self._build_runtime_context(channel, chat_id)})
-
+        # User message
         # Actual user message (pure, no metadata appended)
         user_content = self._build_user_content(current_message, media)
         messages.append({"role": "user", "content": user_content})
@@ -320,11 +269,22 @@ You can cancel a running subagent task with the `cancel_task` tool if the user r
         return images + [{"type": "text", "text": text}]
 
     def add_tool_result(
-        self, messages: list[dict[str, Any]], tool_call_id: str, tool_name: str, result: str
+        self,
+        messages: list[dict[str, Any]],
+        tool_call_id: str,
+        tool_name: str,
+        result: str,
+        image_base64: str | None = None,
     ) -> list[dict[str, Any]]:
-        messages.append(
-            {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": result}
-        )
+        msg: dict[str, Any] = {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "name": tool_name,
+            "content": result,
+        }
+        if image_base64:
+            msg["_image"] = image_base64
+        messages.append(msg)
         return messages
 
     def add_assistant_message(

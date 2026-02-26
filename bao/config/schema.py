@@ -206,12 +206,12 @@ class AgentDefaults(Base):
     temperature: float = 0.1
     max_tool_iterations: int = 20
     memory_window: int = 50
-    context_management: str = "observe"  # off | observe | auto | aggressive
+    context_management: str = "auto"  # off | observe | auto | aggressive
     tool_output_preview_chars: int = 3000
     tool_output_offload_chars: int = 8000
     tool_output_hard_chars: int = 6000
     context_compact_bytes_est: int = 240000
-    context_compact_keep_recent_tool_blocks: int = 4
+    context_compact_keep_recent_tool_blocks: int = 6
     artifact_retention_days: int = 7
     send_progress: bool = True
     send_tool_hints: bool = True
@@ -282,7 +282,7 @@ class ExecToolConfig(Base):
 
     timeout: int = 60
     path_append: str = ""
-
+    sandbox_mode: str = "semi-auto"  # full-auto | semi-auto | read-only
 
 class MCPServerConfig(Base):
     """MCP server connection configuration (stdio or HTTP)."""
@@ -294,6 +294,17 @@ class MCPServerConfig(Base):
     headers: dict[str, str] = Field(default_factory=dict)  # HTTP: Custom HTTP Headers
     tool_timeout_seconds: int = 30  # Timeout for individual MCP tool calls
 
+class ImageGenerationConfig(Base):
+    """Image generation tool config. Leave api_key empty to disable."""
+
+    api_key: str = ""
+    model: str = ""  # Empty → default to gemini-2.0-flash-exp-image-generation inside tool
+    base_url: str = ""  # Empty → Google official endpoint
+
+class DesktopConfig(Base):
+    """Desktop automation tools config. Set enabled=true to activate."""
+
+    enabled: bool = False  # Disabled by default for safety
 
 class ToolsConfig(Base):
     """Tools configuration."""
@@ -305,6 +316,8 @@ class ToolsConfig(Base):
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
     mcp_max_tools: int = 50
     mcp_slim_schema: bool = True
+    image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
+    desktop: DesktopConfig = Field(default_factory=DesktopConfig)
 
 
 class UIConfig(Base):

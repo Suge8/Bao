@@ -341,17 +341,17 @@ class MemoryStore:
                 vec = embed_fn.compute_query_embeddings(query)[0]
                 with self._store_lock:
                     if not self._vec_tbl:
-                        return self._fallback_text_search(query, limit=limit)
+                        return self._fallback_text_search(query, limit=limit, exclude_types=["experience", "long_term"])
                     rows = (
                         self._vec_tbl.search(vec)
-                        .where("type != 'experience'")
+                        .where("type NOT IN ('experience', 'long_term')")
                         .limit(limit)
                         .to_list()
                     )
                     return [r["content"] for r in rows if r.get("content")]
             except Exception as e:
                 logger.warning("Semantic search failed: {}", e)
-        return self._fallback_text_search(query, limit=limit)
+        return self._fallback_text_search(query, limit=limit, exclude_types=["experience", "long_term"])
 
     # ── Experience (columnar) ──
     def append_experience(
@@ -728,11 +728,18 @@ class MemoryStore:
         return scored
 
     def _fallback_text_search(
-        self, query: str, type_filter: str | None = None, limit: int = 5
+        self, query: str, type_filter: str | None = None, limit: int = 5,
+        exclude_types: list[str] | None = None,
     ) -> list[str]:
         with self._store_lock:
             try:
-                where = f"type = '{type_filter}'" if type_filter else "type != '_init_'"
+                if type_filter:
+                    where = f"type = '{type_filter}'"
+                elif exclude_types:
+                    quoted = ", ".join(f"'{t}'" for t in exclude_types)
+                    where = f"type NOT IN ({quoted})"
+                else:
+                    where = "type != '_init_'"
                 if not (rows := self._tbl.search().where(where).limit(100).to_list()):
                     return []
                 ranked = self._bm25_rank(query, rows)

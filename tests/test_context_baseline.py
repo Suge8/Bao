@@ -1,17 +1,18 @@
 import asyncio
+import importlib
 import json
-from pathlib import Path
 import sys
 import types
+from pathlib import Path
 from typing import Any
-
-import pytest
 
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
+pytest = importlib.import_module("pytest")
 
-def _install_web_tool_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+
+def _install_web_tool_stub(monkeypatch: Any) -> None:
     module = types.ModuleType("bao.agent.tools.web")
 
     class WebSearchTool:
@@ -19,6 +20,7 @@ def _install_web_tool_stub(monkeypatch: pytest.MonkeyPatch) -> None:
             del search_config
             self.brave_key = None
             self.tavily_key = None
+            self.exa_key = None
 
         @property
         def name(self) -> str:
@@ -108,7 +110,10 @@ class ScriptedProvider(LLMProvider):
         on_progress=None,
         **kwargs: Any,
     ) -> LLMResponse:
-        del tools, model, max_tokens, temperature, on_progress, kwargs
+        source = kwargs.get("source")
+        del tools, model, max_tokens, temperature, on_progress
+        if source == "utility":
+            return LLMResponse(content='{"sufficient": false}', finish_reason="stop")
         bytes_est = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
         self.context_bytes_est.append(bytes_est)
 
@@ -134,9 +139,7 @@ class ScriptedProvider(LLMProvider):
 
 
 @pytest.mark.asyncio
-def test_context_bytes_est_increases_with_tool_calls(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_context_bytes_est_increases_with_tool_calls(tmp_path: Path, monkeypatch: Any) -> None:
     _install_web_tool_stub(monkeypatch)
     from bao.agent.loop import AgentLoop
 
