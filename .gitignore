@@ -12,6 +12,9 @@ __pycache__/
 dist/
 build/
 
+# Node (bridge sub-project)
+node_modules/
+
 # Virtual environments
 .venv/
 venv/
@@ -19,6 +22,8 @@ venv/
 # Testing
 .pytest_cache/
 .ruff_cache/
+.coverage
+htmlcov/
 
 # Docs (local engineering notes, not published)
 docs/
@@ -45,5 +50,6 @@ botpy.log
 .claude/
 .DS_Store
 .sisyphus/
+.opencode/
 update.md
 AGENTS.md
