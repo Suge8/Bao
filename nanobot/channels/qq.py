@@ -31,7 +31,13 @@ def _make_bot_class(channel: "QQChannel") -> "type[botpy.Client]":
 
     class _Bot(botpy.Client):
         def __init__(self):
-            super().__init__(intents=intents)
+            # Disable botpy's default file handler (TimedRotatingFileHandler).
+            # By default botpy writes "botpy.log" to the process cwd, which
+            # fails under systemd with ProtectSystem=strict (read-only root fs).
+            # nanobot already handles logging via loguru, so the file handler is
+            # redundant.  ext_handlers=False keeps console output but suppresses
+            # the file log.  See: https://github.com/HKUDS/nanobot/issues/1343
+            super().__init__(intents=intents, ext_handlers=False)
 
         async def on_ready(self):
             logger.info("QQ bot ready: {}", self.robot.name)
