@@ -218,6 +218,7 @@ class AgentLoop:
                 messages = self.context.add_assistant_message(
                     messages, response.content, tool_call_dicts,
                     reasoning_content=response.reasoning_content,
+                    thinking_blocks=response.thinking_blocks,
                 )
 
                 for tool_call in response.tool_calls:
@@ -238,6 +239,7 @@ class AgentLoop:
                     break
                 messages = self.context.add_assistant_message(
                     messages, clean, reasoning_content=response.reasoning_content,
+                    thinking_blocks=response.thinking_blocks,
                 )
                 final_content = clean
                 break
@@ -451,7 +453,7 @@ class AgentLoop:
         """Save new-turn messages into session, truncating large tool results."""
         from datetime import datetime
         for m in messages[skip:]:
-            entry = {k: v for k, v in m.items() if k != "reasoning_content"}
+            entry = dict(m)
             role, content = entry.get("role"), entry.get("content")
             if role == "assistant" and not content and not entry.get("tool_calls"):
                 continue  # skip empty assistant messages — they poison session context
