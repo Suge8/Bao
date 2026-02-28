@@ -6,9 +6,19 @@ Internal signals marshal results back to the Qt main thread.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QObject, Qt, Signal, Slot, Property
+from PySide6.QtCore import (
+    Property,
+    QAbstractListModel,
+    QModelIndex,
+    QObject,
+    Qt,
+    QTimer,
+    Signal,
+    Slot,
+)
 
 from app.backend.asyncio_runner import AsyncioRunner
 
@@ -22,12 +32,14 @@ class SessionListModel(QAbstractListModel):
         Qt.UserRole + 3: b"isActive",
         Qt.UserRole + 4: b"updatedAt",
         Qt.UserRole + 5: b"channel",
+        Qt.UserRole + 6: b"hasUnread",
     }
 
     def __init__(self, parent: Any = None) -> None:
         super().__init__(parent)
         self._sessions: list[dict[str, Any]] = []
         self._active_key: str = ""
+        self._unread_keys: set[str] = set()
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008
         return len(self._sessions)
@@ -46,15 +58,22 @@ class SessionListModel(QAbstractListModel):
             return s.get("updated_at", 0)
         if role == Qt.UserRole + 5:
             return s.get("channel", "other")
+        if role == Qt.UserRole + 6:
+            return s.get("key", "") in self._unread_keys
         return None
 
     def roleNames(self) -> dict[int, bytes]:
         return {int(k): v for k, v in self._ROLES.items()}
 
-    def reset_sessions(self, sessions: list[dict[str, Any]], active_key: str) -> None:
+    def reset_sessions(
+        self, sessions: list[dict[str, Any]], active_key: str,
+        unread_keys: set[str] | None = None,
+    ) -> None:
         self.beginResetModel()
         self._sessions = sessions
         self._active_key = active_key
+        if unread_keys is not None:
+            self._unread_keys = unread_keys
         self.endResetModel()
 
     def set_active(self, key: str) -> None:
@@ -90,6 +109,10 @@ class SessionService(QObject):
         self._pending_select_key: str | None = None
         self._model = SessionListModel()
         self._pending_deletes: dict[str, tuple[list[dict[str, Any]], str]] = {}
+        self._list_fp: tuple[Any, ...] | None = None
+        self._unread_timer = QTimer(self)
+        self._unread_timer.setInterval(5000)
+        self._unread_timer.timeout.connect(self.refresh)
 
         self._listResult.connect(self._handle_list_result)
         self._selectResult.connect(self._handle_select_result)
@@ -108,6 +131,7 @@ class SessionService(QObject):
         """Called after ChatService has initialized the bao SessionManager."""
         self._session_manager = session_manager
         self.refresh()
+        self._unread_timer.start()
 
     # ------------------------------------------------------------------
     # Public slots
@@ -133,6 +157,13 @@ class SessionService(QObject):
     def selectSession(self, key: str) -> None:
         if not key:
             return
+        # Mark old + new session as read (fire-and-forget)
+        old_key = self._active_key
+        if old_key and old_key != key:
+            self._runner.submit(self._mark_read(old_key))
+            self._model._unread_keys.discard(old_key)
+        self._runner.submit(self._mark_read(key))
+        self._model._unread_keys.discard(key)
         self._pending_select_key = key
         if self._active_key != key:
             self._allow_active_selection = True
@@ -174,23 +205,29 @@ class SessionService(QObject):
     # Async helpers (run on asyncio thread)
     # ------------------------------------------------------------------
 
-    async def _list_sessions(self) -> tuple[list[dict], str]:
+    async def _list_sessions(self) -> tuple[list[dict], str, set[str]]:
         sm = self._session_manager
         sessions = sm.list_sessions()
         active = sm.get_active_session_key(self._natural_key) or ""
         result = []
+        unread_keys: set[str] = set()
         for s in sessions:
             key = s["key"]
             channel = key.split(":")[0] if ":" in key else (key if key == "heartbeat" else "other")
+            meta = s.get("metadata", {})
+            last_read = meta.get("desktop_last_read_at")
+            updated = s.get("updated_at", "")
+            if last_read and updated > last_read:
+                unread_keys.add(key)
             result.append(
                 {
                     "key": key,
-                    "title": s.get("metadata", {}).get("title") or key,
-                    "updated_at": s.get("updated_at", 0),
+                    "title": meta.get("title") or key,
+                    "updated_at": updated,
                     "channel": channel,
                 }
             )
-        return result, active
+        return result, active, unread_keys
 
     async def _create_session(self, name: str) -> str:
         sm = self._session_manager
@@ -209,6 +246,12 @@ class SessionService(QObject):
     async def _select_session(self, key: str) -> str:
         self._session_manager.set_active_session_key(self._natural_key, key)
         return key
+
+    async def _mark_read(self, key: str) -> None:
+        sm = self._session_manager
+        session = sm.get_or_create(key)
+        session.metadata["desktop_last_read_at"] = datetime.now().isoformat()
+        sm.save(session)
 
     async def _delete_session(self, key: str) -> None:
         was_active = self._session_manager.get_active_session_key(self._natural_key) == key
@@ -256,7 +299,7 @@ class SessionService(QObject):
         if not ok:
             self.errorOccurred.emit(error)
             return
-        sessions, active = data
+        sessions, active, unread_keys = data
         if not self._allow_active_selection:
             active = ""
         elif not active and sessions:
@@ -265,8 +308,19 @@ class SessionService(QObject):
             active = pick["key"]
             if self._session_manager:
                 self._session_manager.set_active_session_key(self._natural_key, active)
+        # Active session is always "read" — prevent stale poll from re-adding red dot
+        if self._active_key:
+            unread_keys.discard(self._active_key)
+        # Fingerprint check — skip rebuild if nothing changed
+        fp = (
+            tuple((s["key"], s.get("title", "")) for s in sessions),
+            active, frozenset(unread_keys),
+        )
+        if self._list_fp == fp:
+            return
+        self._list_fp = fp
         self._active_key = active
-        self._model.reset_sessions(sessions, active)
+        self._model.reset_sessions(sessions, active, unread_keys)
         self.sessionsChanged.emit()
         if active:
             self.activeKeyChanged.emit(active)

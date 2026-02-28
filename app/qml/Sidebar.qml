@@ -49,8 +49,9 @@ Rectangle {
             var title   = sm.data(idx, Qt.UserRole + 2) || key
             var active  = sm.data(idx, Qt.UserRole + 3) || false
             var channel = sm.data(idx, Qt.UserRole + 5) || "other"
+            var unread  = sm.data(idx, Qt.UserRole + 6) || false
             if (!groups[channel]) { groups[channel] = []; order.push(channel) }
-            groups[channel].push({ key: key, title: title, isActive: active, channel: channel })
+            groups[channel].push({ key: key, title: title, isActive: active, channel: channel, hasUnread: unread })
         }
 
         order.sort(function(a, b) {
@@ -78,13 +79,13 @@ Rectangle {
             var grp = order[gi]
             var exp = root.expandedGroups[grp] === true
             groupModel.append({ isHeader: true,  channel: grp, expanded: exp,
-                                 itemKey: "", itemTitle: "", isActive: false, itemVisible: true })
+                                 itemKey: "", itemTitle: "", isActive: false, itemVisible: true, itemHasUnread: false })
             var items = groups[grp]
             for (var si = 0; si < items.length; si++) {
                 var s = items[si]
                 groupModel.append({ isHeader: false, channel: grp, expanded: false,
                                      itemKey: s.key, itemTitle: s.title, isActive: s.isActive,
-                                     itemVisible: exp })
+                                     itemVisible: exp, itemHasUnread: s.hasUnread })
             }
         }
         sessionList.model = groupModel
@@ -117,7 +118,12 @@ Rectangle {
             for (var i = 0; i < groupModel.count; i++) {
                 var item = groupModel.get(i)
                 if (!item.isHeader) {
-                    groupModel.setProperty(i, "isActive", item.itemKey === key)
+                    var wasActive = item.isActive
+                    var isNowActive = item.itemKey === key
+                    groupModel.setProperty(i, "isActive", isNowActive)
+                    // Clear unread for session being left and session being entered
+                    if (wasActive || isNowActive)
+                        groupModel.setProperty(i, "itemHasUnread", false)
                 }
             }
         }
@@ -483,6 +489,7 @@ Rectangle {
                         sessionTitle: model.itemTitle ?? model.itemKey ?? ""
                         isActive:     model.isActive  ?? false
                         dimmed:       root.gatewayIdle
+                        hasUnread:    model.itemHasUnread ?? false
                         onSelected:       root.sessionSelected(sessionKey)
                         onDeleteRequested: root.sessionDeleteRequested(sessionKey)
                     }
