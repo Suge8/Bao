@@ -7,7 +7,6 @@ Usage:
     result = future.result(timeout=5)
     runner.shutdown(grace_s=3.0)
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -86,7 +85,9 @@ class AsyncioRunner:
     # Error handling
     # ------------------------------------------------------------------
 
-    def _handle_exception(self, loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+    def _handle_exception(
+        self, loop: asyncio.AbstractEventLoop, context: dict[str, Any]
+    ) -> None:
         exc = context.get("exception")
         msg = context.get("message", "unknown asyncio error")
         if exc:

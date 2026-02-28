@@ -8,6 +8,7 @@ Rectangle {
     property string sessionTitle: ""
     property bool isActive: false
     property bool dimmed: false
+    property bool hasUnread: false
     signal selected()
     signal deleteRequested()
 
@@ -99,6 +100,18 @@ Rectangle {
                 root.deleteRequested()
             }
         }
+    }
+
+    // Unread indicator dot
+    Rectangle {
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.rightMargin: 14
+        width: 7; height: 7; radius: 3.5
+        color: isDark ? "#F87171" : "#DC2626"
+        opacity: (root.hasUnread && !root.isActive && !hoverArea.containsMouse) ? 1.0 : 0.0
+        visible: opacity > 0
+        Behavior on opacity { NumberAnimation { duration: 200 } }
     }
 
     MouseArea {
