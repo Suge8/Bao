@@ -53,3 +53,6 @@ botpy.log
 .opencode/
 update.md
 AGENTS.md
+
+# Backup files
+*.bak
