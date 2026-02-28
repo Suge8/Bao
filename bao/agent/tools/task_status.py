@@ -19,11 +19,7 @@ class CheckTasksTool(Tool):
 
     @property
     def description(self) -> str:
-        return (
-            "Check the status of background tasks. "
-            "Use when the user asks about task progress, status, "
-            "or anything like 'how is it going', 'is it done yet', 'what tasks are running'."
-        )
+        return "Check status of background tasks (by task_id or list all)."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -46,7 +42,7 @@ class CheckTasksTool(Tool):
             st = self._manager.get_task_status(task_id)
             if not st:
                 return f"No task found with id '{task_id}'."
-            return _format_status(st)
+            return _format_detailed(st)
 
         all_statuses = self._manager.get_all_statuses()
         if not all_statuses:
@@ -59,11 +55,12 @@ class CheckTasksTool(Tool):
         if running:
             parts.append(f"Running ({len(running)}):")
             for s in running:
-                parts.append(_format_status(s))
+                parts.append(_format_brief(s))
         if finished:
-            parts.append(f"\nRecent finished ({len(finished)}):")
+            nl = "\n" if running else ""
+            parts.append(f"{nl}Recent finished ({len(finished)}):")
             for s in sorted(finished, key=lambda x: x.updated_at, reverse=True)[:5]:
-                parts.append(_format_status(s))
+                parts.append(_format_brief(s))
         return "\n".join(parts)
 
 
@@ -77,10 +74,7 @@ class CancelTaskTool(Tool):
 
     @property
     def description(self) -> str:
-        return (
-            "Cancel a running background task. "
-            "Use when the user wants to stop a task that is currently running."
-        )
+        return "Cancel a running background task by task_id."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -102,37 +96,57 @@ class CancelTaskTool(Tool):
         return await self._manager.cancel_task(task_id)
 
 
-def _format_status(st: "TaskStatus") -> str:
-
-    elapsed = int(time.time() - st.started_at)
+def _format_brief(st: "TaskStatus") -> str:
+    """Compact single-line format for list view."""
+    now = time.time()
+    elapsed = max(0, int(now - st.started_at))
     mins, secs = divmod(elapsed, 60)
     time_str = f"{mins}m{secs}s" if mins else f"{secs}s"
+    label = st.label.replace("\n", " ").replace("\r", "")
     stale_warning = ""
-    if st.status == "running" and time.time() - st.updated_at > 120:
+    if st.status == "running" and now - st.updated_at > 120:
+        stale_warning = " ⚠️ stale"
+
+    if st.status == "running":
+        line = (
+            f"  [{st.task_id}] {label}"
+            f" | {st.status} | {st.iteration}/{st.max_iterations} iters"
+            f" | {time_str}{stale_warning}"
+        )
+    else:
+        line = f"  [{st.task_id}] {label} | {st.status} | {time_str}"
+        if st.result_summary:
+            cleaned = st.result_summary.replace("\n", " ").replace("\r", "")
+            summary = cleaned[:80]
+            if len(cleaned) > 80:
+                summary += "..."
+            line += f" → {summary}"
+    return line
+
+
+def _format_detailed(st: "TaskStatus") -> str:
+    """Multi-line format for single-task query."""
+    now = time.time()
+    elapsed = max(0, int(now - st.started_at))
+    mins, secs = divmod(elapsed, 60)
+    time_str = f"{mins}m{secs}s" if mins else f"{secs}s"
+    label = st.label.replace("\n", " ").replace("\r", "")
+    stale_warning = ""
+    if st.status == "running" and now - st.updated_at > 120:
         stale_warning = " ⚠️ no update for >2min"
 
     line = (
-        f"  [{st.task_id}] {st.label} | {st.status} | "
-        f"{st.iteration}/{st.max_iterations} iters, {st.tool_steps} tools | "
-        f"phase: {st.phase} | {time_str}{stale_warning}"
+        f"  [{st.task_id}] {label}\n"
+        f"  status: {st.status} | {st.iteration}/{st.max_iterations} iters"
+        f" | {st.tool_steps} tools | phase: {st.phase} | {time_str}{stale_warning}"
     )
     if st.result_summary and st.status in ("completed", "failed"):
-        summary = st.result_summary[:200]
-        if len(st.result_summary) > 200:
+        cleaned = st.result_summary.replace("\n", " ").replace("\r", "")
+        summary = cleaned[:300]
+        if len(cleaned) > 300:
             summary += "..."
-        line += f"\n    → {summary}"
-    # Show recent actions for running tasks (helps main agent understand what subagent is doing)
+        line += f"\n  result: {summary}"
     recent_actions = getattr(st, "recent_actions", [])
     if recent_actions and st.status == "running":
-        line += "\n    → recent: " + "; ".join(recent_actions[-3:])
-    offloaded_count = int(getattr(st, "offloaded_count", 0) or 0)
-    offloaded_chars = int(getattr(st, "offloaded_chars", 0) or 0)
-    clipped_count = int(getattr(st, "clipped_count", 0) or 0)
-    clipped_chars = int(getattr(st, "clipped_chars", 0) or 0)
-    if offloaded_count or clipped_count:
-        line += (
-            "\n    → budget: "
-            f"offload {offloaded_count}/{offloaded_chars} chars, "
-            f"clip {clipped_count}/{clipped_chars} chars"
-        )
+        line += "\n  recent: " + "; ".join(str(a).replace("\n", " ").replace("\r", "") for a in recent_actions[-3:])
     return line

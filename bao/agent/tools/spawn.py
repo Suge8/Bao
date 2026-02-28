@@ -40,9 +40,7 @@ class SpawnTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Spawn a subagent to handle a task in the background. "
-            "Use this for complex or time-consuming tasks that can run independently. "
-            "The subagent will complete the task and report back when done."
+            "Delegate a task to a background subagent. Returns task_id for tracking."
         )
 
     @property
@@ -58,6 +56,10 @@ class SpawnTool(Tool):
                     "type": "string",
                     "description": "Optional short label for the task (for display)",
                 },
+                "context_from": {
+                    "type": "string",
+                    "description": "task_id of a completed/failed task whose result provides context",
+                },
             },
             "required": ["task"],
         }
@@ -66,14 +68,16 @@ class SpawnTool(Tool):
         """Spawn a subagent to execute the given task."""
         task = kwargs.get("task")
         label = kwargs.get("label")
+        context_from = kwargs.get("context_from")
         if not isinstance(task, str) or not task:
-            return "Error: task is required"
+            return "Spawn failed: task text is required"
         if label is not None and not isinstance(label, str):
-            return "Error: label must be a string"
+            return "Spawn failed: label must be a string"
         return await self._manager.spawn(
             task=task,
             label=label,
             origin_channel=self._origin_channel.get(),
             origin_chat_id=self._origin_chat_id.get(),
             session_key=self._session_key.get(),
+            context_from=context_from if isinstance(context_from, str) else None,
         )

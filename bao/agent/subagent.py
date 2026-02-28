@@ -2,16 +2,17 @@
 
 import asyncio
 import json
-import shutil
+import re
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import json_repair
 from loguru import logger
 
+from bao.agent import shared
 from bao.agent.artifacts import ArtifactStore, apply_tool_output_budget
 from bao.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from bao.agent.tools.registry import ToolRegistry
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 
 _SUBAGENT_ERROR_KEYWORDS = ("error:", "traceback", "failed", "exception", "permission denied")
 _PROTECTED_WRITE_DIRS = ("lancedb", "memory", ".bao")
+_ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 
 
 @dataclass
@@ -132,23 +134,29 @@ class SubagentManager:
         origin_channel: str = "gateway",
         origin_chat_id: str = "direct",
         session_key: str | None = None,
+        context_from: str | None = None,
     ) -> str:
         task_id = str(uuid.uuid4())[:8]
-        display_label = label or (task[:30] + ("..." if len(task) > 30 else "")) or "unnamed task"
+        display_label = label or task or "unnamed task"
+        safe_label = self._sanitize_visible(display_label).replace('"', "'")
+        if len(safe_label) > 48:
+            safe_label = safe_label[:48] + "…"
         origin = {"channel": origin_channel, "chat_id": origin_chat_id}
         if session_key:
             origin["session_key"] = session_key
 
         self._task_statuses[task_id] = TaskStatus(
             task_id=task_id,
-            label=display_label,
+            label=safe_label,
             task_description=task[:200],
             origin=origin,
             max_iterations=self.max_iterations,
         )
         self._cleanup_completed()
 
-        bg_task = asyncio.create_task(self._run_subagent(task_id, task, display_label, origin))
+        bg_task = asyncio.create_task(
+            self._run_subagent(task_id, task, safe_label, origin, context_from)
+        )
         self._running_tasks[task_id] = bg_task
         if session_key:
             self._session_tasks.setdefault(session_key, set()).add(task_id)
@@ -162,8 +170,8 @@ class SubagentManager:
 
         bg_task.add_done_callback(_cleanup)
 
-        logger.info("Spawned subagent [{}]: {}", task_id, display_label)
-        return f"Subagent [{display_label}] started (id: {task_id}). I'll notify you when it completes."
+        logger.info("🚀 启动子代 / subagent spawned: [{}]: {}", task_id, safe_label)
+        return f'Spawned task_id={task_id} label="{safe_label}"'
 
     def get_task_status(self, task_id: str) -> TaskStatus | None:
         return self._task_statuses.get(task_id)
@@ -205,7 +213,7 @@ class SubagentManager:
         if st := self._task_statuses.get(task_id):
             st.status = "cancelled"
             st.updated_at = time.time()
-        logger.info("Cancelled subagent [{}]", task_id)
+        logger.info("👋 取消子代 / subagent cancelled: [{}]", task_id)
         return f"Task '{task_id}' cancelled."
 
     # ------------------------------------------------------------------
@@ -213,6 +221,19 @@ class SubagentManager:
     # ------------------------------------------------------------------
 
     _MAX_RECENT_ACTIONS: int = 6  # keep last N tool call summaries
+
+    @staticmethod
+    def _sanitize_visible(text: str) -> str:
+        return text.replace("\n", " ").replace("\r", "")
+
+    @staticmethod
+    def _normalize_progress_line(text: str) -> str:
+        cleaned = _ANSI_ESCAPE_RE.sub("", text)
+        cleaned = cleaned.replace("\x1b", "")
+        cleaned = SubagentManager._sanitize_visible(cleaned).strip()
+        if len(cleaned) > 180:
+            cleaned = cleaned[:177] + "..."
+        return cleaned
 
     def _update_status(
         self,
@@ -237,9 +258,9 @@ class SubagentManager:
         if status is not None:
             st.status = status
         if result_summary is not None:
-            st.result_summary = result_summary
+            st.result_summary = self._sanitize_visible(result_summary)
         if action is not None:
-            st.recent_actions.append(action)
+            st.recent_actions.append(self._sanitize_visible(action))
             if len(st.recent_actions) > self._MAX_RECENT_ACTIONS:
                 st.recent_actions = st.recent_actions[-self._MAX_RECENT_ACTIONS :]
         st.updated_at = time.time()
@@ -262,7 +283,7 @@ class SubagentManager:
         self, task_id: str, label: str, iteration: int, max_iter: int, origin: dict[str, str]
     ) -> None:
         st = self._task_statuses.get(task_id)
-        content = f"⏳ [{label}] {iteration}/{max_iter}"
+        content = f"⏳ [{self._sanitize_visible(label)}] {iteration}/{max_iter}"
         if st:
             content += f", {st.tool_steps} tools"
             if st.phase.startswith("tool:"):
@@ -270,7 +291,7 @@ class SubagentManager:
             # Append recent actions for transparency
             if st.recent_actions:
                 recent = st.recent_actions[-3:]  # show last 3 actions in milestone
-                content += "\n" + "\n".join(f"  → {a}" for a in recent)
+                content += "\n" + "\n".join(f"  → {self._sanitize_visible(a)}" for a in recent)
             if st.clipped_count or st.offloaded_count:
                 content += (
                     f"\n  budget clip:{st.clipped_count}/{st.clipped_chars} "
@@ -302,48 +323,18 @@ class SubagentManager:
 
     @staticmethod
     def _parse_llm_json(content: str | None) -> dict[str, Any] | None:
-        text = (content or "").strip()
-        if not text:
-            return None
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        result = json_repair.loads(text)
-        return result if isinstance(result, dict) else None
+        return shared.parse_llm_json(content)
 
     async def _call_experience_llm(self, system: str, prompt: str) -> dict[str, Any] | None:
-        mode = (self._experience_mode or "utility").lower()
-        if mode == "none":
-            return None
-
-        use_utility = False
-        if mode == "main":
-            use_utility = False
-        elif mode == "utility":
-            use_utility = self._utility_provider is not None
-        else:
-            use_utility = self._utility_provider is not None
-
-        source = "main" if mode == "main" else "utility"
-        if use_utility and self._utility_provider:
-            provider = self._utility_provider
-            model = self._utility_model or self.model
-        else:
-            provider = self.provider
-            model = self.model
-
-        assert provider is not None
-
-        response = await provider.chat(
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
-            model=model,
-            temperature=0.3,
-            max_tokens=512,
-            source=source,
+        return await shared.call_experience_llm(
+            system,
+            prompt,
+            experience_mode=self._experience_mode,
+            provider=self.provider,
+            model=self.model,
+            utility_provider=self._utility_provider,
+            utility_model=self._utility_model,
         )
-        return self._parse_llm_json(response.content)
 
     @staticmethod
     def _has_tool_error(result: str) -> bool:
@@ -375,82 +366,23 @@ class SubagentManager:
         failed_directions: list[str],
         previous_state: str | None = None,
     ) -> str | None:
-        if self._experience_mode == "none":
-            parts = [f"[Progress] {len(tool_trace)} steps completed"]
-            if failed_directions:
-                parts.append(f"[Failed] {'; '.join(failed_directions[-3:])}")
-            recent = "; ".join(t.split("→")[0].strip() for t in tool_trace[-5:])
-            parts.append(f"[Recent] {recent}")
-            return "\n".join(parts)
-
-        trace_str = "\n".join(tool_trace[-10:])
-        reasoning_str = " | ".join(reasoning_snippets[-5:]) if reasoning_snippets else "none"
-        failed_str = "; ".join(failed_directions[-5:]) if failed_directions else "none"
-        prev_section = (
-            f"\n## Previous State (update this, don't start from scratch)\n{previous_state}"
-            if previous_state
-            else ""
+        return await shared.compress_state(
+            tool_trace,
+            reasoning_snippets,
+            failed_directions,
+            previous_state,
+            experience_mode=self._experience_mode,
+            llm_fn=self._call_experience_llm,
+            label="subagent",
         )
-        has_failures = len(failed_directions) >= 2
-        key_count = "4" if has_failures else "3"
-        audit_section = ""
-        if has_failures:
-            audit_section = '\n4. "audit": 1-2 actionable corrections — what specific mistake to avoid and what concrete action to take instead (NOT vague self-criticism). Omit if no clear correction exists.'
-
-        prompt = f"""Compress this subagent execution state into a structured summary. Return JSON with exactly {key_count} keys:
-
-1. "conclusions": What has been established so far — key findings, partial answers, verified facts (2-3 sentences)
-2. "evidence": Sources consulted, tools used successfully, data gathered (1-2 sentences)
-3. "unexplored": Branches mentioned but NOT yet executed, open questions, alternative approaches to try next (1-3 bullet points as a single string){audit_section}
-
-## Execution Trace
-{trace_str}
-
-## Reasoning Steps
-{reasoning_str[:400]}
-
-## Failed Approaches
-{failed_str}{prev_section}
-
-Respond with ONLY valid JSON."""
-        try:
-            result = await self._call_experience_llm(
-                "You are a trajectory compression agent. Respond only with valid JSON.", prompt
-            )
-            if not result:
-                return None
-            parts = []
-            if c := result.get("conclusions"):
-                parts.append(f"[Conclusions] {c}")
-            if e := result.get("evidence"):
-                parts.append(f"[Evidence] {e}")
-            if u := result.get("unexplored"):
-                parts.append(f"[Unexplored branches — prioritize these next] {u}")
-            if a := result.get("audit"):
-                parts.append(f"[Audit — correct these mistakes] {a}")
-            return "\n".join(parts) if parts else None
-        except Exception as e:
-            logger.debug("Subagent state compression skipped: {}", e)
-            return None
 
     async def _check_sufficiency(self, user_request: str, tool_trace: list[str]) -> bool:
-        if self._experience_mode == "none":
-            return False
-
-        trace_summary = "; ".join(t.split("→")[0].strip() for t in tool_trace[-8:])
-        prompt = f"""Given the user's request and the tools already executed, is there enough information to provide a complete answer?
-
-User request: {user_request[:300]}
-Steps taken: {trace_summary}
-
-Return JSON: {{"sufficient": true}} or {{"sufficient": false}}"""
-        try:
-            result = await self._call_experience_llm(
-                "You are a task completion verifier. Respond only with valid JSON.", prompt
-            )
-            return bool(result and result.get("sufficient"))
-        except Exception:
-            return False
+        return await shared.check_sufficiency(
+            user_request,
+            tool_trace,
+            experience_mode=self._experience_mode,
+            llm_fn=self._call_experience_llm,
+        )
 
     def _compact_messages(
         self,
@@ -459,51 +391,14 @@ Return JSON: {{"sufficient": true}} or {{"sufficient": false}}"""
         last_state_text: str | None,
         artifact_store: ArtifactStore | None,
     ) -> list[dict[str, Any]]:
-        if artifact_store is not None:
-            try:
-                artifact_store.archive_json(
-                    "evicted_messages", "subagent_compacted_context", messages
-                )
-            except Exception as exc:
-                logger.warning("subagent ctx[L2] archive failed: {}", exc)
-
-        tool_blocks: list[list[dict[str, Any]]] = []
-        i = 0
-        while i < len(messages):
-            msg = messages[i]
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                tc_ids = {tc["id"] for tc in msg["tool_calls"]}
-                block, j = [msg], i + 1
-                while (
-                    j < len(messages)
-                    and messages[j].get("role") == "tool"
-                    and messages[j].get("tool_call_id") in tc_ids
-                ):
-                    block.append(messages[j])
-                    j += 1
-                tool_blocks.append(block)
-                i = j
-            else:
-                i += 1
-
-        recent_blocks = tool_blocks[-self._compact_keep_blocks :]
-        recent_msgs = [m for block in recent_blocks for m in block]
-        state_note = (
-            f"\n\n[Compacted context. Previous state:\n{last_state_text}\n]"
-            if last_state_text
-            else "\n\n[Compacted context: older messages archived.]"
+        return shared.compact_messages(
+            messages,
+            initial_messages,
+            last_state_text,
+            artifact_store,
+            keep_blocks=self._compact_keep_blocks,
+            label="subagent",
         )
-        system_msgs = [m for m in initial_messages if m.get("role") == "system"]
-        user_msgs = [m for m in initial_messages if m.get("role") == "user"]
-        if user_msgs:
-            original_content = str(user_msgs[0].get("content", ""))
-            if "[Compacted context" in original_content:
-                state_note = ""
-            user_msgs = [
-                {**user_msgs[0], "content": original_content + state_note},
-                *user_msgs[1:],
-            ]
-        return system_msgs + user_msgs + recent_msgs
 
     @staticmethod
     def _budget_items(items: list[str], max_items: int, max_chars: int) -> list[str]:
@@ -542,8 +437,9 @@ Return JSON: {{"sufficient": true}} or {{"sufficient": false}}"""
         task: str,
         label: str,
         origin: dict[str, str],
+        context_from: str | None = None,
     ) -> None:
-        logger.info("Subagent [{}] starting task: {}", task_id, label)
+        logger.info("🚀 子代启动 / subagent start: [{}]: {}", task_id, label)
         artifact_store: ArtifactStore | None = None
 
         try:
@@ -565,44 +461,35 @@ Return JSON: {{"sufficient": true}} or {{"sufficient": false}}"""
             channel = origin.get("channel", "gateway")
             chat_id = origin.get("chat_id", "direct")
             coding_tools: list[str] = []
-            if shutil.which("opencode"):
-                from bao.agent.tools.opencode import OpenCodeDetailsTool, OpenCodeTool
+            from bao.agent.tools.coding_agent import CodingAgentDetailsTool, CodingAgentTool
 
-                oc_tool = OpenCodeTool(workspace=self.workspace, allowed_dir=allowed_dir)
-                oc_details = OpenCodeDetailsTool()
-                oc_tool.set_context(channel, chat_id)
-                oc_details.set_context(channel, chat_id)
-                tools.register(oc_tool)
-                tools.register(oc_details)
-                coding_tools.append("opencode")
-            if shutil.which("codex"):
-                from bao.agent.tools.codex import CodexDetailsTool, CodexTool
-
-                cx_tool = CodexTool(workspace=self.workspace, allowed_dir=allowed_dir)
-                cx_details = CodexDetailsTool()
-                cx_tool.set_context(channel, chat_id)
-                cx_details.set_context(channel, chat_id)
-                tools.register(cx_tool)
-                tools.register(cx_details)
-                coding_tools.append("codex")
-            if shutil.which("claude"):
-                from bao.agent.tools.claudecode import ClaudeCodeDetailsTool, ClaudeCodeTool
-
-                cc_tool = ClaudeCodeTool(workspace=self.workspace, allowed_dir=allowed_dir)
-                cc_details = ClaudeCodeDetailsTool()
-                cc_tool.set_context(channel, chat_id)
-                cc_details.set_context(channel, chat_id)
-                tools.register(cc_tool)
-                tools.register(cc_details)
-                coding_tools.append("claudecode")
+            coding_tool = CodingAgentTool(workspace=self.workspace, allowed_dir=allowed_dir)
+            if coding_tool.available_backends:
+                coding_details = CodingAgentDetailsTool(parent=coding_tool)
+                coding_tool.set_context(
+                    channel,
+                    chat_id,
+                    session_key=origin.get("session_key"),
+                )
+                coding_details.set_context(
+                    channel,
+                    chat_id,
+                    session_key=origin.get("session_key"),
+                )
+                tools.register(coding_tool)
+                tools.register(coding_details)
+                coding_tools.extend(coding_tool.available_backends)
             # Image generation (conditional)
             if self.image_generation_config and self.image_generation_config.api_key:
                 from bao.agent.tools.image_gen import ImageGenTool
-                tools.register(ImageGenTool(
-                    api_key=self.image_generation_config.api_key,
-                    model=self.image_generation_config.model,
-                    base_url=self.image_generation_config.base_url,
-                ))
+
+                tools.register(
+                    ImageGenTool(
+                        api_key=self.image_generation_config.api_key,
+                        model=self.image_generation_config.model,
+                        base_url=self.image_generation_config.base_url,
+                    )
+                )
             # Desktop automation (conditional: enabled in config + deps available)
             if self.desktop_config and self.desktop_config.enabled:
                 try:
@@ -615,6 +502,7 @@ Return JSON: {{"sufficient": true}} or {{"sufficient": false}}"""
                         ScrollTool,
                         TypeTextTool,
                     )
+
                     tools.register(ScreenshotTool())
                     tools.register(ClickTool())
                     tools.register(TypeTextTool())
@@ -641,7 +529,7 @@ Return JSON: {{"sufficient": true}} or {{"sufficient": false}}"""
                         self.workspace, "_stale_", self._artifact_retention_days
                     ).cleanup_stale()
                 except Exception as exc:
-                    logger.warning("subagent ctx stale cleanup failed: {}", exc)
+                    logger.debug("subagent ctx stale cleanup failed: {}", exc)
 
             # Build messages with subagent-specific prompt
             system_prompt = self._build_subagent_prompt(
@@ -656,6 +544,19 @@ Return JSON: {{"sufficient": true}} or {{"sufficient": false}}"""
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": task},
             ]
+            if context_from:
+                prev = self.get_task_status(context_from)
+                if prev and prev.status in ("completed", "failed"):
+                    resume_ctx = (
+                        f"[Continuing from previous task ({context_from})]\n"
+                        f"Previous task: {prev.task_description[:200]}\n"
+                        f"Previous result: {prev.result_summary or 'no summary'}"
+                    )
+                    messages.insert(1, {"role": "user", "content": resume_ctx})
+                else:
+                    logger.debug(
+                        "context_from={} not found or not finished, ignoring", context_from
+                    )
             initial_messages = list(messages)
 
             artifact_store = (
@@ -720,16 +621,17 @@ Return JSON: {{"sufficient": true}} or {{"sufficient": false}}"""
 
                 self._update_status(task_id, iteration=iteration, phase="thinking")
 
-                response = await self.provider.chat(
-                    messages=messages,
-                    tools=tools.get_definitions(),
-                    model=self.model,
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                )
-                # Strip _image base64 from messages after provider has processed them
-                for _m in messages:
-                    _m.pop("_image", None)
+                try:
+                    response = await self.provider.chat(
+                        messages=messages,
+                        tools=tools.get_definitions(),
+                        model=self.model,
+                        temperature=self.temperature,
+                        max_tokens=self.max_tokens,
+                    )
+                finally:
+                    for _m in messages:
+                        _m.pop("_image", None)
 
                 if response.has_tool_calls:
                     clean = self._strip_think(response.content)
@@ -783,7 +685,37 @@ Return JSON: {{"sufficient": true}} or {{"sufficient": false}}"""
                         ):
                             raw_result = f"Error: write access to protected path is blocked: {first_arg_value}"
                         else:
-                            raw_result = await tools.execute(tool_call.name, tool_call.arguments)
+                            progress_backend = None
+                            if tool_call.name == "coding_agent":
+                                backend_name = tool_call.arguments.get("agent")
+                                if isinstance(backend_name, str):
+                                    backend = coding_tool._backends.get(backend_name)
+                                    if backend and hasattr(backend, "set_progress_callback"):
+
+                                        step_index = tool_step + 1
+
+                                        async def _on_coding_progress(line: str) -> None:
+                                            progress = self._normalize_progress_line(line)
+                                            if not progress:
+                                                return
+                                            self._update_status(
+                                                task_id,
+                                                phase="tool:coding_agent",
+                                                tool_steps=step_index,
+                                                action=f"{backend_name}: {progress}",
+                                            )
+
+                                        backend.set_progress_callback(_on_coding_progress)
+                                        progress_backend = backend
+                            try:
+                                raw_result = await tools.execute(
+                                    tool_call.name, tool_call.arguments
+                                )
+                            finally:
+                                if progress_backend and hasattr(
+                                    progress_backend, "set_progress_callback"
+                                ):
+                                    progress_backend.set_progress_callback(None)
                         result_text = raw_result if isinstance(raw_result, str) else str(raw_result)
                         result, budget_event = apply_tool_output_budget(
                             store=artifact_store,
@@ -802,17 +734,50 @@ Return JSON: {{"sufficient": true}} or {{"sufficient": false}}"""
                         )
                         # Detect screenshot image marker → inject as multimodal
                         _screenshot_image_b64: str | None = None
-                        if isinstance(result, str) and result.startswith("__SCREENSHOT__:"):
-                            _ss_path = result[len("__SCREENSHOT__:"):].strip()
+                        if (
+                            tool_call.name == "screenshot"
+                            and isinstance(result, str)
+                            and result.startswith("__SCREENSHOT__:")
+                        ):
+                            marker = result
+                            result = "[screenshot unavailable]"
+                            _ss_path = marker[len("__SCREENSHOT__:") :].strip()
+                            _ss_file = Path(_ss_path).expanduser()
+                            _tmp_dir = Path(tempfile.gettempdir()).resolve()
                             try:
-                                import base64 as _b64mod
-                                with open(_ss_path, "rb") as _sf:
-                                    _screenshot_image_b64 = _b64mod.b64encode(_sf.read()).decode()
-                                result = "[screenshot captured]"
-                                import os
-                                os.unlink(_ss_path)
-                            except Exception as _ss_err:
-                                logger.warning("subagent: failed to read screenshot {}: {}", _ss_path, _ss_err)
+                                _resolved_parent = _ss_file.resolve(strict=False).parent
+                            except Exception:
+                                _resolved_parent = None
+                            _safe_marker = (
+                                _ss_file.name.startswith("bao_screenshot_")
+                                and _resolved_parent == _tmp_dir
+                            )
+                            if _safe_marker:
+                                try:
+                                    import base64 as _b64mod
+
+                                    with _ss_file.open("rb") as _sf:
+                                        _screenshot_image_b64 = _b64mod.b64encode(
+                                            _sf.read()
+                                        ).decode()
+                                    result = "[screenshot captured]"
+                                except Exception as _ss_err:
+                                    logger.warning(
+                                        "⚠️ 子代截图失败 / screenshot read failed: {}: {}",
+                                        _ss_file,
+                                        _ss_err,
+                                    )
+                                finally:
+                                    try:
+                                        if _ss_file.exists():
+                                            _ss_file.unlink()
+                                    except Exception:
+                                        pass
+                            else:
+                                logger.warning(
+                                    "⚠️ 子代忽略非安全截图路径 / ignored unsafe screenshot path: {}",
+                                    _ss_file,
+                                )
                         tool_msg: dict[str, Any] = {
                             "role": "tool",
                             "tool_call_id": tool_call.id,
@@ -877,12 +842,12 @@ Return JSON: {{"sufficient": true}} or {{"sufficient": false}}"""
                 result_summary=final_result[:500] if final_result else None,
             )
 
-            logger.info("Subagent [{}] completed successfully", task_id)
+            logger.info("✅ 子代完成 / subagent done: [{}]", task_id)
             await self._announce_result(task_id, label, task, final_result, origin, "ok")
 
         except asyncio.CancelledError:
             self._update_status(task_id, status="cancelled", phase="cancelled")
-            logger.info("Subagent [{}] was cancelled", task_id)
+            logger.info("👋 子代终止 / subagent stopped: [{}]", task_id)
 
         except Exception as e:
             error_msg = f"Error: {str(e)}"
@@ -892,7 +857,7 @@ Return JSON: {{"sufficient": true}} or {{"sufficient": false}}"""
                 phase="failed",
                 result_summary=error_msg[:500],
             )
-            logger.error("Subagent [{}] failed: {}", task_id, e)
+            logger.error("❌ 子代失败 / subagent failed: [{}]: {}", task_id, e)
             await self._announce_result(task_id, label, task, error_msg, origin, "error")
 
     async def _announce_result(
@@ -905,13 +870,16 @@ Return JSON: {{"sufficient": true}} or {{"sufficient": false}}"""
         status: str,
     ) -> None:
         status_text = "completed successfully" if status == "ok" else "failed"
+        safe_label = self._sanitize_visible(label)
+        safe_task = self._sanitize_visible(task)
+        safe_result = self._sanitize_visible(result)
 
-        announce_content = f"""[Subagent '{label}' {status_text}]
+        announce_content = f"""[Subagent '{safe_label}' {status_text}]
 
-Task: {task}
+Task: {safe_task}
 
 Result:
-{result}
+{safe_result}
 
 Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not mention technical details like "subagent" or task IDs."""
 
@@ -954,13 +922,25 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
 
         coding_capability = ""
         if coding_tools:
-            names = ", ".join(f"`{t}`" for t in coding_tools)
+            names = ", ".join(coding_tools)
             coding_capability = (
-                f"\n- Delegate complex coding tasks to coding agents: {names}\n"
-                "  PREFER coding agents for multi-file changes, refactoring, debugging, "
+                f"\n- coding_agent(agent=...): delegate coding to {names}.\n"
+                "  PREFER coding_agent for multi-file changes, refactoring, debugging, "
                 "and feature implementation over manual exec+read_file+write_file. "
-                "Read the corresponding skill for usage: skills/{name}/SKILL.md"
+                "Read the skill for usage: skills/coding-agent/SKILL.md"
             )
+            if "opencode" in coding_tools:
+                _omo_paths = [
+                    self.workspace / ".opencode/oh-my-opencode.jsonc",
+                    self.workspace / ".opencode/oh-my-opencode.json",
+                    Path.home() / ".config/opencode/oh-my-opencode.jsonc",
+                    Path.home() / ".config/opencode/oh-my-opencode.json",
+                ]
+                if any(p.exists() for p in _omo_paths):
+                    coding_capability += (
+                        "\n  OhMyOpenCode detected: use `ulw` prefix in opencode "
+                        "prompts for enhanced orchestration mode."
+                    )
 
         format_hint = ContextBuilder.get_channel_format_hint(channel)
         format_section = f"\n\n## Response Format\n{format_hint}" if format_hint else ""
