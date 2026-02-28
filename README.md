@@ -20,6 +20,10 @@
 
 ## 📢 News
 
+- **2026-02-28** 🚀 Released **v0.1.4.post3** — cleaner context, hardened session history, and smarter agent. See [release notes](https://github.com/HKUDS/nanobot/releases/tag/v0.1.4.post3) for details.
+- **2026-02-27** 🧠 Experimental thinking mode support, DingTalk media messages, Feishu and QQ channel fixes.
+- **2026-02-26** 🛡️ Session poisoning fix, WhatsApp dedup, Windows path guard, Mistral compatibility.
+- **2026-02-25** 🧹 New Matrix channel, cleaner session context, auto workspace template sync.
 - **2026-02-24** 🚀 Released **v0.1.4.post2** — a reliability-focused release with a redesigned heartbeat, prompt cache optimization, and hardened provider & channel stability. See [release notes](https://github.com/HKUDS/nanobot/releases/tag/v0.1.4.post2) for details.
 - **2026-02-23** 🔧 Virtual tool-call heartbeat, prompt cache optimization, Slack mrkdwn fixes.
 - **2026-02-22** 🛡️ Slack thread isolation, Discord typing fix, agent reliability improvements.
