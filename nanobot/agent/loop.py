@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import weakref
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -100,7 +101,7 @@ class AgentLoop:
         self._mcp_connecting = False
         self._consolidating: set[str] = set()  # Session keys with consolidation in progress
         self._consolidation_tasks: set[asyncio.Task] = set()  # Strong refs to in-flight tasks
-        self._consolidation_locks: dict[str, asyncio.Lock] = {}
+        self._consolidation_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._processing_lock = asyncio.Lock()
         self._register_default_tools()
@@ -373,8 +374,6 @@ class AgentLoop:
                 )
             finally:
                 self._consolidating.discard(session.key)
-                if not lock.locked():
-                    self._consolidation_locks.pop(session.key, None)
 
             session.clear()
             self.sessions.save(session)
@@ -396,8 +395,6 @@ class AgentLoop:
                         await self._consolidate_memory(session)
                 finally:
                     self._consolidating.discard(session.key)
-                    if not lock.locked():
-                        self._consolidation_locks.pop(session.key, None)
                     _task = asyncio.current_task()
                     if _task is not None:
                         self._consolidation_tasks.discard(_task)
