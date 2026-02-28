@@ -3,6 +3,8 @@
 import json
 import json_repair
 import os
+import secrets
+import string
 from typing import Any
 
 import litellm
@@ -12,8 +14,14 @@ from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.providers.registry import find_by_model, find_gateway
 
 
-# Standard OpenAI chat-completion message keys; extras (e.g. reasoning_content) are stripped for strict providers.
+# Standard OpenAI chat-completion message keys plus reasoning_content for
+# thinking-enabled models (Kimi k2.5, DeepSeek-R1, etc.).
 _ALLOWED_MSG_KEYS = frozenset({"role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content"})
+_ALNUM = string.ascii_letters + string.digits
+
+def _short_tool_id() -> str:
+    """Generate a 9-char alphanumeric ID compatible with all providers (incl. Mistral)."""
+    return "".join(secrets.choice(_ALNUM) for _ in range(9))
 
 
 class LiteLLMProvider(LLMProvider):
@@ -170,6 +178,7 @@ class LiteLLMProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        reasoning_effort: str | None = None,
     ) -> LLMResponse:
         """
         Send a chat completion request via LiteLLM.
@@ -216,6 +225,10 @@ class LiteLLMProvider(LLMProvider):
         if self.extra_headers:
             kwargs["extra_headers"] = self.extra_headers
         
+        if reasoning_effort:
+            kwargs["reasoning_effort"] = reasoning_effort
+            kwargs["drop_params"] = True
+        
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
@@ -244,7 +257,7 @@ class LiteLLMProvider(LLMProvider):
                     args = json_repair.loads(args)
                 
                 tool_calls.append(ToolCallRequest(
-                    id=tc.id,
+                    id=_short_tool_id(),
                     name=tc.function.name,
                     arguments=args,
                 ))

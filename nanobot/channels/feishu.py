@@ -89,8 +89,9 @@ def _extract_interactive_content(content: dict) -> list[str]:
         elif isinstance(title, str):
             parts.append(f"title: {title}")
 
-    for element in content.get("elements", []) if isinstance(content.get("elements"), list) else []:
-        parts.extend(_extract_element_content(element))
+    for elements in content.get("elements", []) if isinstance(content.get("elements"), list) else []:
+        for element in elements:
+            parts.extend(_extract_element_content(element))
 
     card = content.get("card", {})
     if card:
@@ -325,13 +326,14 @@ class FeishuChannel(BaseChannel):
             await asyncio.sleep(1)
     
     async def stop(self) -> None:
-        """Stop the Feishu bot."""
+        """
+        Stop the Feishu bot.
+
+        Notice: lark.ws.Client does not expose stop method， simply exiting the program will close the client.
+
+        Reference: https://github.com/larksuite/oapi-sdk-python/blob/v2_main/lark_oapi/ws/client.py#L86
+        """
         self._running = False
-        if self._ws_client:
-            try:
-                self._ws_client.stop()
-            except Exception as e:
-                logger.warning("Error stopping WebSocket client: {}", e)
         logger.info("Feishu bot stopped")
     
     def _add_reaction_sync(self, message_id: str, emoji_type: str) -> None:
@@ -692,7 +694,7 @@ class FeishuChannel(BaseChannel):
             msg_type = message.message_type
 
             # Add reaction
-            await self._add_reaction(message_id, "THUMBSUP")
+            await self._add_reaction(message_id, self.config.react_emoji)
 
             # Parse content
             content_parts = []
