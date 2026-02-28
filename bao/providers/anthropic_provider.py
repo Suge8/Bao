@@ -14,6 +14,7 @@ from bao.providers.retry import (
     DEFAULT_BASE_DELAY,
     DEFAULT_MAX_RETRIES,
     ProgressCallbackError,
+    StreamInterruptedError,
     compute_retry_delay,
     emit_progress,
     emit_progress_reset,
@@ -119,12 +120,21 @@ class AnthropicProvider(LLMProvider):
                 # Handle tool calls
                 for tc in msg.get("tool_calls", []) or []:
                     fn = tc.get("function") or {}
+                    fn_args = fn.get("arguments", {})
+                    if isinstance(fn_args, str):
+                        try:
+                            parsed = json.loads(fn_args)
+                            fn_args = parsed if isinstance(parsed, dict) else {}
+                        except json.JSONDecodeError:
+                            fn_args = {}
+                    elif not isinstance(fn_args, dict):
+                        fn_args = {}
                     parts.append(
                         {
                             "type": "tool_use",
                             "id": tc.get("id", f"tool_{tc.get('name', 'unknown')}"),
                             "name": fn.get("name", ""),
-                            "input": fn.get("arguments", {}),
+                            "input": fn_args,
                         }
                     )
 
@@ -181,13 +191,19 @@ class AnthropicProvider(LLMProvider):
                     url = url_data.get("url", "")
                     # Anthropic expects base64 or media type
                     if url.startswith("data:"):
+                        header, _, b64_data = url.partition(",")
+                        media_type = "image/jpeg"
+                        if header.startswith("data:") and ";" in header:
+                            media_type = header[len("data:") : header.index(";")]
+                        if not b64_data:
+                            continue
                         parts.append(
                             {
                                 "type": "image",
                                 "source": {
                                     "type": "base64",
-                                    "media_type": "image/jpeg",
-                                    "data": url.split(",", 1)[1],
+                                    "media_type": media_type,
+                                    "data": b64_data,
                                 },
                             }
                         )
@@ -337,6 +353,7 @@ class AnthropicProvider(LLMProvider):
             request_kwargs["thinking"] = thinking
 
         last_err: Exception | None = None
+        content = ""
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 content = ""
@@ -412,6 +429,8 @@ class AnthropicProvider(LLMProvider):
             except asyncio.CancelledError:
                 raise
             except ProgressCallbackError as exc:
+                if isinstance(exc, StreamInterruptedError):
+                    return LLMResponse(content=content or None, finish_reason="interrupted")
                 cause = exc.__cause__ or exc
                 return LLMResponse(
                     content=f"Error calling Anthropic progress callback: {safe_error_text(cause)}",
@@ -425,6 +444,8 @@ class AnthropicProvider(LLMProvider):
                     try:
                         await emit_progress_reset(on_progress)
                     except ProgressCallbackError as exc:
+                        if isinstance(exc, StreamInterruptedError):
+                            return LLMResponse(content=content or None, finish_reason="interrupted")
                         cause = exc.__cause__ or exc
                         return LLMResponse(
                             content=(
@@ -436,7 +457,7 @@ class AnthropicProvider(LLMProvider):
 
                     delay = compute_retry_delay(e, attempt, base_delay=_BASE_DELAY)
                     logger.warning(
-                        "Anthropic transient error (attempt {}/{}), retrying in {:.1f}s: {}",
+                        "⚠️ Anthropic 重试中 / retrying: transient error (attempt {}/{}), in {:.1f}s: {}",
                         attempt + 1,
                         _MAX_RETRIES + 1,
                         delay,
@@ -448,7 +469,7 @@ class AnthropicProvider(LLMProvider):
                 # Non-retryable or retries exhausted
                 if attempt > 0:
                     logger.error(
-                        "Anthropic failed after {} attempts: {}",
+                        "❌ Anthropic 最终失败 / final failure: after {} attempts: {}",
                         attempt + 1,
                         safe_error_text(e),
                     )

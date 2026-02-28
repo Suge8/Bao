@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Any
+
 
 import httpx
 from loguru import logger
@@ -30,12 +30,12 @@ class GroqTranscriptionProvider:
             Transcribed text.
         """
         if not self.api_key:
-            logger.warning("Groq API key not configured for transcription")
+            logger.warning("⚠️ 转写密钥缺失 / key missing: Groq API key not configured")
             return ""
         
         path = Path(file_path)
         if not path.exists():
-            logger.error("Audio file not found: {}", file_path)
+            logger.error("❌ 音频不存在 / file missing: {}", file_path)
             return ""
         
         try:
@@ -61,5 +61,5 @@ class GroqTranscriptionProvider:
                     return data.get("text", "")
                     
         except Exception as e:
-            logger.error("Groq transcription error: {}", e)
+            logger.error("❌ 转写失败 / transcription error: {}", e)
             return ""

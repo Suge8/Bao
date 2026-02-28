@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+import asyncio
+import json
+from typing import Any, Awaitable, Callable, cast
 
 from google import genai
 from google.genai import types
 
 from bao.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from bao.providers.retry import (
+    ProgressCallbackError,
+    StreamInterruptedError,
+    emit_progress,
+    safe_error_text,
+)
 
 
 class GeminiProvider(LLMProvider):
@@ -57,50 +65,98 @@ class GeminiProvider(LLMProvider):
             if role == "system":
                 continue
 
-            gemini_role = "user" if role in ("user", "system") else "model"
+            gemini_role = "model" if role == "assistant" else "user"
 
             # Flush pending screenshot images before non-tool message
             if role != "tool" and pending_images:
                 img_parts = [types.Part(text="[screenshot from tool above]")]
                 for ib64 in pending_images:
-                    img_parts.append(types.Part(inline_data=types.Blob(
-                        mime_type="image/jpeg",
-                        data=_b64mod.b64decode(ib64),
-                    )))
+                    img_parts.append(
+                        types.Part(
+                            inline_data=types.Blob(
+                                mime_type="image/jpeg",
+                                data=_b64mod.b64decode(ib64),
+                            )
+                        )
+                    )
                 contents.append(types.Content(role="user", parts=img_parts))
                 pending_images = []
 
             # Handle content
-            if isinstance(content, str):
-                parts = [types.Part(text=content)]
-            elif isinstance(content, list):
-                parts = []
-                for item in content:
-                    if not isinstance(item, dict):
-                        continue
-                    item_type = item.get("type")
-                    if item_type == "text":
-                        parts.append(types.Part(text=item.get("text", "")))
-                    elif item_type == "image_url":
-                        url_data = item.get("image_url") or {}
-                        url = url_data.get("url", "")
-                        # For now, skip image handling - would need to fetch
+            if role == "tool":
+                tool_name = str(msg.get("name") or "tool")
+                tool_content = (
+                    content if isinstance(content, str) else str(content) if content else ""
+                )
+                fr_kwargs: dict[str, Any] = {
+                    "name": tool_name,
+                    "response": {"result": tool_content},
+                }
+                tool_call_id = msg.get("tool_call_id")
+                if isinstance(tool_call_id, str) and tool_call_id:
+                    fr_kwargs["id"] = tool_call_id
+                parts = [
+                    types.Part(
+                        function_response=types.FunctionResponse(**fr_kwargs),
+                    )
+                ]
             else:
-                parts = [types.Part(text=str(content) if content else "")]
+                if isinstance(content, str):
+                    parts = [types.Part(text=content)]
+                elif isinstance(content, list):
+                    parts = []
+                    for item in content:
+                        if not isinstance(item, dict):
+                            continue
+                        item_type = item.get("type")
+                        if item_type == "text":
+                            parts.append(types.Part(text=item.get("text", "")))
+                        elif item_type == "image_url":
+                            url_data = item.get("image_url") or {}
+                            url = url_data.get("url", "")
+                            if url.startswith("data:") and ";base64," in url:
+                                _, _, b64_data = url.partition(",")
+                                if b64_data:
+                                    header = url[: url.index(",")]
+                                    media_type = "image/jpeg"
+                                    if header.startswith("data:") and ";" in header:
+                                        media_type = header[len("data:") : header.index(";")]
+                                    try:
+                                        parts.append(
+                                            types.Part(
+                                                inline_data=types.Blob(
+                                                    mime_type=media_type,
+                                                    data=_b64mod.b64decode(b64_data),
+                                                )
+                                            )
+                                        )
+                                    except Exception:
+                                        pass  # skip malformed base64
+                else:
+                    parts = [types.Part(text=str(content) if content else "")]
 
-            # Handle tool calls (function calling)
-            tool_calls = msg.get("tool_calls", [])
-            if tool_calls:
-                for tc in tool_calls:
-                    fn = tc.get("function") or {}
-                    parts.append(
-                        types.Part(
-                            function_call=types.FunctionCall(
-                                name=fn.get("name", ""),
-                                args=fn.get("arguments", {}),
+                # Handle tool calls (function calling)
+                tool_calls = msg.get("tool_calls", [])
+                if tool_calls:
+                    for tc in tool_calls:
+                        fn = tc.get("function") or {}
+                        fn_args = fn.get("arguments", {})
+                        if isinstance(fn_args, str):
+                            try:
+                                parsed = json.loads(fn_args)
+                                fn_args = parsed if isinstance(parsed, dict) else {}
+                            except json.JSONDecodeError:
+                                fn_args = {}
+                        elif not isinstance(fn_args, dict):
+                            fn_args = {}
+                        parts.append(
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name=fn.get("name", ""),
+                                    args=fn_args,
+                                )
                             )
                         )
-                    )
 
             if parts:
                 contents.append(types.Content(role=gemini_role, parts=parts))
@@ -113,10 +169,14 @@ class GeminiProvider(LLMProvider):
         if pending_images:
             img_parts = [types.Part(text="[screenshot from tool above]")]
             for ib64 in pending_images:
-                img_parts.append(types.Part(inline_data=types.Blob(
-                    mime_type="image/jpeg",
-                    data=_b64mod.b64decode(ib64),
-                )))
+                img_parts.append(
+                    types.Part(
+                        inline_data=types.Blob(
+                            mime_type="image/jpeg",
+                            data=_b64mod.b64decode(ib64),
+                        )
+                    )
+                )
             contents.append(types.Content(role="user", parts=img_parts))
 
         return contents
@@ -140,7 +200,9 @@ class GeminiProvider(LLMProvider):
                         types.FunctionDeclaration(
                             name=name,
                             description=description,
-                            parameters=parameters if isinstance(parameters, dict) else {},
+                            parameters=cast(
+                                Any, parameters if isinstance(parameters, dict) else {}
+                            ),
                         )
                     ]
                 )
@@ -195,7 +257,7 @@ class GeminiProvider(LLMProvider):
 
         # Add tools if provided
         if tools:
-            config.tools = self._convert_tools(tools)
+            config.tools = cast(Any, self._convert_tools(tools))
 
         # Handle thinking (Gemini 2.5 thinking mode)
         thinking = kwargs.get("thinking", False)
@@ -206,6 +268,7 @@ class GeminiProvider(LLMProvider):
                 thinking_budget=kwargs.get("thinking_budget", 2048),
             )
 
+        content = ""
         try:
             content = ""
             tool_calls: list[ToolCallRequest] = []
@@ -213,7 +276,7 @@ class GeminiProvider(LLMProvider):
             chunk = None
             async for chunk in await self._client.aio.models.generate_content_stream(
                 model=resolved_model,
-                contents=contents,
+                contents=cast(Any, contents),
                 config=config,
             ):
                 if not chunk.candidates:
@@ -224,8 +287,10 @@ class GeminiProvider(LLMProvider):
                 for part in candidate.content.parts:
                     if part.text:
                         content += part.text
-                        if on_progress:
-                            await on_progress(part.text)
+                        try:
+                            await emit_progress(on_progress, part.text)
+                        except StreamInterruptedError:
+                            return LLMResponse(content=content or None, finish_reason="interrupted")
                     if getattr(part, "thought", None):
                         reasoning_content = (reasoning_content or "") + str(part.thought)
                     if part.function_call:
@@ -233,18 +298,22 @@ class GeminiProvider(LLMProvider):
                         args_dict = {}
                         if fc.args:
                             args_dict = dict(fc.args) if isinstance(fc.args, dict) else {}
-                        tool_calls.append(ToolCallRequest(
-                            id=getattr(fc, "id", None) or f"call_{fc.name}",
-                            name=fc.name or "unknown",
-                            arguments=args_dict,
-                        ))
+                        tool_calls.append(
+                            ToolCallRequest(
+                                id=getattr(fc, "id", None) or f"call_{fc.name}",
+                                name=fc.name or "unknown",
+                                arguments=args_dict,
+                            )
+                        )
             # Finish reason from last chunk
             finish_reason = "stop"
             if chunk and chunk.candidates:
                 fr = str(chunk.candidates[0].finish_reason)
                 finish_reason = {
-                    "STOP": "stop", "MAX_TOKENS": "length",
-                    "SAFETY": "content_filter", "RECITATION": "content_filter",
+                    "STOP": "stop",
+                    "MAX_TOKENS": "length",
+                    "SAFETY": "content_filter",
+                    "RECITATION": "content_filter",
                 }.get(fr, "stop")
             # Usage from last chunk
             usage: dict[str, int] = {}
@@ -261,6 +330,16 @@ class GeminiProvider(LLMProvider):
                 finish_reason=finish_reason,
                 usage=usage,
                 reasoning_content=reasoning_content,
+            )
+        except asyncio.CancelledError:
+            raise
+        except ProgressCallbackError as exc:
+            if isinstance(exc, StreamInterruptedError):
+                return LLMResponse(content=content or None, finish_reason="interrupted")
+            cause = exc.__cause__ or exc
+            return LLMResponse(
+                content=f"Error calling Gemini progress callback: {safe_error_text(cause)}",
+                finish_reason="error",
             )
         except Exception as e:
             return LLMResponse(
@@ -313,7 +392,7 @@ class GeminiProvider(LLMProvider):
 
                             try:
                                 args_dict = json.loads(fc.args)
-                            except:
+                            except (TypeError, json.JSONDecodeError):
                                 args_dict = {"raw": str(fc.args)}
 
                     tool_calls.append(

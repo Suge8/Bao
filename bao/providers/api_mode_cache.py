@@ -37,7 +37,7 @@ def _save() -> None:
         _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         _CACHE_FILE.write_text(json.dumps(_load(), indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception as e:
-        logger.debug(f"Failed to save API mode cache: {e}")
+        logger.debug("🤖 缓存保存失败 / save failed: {}", e)
 
 
 def _normalize_key(api_base: str) -> str:
@@ -68,4 +68,4 @@ def set_cached_mode(api_base: str, mode: str) -> None:
     key = _normalize_key(api_base)
     _load()[key] = {"mode": mode, "probed_at": time.time()}
     _save()
-    logger.info(f"API mode cached: {key} → {mode}")
+    logger.debug("🤖 模式已缓存 / cached: {} → {}", key, mode)

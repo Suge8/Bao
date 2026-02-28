@@ -48,6 +48,11 @@ class ProgressCallbackError(RuntimeError):
     pass
 
 
+class StreamInterruptedError(ProgressCallbackError):
+    """Raised when soft interrupt is detected during LLM streaming."""
+    pass
+
+
 def safe_error_text(exc: BaseException) -> str:
     try:
         text = str(exc)
@@ -201,6 +206,8 @@ async def emit_progress(
         await on_progress(chunk)
     except asyncio.CancelledError:
         raise
+    except ProgressCallbackError:
+        raise  # preserve subclass (StreamInterruptedError)
     except Exception as exc:
         raise ProgressCallbackError("progress callback failed") from exc
 

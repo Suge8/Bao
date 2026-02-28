@@ -21,6 +21,7 @@ from bao.providers.retry import (
     DEFAULT_BASE_DELAY,
     DEFAULT_MAX_RETRIES,
     ProgressCallbackError,
+    StreamInterruptedError,
     compute_retry_delay,
     emit_progress,
     emit_progress_reset,
@@ -145,12 +146,16 @@ class OpenAICompatibleProvider(LLMProvider):
                 clean["content"] = None
             # Flush pending screenshot images before non-tool message
             if clean.get("role") != "tool" and pending_images:
-                parts: list[dict[str, Any]] = [{"type": "text", "text": "[screenshot from tool above]"}]
+                parts: list[dict[str, Any]] = [
+                    {"type": "text", "text": "[screenshot from tool above]"}
+                ]
                 for ib64 in pending_images:
-                    parts.append({
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{ib64}"},
-                    })
+                    parts.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{ib64}"},
+                        }
+                    )
                 sanitized.append({"role": "user", "content": parts})
                 pending_images = []
             sanitized.append(clean)
@@ -160,10 +165,12 @@ class OpenAICompatibleProvider(LLMProvider):
         if pending_images:
             parts = [{"type": "text", "text": "[screenshot from tool above]"}]
             for ib64 in pending_images:
-                parts.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{ib64}"},
-                })
+                parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{ib64}"},
+                    }
+                )
             sanitized.append({"role": "user", "content": parts})
         return sanitized
 
@@ -272,10 +279,11 @@ class OpenAICompatibleProvider(LLMProvider):
             params["tool_choice"] = "auto"
 
         last_err: Exception | None = None
+        content = ""
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                stream = await self._client.chat.completions.create(**params)
                 content = ""
+                stream = await self._client.chat.completions.create(**params)
                 tool_calls_acc: dict[int, dict[str, Any]] = {}
                 finish_reason = "stop"
                 usage: dict[str, int] = {}
@@ -344,6 +352,8 @@ class OpenAICompatibleProvider(LLMProvider):
             except asyncio.CancelledError:
                 raise
             except ProgressCallbackError as exc:
+                if isinstance(exc, StreamInterruptedError):
+                    return LLMResponse(content=content or None, finish_reason="interrupted")
                 cause = exc.__cause__ or exc
                 return LLMResponse(
                     content=f"Error calling LLM progress callback: {safe_error_text(cause)}",
@@ -356,6 +366,8 @@ class OpenAICompatibleProvider(LLMProvider):
                     try:
                         await emit_progress_reset(on_progress)
                     except ProgressCallbackError as exc:
+                        if isinstance(exc, StreamInterruptedError):
+                            return LLMResponse(content=content or None, finish_reason="interrupted")
                         cause = exc.__cause__ or exc
                         return LLMResponse(
                             content=f"Error calling LLM progress callback: {safe_error_text(cause)}",
@@ -364,7 +376,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
                     delay = compute_retry_delay(e, attempt, base_delay=_BASE_DELAY)
                     logger.warning(
-                        "LLM transient error (attempt {}/{}), retrying in {:.1f}s: {}",
+                        "⚠️ LLM 重试中 / retrying: transient error (attempt {}/{}), in {:.1f}s: {}",
                         attempt + 1,
                         _MAX_RETRIES + 1,
                         delay,
@@ -374,7 +386,9 @@ class OpenAICompatibleProvider(LLMProvider):
                     continue
                 if attempt > 0:
                     logger.error(
-                        "LLM failed after {} attempts: {}", attempt + 1, safe_error_text(e)
+                        "❌ LLM 最终失败 / final failure: after {} attempts: {}",
+                        attempt + 1,
+                        safe_error_text(e),
                     )
                 return LLMResponse(
                     content=f"Error calling LLM: {safe_error_text(e)}",
@@ -444,7 +458,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 if should_retry_exception(exc) and attempt < _MAX_RETRIES:
                     delay = compute_retry_delay(exc, attempt, base_delay=_BASE_DELAY)
                     logger.warning(
-                        "[{}] Responses API transient error (attempt {}/{}), retrying in {:.1f}s: {}",
+                        "⚠️ 接口重试中 / retrying: [{}] Responses transient error (attempt {}/{}), in {:.1f}s: {}",
                         source,
                         attempt + 1,
                         _MAX_RETRIES + 1,
@@ -455,8 +469,8 @@ class OpenAICompatibleProvider(LLMProvider):
                     continue
 
                 if allow_fallback:
-                    logger.warning(
-                        "[{}] Responses API request failed for model={} base={} ({}), trying Chat Completions",
+                    logger.debug(
+                        "🤖 回退补全 / fallback: [{}] request failed model={} base={} ({}), trying Chat Completions",
                         source,
                         model,
                         self._effective_base,
@@ -487,7 +501,7 @@ class OpenAICompatibleProvider(LLMProvider):
                     if attempt < _MAX_RETRIES:
                         delay = compute_retry_delay(parse_err, attempt, base_delay=_BASE_DELAY)
                         logger.warning(
-                            "[{}] Responses payload parse failed (attempt {}/{}), retrying in {:.1f}s: {}",
+                            "⚠️ 负载重试中 / retrying: [{}] payload parse failed (attempt {}/{}), in {:.1f}s: {}",
                             source,
                             attempt + 1,
                             _MAX_RETRIES + 1,
@@ -498,8 +512,8 @@ class OpenAICompatibleProvider(LLMProvider):
                         continue
 
                     if allow_fallback:
-                        logger.warning(
-                            "[{}] Responses payload parse failed for model={} base={} ({}), trying Chat Completions",
+                        logger.debug(
+                            "🤖 回退补全 / fallback: [{}] payload parse failed model={} base={} ({}), trying Chat Completions",
                             source,
                             model,
                             self._effective_base,
@@ -523,8 +537,8 @@ class OpenAICompatibleProvider(LLMProvider):
             status_err = RuntimeError(f"Responses API HTTP {resp.status_code}: {resp.text[:500]}")
             last_err = status_err
             if resp.status_code in _PROBE_FALLBACK_CODES and allow_fallback:
-                logger.info(
-                    "[{}] Responses API unsupported ({}), falling back to Chat Completions",
+                logger.debug(
+                    "🤖 响应不支持 / unsupported: [{}] status {}, falling back to Chat Completions",
                     source,
                     resp.status_code,
                 )
@@ -542,7 +556,7 @@ class OpenAICompatibleProvider(LLMProvider):
             if should_retry_exception(status_err) and attempt < _MAX_RETRIES:
                 delay = compute_retry_delay(status_err, attempt, base_delay=_BASE_DELAY)
                 logger.warning(
-                    "[{}] Responses API transient HTTP {} (attempt {}/{}), retrying in {:.1f}s",
+                    "⚠️ HTTP 重试中 / retrying: [{}] transient HTTP {} (attempt {}/{}), in {:.1f}s",
                     source,
                     resp.status_code,
                     attempt + 1,
@@ -553,8 +567,8 @@ class OpenAICompatibleProvider(LLMProvider):
                 continue
 
             if allow_fallback:
-                logger.warning(
-                    "[{}] Responses API returned {} for model={} base={}, trying Chat Completions",
+                logger.debug(
+                    "🤖 回退补全 / fallback: [{}] Responses returned {} model={} base={}, trying Chat Completions",
                     source,
                     resp.status_code,
                     model,
@@ -602,8 +616,8 @@ class OpenAICompatibleProvider(LLMProvider):
                 resp = await client.post(url, headers=headers, json=body)
 
             if resp.status_code in _PROBE_FALLBACK_CODES:
-                logger.info(
-                    "[{}] Responses API not supported ({}), falling back to Chat Completions",
+                logger.debug(
+                    "🤖 探测回退 / probe fallback: [{}] Responses not supported ({}), falling back",
                     source,
                     resp.status_code,
                 )
@@ -614,11 +628,11 @@ class OpenAICompatibleProvider(LLMProvider):
 
             if resp.status_code == 200:
                 set_cached_mode(self._effective_base, "responses")
-                logger.info("[{}] Responses API detected, cached for future requests", source)
+                logger.info("🤖 响应已启用 / detected: [{}] Responses API cached", source)
                 return self._build_responses_result(self._decode_responses_payload(resp))
 
-            logger.warning(
-                "[{}] Responses API returned {} for model={} base={}, trying Chat Completions",
+            logger.debug(
+                "🤖 探测回退 / probe fallback: [{}] Responses returned {} model={} base={}, trying Chat Completions",
                 source,
                 resp.status_code,
                 model,
@@ -631,8 +645,8 @@ class OpenAICompatibleProvider(LLMProvider):
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.warning(
-                "[{}] Responses API probe failed for model={} base={} ({}) trying Chat Completions",
+            logger.debug(
+                "🤖 探测失败回退 / probe fallback: [{}] probe failed model={} base={} ({}), trying Chat Completions",
                 source,
                 model,
                 self._effective_base,
