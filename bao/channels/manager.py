@@ -48,7 +48,7 @@ class ChannelManager:
                 )
                 logger.debug("Telegram channel enabled")
             except ImportError as e:
-                logger.warning("Telegram channel not available: {}", e)
+                logger.warning("⚠️ 通道不可用 / unavailable: Telegram {}", e)
 
         # WhatsApp channel
         if self.config.channels.whatsapp.enabled:
@@ -58,7 +58,7 @@ class ChannelManager:
                 self.channels["whatsapp"] = WhatsAppChannel(self.config.channels.whatsapp, self.bus)
                 logger.debug("WhatsApp channel enabled")
             except ImportError as e:
-                logger.warning("WhatsApp channel not available: {}", e)
+                logger.warning("⚠️ 通道不可用 / unavailable: WhatsApp {}", e)
 
         # Discord channel
         if self.config.channels.discord.enabled:
@@ -68,7 +68,7 @@ class ChannelManager:
                 self.channels["discord"] = DiscordChannel(self.config.channels.discord, self.bus)
                 logger.debug("Discord channel enabled")
             except ImportError as e:
-                logger.warning("Discord channel not available: {}", e)
+                logger.warning("⚠️ 通道不可用 / unavailable: Discord {}", e)
 
         # Feishu channel
         if self.config.channels.feishu.enabled:
@@ -78,7 +78,7 @@ class ChannelManager:
                 self.channels["feishu"] = FeishuChannel(self.config.channels.feishu, self.bus)
                 logger.debug("Feishu channel enabled")
             except ImportError as e:
-                logger.warning("Feishu channel not available: {}", e)
+                logger.warning("⚠️ 通道不可用 / unavailable: Feishu {}", e)
 
         # Mochat channel
         if self.config.channels.mochat.enabled:
@@ -88,7 +88,7 @@ class ChannelManager:
                 self.channels["mochat"] = MochatChannel(self.config.channels.mochat, self.bus)
                 logger.debug("Mochat channel enabled")
             except ImportError as e:
-                logger.warning("Mochat channel not available: {}", e)
+                logger.warning("⚠️ 通道不可用 / unavailable: Mochat {}", e)
 
         # DingTalk channel
         if self.config.channels.dingtalk.enabled:
@@ -98,7 +98,7 @@ class ChannelManager:
                 self.channels["dingtalk"] = DingTalkChannel(self.config.channels.dingtalk, self.bus)
                 logger.debug("DingTalk channel enabled")
             except ImportError as e:
-                logger.warning("DingTalk channel not available: {}", e)
+                logger.warning("⚠️ 通道不可用 / unavailable: DingTalk {}", e)
 
         # Email channel
         if self.config.channels.email.enabled:
@@ -108,7 +108,7 @@ class ChannelManager:
                 self.channels["email"] = EmailChannel(self.config.channels.email, self.bus)
                 logger.debug("Email channel enabled")
             except ImportError as e:
-                logger.warning("Email channel not available: {}", e)
+                logger.warning("⚠️ 通道不可用 / unavailable: Email {}", e)
 
         # Slack channel
         if self.config.channels.slack.enabled:
@@ -118,7 +118,7 @@ class ChannelManager:
                 self.channels["slack"] = SlackChannel(self.config.channels.slack, self.bus)
                 logger.debug("Slack channel enabled")
             except ImportError as e:
-                logger.warning("Slack channel not available: {}", e)
+                logger.warning("⚠️ 通道不可用 / unavailable: Slack {}", e)
 
         # QQ channel
         if self.config.channels.qq.enabled:
@@ -131,7 +131,7 @@ class ChannelManager:
                 )
                 logger.debug("QQ channel enabled")
             except ImportError as e:
-                logger.warning("QQ channel not available: {}", e)
+                logger.warning("⚠️ 通道不可用 / unavailable: QQ {}", e)
 
         # iMessage channel (macOS only)
         if self.config.channels.imessage.enabled:
@@ -141,19 +141,19 @@ class ChannelManager:
                 self.channels["imessage"] = IMessageChannel(self.config.channels.imessage, self.bus)
                 logger.debug("iMessage channel enabled")
             except ImportError as e:
-                logger.warning("iMessage channel not available: {}", e)
+                logger.warning("⚠️ 通道不可用 / unavailable: iMessage {}", e)
 
     async def _start_channel(self, name: str, channel: BaseChannel) -> None:
         """Start a channel and log any exceptions."""
         try:
             await channel.start()
         except Exception as e:
-            logger.error("Failed to start channel {}: {}", name, e)
+            logger.error("❌ 启动失败 / start failed: {}: {}", name, e)
 
     async def start_all(self) -> None:
         """Start all channels and the outbound dispatcher."""
         if not self.channels:
-            logger.warning("No channels enabled")
+            logger.warning("⚠️ 通道为空 / no channels: enabled=0")
             return
 
         # Start outbound dispatcher
@@ -162,7 +162,7 @@ class ChannelManager:
         # Start channels
         tasks = []
         for name, channel in self.channels.items():
-            logger.info("Starting {} channel...", name)
+            logger.info("📡 启动通道 / starting: {}", name)
             tasks.append(asyncio.create_task(self._start_channel(name, channel)))
 
         # Wait for all to complete (they should run forever)
@@ -170,7 +170,7 @@ class ChannelManager:
 
     async def stop_all(self) -> None:
         """Stop all channels and the dispatcher."""
-        logger.info("Stopping all channels...")
+        logger.info("📡 停止通道 / stopping: all channels")
 
         # Stop dispatcher
         if self._dispatch_task:
@@ -184,9 +184,9 @@ class ChannelManager:
         for name, channel in self.channels.items():
             try:
                 await channel.stop()
-                logger.info("Stopped {} channel", name)
+                logger.info("✅ 已停止 / stopped: {}", name)
             except Exception as e:
-                logger.error("Error stopping {}: {}", name, e)
+                logger.error("❌ 停止失败 / stop failed: {}: {}", name, e)
 
     async def _dispatch_outbound(self) -> None:
         """Dispatch outbound messages to the appropriate channel.
@@ -201,7 +201,7 @@ class ChannelManager:
                 channel = self.channels.get(msg.channel)
                 if not channel:
                     if msg.channel != "desktop":
-                        logger.warning("Unknown channel: {}", msg.channel)
+                        logger.warning("⚠️ 未知通道 / unknown channel: {}", msg.channel)
                     continue
                 if msg.metadata.get("_progress"):
                     is_tool_hint = msg.metadata.get("_tool_hint", False)
@@ -209,6 +209,8 @@ class ChannelManager:
                     allow_progress = defaults.send_progress
                     if is_tool_hint and not allow_tool_hints:
                         if not allow_progress:
+                            continue
+                        if not hasattr(channel, "_progress"):
                             continue
                         suppressed_meta = dict(msg.metadata)
                         suppressed_meta["_tool_hint_suppressed"] = True
@@ -226,7 +228,7 @@ class ChannelManager:
                 try:
                     await channel.send(msg)
                 except Exception as e:
-                    logger.error("Error sending to {}: {}", msg.channel, e)
+                    logger.error("❌ 发送失败 / send failed: {}: {}", msg.channel, e)
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:

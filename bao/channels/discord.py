@@ -63,7 +63,7 @@ class DiscordChannel(BaseChannel):
     async def start(self) -> None:
         """Start the Discord gateway connection."""
         if not self.config.token:
-            logger.error("Discord bot token not configured")
+            logger.error("❌ 未配置 / not configured: Discord token")
             return
 
         self._running = True
@@ -73,16 +73,16 @@ class DiscordChannel(BaseChannel):
             try:
                 # Use resume URL if available, otherwise default gateway
                 url = self._resume_gateway_url or self.config.gateway_url
-                logger.info("Connecting to Discord gateway...")
+                logger.info("📡 连接网关 / connecting: Discord gateway")
                 async with websockets.connect(url) as ws:
                     self._ws = ws
                     await self._gateway_loop()
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.warning("Discord gateway error: {}", e)
+                logger.warning("⚠️ 网关异常 / gateway error: {}", e)
                 if self._running:
-                    logger.info("Reconnecting to Discord gateway in 5 seconds...")
+                    logger.info("🔄 开始重连 / reconnecting: wait=5s")
                     await asyncio.sleep(5)
 
     async def stop(self) -> None:
@@ -104,7 +104,7 @@ class DiscordChannel(BaseChannel):
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Discord REST API."""
         if not self._http:
-            logger.warning("Discord HTTP client not initialized")
+            logger.warning("⚠️ 未初始化 / client not initialized: Discord HTTP")
             return
 
         url = f"{DISCORD_API_BASE}/channels/{msg.chat_id}/messages"
@@ -138,14 +138,14 @@ class DiscordChannel(BaseChannel):
                 if response.status_code == 429:
                     data = response.json()
                     retry_after = float(data.get("retry_after", 1.0))
-                    logger.warning("Discord rate limited, retrying in {}s", retry_after)
+                    logger.warning("⚠️ 限流重试 / rate limited: {}s", retry_after)
                     await asyncio.sleep(retry_after)
                     continue
                 response.raise_for_status()
                 return True
             except Exception as e:
                 if attempt == 2:
-                    logger.error("Error sending Discord message: {}", e)
+                    logger.error("❌ 发送失败 / send failed: {}", e)
                 else:
                     await asyncio.sleep(1)
         return False
@@ -159,7 +159,7 @@ class DiscordChannel(BaseChannel):
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
-                logger.warning("Invalid JSON from Discord gateway: {}", raw[:100])
+                logger.debug("Invalid JSON from Discord gateway: {}", raw[:100])
                 continue
 
             op = data.get("op")
@@ -186,26 +186,27 @@ class DiscordChannel(BaseChannel):
                 self._session_id = payload.get("session_id")
                 self._resume_gateway_url = payload.get("resume_gateway_url")
                 self._should_resume = True
-                logger.info("Discord gateway READY (session={})", self._session_id)
+                logger.debug("Discord gateway READY (session={})", self._session_id)
             elif op == 0 and event_type == "RESUMED":
-                logger.info("Discord gateway RESUMED successfully")
+                logger.debug("Discord gateway RESUMED successfully")
             elif op == 0 and event_type == "MESSAGE_CREATE":
                 await self._handle_message_create(payload)
             elif op == 7:
                 # RECONNECT: server requests reconnect, try RESUME
-                logger.info("Discord gateway requested reconnect")
+                logger.info("🔄 收到重连 / reconnect requested: Discord gateway")
                 self._should_resume = True
                 break
             elif op == 9:
                 # INVALID_SESSION: d=true means resumable, d=false means fresh identify
                 resumable = payload is True
-                logger.warning("Discord invalid session (resumable={})", resumable)
+                logger.warning("⚠️ 会话失效 / invalid session: resumable={}", resumable)
                 self._should_resume = resumable
                 if not resumable:
                     self._session_id = None
                     self._resume_gateway_url = None
                 await asyncio.sleep(1 + 4 * (not resumable))  # 1s if resumable, 5s if not
                 break
+
     async def _identify(self) -> None:
         """Send IDENTIFY payload."""
         if not self._ws:
@@ -237,7 +238,7 @@ class DiscordChannel(BaseChannel):
                 "seq": self._seq,
             },
         }
-        logger.info("Discord sending RESUME (seq={})", self._seq)
+        logger.debug("Discord sending RESUME (seq={})", self._seq)
         await self._ws.send(json.dumps(resume, ensure_ascii=False))
 
     async def _start_heartbeat(self, interval_s: float) -> None:
@@ -249,14 +250,16 @@ class DiscordChannel(BaseChannel):
         async def heartbeat_loop() -> None:
             while self._running and self._ws:
                 if not self._heartbeat_acked:
-                    logger.warning("Discord heartbeat ACK not received — zombie connection, reconnecting")
+                    logger.debug(
+                        "Discord heartbeat ACK not received — zombie connection, reconnecting"
+                    )
                     await self._ws.close()
                     break
                 self._heartbeat_acked = False
                 try:
                     await self._ws.send(json.dumps({"op": 1, "d": self._seq}, ensure_ascii=False))
                 except Exception as e:
-                    logger.warning("Discord heartbeat failed: {}", e)
+                    logger.debug("Discord heartbeat failed: {}", e)
                     break
                 await asyncio.sleep(interval_s)
 
@@ -302,7 +305,7 @@ class DiscordChannel(BaseChannel):
                 media_paths.append(str(file_path))
                 content_parts.append(f"[attachment: {file_path}]")
             except Exception as e:
-                logger.warning("Failed to download Discord attachment: {}", e)
+                logger.warning("⚠️ 下载失败 / attachment failed: {}", e)
                 content_parts.append(f"[attachment: {filename} - download failed]")
 
         reply_to = (payload.get("referenced_message") or {}).get("id")
@@ -336,9 +339,10 @@ class DiscordChannel(BaseChannel):
                 except Exception:
                     consecutive_failures += 1
                     if consecutive_failures >= 3:
-                        logger.warning(
+                        logger.debug(
                             "Discord typing stopped: {} consecutive HTTP failures for channel {}",
-                            consecutive_failures, channel_id,
+                            consecutive_failures,
+                            channel_id,
                         )
                         break
                 await asyncio.sleep(8)

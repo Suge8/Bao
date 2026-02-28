@@ -62,8 +62,7 @@ class EmailChannel(BaseChannel):
         """Start polling IMAP for inbound emails."""
         if not self.config.consent_granted:
             logger.warning(
-                "Email channel disabled: consent_granted is false. "
-                "Set channels.email.consentGranted=true after explicit user permission."
+                "⚠️ 邮件通道未授权 / consent missing: set channels.email.consentGranted=true"
             )
             return
 
@@ -71,7 +70,7 @@ class EmailChannel(BaseChannel):
             return
 
         self._running = True
-        logger.info("Starting Email channel (IMAP polling mode)...")
+        logger.info("📡 邮件通道启动 / channel start: IMAP polling mode")
 
         poll_seconds = max(5, int(self.config.poll_interval_seconds))
         while self._running:
@@ -94,7 +93,7 @@ class EmailChannel(BaseChannel):
                         metadata=item.get("metadata", {}),
                     )
             except Exception as e:
-                logger.error("Email polling error: {}", e)
+                logger.error("❌ 邮件轮询异常 / polling error: {}", e)
 
             await asyncio.sleep(poll_seconds)
 
@@ -105,16 +104,16 @@ class EmailChannel(BaseChannel):
     async def send(self, msg: OutboundMessage) -> None:
         """Send email via SMTP."""
         if not self.config.consent_granted:
-            logger.warning("Skip email send: consent_granted is false")
+            logger.warning("⚠️ 邮件发送已跳过 / send skipped: consent_granted is false")
             return
 
         if not self.config.smtp_host:
-            logger.warning("Email channel SMTP host not configured")
+            logger.warning("⚠️ 邮件 SMTP 未配置 / smtp missing: host not configured")
             return
 
         to_addr = msg.chat_id.strip()
         if not to_addr:
-            logger.warning("Email channel missing recipient address")
+            logger.warning("⚠️ 邮件收件人缺失 / recipient missing: empty address")
             return
 
         # Determine if this is a reply (recipient has sent us an email before)
@@ -123,7 +122,7 @@ class EmailChannel(BaseChannel):
 
         # autoReplyEnabled only controls automatic replies, not proactive sends
         if is_reply and not self.config.auto_reply_enabled and not force_send:
-            logger.info("Skip automatic email reply to {}: auto_reply_enabled is false", to_addr)
+            logger.info("ℹ️ 自动回复已跳过 / reply skipped: {} auto_reply_enabled is false", to_addr)
             return
 
         base_subject = self._last_subject_by_chat.get(to_addr, "bao reply")
@@ -147,7 +146,7 @@ class EmailChannel(BaseChannel):
         try:
             await asyncio.to_thread(self._smtp_send, email_msg)
         except Exception as e:
-            logger.error("Error sending email to {}: {}", to_addr, e)
+            logger.error("❌ 邮件发送异常 / send error: {}: {}", to_addr, e)
             raise
 
     def _validate_config(self) -> bool:
@@ -166,7 +165,7 @@ class EmailChannel(BaseChannel):
             missing.append("smtp_password")
 
         if missing:
-            logger.error("Email channel not configured, missing: {}", ', '.join(missing))
+            logger.error("❌ 邮件配置缺失 / config missing: {}", ", ".join(missing))
             return False
         return True
 

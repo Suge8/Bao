@@ -58,7 +58,7 @@ class baoDingTalkHandler(CallbackHandler):
 
             if not content:
                 logger.warning(
-                    "Received empty or unsupported message type: {}",
+                    "⚠️ 钉钉消息为空 / empty message: {}",
                     chatbot_msg.message_type,
                 )
                 return AckMessage.STATUS_OK, "OK"
@@ -66,7 +66,7 @@ class baoDingTalkHandler(CallbackHandler):
             sender_id = chatbot_msg.sender_staff_id or chatbot_msg.sender_id
             sender_name = chatbot_msg.sender_nick or "Unknown"
 
-            logger.info("Received DingTalk message from {} ({}): {}", sender_name, sender_id, content)
+            logger.debug("ℹ️ 钉钉入站消息 / inbound: {} ({}) {}", sender_name, sender_id, content)
 
             # Forward to bao via _on_message (non-blocking).
             # Store reference to prevent GC before task completes.
@@ -79,7 +79,7 @@ class baoDingTalkHandler(CallbackHandler):
             return AckMessage.STATUS_OK, "OK"
 
         except Exception as e:
-            logger.error("Error processing DingTalk message: {}", e)
+            logger.error("❌ 钉钉消息处理异常 / process error: {}", e)
             # Return OK to avoid retry loop from DingTalk server
             return AckMessage.STATUS_OK, "Error"
 
@@ -114,20 +114,18 @@ class DingTalkChannel(BaseChannel):
         """Start the DingTalk bot with Stream Mode."""
         try:
             if not DINGTALK_AVAILABLE:
-                logger.error(
-                    "DingTalk Stream SDK not installed. Run: pip install dingtalk-stream"
-                )
+                logger.error("❌ 钉钉 SDK 未安装 / sdk missing: pip install dingtalk-stream")
                 return
 
             if not self.config.client_id or not self.config.client_secret:
-                logger.error("DingTalk client_id and client_secret not configured")
+                logger.error("❌ 钉钉配置缺失 / config missing: client_id and client_secret")
                 return
 
             self._running = True
             self._http = httpx.AsyncClient()
 
             logger.info(
-                "Initializing DingTalk Stream Client with Client ID: {}...",
+                "📡 钉钉开始连接 / stream init: client_id={}...",
                 self.config.client_id,
             )
             credential = Credential(self.config.client_id, self.config.client_secret)
@@ -137,20 +135,20 @@ class DingTalkChannel(BaseChannel):
             handler = baoDingTalkHandler(self)
             self._client.register_callback_handler(ChatbotMessage.TOPIC, handler)
 
-            logger.info("DingTalk bot started with Stream Mode")
+            logger.info("✅ 钉钉已连接 / stream connected: stream mode started")
 
             # Reconnect loop: restart stream if SDK exits or crashes
             while self._running:
                 try:
                     await self._client.start()
                 except Exception as e:
-                    logger.warning("DingTalk stream error: {}", e)
+                    logger.warning("⚠️ 钉钉连接异常 / stream error: {}", e)
                 if self._running:
-                    logger.info("Reconnecting DingTalk stream in 5 seconds...")
+                    logger.info("🔄 钉钉准备重连 / reconnecting: in 5 seconds")
                     await asyncio.sleep(5)
 
         except Exception as e:
-            logger.exception("Failed to start DingTalk channel: {}", e)
+            logger.exception("❌ 钉钉启动失败 / start failed: {}", e)
 
     async def stop(self) -> None:
         """Stop the DingTalk bot."""
@@ -176,7 +174,7 @@ class DingTalkChannel(BaseChannel):
         }
 
         if not self._http:
-            logger.warning("DingTalk HTTP client not initialized, cannot refresh token")
+            logger.warning("⚠️ 钉钉客户端未就绪 / client not ready: cannot refresh token")
             return None
 
         try:
@@ -188,7 +186,7 @@ class DingTalkChannel(BaseChannel):
             self._token_expiry = time.time() + int(res_data.get("expireIn", 7200)) - 60
             return self._access_token
         except Exception as e:
-            logger.error("Failed to get DingTalk access token: {}", e)
+            logger.error("❌ 钉钉令牌获取失败 / token failed: {}", e)
             return None
 
     async def send(self, msg: OutboundMessage) -> None:
@@ -207,24 +205,27 @@ class DingTalkChannel(BaseChannel):
             "robotCode": self.config.client_id,
             "userIds": [msg.chat_id],  # chat_id is the user's staffId
             "msgKey": "sampleMarkdown",
-            "msgParam": json.dumps({
-                "text": msg.content,
-                "title": "bao Reply",
-            }, ensure_ascii=False),
+            "msgParam": json.dumps(
+                {
+                    "text": msg.content,
+                    "title": "bao Reply",
+                },
+                ensure_ascii=False,
+            ),
         }
 
         if not self._http:
-            logger.warning("DingTalk HTTP client not initialized, cannot send")
+            logger.warning("⚠️ 钉钉客户端未就绪 / client not ready: cannot send")
             return
 
         try:
             resp = await self._http.post(url, json=data, headers=headers)
             if resp.status_code != 200:
-                logger.error("DingTalk send failed: {}", resp.text)
+                logger.error("❌ 钉钉发送失败 / send failed: {}", resp.text)
             else:
                 logger.debug("DingTalk message sent to {}", msg.chat_id)
         except Exception as e:
-            logger.error("Error sending DingTalk message: {}", e)
+            logger.error("❌ 钉钉发送异常 / send error: {}", e)
 
     async def _on_message(self, content: str, sender_id: str, sender_name: str) -> None:
         """Handle incoming message (called by baoDingTalkHandler).
@@ -233,7 +234,7 @@ class DingTalkChannel(BaseChannel):
         permission checks before publishing to the bus.
         """
         try:
-            logger.info("DingTalk inbound: {} from {}", content, sender_name)
+            logger.debug("ℹ️ 钉钉入站消息 / inbound: {} from {}", content, sender_name)
             await self._handle_message(
                 sender_id=sender_id,
                 chat_id=sender_id,  # For private chat, chat_id == sender_id
@@ -244,4 +245,4 @@ class DingTalkChannel(BaseChannel):
                 },
             )
         except Exception as e:
-            logger.error("Error publishing DingTalk message: {}", e)
+            logger.error("❌ 钉钉消息转发异常 / publish error: {}", e)
