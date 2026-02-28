@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
+from rich.text import Text
 
 from bao import __logo__, __version__
 
@@ -15,6 +16,32 @@ if TYPE_CHECKING:
 app = typer.Typer(name="bao", help=f"{__logo__} bao - Gateway", invoke_without_command=True)
 console = Console()
 
+_BREAD = [
+    "           [yellow]██████████[/]",
+    "        [yellow]██▓▓▓▓▓▓▓▓▓▓▓▓██[/]",
+    "      [yellow]██▓▓▓▓[/]●[yellow]▓▓▓▓▓▓[/]●[yellow]▓▓▓▓██[/]",
+    "      [yellow]██▓▓▓▓▓▓▓[/]◡◡[yellow]▓▓▓▓▓▓▓██[/]",
+    "        [yellow]██▓▓▓▓▓▓▓▓▓▓▓▓██[/]",
+    "           [yellow]██████████[/]",
+]
+_BAO = r"""
+  ██████╗  █████╗  ██████╗
+  ██╔══██╗██╔══██╗██╔═══██╗
+  ██████╔╝███████║██║   ██║
+  ██╔══██╗██╔══██║██║   ██║
+  ██████╔╝██║  ██║╚██████╔╝
+  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝"""
+
+
+def _print_banner(port: int) -> None:
+    console.print()
+    for line in _BREAD:
+        console.print(line)
+    console.print(Text(_BAO, style="bold cyan"), highlight=False)
+    console.print()
+    console.print(f"  [dim]v{__version__}[/dim]  [italic dim]记忆 · 经验 · 进化[/italic dim]")
+    console.print(f"  [dim]port {port}[/dim]")
+    console.print()
 
 def version_callback(value: bool) -> None:
     if value:
@@ -49,7 +76,16 @@ def _setup_logging(verbose: bool) -> None:
     if verbose:
         logger.add(sys.stderr, level="DEBUG")
     else:
-        logger.add(sys.stderr, level="INFO", format="{time:HH:mm:ss} | {message}")
+
+        def _friendly_format(record):
+            lvl = record["level"].name
+            if lvl == "WARNING":
+                return "{time:HH:mm:ss} │ <yellow>{message}</yellow>\n{exception}"
+            if lvl in ("ERROR", "CRITICAL"):
+                return "{time:HH:mm:ss} │ <red>{message}</red>\n{exception}"
+            return "{time:HH:mm:ss} │ {message}\n{exception}"
+
+        logger.add(sys.stderr, level="INFO", format=_friendly_format)
 
 
 def run_gateway(port: int, verbose: bool) -> None:
@@ -60,7 +96,7 @@ def run_gateway(port: int, verbose: bool) -> None:
 
     if not isinstance(port, int):
         port = 18790
-    console.print(f"\n{__logo__} 启动 bao 网关 / Starting bao gateway on port {port}...")
+    _print_banner(port)
 
     config = load_config()
     provider = _make_provider(config)
