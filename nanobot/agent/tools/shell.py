@@ -153,10 +153,6 @@ class ExecTool(Tool):
 
     @staticmethod
     def _extract_absolute_paths(command: str) -> list[str]:
-        # Match Windows absolute paths without truncating at backslashes.
-        win_paths = re.findall(r"[A-Za-z]:\\[^\s\"'|><;]+", command)
-        # Only match absolute paths — avoid false positives on relative
-        # paths like ".venv/bin/python" where "/bin/python" would be
-        # incorrectly extracted by the old pattern.
-        posix_paths = re.findall(r"(?:^|[\s|>])(/[^\s\"'>]+)", command)
+        win_paths = re.findall(r"[A-Za-z]:\\[^\s\"'|><;]+", command)   # Windows: C:\...
+        posix_paths = re.findall(r"(?:^|[\s|>])(/[^\s\"'>]+)", command) # POSIX: /absolute only
         return win_paths + posix_paths
