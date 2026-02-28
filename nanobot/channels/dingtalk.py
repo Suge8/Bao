@@ -200,34 +200,18 @@ class DingTalkChannel(BaseChannel):
 
     @staticmethod
     def _is_http_url(value: str) -> bool:
-        low = value.lower()
-        return low.startswith("http://") or low.startswith("https://")
+        return urlparse(value).scheme in ("http", "https")
 
     def _guess_upload_type(self, media_ref: str) -> str:
-        parsed = urlparse(media_ref)
-        path = parsed.path if parsed.scheme else media_ref
-        ext = Path(path).suffix.lower()
-        if ext in self._IMAGE_EXTS:
-            return "image"
-        if ext in self._AUDIO_EXTS:
-            return "voice"
-        if ext in self._VIDEO_EXTS:
-            return "video"
+        ext = Path(urlparse(media_ref).path).suffix.lower()
+        if ext in self._IMAGE_EXTS: return "image"
+        if ext in self._AUDIO_EXTS: return "voice"
+        if ext in self._VIDEO_EXTS: return "video"
         return "file"
 
     def _guess_filename(self, media_ref: str, upload_type: str) -> str:
-        parsed = urlparse(media_ref)
-        path = parsed.path if parsed.scheme else media_ref
-        name = os.path.basename(path)
-        if name:
-            return name
-        fallback = {
-            "image": "image.jpg",
-            "voice": "audio.amr",
-            "video": "video.mp4",
-            "file": "file.bin",
-        }
-        return fallback.get(upload_type, "file.bin")
+        name = os.path.basename(urlparse(media_ref).path)
+        return name or {"image": "image.jpg", "voice": "audio.amr", "video": "video.mp4"}.get(upload_type, "file.bin")
 
     async def _read_media_bytes(
         self,
@@ -288,33 +272,16 @@ class DingTalkChannel(BaseChannel):
         try:
             resp = await self._http.post(url, files=files)
             text = resp.text
-            try:
-                result = resp.json()
-            except Exception:
-                result = {}
+            result = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
             if resp.status_code >= 400:
-                logger.error(
-                    "DingTalk media upload failed status={} type={} body={}",
-                    resp.status_code,
-                    media_type,
-                    text[:500],
-                )
+                logger.error("DingTalk media upload failed status={} type={} body={}", resp.status_code, media_type, text[:500])
                 return None
             errcode = result.get("errcode", 0)
             if errcode != 0:
-                logger.error(
-                    "DingTalk media upload api error type={} errcode={} body={}",
-                    media_type,
-                    errcode,
-                    text[:500],
-                )
+                logger.error("DingTalk media upload api error type={} errcode={} body={}", media_type, errcode, text[:500])
                 return None
-            media_id = (
-                result.get("media_id")
-                or result.get("mediaId")
-                or (result.get("result") or {}).get("media_id")
-                or (result.get("result") or {}).get("mediaId")
-            )
+            sub = result.get("result") or {}
+            media_id = result.get("media_id") or result.get("mediaId") or sub.get("media_id") or sub.get("mediaId")
             if not media_id:
                 logger.error("DingTalk media upload missing media_id body={}", text[:500])
                 return None
@@ -347,25 +314,13 @@ class DingTalkChannel(BaseChannel):
             resp = await self._http.post(url, json=payload, headers=headers)
             body = resp.text
             if resp.status_code != 200:
-                logger.error(
-                    "DingTalk send failed msgKey={} status={} body={}",
-                    msg_key,
-                    resp.status_code,
-                    body[:500],
-                )
+                logger.error("DingTalk send failed msgKey={} status={} body={}", msg_key, resp.status_code, body[:500])
                 return False
-            try:
-                result = resp.json()
-            except Exception:
-                result = {}
+            try: result = resp.json()
+            except Exception: result = {}
             errcode = result.get("errcode")
             if errcode not in (None, 0):
-                logger.error(
-                    "DingTalk send api error msgKey={} errcode={} body={}",
-                    msg_key,
-                    errcode,
-                    body[:500],
-                )
+                logger.error("DingTalk send api error msgKey={} errcode={} body={}", msg_key, errcode, body[:500])
                 return False
             logger.debug("DingTalk message sent to {} with msgKey={}", chat_id, msg_key)
             return True
