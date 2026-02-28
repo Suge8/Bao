@@ -208,12 +208,12 @@ class ClaudeCodeTool(BaseCodingAgentTool):
         if session_id:
             return (
                 "Detailed output omitted to protect context budget. "
-                f"Use claudecode_details with request_id '{request_id}', "
+                f"Use coding_agent_details with request_id '{request_id}', "
                 f"or resume session '{session_id}' via `claude --resume`."
             )
         return (
             "Detailed output omitted to protect context budget. "
-            f"Use claudecode_details with request_id '{request_id}' to view full stdout/stderr."
+            f"Use coding_agent_details with request_id '{request_id}' to view full stdout/stderr."
         )
 
     @staticmethod

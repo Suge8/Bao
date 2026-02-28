@@ -192,16 +192,15 @@ class CodexTool(BaseCodingAgentTool):
     async def _extract_output(
         self, *, stdout_text: str, exec_state: dict[str, Any]
     ) -> str:
-        """Read from temp file first, fall back to JSONL extraction from stdout."""
+        """On success: file > JSONL > raw. On failure: JSONL > raw > file."""
         output_file = exec_state.get("output_file", "")
+        is_failure = exec_state.get("_returncode", 0) != 0
         file_content = self._read_last_output_file(output_file)
-        if file_content:
-            return file_content
-        return (
-            self._extract_last_message_from_jsonl(stdout_text)
-            or stdout_text.strip()
-            or "(no output)"
-        )
+        jsonl_content = self._extract_last_message_from_jsonl(stdout_text)
+        raw = stdout_text.strip()
+        if is_failure:
+            return jsonl_content or raw or file_content or "(no output)"
+        return file_content or jsonl_content or raw or "(no output)"
 
     async def _resolve_session_after_success(
         self,
@@ -256,12 +255,12 @@ class CodexTool(BaseCodingAgentTool):
         if session_id:
             return (
                 "Detailed output omitted to protect context budget. "
-                f"Use codex_details with request_id '{request_id}', "
+                f"Use coding_agent_details with request_id '{request_id}', "
                 f"or resume session '{session_id}' via `codex exec resume`."
             )
         return (
             "Detailed output omitted to protect context budget. "
-            f"Use codex_details with request_id '{request_id}' to view full stdout/stderr."
+            f"Use coding_agent_details with request_id '{request_id}' to view full stdout/stderr."
         )
 
     # -- JSONL / output helpers --
@@ -296,10 +295,18 @@ class CodexTool(BaseCodingAgentTool):
     @staticmethod
     def _extract_session_id_from_jsonl(text: str) -> str | None:
         rows = CodexTool._extract_json_objects(text)
+        # Prefer thread_id from thread.started event (official Codex schema)
+        for obj in rows:
+            if obj.get("type") == "thread.started":
+                tid = obj.get("thread_id") or obj.get("threadId")
+                if isinstance(tid, str) and tid.strip():
+                    return tid.strip()
+        # Fallback: search all rows for any session/thread id key
         for obj in rows:
             sid = CodexTool._find_first_string_by_keys(
                 obj,
-                ("session_id", "sessionId", "conversation_id", "conversationId"),
+                ("thread_id", "threadId", "session_id", "sessionId",
+                 "conversation_id", "conversationId"),
             )
             if sid:
                 return sid

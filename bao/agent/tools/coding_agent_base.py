@@ -1,6 +1,8 @@
 """Shared base for CLI-based coding agent tools (OpenCode, Codex, etc.)."""
 
 import asyncio
+import codecs
+import inspect
 import json
 import os
 import shlex
@@ -10,9 +12,12 @@ import time
 import uuid
 from abc import ABC
 from collections import deque
+from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, TypedDict
+
+from loguru import logger
 
 from bao.agent.tools.base import Tool
 
@@ -174,11 +179,17 @@ class BaseCodingAgentTool(Tool, ABC):
         self._session_by_context: dict[str, str] = {}
         self._lock: asyncio.Lock = asyncio.Lock()
         self.detail_cache: DetailCache = detail_cache or DetailCache()
+        self._progress_callback: Callable[[str], Awaitable[None] | None] | None = None
 
     def set_context(self, channel: str, chat_id: str, session_key: str | None = None) -> None:
         self._channel.set(channel)
         self._chat_id.set(chat_id)
         self._context_key.set(session_key or f"{channel}:{chat_id}")
+
+    def set_progress_callback(
+        self, callback: Callable[[str], Awaitable[None] | None] | None
+    ) -> None:
+        self._progress_callback = callback
 
     # -- abstract properties (subclass MUST override) --
 
@@ -276,9 +287,24 @@ class BaseCodingAgentTool(Tool, ABC):
         lowered = f"{stdout_text}\n{stderr_text}".lower()
         return any(m in lowered for m in self._TRANSIENT_MARKERS)
 
+    _STALE_SESSION_MARKERS: tuple[str, ...] = (
+        "no conversation found",
+        "session not found",
+        "unknown session",
+        "invalid session",
+        "could not find session",
+        "no such session",
+    )
+
+    def _is_stale_session_error(self, stdout_text: str, stderr_text: str) -> bool:
+        lowered = f"{stdout_text}\n{stderr_text}".lower()
+        return any(m in lowered for m in self._STALE_SESSION_MARKERS)
+
     # -- main execute (template method) --
 
     async def execute(self, **kwargs: Any) -> str:
+        _session_retry = kwargs.pop("__session_retry", False)
+        _original_kwargs = dict(kwargs)
         # 1. Common param validation
         prompt = kwargs.get("prompt")
         if not isinstance(prompt, str):
@@ -390,6 +416,8 @@ class BaseCodingAgentTool(Tool, ABC):
             async with self._lock:
                 resolved_session = self._session_by_context.get(context_key)
 
+        session_from_cache = bool(resolved_session and not session_id)
+
         # 6. Build command (subclass hook) — inside try/finally so _cleanup
         #    runs even if _build_command_preview raises after _build_command
         #    already created resources (e.g. Codex temp file).
@@ -410,7 +438,21 @@ class BaseCodingAgentTool(Tool, ABC):
             result: _RunResult | None = None
             while attempts <= max_retries:
                 attempts += 1
-                result = await self._run_command(cmd=cmd, cwd=cwd, timeout_seconds=timeout)
+                try:
+                    result = await self._run_command(
+                        cmd=cmd,
+                        cwd=cwd,
+                        timeout_seconds=timeout,
+                        on_stdout_line=self._progress_callback,
+                    )
+                except TypeError as exc:
+                    if "on_stdout_line" not in str(exc):
+                        raise
+                    result = await self._run_command(
+                        cmd=cmd,
+                        cwd=cwd,
+                        timeout_seconds=timeout,
+                    )
                 if result["timed_out"]:
                     break
                 if result["returncode"] == 0:
@@ -454,7 +496,7 @@ class BaseCodingAgentTool(Tool, ABC):
             stdout_text = result["stdout"]
             stderr_text = result["stderr"]
             return_code = result["returncode"]
-
+            exec_state["_returncode"] = return_code
             # 9. Extract output (subclass hook)
             final_output = await self._extract_output(
                 stdout_text=stdout_text, exec_state=exec_state
@@ -467,6 +509,20 @@ class BaseCodingAgentTool(Tool, ABC):
 
             # 10. Failure
             if return_code is None or return_code != 0:
+                # Stale session auto-recovery: clear cache and retry once
+                if (
+                    not _session_retry
+                    and session_from_cache
+                    and self._is_stale_session_error(stdout_text, stderr_text)
+                ):
+                    async with self._lock:
+                        self._session_by_context.pop(context_key, None)
+                    logger.debug(
+                        "{}: stale session {}, retrying fresh",
+                        self._tool_label,
+                        resolved_session,
+                    )
+                    return await self.execute(**_original_kwargs, __session_retry=True)
                 return self._failure_response(
                     return_code=int(return_code or -1),
                     final_output=final_output,
@@ -732,7 +788,12 @@ class BaseCodingAgentTool(Tool, ABC):
         return " ".join(preview_parts)
 
     @staticmethod
-    async def _run_command(cmd: list[str], cwd: Path, timeout_seconds: int) -> _RunResult:
+    async def _run_command(
+        cmd: list[str],
+        cwd: Path,
+        timeout_seconds: int,
+        on_stdout_line: Callable[[str], Awaitable[None] | None] | None = None,
+    ) -> _RunResult:
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -741,7 +802,68 @@ class BaseCodingAgentTool(Tool, ABC):
             start_new_session=True,
         )
 
-        def _kill_process_tree() -> None:
+        async def _read_stream(
+            stream: asyncio.StreamReader | None,
+            buf: list[str],
+            *,
+            on_line: Callable[[str], Awaitable[None] | None] | None = None,
+        ) -> str:
+            if stream is None:
+                return ""
+            decoder = codecs.getincrementaldecoder("utf-8")("replace")
+            remainder = ""
+            while True:
+                chunk = await stream.read(8192)
+                if not chunk:
+                    tail = decoder.decode(b"", final=True)
+                    if tail:
+                        buf.append(tail)
+                        remainder += tail
+                    if remainder and remainder.strip() and on_line:
+                        await _fire_cb(on_line, remainder.strip())
+                    break
+                text = decoder.decode(chunk)
+                buf.append(text)
+                if on_line is None:
+                    continue
+                parts = (remainder + text).replace("\r\n", "\n").replace("\r", "\n").split("\n")
+                remainder = parts[-1]
+                for part in parts[:-1]:
+                    cleaned = part.strip()
+                    if cleaned:
+                        await _fire_cb(on_line, cleaned)
+            return "".join(buf)
+
+        async def _fire_cb(
+            cb: Callable[[str], Awaitable[None] | None], text: str
+        ) -> None:
+            try:
+                maybe = cb(text)
+                if inspect.isawaitable(maybe):
+                    await maybe
+            except Exception as exc:
+                logger.debug("coding tool progress callback failed: {}", exc)
+
+        async def _graceful_kill() -> None:
+            """SIGTERM → 2 s grace → SIGKILL."""
+            if process.returncode is not None:
+                return
+            # Stage 1: SIGTERM
+            try:
+                if hasattr(os, "killpg"):
+                    os.killpg(process.pid, signal.SIGTERM)
+                else:
+                    process.terminate()
+            except ProcessLookupError:
+                return
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=2.0)
+                return
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+            # Stage 2: SIGKILL
             if process.returncode is not None:
                 return
             try:
@@ -752,29 +874,61 @@ class BaseCodingAgentTool(Tool, ABC):
             except ProcessLookupError:
                 pass
             except Exception:
-                process.kill()
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=3.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+
+        stdout_buf: list[str] = []
+        stderr_buf: list[str] = []
+        stdout_task: asyncio.Task[str] | None = None
+        stderr_task: asyncio.Task[str] | None = None
+
+        async def _drain_tasks() -> None:
+            pending = [t for t in (stdout_task, stderr_task) if t and not t.done()]
+            if pending:
+                done, still = await asyncio.wait(pending, timeout=0.5)
+                for task in still:
+                    task.cancel()
+            if stdout_task or stderr_task:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            *(t for t in (stdout_task, stderr_task) if t),
+                            return_exceptions=True,
+                        ),
+                        timeout=2.0,
+                    )
+                except asyncio.TimeoutError:
+                    pass
 
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
+            stdout_task = asyncio.create_task(
+                _read_stream(process.stdout, stdout_buf, on_line=on_stdout_line)
+            )
+            stderr_task = asyncio.create_task(_read_stream(process.stderr, stderr_buf))
+            await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
+            stdout = await stdout_task
+            stderr = await stderr_task
             return {
                 "timed_out": False,
                 "returncode": int(process.returncode or 0),
-                "stdout": stdout.decode("utf-8", errors="replace"),
-                "stderr": stderr.decode("utf-8", errors="replace"),
+                "stdout": stdout,
+                "stderr": stderr,
             }
         except asyncio.TimeoutError:
-            _kill_process_tree()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                pass
-            return {"timed_out": True, "returncode": None, "stdout": "", "stderr": ""}
+            await _graceful_kill()
+            await _drain_tasks()
+            return {
+                "timed_out": True,
+                "returncode": None,
+                "stdout": "".join(stdout_buf),
+                "stderr": "".join(stderr_buf),
+            }
         except asyncio.CancelledError:
-            _kill_process_tree()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                pass
+            await _graceful_kill()
+            await _drain_tasks()
             raise
 
     @staticmethod
