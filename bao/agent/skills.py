@@ -41,7 +41,9 @@ class SkillsLoader:
                 if skill_dir.is_dir():
                     skill_file = skill_dir / "SKILL.md"
                     if skill_file.exists():
-                        skills.append({"name": skill_dir.name, "path": str(skill_file), "source": "workspace"})
+                        skills.append(
+                            {"name": skill_dir.name, "path": str(skill_file), "source": "workspace"}
+                        )
 
         # Built-in skills
         if self.builtin_skills and self.builtin_skills.exists():
@@ -49,7 +51,9 @@ class SkillsLoader:
                 if skill_dir.is_dir():
                     skill_file = skill_dir / "SKILL.md"
                     if skill_file.exists() and not any(s["name"] == skill_dir.name for s in skills):
-                        skills.append({"name": skill_dir.name, "path": str(skill_file), "source": "builtin"})
+                        skills.append(
+                            {"name": skill_dir.name, "path": str(skill_file), "source": "builtin"}
+                        )
 
         # Filter by requirements
         if filter_unavailable:
@@ -100,7 +104,7 @@ class SkillsLoader:
 
     def build_skills_summary(self) -> str:
         """
-        Build a summary of all skills (name, description, path, availability).
+        Build a compact index of all skills (name + short description + availability).
 
         This is used for progressive loading - the agent can read the full
         skill content using read_file when needed.
@@ -113,38 +117,67 @@ class SkillsLoader:
             return ""
 
         def escape_xml(s: str) -> str:
-            return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            return (
+                s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+            )
 
         lines = ["<skills>"]
         for s in all_skills:
-            name = escape_xml(s["name"])
-            desc = escape_xml(self._get_skill_description(s["name"]))
-            skill_meta = self._get_skill_meta(s["name"])
+            name = s["name"]
+            skill_meta = self._get_skill_meta(name)
             available = self._check_requirements(skill_meta)
+            desc = self._get_skill_description(name)
+            short_desc = self._truncate_description(desc)
+            attrs = f'available="{str(available).lower()}"'
 
-            lines.append(f"  <skill available=\"{str(available).lower()}\">")
-            lines.append(f"    <name>{name}</name>")
-            lines.append(f"    <description>{desc}</description>")
-
-            # Show missing requirements for unavailable skills
             if not available:
                 missing = self._get_missing_requirements(skill_meta)
                 if missing:
-                    lines.append(f"    <requires>{escape_xml(missing)}</requires>")
+                    attrs += f' requires="{escape_xml(missing)}"'
 
-            lines.append("  </skill>")
+            lines.append(f"  <skill {attrs}>{escape_xml(name)} — {escape_xml(short_desc)}</skill>")
         lines.append("</skills>")
 
         return "\n".join(lines)
 
-    def _get_missing_requirements(self, skill_meta: dict) -> str:
+    @staticmethod
+    def _truncate_description(desc: str, max_len: int = 60) -> str:
+        """Truncate description to first sentence or max_len chars."""
+        desc = desc.replace("\n", " ").replace("\r", " ").strip()
+        for sep in (". ", "\u3002", "! ", "? "):
+            idx = desc.find(sep)
+            if 0 < idx < max_len:
+                return desc[: idx + 1].strip()
+        if len(desc) <= max_len:
+            return desc
+        return desc[: max_len - 1].strip() + "\u2026"
+
+    def _get_missing_requirements(self, skill_meta: dict[str, object]) -> str:
         """Get a description of missing requirements."""
         missing = []
         requires = skill_meta.get("requires", {})
-        for b in requires.get("bins", []):
+        if not isinstance(requires, dict):
+            return ""
+
+        bins = requires.get("bins", [])
+        if not isinstance(bins, list):
+            bins = []
+        for b in bins:
             if not shutil.which(b):
                 missing.append(f"CLI: {b}")
-        for env in requires.get("env", []):
+
+        bins_any = requires.get("bins_any", [])
+        if isinstance(bins_any, list) and bins_any:
+            if not any(shutil.which(b) for b in bins_any):
+                missing.append(f"CLI(any): {' | '.join(bins_any)}")
+
+        envs = requires.get("env", [])
+        if not isinstance(envs, list):
+            envs = []
+        for env in envs:
             if not os.environ.get(env):
                 missing.append(f"ENV: {env}")
         return ", ".join(missing)
@@ -161,10 +194,10 @@ class SkillsLoader:
         if content.startswith("---"):
             match = re.match(r"^---\n.*?\n---\n", content, re.DOTALL)
             if match:
-                return content[match.end():].strip()
+                return content[match.end() :].strip()
         return content
 
-    def _parse_bao_metadata(self, raw: str) -> dict:
+    def _parse_bao_metadata(self, raw: str) -> dict[str, object]:
         """Parse skill metadata JSON from frontmatter (supports bao and openclaw keys)."""
         try:
             data = json.loads(raw)
@@ -172,18 +205,33 @@ class SkillsLoader:
         except (json.JSONDecodeError, TypeError):
             return {}
 
-    def _check_requirements(self, skill_meta: dict) -> bool:
+    def _check_requirements(self, skill_meta: dict[str, object]) -> bool:
         """Check if skill requirements are met (bins, env vars)."""
         requires = skill_meta.get("requires", {})
-        for b in requires.get("bins", []):
+        if not isinstance(requires, dict):
+            return True
+
+        bins = requires.get("bins", [])
+        if not isinstance(bins, list):
+            bins = []
+        for b in bins:
             if not shutil.which(b):
                 return False
-        for env in requires.get("env", []):
+
+        bins_any = requires.get("bins_any", [])
+        if isinstance(bins_any, list) and bins_any:
+            if not any(shutil.which(b) for b in bins_any):
+                return False
+
+        envs = requires.get("env", [])
+        if not isinstance(envs, list):
+            envs = []
+        for env in envs:
             if not os.environ.get(env):
                 return False
         return True
 
-    def _get_skill_meta(self, name: str) -> dict:
+    def _get_skill_meta(self, name: str) -> dict[str, object]:
         """Get bao metadata for a skill (cached in frontmatter)."""
         meta = self.get_skill_metadata(name) or {}
         return self._parse_bao_metadata(meta.get("metadata", ""))
@@ -198,7 +246,7 @@ class SkillsLoader:
                 result.append(s["name"])
         return result
 
-    def get_skill_metadata(self, name: str) -> dict | None:
+    def get_skill_metadata(self, name: str) -> dict[str, str] | None:
         """
         Get metadata from a skill's frontmatter.
 
@@ -220,7 +268,7 @@ class SkillsLoader:
                 for line in match.group(1).split("\n"):
                     if ":" in line:
                         key, value = line.split(":", 1)
-                        metadata[key.strip()] = value.strip().strip('"\'')
+                        metadata[key.strip()] = value.strip().strip("\"'")
                 return metadata
 
         return None
