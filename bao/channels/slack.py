@@ -2,7 +2,7 @@
 
 import asyncio
 import re
-from typing import Any
+
 
 from loguru import logger
 from slack_sdk.socket_mode.websockets import SocketModeClient
@@ -33,10 +33,10 @@ class SlackChannel(BaseChannel):
     async def start(self) -> None:
         """Start the Slack Socket Mode client."""
         if not self.config.bot_token or not self.config.app_token:
-            logger.error("Slack bot/app token not configured")
+            logger.error("❌ 未配置 / not configured: Slack token")
             return
         if self.config.mode != "socket":
-            logger.error("Unsupported Slack mode: {}", self.config.mode)
+            logger.error("❌ 模式错误 / unsupported mode: {}", self.config.mode)
             return
 
         self._running = True
@@ -53,11 +53,11 @@ class SlackChannel(BaseChannel):
         try:
             auth = await self._web_client.auth_test()
             self._bot_user_id = auth.get("user_id")
-            logger.info("Slack bot connected as {}", self._bot_user_id)
+            logger.info("✅ 连接成功 / connected as: {}", self._bot_user_id)
         except Exception as e:
-            logger.warning("Slack auth_test failed: {}", e)
+            logger.warning("⚠️ 认证失败 / auth failed: {}", e)
 
-        logger.info("Starting Slack Socket Mode client...")
+        logger.info("📡 启动通道 / starting: Slack socket mode")
         await self._socket_client.connect()
 
         while self._running:
@@ -70,13 +70,13 @@ class SlackChannel(BaseChannel):
             try:
                 await self._socket_client.close()
             except Exception as e:
-                logger.warning("Slack socket close failed: {}", e)
+                logger.debug("Slack socket close failed: {}", e)
             self._socket_client = None
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Slack."""
         if not self._web_client:
-            logger.warning("Slack client not running")
+            logger.warning("⚠️ 未运行 / client not running: Slack client")
             return
         try:
             slack_meta = msg.metadata.get("slack", {}) if msg.metadata else {}
@@ -101,9 +101,9 @@ class SlackChannel(BaseChannel):
                         thread_ts=thread_ts_param,
                     )
                 except Exception as e:
-                    logger.error("Failed to upload file {}: {}", media_path, e)
+                    logger.error("❌ 上传失败 / upload failed: {}: {}", media_path, e)
         except Exception as e:
-            logger.error("Error sending Slack message: {}", e)
+            logger.error("❌ 发送失败 / send failed: {}", e)
 
     async def _on_socket_request(
         self,
@@ -115,9 +115,7 @@ class SlackChannel(BaseChannel):
             return
 
         # Acknowledge right away
-        await client.send_socket_mode_response(
-            SocketModeResponse(envelope_id=req.envelope_id)
-        )
+        await client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
 
         payload = req.payload or {}
         event = payload.get("event") or {}
@@ -197,7 +195,7 @@ class SlackChannel(BaseChannel):
                 metadata=meta,
             )
         except Exception:
-            logger.exception("Error handling Slack message from {}", sender_id)
+            logger.exception("❌ 处理失败 / message error: {}", sender_id)
 
     def _is_allowed(self, sender_id: str, chat_id: str, channel_type: str) -> bool:
         if channel_type == "im":
@@ -247,9 +245,11 @@ class SlackChannel(BaseChannel):
     def _fixup_mrkdwn(cls, text: str) -> str:
         """Fix markdown artifacts that slackify_markdown misses."""
         code_blocks: list[str] = []
+
         def _save_code(m: re.Match) -> str:
             code_blocks.append(m.group(0))
             return f"\x00CB{len(code_blocks) - 1}\x00"
+
         text = cls._CODE_FENCE_RE.sub(_save_code, text)
         text = cls._INLINE_CODE_RE.sub(_save_code, text)
         text = cls._LEFTOVER_BOLD_RE.sub(r"*\1*", text)
@@ -275,4 +275,3 @@ class SlackChannel(BaseChannel):
             if parts:
                 rows.append(" · ".join(parts))
         return "\n".join(rows)
-

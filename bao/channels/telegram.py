@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import re
+
 from loguru import logger
-from telegram import BotCommand, Update, ReplyParameters
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import BotCommand, ReplyParameters, Update
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
 from bao.bus.events import OutboundMessage
@@ -131,11 +132,13 @@ class TelegramChannel(BaseChannel):
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
+        self._media_group_buffers: dict[str, list[dict[str, object]]] = {}
+        self._media_group_tasks: dict[str, asyncio.Task] = {}
 
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
         if not self.config.token:
-            logger.error("Telegram bot token not configured")
+            logger.error("❌ 未配置 / not configured: Telegram token")
             return
 
         self._running = True
@@ -150,18 +153,19 @@ class TelegramChannel(BaseChannel):
         if self.config.proxy:
             builder = builder.proxy(self.config.proxy).get_updates_proxy(self.config.proxy)
         self._app = builder.build()
-        self._app.add_error_handler(self._on_error)
+        app = self._app
+        app.add_error_handler(self._on_error)
 
         # Add command handlers
-        self._app.add_handler(CommandHandler("start", self._on_start))
-        self._app.add_handler(CommandHandler("new", self._forward_command))
-        self._app.add_handler(CommandHandler("session", self._forward_command))
-        self._app.add_handler(CommandHandler("delete", self._forward_command))
-        self._app.add_handler(CommandHandler("stop", self._forward_command))
-        self._app.add_handler(CommandHandler("help", self._on_help))
+        app.add_handler(CommandHandler("start", self._on_start))
+        app.add_handler(CommandHandler("new", self._forward_command))
+        app.add_handler(CommandHandler("session", self._forward_command))
+        app.add_handler(CommandHandler("delete", self._forward_command))
+        app.add_handler(CommandHandler("stop", self._forward_command))
+        app.add_handler(CommandHandler("help", self._on_help))
 
         # Add message handler for text, photos, voice, documents
-        self._app.add_handler(
+        app.add_handler(
             MessageHandler(
                 (
                     filters.TEXT
@@ -175,24 +179,24 @@ class TelegramChannel(BaseChannel):
             )
         )
 
-        logger.info("Starting Telegram bot (polling mode)...")
+        logger.info("📡 启动通道 / starting: Telegram polling")
 
         # Initialize and start polling
-        await self._app.initialize()
-        await self._app.start()
+        await app.initialize()
+        await app.start()
 
         # Get bot info and register command menu
-        bot_info = await self._app.bot.get_me()
-        logger.info("Telegram bot @{} connected", bot_info.username)
+        bot_info = await app.bot.get_me()
+        logger.info("✅ 连接成功 / connected: @{}", bot_info.username)
 
         try:
-            await self._app.bot.set_my_commands(self.BOT_COMMANDS)
+            await app.bot.set_my_commands(self.BOT_COMMANDS)
             logger.debug("Telegram bot commands registered")
         except Exception as e:
-            logger.warning("Failed to register bot commands: {}", e)
+            logger.warning("⚠️ 注册失败 / register failed: {}", e)
 
         # Start polling (this runs until stopped)
-        await self._app.updater.start_polling(
+        await app.updater.start_polling(
             allowed_updates=["message"],
             drop_pending_updates=True,  # Ignore old messages on startup
         )
@@ -209,11 +213,21 @@ class TelegramChannel(BaseChannel):
         for chat_id in list(self._typing_tasks):
             self._stop_typing(chat_id)
 
+        flush_tasks = list(self._media_group_tasks.values())
+        for task in flush_tasks:
+            if not task.done():
+                task.cancel()
+        if flush_tasks:
+            await asyncio.gather(*flush_tasks, return_exceptions=True)
+        self._media_group_tasks.clear()
+        self._media_group_buffers.clear()
+
         if self._app:
-            logger.info("Stopping Telegram bot...")
-            await self._app.updater.stop()
-            await self._app.stop()
-            await self._app.shutdown()
+            app = self._app
+            logger.info("📡 停止通道 / stopping: Telegram bot")
+            await app.updater.stop()
+            await app.stop()
+            await app.shutdown()
             self._app = None
 
     @staticmethod
@@ -231,7 +245,7 @@ class TelegramChannel(BaseChannel):
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Telegram."""
         if not self._app:
-            logger.warning("Telegram bot not running")
+            logger.warning("⚠️ 未运行 / not running: Telegram bot")
             return
 
         self._stop_typing(msg.chat_id)
@@ -239,7 +253,7 @@ class TelegramChannel(BaseChannel):
         try:
             chat_id = int(msg.chat_id)
         except ValueError:
-            logger.error("Invalid chat_id: {}", msg.chat_id)
+            logger.error("❌ 参数无效 / invalid chat_id: {}", msg.chat_id)
             return
 
         reply_params = None
@@ -270,7 +284,7 @@ class TelegramChannel(BaseChannel):
                     await sender(chat_id=chat_id, **{param: f}, reply_parameters=reply_params)
             except Exception as e:
                 filename = media_path.rsplit("/", 1)[-1]
-                logger.error("Failed to send media {}: {}", media_path, e)
+                logger.error("❌ 发送失败 / media failed: {}: {}", media_path, e)
                 await self._app.bot.send_message(
                     chat_id=chat_id,
                     text=f"[Failed to send: {filename}]",
@@ -286,13 +300,13 @@ class TelegramChannel(BaseChannel):
                         chat_id=chat_id, text=html, parse_mode="HTML", reply_parameters=reply_params
                     )
                 except Exception as e:
-                    logger.warning("HTML parse failed, falling back to plain text: {}", e)
+                    logger.warning("⚠️ 解析失败 / parse failed: {}", e)
                     try:
                         await self._app.bot.send_message(
                             chat_id=chat_id, text=chunk, reply_parameters=reply_params
                         )
                     except Exception as e2:
-                        logger.error("Error sending Telegram message: {}", e2)
+                        logger.error("❌ 发送失败 / send failed: {}", e2)
 
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
@@ -333,7 +347,7 @@ class TelegramChannel(BaseChannel):
         await self._handle_message(
             sender_id=self._sender_id(update.effective_user),
             chat_id=str(update.message.chat_id),
-            content=update.message.text,
+            content=update.message.text or "",
         )
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -380,7 +394,8 @@ class TelegramChannel(BaseChannel):
         if media_file and self._app:
             try:
                 file = await self._app.bot.get_file(media_file.file_id)
-                ext = self._get_extension(media_type, getattr(media_file, "mime_type", None))
+                media_kind = media_type or "file"
+                ext = self._get_extension(media_kind, getattr(media_file, "mime_type", None))
 
                 # Save to workspace/media/
                 from pathlib import Path
@@ -400,7 +415,9 @@ class TelegramChannel(BaseChannel):
                     transcriber = GroqTranscriptionProvider(api_key=self.groq_api_key)
                     transcription = await transcriber.transcribe(file_path)
                     if transcription:
-                        logger.info("Transcribed {}: {}...", media_type, transcription[:50])
+                        logger.info(
+                            "🎙️ 转写完成 / transcribed: {}: {}...", media_type, transcription[:50]
+                        )
                         content_parts.append(f"[transcription: {transcription}]")
                     else:
                         content_parts.append(f"[{media_type}: {file_path}]")
@@ -409,7 +426,7 @@ class TelegramChannel(BaseChannel):
 
                 logger.debug("Downloaded {} to {}", media_type, file_path)
             except Exception as e:
-                logger.error("Failed to download media: {}", e)
+                logger.error("❌ 下载失败 / download failed: {}", e)
                 content_parts.append(f"[{media_type}: download failed]")
 
         content = "\n".join(content_parts) if content_parts else "[empty message]"
@@ -421,20 +438,79 @@ class TelegramChannel(BaseChannel):
         # Start typing indicator before processing
         self._start_typing(str_chat_id)
 
+        metadata = {
+            "message_id": message.message_id,
+            "user_id": user.id,
+            "username": user.username,
+            "first_name": user.first_name,
+            "is_group": message.chat.type != "private",
+        }
+
+        media_group_id = getattr(message, "media_group_id", None)
+        if media_group_id:
+            key = f"{str_chat_id}:{media_group_id}"
+            self._media_group_buffers.setdefault(key, []).append(
+                {
+                    "sender_id": sender_id,
+                    "chat_id": str_chat_id,
+                    "content": content,
+                    "media": media_paths,
+                    "metadata": metadata,
+                }
+            )
+            if key not in self._media_group_tasks or self._media_group_tasks[key].done():
+                self._media_group_tasks[key] = asyncio.create_task(self._flush_media_group(key))
+            return
+
         # Forward to the message bus
         await self._handle_message(
             sender_id=sender_id,
             chat_id=str_chat_id,
             content=content,
             media=media_paths,
-            metadata={
-                "message_id": message.message_id,
-                "user_id": user.id,
-                "username": user.username,
-                "first_name": user.first_name,
-                "is_group": message.chat.type != "private",
-            },
+            metadata=metadata,
         )
+
+    async def _flush_media_group(self, key: str) -> None:
+        try:
+            await asyncio.sleep(0.6)
+            items = self._media_group_buffers.pop(key, [])
+            if not items:
+                return
+
+            sender_id = str(items[-1]["sender_id"])
+            chat_id = str(items[-1]["chat_id"])
+            metadata_obj = items[-1].get("metadata", {})
+            metadata = metadata_obj if isinstance(metadata_obj, dict) else {}
+
+            contents = [str(it.get("content", "")).strip() for it in items]
+            merged_content = "\n".join(c for c in contents if c and c != "[empty message]")
+            if not merged_content:
+                merged_content = "[empty message]"
+
+            merged_media: list[str] = []
+            for it in items:
+                media_obj = it.get("media", [])
+                if isinstance(media_obj, list):
+                    for media_path in media_obj:
+                        if isinstance(media_path, str):
+                            merged_media.append(media_path)
+            merged_media = list(dict.fromkeys(merged_media))
+
+            await self._handle_message(
+                sender_id=sender_id,
+                chat_id=chat_id,
+                content=merged_content,
+                media=merged_media,
+                metadata=metadata,
+            )
+        except asyncio.CancelledError:
+            self._media_group_buffers.pop(key, None)
+            raise
+        except Exception as e:
+            logger.error("❌ 媒体组处理失败 / media-group flush failed: {}", e)
+        finally:
+            self._media_group_tasks.pop(key, None)
 
     def _start_typing(self, chat_id: str) -> None:
         """Start sending 'typing...' indicator for a chat."""
@@ -461,7 +537,7 @@ class TelegramChannel(BaseChannel):
 
     async def _on_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Log polling / handler errors instead of silently swallowing them."""
-        logger.error("Telegram error: {}", context.error)
+        logger.error("❌ 处理异常 / handler error: {}", context.error)
 
     def _get_extension(self, media_type: str, mime_type: str | None) -> str:
         """Get file extension based on media type."""

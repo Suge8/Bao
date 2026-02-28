@@ -268,7 +268,7 @@ class MochatChannel(BaseChannel):
     async def start(self) -> None:
         """Start Mochat channel workers and websocket connection."""
         if not self.config.claw_token:
-            logger.error("Mochat claw_token not configured")
+            logger.error("❌ Mochat 配置缺失 / config missing: claw_token not configured")
             return
 
         self._running = True
@@ -315,7 +315,7 @@ class MochatChannel(BaseChannel):
     async def send(self, msg: OutboundMessage) -> None:
         """Send outbound message to session or panel."""
         if not self.config.claw_token:
-            logger.warning("Mochat claw_token missing, skip send")
+            logger.warning("⚠️ Mochat 令牌缺失 / token missing: skip send")
             return
 
         parts = [msg.content.strip()] if msg.content and msg.content.strip() else []
@@ -327,7 +327,7 @@ class MochatChannel(BaseChannel):
 
         target = resolve_mochat_target(msg.chat_id)
         if not target.id:
-            logger.warning("Mochat outbound target is empty")
+            logger.warning("⚠️ Mochat 发送目标为空 / target empty: outbound target is empty")
             return
 
         is_panel = (target.is_panel or target.id in self._panel_set) and not target.id.startswith(
@@ -348,7 +348,7 @@ class MochatChannel(BaseChannel):
                     "/api/claw/sessions/send", "sessionId", target.id, content, msg.reply_to
                 )
         except Exception as e:
-            logger.error("Failed to send Mochat message: {}", e)
+            logger.error("❌ Mochat 消息发送失败 / send failed: {}", e)
 
     # ---- config / init helpers ---------------------------------------------
 
@@ -370,7 +370,7 @@ class MochatChannel(BaseChannel):
 
     async def _start_socket_client(self) -> bool:
         if not SOCKETIO_AVAILABLE:
-            logger.warning("python-socketio not installed, Mochat using polling fallback")
+            logger.warning("⚠️ Mochat SocketIO 未安装 / socketio missing: using polling fallback")
             return False
 
         serializer = "default"
@@ -378,7 +378,7 @@ class MochatChannel(BaseChannel):
             if MSGPACK_AVAILABLE:
                 serializer = "msgpack"
             else:
-                logger.warning("msgpack not installed but socket_disable_msgpack=false; using JSON")
+                logger.warning("⚠️ Mochat Msgpack 未安装 / msgpack missing: socket_disable_msgpack=false, using JSON")
 
         client = socketio.AsyncClient(
             reconnection=True,
@@ -393,7 +393,7 @@ class MochatChannel(BaseChannel):
         @client.event
         async def connect() -> None:
             self._ws_connected, self._ws_ready = True, False
-            logger.info("Mochat websocket connected")
+            logger.info("✅ Mochat 已连接 / ws connected: websocket connected")
             subscribed = await self._subscribe_all()
             self._ws_ready = subscribed
             await (self._stop_fallback_workers() if subscribed else self._ensure_fallback_workers())
@@ -403,12 +403,12 @@ class MochatChannel(BaseChannel):
             if not self._running:
                 return
             self._ws_connected = self._ws_ready = False
-            logger.warning("Mochat websocket disconnected")
+            logger.info("ℹ️ Mochat 已断开 / ws disconnected: websocket disconnected")
             await self._ensure_fallback_workers()
 
         @client.event
         async def connect_error(data: Any) -> None:
-            logger.error("Mochat websocket connect error: {}", data)
+            logger.error("❌ Mochat 连接失败 / ws connect error: {}", data)
 
         @client.on("claw.session.events")
         async def on_session_events(payload: dict[str, Any]) -> None:
@@ -441,7 +441,7 @@ class MochatChannel(BaseChannel):
             )
             return True
         except Exception as e:
-            logger.error("Failed to connect Mochat websocket: {}", e)
+            logger.error("❌ Mochat 连接异常 / ws connect failed: {}", e)
             try:
                 await client.disconnect()
             except Exception:
@@ -483,7 +483,7 @@ class MochatChannel(BaseChannel):
             },
         )
         if not ack.get("result"):
-            logger.error("Mochat subscribeSessions failed: {}", ack.get("message", "unknown error"))
+            logger.error("❌ Mochat 订阅会话失败 / subscribe failed: {}", ack.get("message", "unknown error"))
             return False
 
         data = ack.get("data")
@@ -505,7 +505,7 @@ class MochatChannel(BaseChannel):
             return True
         ack = await self._socket_call("com.claw.im.subscribePanels", {"panelIds": panel_ids})
         if not ack.get("result"):
-            logger.error("Mochat subscribePanels failed: {}", ack.get("message", "unknown error"))
+            logger.error("❌ Mochat 订阅面板失败 / subscribe failed: {}", ack.get("message", "unknown error"))
             return False
         return True
 
@@ -527,7 +527,7 @@ class MochatChannel(BaseChannel):
             try:
                 await self._refresh_targets(subscribe_new=self._ws_ready)
             except Exception as e:
-                logger.warning("Mochat refresh failed: {}", e)
+                logger.warning("⚠️ Mochat 刷新失败 / refresh failed: {}", e)
             if self._fallback_mode:
                 await self._ensure_fallback_workers()
 
@@ -541,7 +541,7 @@ class MochatChannel(BaseChannel):
         try:
             response = await self._post_json("/api/claw/sessions/list", {})
         except Exception as e:
-            logger.warning("Mochat listSessions failed: {}", e)
+            logger.warning("⚠️ Mochat 会话拉取失败 / list failed: {}", e)
             return
 
         sessions = response.get("sessions")
@@ -575,7 +575,7 @@ class MochatChannel(BaseChannel):
         try:
             response = await self._post_json("/api/claw/groups/get", {})
         except Exception as e:
-            logger.warning("Mochat getWorkspaceGroup failed: {}", e)
+            logger.warning("⚠️ Mochat 面板拉取失败 / panel fetch failed: {}", e)
             return
 
         raw_panels = response.get("panels")
@@ -644,7 +644,7 @@ class MochatChannel(BaseChannel):
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.warning("Mochat watch fallback error ({}): {}", session_id, e)
+                logger.warning("⚠️ Mochat 轮询回退异常 / fallback watch error: {} {}", session_id, e)
                 await asyncio.sleep(max(0.1, self.config.retry_delay_ms / 1000.0))
 
     async def _panel_poll_worker(self, panel_id: str) -> None:
@@ -677,7 +677,7 @@ class MochatChannel(BaseChannel):
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.warning("Mochat panel polling error ({}): {}", panel_id, e)
+                logger.warning("⚠️ Mochat 面板轮询异常 / panel poll error: {} {}", panel_id, e)
             await asyncio.sleep(sleep_s)
 
     # ---- inbound event processing ------------------------------------------
@@ -930,7 +930,7 @@ class MochatChannel(BaseChannel):
         try:
             data = json.loads(self._cursor_path.read_text(encoding="utf-8"))
         except Exception as e:
-            logger.warning("Failed to read Mochat cursor file: {}", e)
+            logger.debug("ℹ️ Mochat 游标读取失败 / cursor read failed: {}", e)
             return
         cursors = data.get("cursors") if isinstance(data, dict) else None
         if isinstance(cursors, dict):
@@ -955,7 +955,7 @@ class MochatChannel(BaseChannel):
                 encoding="utf-8",
             )
         except Exception as e:
-            logger.warning("Failed to save Mochat cursor file: {}", e)
+            logger.debug("ℹ️ Mochat 游标保存失败 / cursor save failed: {}", e)
 
     # ---- HTTP helpers ------------------------------------------------------
 

@@ -255,11 +255,11 @@ class FeishuChannel(BaseChannel):
     async def start(self) -> None:
         """Start the Feishu bot with WebSocket long connection."""
         if not FEISHU_AVAILABLE:
-            logger.error("Feishu SDK not installed. Run: pip install lark-oapi")
+            logger.error("❌ 飞书SDK缺失 / sdk missing: pip install lark-oapi")
             return
 
         if not self.config.app_id or not self.config.app_secret:
-            logger.error("Feishu app_id and app_secret not configured")
+            logger.error("❌ 飞书配置缺失 / config missing: app_id and app_secret")
             return
 
         self._running = True
@@ -298,7 +298,7 @@ class FeishuChannel(BaseChannel):
                 try:
                     self._ws_client.start()
                 except Exception as e:
-                    logger.warning("Feishu WebSocket error: {}", e)
+                    logger.warning("⚠️ 飞书连接异常 / ws error: {}", e)
                 if self._running:
                     import time
 
@@ -307,8 +307,8 @@ class FeishuChannel(BaseChannel):
         self._ws_thread = threading.Thread(target=run_ws, daemon=True)
         self._ws_thread.start()
 
-        logger.info("Feishu bot started with WebSocket long connection")
-        logger.info("No public IP required - using WebSocket to receive events")
+        logger.info("✅ 飞书已连接 / ws connected: long connection started")
+        logger.info("📡 飞书事件接收 / event recv: using WebSocket without public IP")
 
         # Keep running until stopped
         while self._running:
@@ -321,11 +321,11 @@ class FeishuChannel(BaseChannel):
             try:
                 self._ws_client.stop()
             except Exception as e:
-                logger.warning("Error stopping WebSocket client: {}", e)
+                logger.warning("⚠️ 飞书停止异常 / ws stop failed: {}", e)
         if self._ws_thread and self._ws_thread.is_alive():
             self._ws_thread.join(timeout=3)
         self._ws_thread = None
-        logger.info("Feishu bot stopped")
+        logger.info("ℹ️ 飞书已停止 / channel stopped: shutdown complete")
 
     def _add_reaction_sync(self, message_id: str, emoji_type: str) -> None:
         """Sync helper for adding reaction (runs in thread pool)."""
@@ -344,13 +344,13 @@ class FeishuChannel(BaseChannel):
             response = self._client.im.v1.message_reaction.create(request)
 
             if not response.success():
-                logger.warning(
-                    "Failed to add reaction: code={}, msg={}", response.code, response.msg
+                logger.debug(
+                    "ℹ️ 飞书表情失败 / react failed: code={}, msg={}", response.code, response.msg
                 )
             else:
                 logger.debug("Added {} reaction to message {}", emoji_type, message_id)
         except Exception as e:
-            logger.warning("Error adding reaction: {}", e)
+            logger.debug("ℹ️ 飞书表情异常 / react error: {}", e)
 
     async def _add_reaction(self, message_id: str, emoji_type: str = "THUMBSUP") -> None:
         """
@@ -377,12 +377,15 @@ class FeishuChannel(BaseChannel):
     @staticmethod
     def _parse_md_table(table_text: str) -> dict | None:
         """Parse a markdown table into a Feishu table element."""
-        lines = [l.strip() for l in table_text.strip().split("\n") if l.strip()]
+        lines = [line.strip() for line in table_text.strip().split("\n") if line.strip()]
         if len(lines) < 3:
             return None
-        split = lambda l: [c.strip() for c in l.strip("|").split("|")]
-        headers = split(lines[0])
-        rows = [split(l) for l in lines[2:]]
+
+        def split_row(row: str) -> list[str]:
+            return [c.strip() for c in row.strip("|").split("|")]
+
+        headers = split_row(lines[0])
+        rows = [split_row(row) for row in lines[2:]]
         columns = [
             {"tag": "column", "name": f"c{i}", "display_name": h, "width": "auto"}
             for i, h in enumerate(headers)
@@ -480,11 +483,13 @@ class FeishuChannel(BaseChannel):
                     return image_key
                 else:
                     logger.error(
-                        "Failed to upload image: code={}, msg={}", response.code, response.msg
+                        "❌ 飞书图片上传失败 / upload failed: code={}, msg={}",
+                        response.code,
+                        response.msg,
                     )
                     return None
         except Exception as e:
-            logger.error("Error uploading image {}: {}", file_path, e)
+            logger.error("❌ 飞书图片上传异常 / upload error: {}: {}", file_path, e)
             return None
 
     def _upload_file_sync(self, file_path: str) -> str | None:
@@ -512,11 +517,13 @@ class FeishuChannel(BaseChannel):
                     return file_key
                 else:
                     logger.error(
-                        "Failed to upload file: code={}, msg={}", response.code, response.msg
+                        "❌ 飞书文件上传失败 / upload failed: code={}, msg={}",
+                        response.code,
+                        response.msg,
                     )
                     return None
         except Exception as e:
-            logger.error("Error uploading file {}: {}", file_path, e)
+            logger.error("❌ 飞书文件上传异常 / upload error: {}: {}", file_path, e)
             return None
 
     def _download_image_sync(
@@ -539,11 +546,13 @@ class FeishuChannel(BaseChannel):
                 return file_data, response.file_name
             else:
                 logger.error(
-                    "Failed to download image: code={}, msg={}", response.code, response.msg
+                    "❌ 飞书图片下载失败 / download failed: code={}, msg={}",
+                    response.code,
+                    response.msg,
                 )
                 return None, None
         except Exception as e:
-            logger.error("Error downloading image {}: {}", image_key, e)
+            logger.error("❌ 飞书图片下载异常 / download error: {}: {}", image_key, e)
             return None, None
 
     def _download_file_sync(self, file_key: str) -> tuple[bytes | None, str | None]:
@@ -555,11 +564,13 @@ class FeishuChannel(BaseChannel):
                 return response.file, response.file_name
             else:
                 logger.error(
-                    "Failed to download file: code={}, msg={}", response.code, response.msg
+                    "❌ 飞书文件下载失败 / download failed: code={}, msg={}",
+                    response.code,
+                    response.msg,
                 )
                 return None, None
         except Exception as e:
-            logger.error("Error downloading file {}: {}", file_key, e)
+            logger.error("❌ 飞书文件下载异常 / download error: {}: {}", file_key, e)
             return None, None
 
     async def _download_and_save_media(
@@ -626,7 +637,7 @@ class FeishuChannel(BaseChannel):
             response = self._client.im.v1.message.create(request)
             if not response.success():
                 logger.error(
-                    "Failed to send Feishu {} message: code={}, msg={}, log_id={}",
+                    "❌ 飞书消息发送失败 / send failed: {} code={}, msg={}, log_id={}",
                     msg_type,
                     response.code,
                     response.msg,
@@ -636,13 +647,13 @@ class FeishuChannel(BaseChannel):
             logger.debug("Feishu {} message sent to {}", msg_type, receive_id)
             return True
         except Exception as e:
-            logger.error("Error sending Feishu {} message: {}", msg_type, e)
+            logger.error("❌ 飞书消息发送异常 / send error: {}: {}", msg_type, e)
             return False
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Feishu, including media (images/files) if present."""
         if not self._client:
-            logger.warning("Feishu client not initialized")
+            logger.warning("⚠️ 飞书客户端未就绪 / client not ready: not initialized")
             return
 
         try:
@@ -651,7 +662,7 @@ class FeishuChannel(BaseChannel):
 
             for file_path in msg.media:
                 if not os.path.isfile(file_path):
-                    logger.warning("Media file not found: {}", file_path)
+                    logger.warning("⚠️ 飞书媒体缺失 / media missing: {}", file_path)
                     continue
                 ext = os.path.splitext(file_path)[1].lower()
                 if ext in self._IMAGE_EXTS:
@@ -693,7 +704,7 @@ class FeishuChannel(BaseChannel):
                 )
 
         except Exception as e:
-            logger.error("Error sending Feishu message: {}", e)
+            logger.error("❌ 飞书发送异常 / send error: {}", e)
 
     def _on_message_sync(self, data: "P2ImMessageReceiveV1") -> None:
         """
@@ -733,7 +744,7 @@ class FeishuChannel(BaseChannel):
             msg_type = message.message_type
 
             # Add reaction
-            await self._add_reaction(message_id, "THUMBSUP")
+            await self._add_reaction(message_id, self.config.react_emoji)
 
             # Parse content
             content_parts = []
@@ -797,4 +808,4 @@ class FeishuChannel(BaseChannel):
             )
 
         except Exception as e:
-            logger.error("Error processing Feishu message: {}", e)
+            logger.error("❌ 飞书消息处理异常 / process error: {}", e)

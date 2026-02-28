@@ -39,7 +39,7 @@ class WhatsAppChannel(BaseChannel):
 
         bridge_url = self.config.bridge_url
 
-        logger.info("Connecting to WhatsApp bridge at {}...", bridge_url)
+        logger.info("📡 连接桥接 / connecting: {}", bridge_url)
 
         self._running = True
 
@@ -56,24 +56,24 @@ class WhatsAppChannel(BaseChannel):
                             )
                         )
                     self._connected = True
-                    logger.info("Connected to WhatsApp bridge")
+                    logger.info("✅ 连接成功 / connected: WhatsApp bridge")
 
                     # Listen for messages
                     async for message in ws:
                         try:
                             await self._handle_bridge_message(message)
                         except Exception as e:
-                            logger.error("Error handling bridge message: {}", e)
+                            logger.error("❌ 处理失败 / message error: {}", e)
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 self._connected = False
                 self._ws = None
-                logger.warning("WhatsApp bridge connection error: {}", e)
+                logger.warning("⚠️ 连接异常 / connection error: {}", e)
 
                 if self._running:
-                    logger.info("Reconnecting in 5 seconds...")
+                    logger.info("🔄 准备重连 / reconnecting: wait=5s")
                     await asyncio.sleep(5)
 
     async def stop(self) -> None:
@@ -98,13 +98,13 @@ class WhatsAppChannel(BaseChannel):
     async def _send_text(self, chat_id: str, text: str) -> None:
         """Send raw text via WebSocket bridge."""
         if not self._ws or not self._connected:
-            logger.warning("WhatsApp bridge not connected")
+            logger.warning("⚠️ 未连接 / not connected: WhatsApp bridge")
             return
         try:
             payload = {"type": "send", "to": chat_id, "text": text}
             await self._ws.send(json.dumps(payload, ensure_ascii=False))
         except Exception as e:
-            logger.error("Error sending WhatsApp message: {}", e)
+            logger.error("❌ 发送失败 / send failed: {}", e)
 
     def _save_media(self, media: dict[str, Any], sender_id: str) -> list[str]:
         """Decode base64 media from bridge and save to disk."""
@@ -122,8 +122,9 @@ class WhatsAppChannel(BaseChannel):
             logger.debug("Saved WhatsApp media: {}", path)
             return [str(path)]
         except Exception as e:
-            logger.warning("Failed to save WhatsApp media: ", e)
+            logger.warning("⚠️ 保存失败 / save failed: {}", e)
             return []
+
     async def _handle_bridge_message(self, raw: str | bytes) -> None:
         """Handle a message from the bridge."""
         if isinstance(raw, bytes):
@@ -131,7 +132,7 @@ class WhatsAppChannel(BaseChannel):
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
-            logger.warning("Invalid JSON from bridge: {}", raw[:100])
+            logger.debug("Invalid JSON from bridge: {}", raw[:100])
             return
 
         msg_type = data.get("type")
@@ -142,7 +143,7 @@ class WhatsAppChannel(BaseChannel):
             content = data.get("content", "")
             user_id = pn if pn else sender
             sender_id = user_id.split("@")[0] if "@" in user_id else user_id
-            logger.info("Sender {}", sender)
+            logger.debug("Sender {}", sender)
 
             # Save media from bridge if present
             media_paths: list[str] = []
@@ -169,7 +170,7 @@ class WhatsAppChannel(BaseChannel):
         elif msg_type == "status":
             # Connection status update
             status = data.get("status")
-            logger.info("WhatsApp status: {}", status)
+            logger.info("📡 状态更新 / status update: {}", status)
 
             if status == "connected":
                 self._connected = True
@@ -178,7 +179,7 @@ class WhatsAppChannel(BaseChannel):
 
         elif msg_type == "qr":
             # QR code for authentication
-            logger.info("Scan QR code in the bridge terminal to connect WhatsApp")
+            logger.info("📱 扫码连接 / scan qr: bridge terminal")
 
         elif msg_type == "error":
-            logger.error("WhatsApp bridge error: {}", data.get("error"))
+            logger.error("❌ 服务异常 / bridge error: {}", data.get("error"))

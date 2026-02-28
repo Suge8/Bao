@@ -34,7 +34,7 @@ def _make_bot_class(channel: "QQChannel") -> "type[botpy.Client]":
             super().__init__(intents=intents)
 
         async def on_ready(self):
-            logger.info("QQ bot ready: {}", self.robot.name)
+            logger.info("✅ 已就绪 / bot ready: {}", self.robot.name)
 
         async def on_c2c_message_create(self, message: "C2CMessage"):
             await channel._on_message(message)
@@ -60,11 +60,11 @@ class QQChannel(BaseChannel):
     async def start(self) -> None:
         """Start the QQ bot."""
         if not QQ_AVAILABLE:
-            logger.error("QQ SDK not installed. Run: pip install qq-botpy")
+            logger.error("❌ 未安装 / sdk missing: pip install qq-botpy")
             return
 
         if not self.config.app_id or not self.config.secret:
-            logger.error("QQ app_id and secret not configured")
+            logger.error("❌ 未配置 / not configured: QQ app_id/secret")
             return
 
         self._running = True
@@ -72,7 +72,7 @@ class QQChannel(BaseChannel):
         self._client = BotClass()
 
         self._bot_task = asyncio.create_task(self._run_bot())
-        logger.info("QQ bot started (C2C private message)")
+        logger.info("📡 已启动 / bot started: C2C private message")
 
     async def _run_bot(self) -> None:
         """Run the bot connection with auto-reconnect."""
@@ -80,9 +80,9 @@ class QQChannel(BaseChannel):
             try:
                 await self._client.start(appid=self.config.app_id, secret=self.config.secret)
             except Exception as e:
-                logger.warning("QQ bot error: {}", e)
+                logger.warning("⚠️ 连接异常 / bot error: {}", e)
             if self._running:
-                logger.info("Reconnecting QQ bot in 5 seconds...")
+                logger.info("🔄 准备重连 / reconnecting: wait=5s")
                 await asyncio.sleep(5)
 
     async def stop(self) -> None:
@@ -94,12 +94,12 @@ class QQChannel(BaseChannel):
                 await self._bot_task
             except asyncio.CancelledError:
                 pass
-        logger.info("QQ bot stopped")
+        logger.info("✅ 已停止 / bot stopped: QQ")
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through QQ."""
         if not self._client:
-            logger.warning("QQ client not initialized")
+            logger.warning("⚠️ 未初始化 / client not initialized: QQ")
             return
         try:
             await self._client.api.post_c2c_message(
@@ -108,7 +108,7 @@ class QQChannel(BaseChannel):
                 content=msg.content,
             )
         except Exception as e:
-            logger.error("Error sending QQ message: {}", e)
+            logger.error("❌ 发送失败 / send failed: {}", e)
 
     async def _on_message(self, data: "C2CMessage") -> None:
         """Handle incoming message from QQ."""
@@ -119,7 +119,7 @@ class QQChannel(BaseChannel):
             self._processed_ids.append(data.id)
 
             author = data.author
-            user_id = str(getattr(author, 'id', None) or getattr(author, 'user_openid', 'unknown'))
+            user_id = str(getattr(author, "id", None) or getattr(author, "user_openid", "unknown"))
             content = (data.content or "").strip()
             if not content:
                 return
@@ -131,4 +131,4 @@ class QQChannel(BaseChannel):
                 metadata={"message_id": data.id},
             )
         except Exception as e:
-            logger.error("Error handling QQ message: {}", e)
+            logger.error("❌ 处理失败 / message error: {}", e)

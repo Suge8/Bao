@@ -13,8 +13,8 @@ from loguru import logger
 from bao.bus.events import OutboundMessage
 from bao.bus.queue import MessageBus
 from bao.channels.base import BaseChannel
-from bao.config.schema import IMessageConfig
 from bao.channels.progress_text import ProgressBuffer
+from bao.config.schema import IMessageConfig
 
 CHAT_DB = Path.home() / "Library" / "Messages" / "chat.db"
 APPLE_EPOCH_OFFSET = 978307200
@@ -32,15 +32,13 @@ class IMessageChannel(BaseChannel):
 
     async def start(self) -> None:
         if not CHAT_DB.exists():
-            logger.error("iMessage chat.db not found — need Full Disk Access")
+            logger.error("❌ iMessage 数据库缺失 / db missing: need Full Disk Access")
             return
         self._running = True
         self._last_rowid = self._get_max_rowid()
         if self._last_rowid == 0:
             logger.warning(
-                "iMessage: cannot read chat.db (ROWID=0). "
-                "Grant Full Disk Access to your Python binary: "
-                "System Settings → Privacy & Security → Full Disk Access → add {}",
+                "⚠️ iMessage 无法读库 / db unreadable: ROWID=0, grant Full Disk Access for {}",
                 sys.executable,
             )
         logger.debug("iMessage channel started (polling from ROWID {})", self._last_rowid)
@@ -48,7 +46,7 @@ class IMessageChannel(BaseChannel):
             try:
                 await self._poll()
             except Exception as e:
-                logger.error("iMessage poll error: {}", e)
+                logger.error("❌ iMessage 轮询异常 / poll error: {}", e)
             await asyncio.sleep(self._poll_interval)
 
     async def stop(self) -> None:
@@ -67,7 +65,7 @@ class IMessageChannel(BaseChannel):
             if Path(file_path).is_file():
                 await self._send_file(msg.chat_id, file_path)
             else:
-                logger.warning("iMessage media file not found: {}", file_path)
+                logger.debug("ℹ️ iMessage 媒体缺失 / media missing: {}", file_path)
 
     async def _send_text(self, buddy: str, text: str) -> None:
         encoded = text.replace("\\", "\\\\").replace('"', '\\"')
@@ -88,13 +86,13 @@ class IMessageChannel(BaseChannel):
             )
             _, stderr = await proc.communicate()
             if proc.returncode != 0:
-                logger.error("AppleScript send failed: {}", stderr.decode().strip())
+                logger.error("❌ iMessage 文本发送失败 / send failed: {}", stderr.decode().strip())
         except Exception as e:
-            logger.error("iMessage send error: {}", e)
+            logger.error("❌ iMessage 文本发送异常 / send error: {}", e)
 
     async def _send_file(self, buddy: str, file_path: str) -> None:
         """Send a file (image/doc) via AppleScript POSIX file."""
-        escaped = file_path.replace('\\', '\\\\').replace('"', '\\"')
+        escaped = file_path.replace("\\", "\\\\").replace('"', '\\"')
         script = (
             f'tell application "Messages"\n'
             f"  set targetService to 1st account whose service type = iMessage\n"
@@ -112,9 +110,9 @@ class IMessageChannel(BaseChannel):
             )
             _, stderr = await proc.communicate()
             if proc.returncode != 0:
-                logger.error("AppleScript send file failed: {}", stderr.decode().strip())
+                logger.error("❌ iMessage 文件发送失败 / send failed: {}", stderr.decode().strip())
         except Exception as e:
-            logger.error("iMessage send file error: {}", e)
+            logger.error("❌ iMessage 文件发送异常 / send error: {}", e)
 
     # ---- internal ----
 
@@ -141,10 +139,13 @@ class IMessageChannel(BaseChannel):
                 continue
             if not self.is_allowed(sender):
                 continue
+            if media:
+                logger.debug("iMessage media for ROWID {}: {}", rowid, media)
+            content = text or ("[attachment]" if media else "")
             await self._handle_message(
                 sender_id=sender,
                 chat_id=chat_id,
-                content=text or "",
+                content=content,
                 media=media or None,
             )
 
@@ -182,21 +183,36 @@ class IMessageChannel(BaseChannel):
             placeholders = ",".join("?" * len(rowids))
             cur = conn.execute(
                 f"""
-                SELECT maj.message_id, a.filename
+                SELECT maj.message_id, a.filename, a.transfer_name, a.mime_type
                 FROM message_attachment_join maj
                 JOIN attachment a ON maj.attachment_id = a.ROWID
                 WHERE maj.message_id IN ({placeholders})
-                  AND a.filename IS NOT NULL
                 """,
                 rowids,
             )
             result: dict[int, list[str]] = {}
             home = str(Path.home())
-            for msg_id, filename in cur.fetchall():
-                path = Path(filename.replace("~", home, 1))
+            raw_rows = cur.fetchall()
+            if not raw_rows:
+                logger.debug("iMessage: no attachment rows found for ROWIDs {}", rowids)
+            for msg_id, filename, transfer_name, mime_type in raw_rows:
+                logger.debug(
+                    "iMessage attachment: ROWID={} filename={} transfer_name={} mime={}",
+                    msg_id,
+                    filename,
+                    transfer_name,
+                    mime_type,
+                )
+                actual_name = filename or transfer_name
+                if not actual_name:
+                    continue
+                path = Path(actual_name.replace("~", home, 1))
                 if path.is_file():
                     result.setdefault(msg_id, []).append(str(path))
+                else:
+                    logger.debug("iMessage attachment file not found: {}", path)
             conn.close()
             return result
-        except Exception:
+        except Exception as e:
+            logger.warning("⚠️ iMessage 附件查询失败 / attachment query failed: {}", e)
             return {}
