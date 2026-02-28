@@ -56,7 +56,7 @@ class ExecTool(Tool):
         else:
             if sandbox_mode != "semi-auto":
                 logger.warning(
-                    "Unknown sandbox_mode %r, falling back to semi-auto",
+                    "⚠️ 沙箱模式未知 / unknown mode: {!r}, falling back to semi-auto",
                     sandbox_mode,
                 )
             self.deny_patterns = deny_patterns or list(self._DEFAULT_DENY_PATTERNS)

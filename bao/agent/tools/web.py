@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 import httpx
 
 from bao.agent.tools.base import Tool
+from bao.config.schema import WebSearchConfig
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"
 MAX_REDIRECTS = 5
@@ -216,7 +217,7 @@ class WebSearchTool(Tool):
     """Search the web using Brave, Tavily, or Exa API."""
 
     name = "web_search"
-    description = "Search the web using Tavily/Brave/Exa API. ALWAYS use this instead of exec+curl or web_fetch when you need to find information, news, or answers. Returns structured titles, URLs, and snippets."
+    description = "Search the web. ALWAYS use this instead of exec+curl. Returns titles, URLs, and snippets."
     parameters = {
         "type": "object",
         "properties": {
@@ -354,9 +355,7 @@ class WebFetchTool(Tool):
 
     name = "web_fetch"
     description = (
-        "Fetch URL and extract readable content (HTML → markdown/text). "
-        "Use filterLevel='standard' for cleaner output (removes boilerplate, deduplicates); "
-        "'aggressive' also strips link-heavy navigation paragraphs."
+        "Fetch a URL and extract readable content as markdown or text."
     )
     parameters = {
         "type": "object",

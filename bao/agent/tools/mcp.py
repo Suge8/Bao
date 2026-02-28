@@ -113,8 +113,8 @@ async def connect_mcp_servers(
 
     for name, cfg in mcp_servers.items():
         if tool_limit and total_registered >= max_tools:
-            logger.warning(
-                "MCP: reached global tool limit ({}), skip remaining servers",
+            logger.debug(
+                "🔌 MCP 达到上限 / limit reached: global tool limit ({})",
                 max_tools,
             )
             break
@@ -151,7 +151,10 @@ async def connect_mcp_servers(
                     timeout=connect_timeout,
                 )
             else:
-                logger.warning("MCP server '{}': no command or url configured, skipping", name)
+                logger.warning(
+                    "⚠️ MCP 配置缺失 / config missing: {} has no command/url, skipping",
+                    name,
+                )
                 await server_stack.aclose()
                 continue
 
@@ -165,8 +168,8 @@ async def connect_mcp_servers(
             pending_wrappers: list[MCPToolWrapper] = []
             for tool_def in tools.tools:
                 if tool_limit and total_registered >= max_tools:
-                    logger.warning(
-                        "MCP: reached global tool limit ({}) while registering server '{}'",
+                    logger.debug(
+                        "🔌 MCP 达到上限 / limit reached: ({}) while registering {}",
                         max_tools,
                         name,
                     )
@@ -208,7 +211,7 @@ async def connect_mcp_servers(
             else:
                 await server_stack.aclose()
 
-            logger.info("MCP server '{}': connected, {} tools registered", name, server_count)
+            logger.info("🔌 MCP 已连接 / connected: {} ({} tools)", name, server_count)
         except asyncio.CancelledError:
             try:
                 await server_stack.aclose()
@@ -216,7 +219,7 @@ async def connect_mcp_servers(
                 pass
             raise
         except Exception as e:
-            logger.error("MCP server '{}': failed to connect: {}", name, e)
+            logger.error("❌ MCP 连接失败 / connect failed: {} — {}", name, e)
             try:
                 await server_stack.aclose()
             except Exception:

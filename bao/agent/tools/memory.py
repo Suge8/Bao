@@ -20,9 +20,7 @@ class RememberTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Save a durable fact to long-term memory. Use for user preferences, "
-            "personal info, project context, or important decisions. "
-            f"Categories: {', '.join(MEMORY_CATEGORIES)}."
+            f"Save a fact to long-term memory. Categories: {', '.join(MEMORY_CATEGORIES)}."
         )
     @property
     def parameters(self) -> dict[str, Any]:
@@ -82,8 +80,7 @@ class UpdateMemoryTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Replace the entire content of a memory category. "
-            f"Categories: {', '.join(MEMORY_CATEGORIES)}."
+            f"Replace entire content of a memory category. Categories: {', '.join(MEMORY_CATEGORIES)}."
         )
     @property
     def parameters(self) -> dict[str, Any]:

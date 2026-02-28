@@ -4,8 +4,10 @@ import asyncio
 import inspect
 import json
 import re
-import shutil
+import tempfile
+import uuid
 from contextlib import AsyncExitStack
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, cast, overload
 from urllib.parse import urlsplit
@@ -13,9 +15,10 @@ from urllib.parse import urlsplit
 import json_repair
 from loguru import logger
 
+from bao.agent import commands, experience, shared
 from bao.agent.context import ContextBuilder
+from bao.agent.memory import MEMORY_CATEGORIES, MEMORY_CATEGORY_CAPS
 from bao.agent.subagent import SubagentManager
-from bao.agent.tools.coding_agent_base import BaseCodingAgentTool, BaseCodingDetailsTool
 from bao.agent.tools.cron import CronTool
 from bao.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from bao.agent.tools.memory import ForgetTool, RememberTool, UpdateMemoryTool
@@ -97,9 +100,7 @@ class AgentLoop:
         self._image_generation_config = (
             getattr(_tools_cfg, "image_generation", None) if _tools_cfg else None
         )
-        self._desktop_config = (
-            getattr(_tools_cfg, "desktop", None) if _tools_cfg else None
-        )
+        self._desktop_config = getattr(_tools_cfg, "desktop", None) if _tools_cfg else None
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -145,7 +146,7 @@ class AgentLoop:
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_generations: dict[str, int] = {}
         self._session_running_task: dict[str, asyncio.Task[None]] = {}
-        self._interrupted_task_ids: set[int] = set()
+        self._interrupted_tasks: set[asyncio.Task[None]] = set()
         self._last_tool_budget: dict[str, int] = {
             "offloaded_count": 0,
             "offloaded_chars": 0,
@@ -165,7 +166,7 @@ class AgentLoop:
                 self._utility_model = um
                 logger.debug("Utility model configured: {}", um)
             except Exception as e:
-                logger.warning("Utility model init failed, falling back to main model: {}", e)
+                logger.warning("⚠️ 效用模型初始化失败 / utility init failed: {}", e)
 
         self._experience_mode = (
             config.agents.defaults.experience_model if config else "none"
@@ -195,44 +196,43 @@ class AgentLoop:
                 sandbox_mode=self.exec_config.sandbox_mode,
             )
         )
-        coding_agents: list[str] = []
-        if shutil.which("opencode"):
-            from bao.agent.tools.opencode import OpenCodeDetailsTool, OpenCodeTool
+        from bao.agent.tools.coding_agent import CodingAgentDetailsTool, CodingAgentTool
 
-            self.tools.register(OpenCodeTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            self.tools.register(OpenCodeDetailsTool())
-            coding_agents.append("`opencode`")
-        if shutil.which("codex"):
-            from bao.agent.tools.codex import CodexDetailsTool, CodexTool
-
-            self.tools.register(CodexTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            self.tools.register(CodexDetailsTool())
-            coding_agents.append("`codex`")
-        if shutil.which("claude"):
-            from bao.agent.tools.claudecode import ClaudeCodeDetailsTool, ClaudeCodeTool
-
-            self.tools.register(ClaudeCodeTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            self.tools.register(ClaudeCodeDetailsTool())
-            coding_agents.append("`claudecode`")
-        if coding_agents:
-            names = ", ".join(coding_agents)
+        coding_tool = CodingAgentTool(workspace=self.workspace, allowed_dir=allowed_dir)
+        if coding_tool.available_backends:
+            self.tools.register(coding_tool)
+            self.tools.register(CodingAgentDetailsTool(parent=coding_tool))
+            names = ", ".join(coding_tool.available_backends)
             self.context.tool_hints.append(
-                f"- Coding agents ({names}): AST-aware code search/explore/edit/debug. "
+                f"- coding_agent(agent=...): delegate coding tasks to {names}. "
                 "Route via `spawn` (non-blocking; subagents have access). "
-                "Skills: skills/<tool>/SKILL.md"
+                "Skill: skills/coding-agent/SKILL.md"
             )
+            if "opencode" in coding_tool.available_backends:
+                _omo_paths = [
+                    self.workspace / ".opencode/oh-my-opencode.jsonc",
+                    self.workspace / ".opencode/oh-my-opencode.json",
+                    Path.home() / ".config/opencode/oh-my-opencode.jsonc",
+                    Path.home() / ".config/opencode/oh-my-opencode.json",
+                ]
+                if any(p.exists() for p in _omo_paths):
+                    self.context.tool_hints.append(
+                        "- OhMyOpenCode detected: use `ulw` prefix in opencode prompts "
+                        "for enhanced orchestration mode."
+                    )
         # Image generation (conditional: only when API key is configured)
         if self._image_generation_config and self._image_generation_config.api_key:
             from bao.agent.tools.image_gen import ImageGenTool
 
-            self.tools.register(ImageGenTool(
-                api_key=self._image_generation_config.api_key,
-                model=self._image_generation_config.model,
-                base_url=self._image_generation_config.base_url,
-            ))
+            self.tools.register(
+                ImageGenTool(
+                    api_key=self._image_generation_config.api_key,
+                    model=self._image_generation_config.model,
+                    base_url=self._image_generation_config.base_url,
+                )
+            )
             self.context.tool_hints.append(
-                "- generate_image: create images from text. "
-                "Send result via message(media=[path])."
+                "- generate_image: create images from text. Send result via message(media=[path])."
             )
         search_tool = WebSearchTool(search_config=self.search_config)
         has_brave = bool(search_tool.brave_key)
@@ -244,7 +244,7 @@ class AgentLoop:
                 for p, ok in [("tavily", has_tavily), ("brave", has_brave), ("exa", has_exa)]
                 if ok
             ]
-            logger.info("web_search enabled ({})", ", ".join(providers))
+            logger.info("🔍 启用搜索 / search enabled: {}", ", ".join(providers))
             self.tools.register(search_tool)
             self.context.tool_hints.append(
                 "- web_search: prefer over web_fetch for finding information. web_fetch only for known URLs."
@@ -258,7 +258,10 @@ class AgentLoop:
         self.tools.register(CheckTasksTool(manager=self.subagents))
         self.tools.register(CancelTaskTool(manager=self.subagents))
         self.context.tool_hints.append(
-            "- spawn: delegate multi-step, cross-file, or time-consuming work. Keep main loop short."
+            "- spawn: delegate multi-step or time-consuming work. Returns task_id for "
+            "check_tasks/cancel_task. Pass context_from=<task_id> to give the subagent context "
+            "from a previous task's result. When spawning coding tasks, describe clearly — "
+            "subagents can use coding tools if available."
         )
         mem = self.context.memory
         self.tools.register(RememberTool(memory=mem))
@@ -291,10 +294,10 @@ class AgentLoop:
                     "get_screen_info): control the desktop. Use screenshot+get_screen_info "
                     "first to see the screen, then click/type to interact."
                 )
-                logger.info("desktop automation tools enabled")
+                logger.info("🖥️ 启用桌面 / desktop enabled: desktop automation tools")
             except ImportError:
                 logger.warning(
-                    "desktop automation enabled but deps missing. "
+                    "⚠️ 桌面依赖缺失 / desktop deps missing: "
                     "Install: uv sync --extra desktop-automation"
                 )
 
@@ -325,7 +328,7 @@ class AgentLoop:
                 await self._mcp_stack.aclose()
                 self._mcp_stack = None
         except Exception as e:
-            logger.error("Failed to connect MCP servers (will retry next message): {}", e)
+            logger.error("❌ MCP 连接失败 / MCP connect failed: {}", e)
             self._mcp_connect_succeeded = False
             self._mcp_connected = False
             if self._mcp_stack:
@@ -350,17 +353,13 @@ class AgentLoop:
             t.set_context(channel, chat_id, session_key=session_key)
         if (t := self.tools.get("cron")) and isinstance(t, CronTool):
             t.set_context(channel, chat_id)
-        for name in (
-            "opencode",
-            "opencode_details",
-            "codex",
-            "codex_details",
-            "claudecode",
-            "claudecode_details",
-        ):
+        for name in ("coding_agent", "coding_agent_details"):
             t = self.tools.get(name)
-            if t and isinstance(t, (BaseCodingAgentTool, BaseCodingDetailsTool)):
-                t.set_context(channel, chat_id, session_key=session_key)
+            if not t:
+                continue
+            set_ctx = getattr(t, "set_context", None)
+            if callable(set_ctx):
+                set_ctx(channel, chat_id, session_key=session_key)
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
@@ -412,6 +411,60 @@ class AgentLoop:
 
         return ", ".join(_fmt(tc) for tc in tool_calls)
 
+    _TOOL_INTERRUPT_POLL = 0.2
+    _TOOL_CANCEL_TIMEOUT = 5.0  # max seconds to wait for tool cleanup after cancel
+    _TOOL_CANCELLED_MSG = "Cancelled by soft interrupt."
+
+    async def _await_tool_with_interrupt(
+        self,
+        tool_task: asyncio.Task[str],
+        current_task_ref: asyncio.Task[None] | None,
+    ) -> str:
+        """Await tool task with periodic soft-interrupt checks."""
+        if current_task_ref is None:
+            return await tool_task
+        try:
+            while not tool_task.done():
+                if current_task_ref in self._interrupted_tasks:
+                    if tool_task.done():
+                        return await tool_task
+                    tool_task.cancel()
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(tool_task),
+                            timeout=self._TOOL_CANCEL_TIMEOUT,
+                        )
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
+                    except Exception:
+                        pass
+                    if tool_task.done() and not tool_task.cancelled():
+                        try:
+                            return tool_task.result()
+                        except Exception:
+                            pass
+                    return self._TOOL_CANCELLED_MSG
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.shield(tool_task), timeout=self._TOOL_INTERRUPT_POLL
+                    )
+                except asyncio.TimeoutError:
+                    continue
+            return await tool_task
+        except asyncio.CancelledError:
+            if not tool_task.done():
+                tool_task.cancel()
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(tool_task),
+                        timeout=self._TOOL_CANCEL_TIMEOUT,
+                    )
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+                except Exception:
+                    pass
+            raise
+
     @overload
     async def _run_agent_loop(
         self,
@@ -430,7 +483,7 @@ class AgentLoop:
         on_tool_hint: Callable[[str], Awaitable[None]] | None = None,
         artifact_session_key: str | None = None,
         return_interrupt: Literal[True] = True,
-    ) -> tuple[str | None, list[str], list[str], int, list[str], bool]: ...
+    ) -> tuple[str | None, list[str], list[str], int, list[str], bool, list[dict[str, Any]]]: ...
 
     async def _run_agent_loop(
         self,
@@ -441,7 +494,7 @@ class AgentLoop:
         return_interrupt: bool = False,
     ) -> (
         tuple[str | None, list[str], list[str], int, list[str]]
-        | tuple[str | None, list[str], list[str], int, list[str], bool]
+        | tuple[str | None, list[str], list[str], int, list[str], bool, list[dict[str, Any]]]
     ):
         messages = list(initial_messages)
         iteration = 0
@@ -449,6 +502,7 @@ class AgentLoop:
         tools_used: list[str] = []
         tool_trace: list[str] = []
         reasoning_snippets: list[str] = []
+        _completed_tool_msgs: list[dict[str, Any]] = []
         interrupted = False
         consecutive_errors = 0
         total_errors = 0
@@ -456,7 +510,7 @@ class AgentLoop:
         last_state_attempt_at = 0
         last_state_text: str | None = None
         current_task = asyncio.current_task()
-        current_task_id = id(current_task) if current_task else None
+        current_task_ref: asyncio.Task[None] | None = current_task
         user_request = next(
             (
                 m["content"]
@@ -488,7 +542,7 @@ class AgentLoop:
         while iteration < self.max_iterations:
             iteration += 1
 
-            if current_task_id is not None and current_task_id in self._interrupted_task_ids:
+            if current_task_ref is not None and current_task_ref in self._interrupted_tasks:
                 interrupted = True
                 break
 
@@ -533,18 +587,31 @@ class AgentLoop:
             if iteration > 1 and on_progress:
                 await on_progress("\x00")
 
-            response = await self.provider.chat(
-                messages=messages,
-                tools=self.tools.get_definitions(),
-                model=self.model,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                on_progress=on_progress,
-                source="main",
-            )
-            # Strip _image base64 from messages after provider has processed them
-            for _m in messages:
-                _m.pop("_image", None)
+            _stream_progress = on_progress
+            if current_task_ref is not None and on_progress is not None:
+
+                async def _interruptable_progress(chunk: str, _orig=on_progress) -> None:
+                    if current_task_ref in self._interrupted_tasks:
+                        from bao.providers.retry import StreamInterruptedError
+
+                        raise StreamInterruptedError("soft interrupt during streaming")
+                    await _orig(chunk)
+
+                _stream_progress = _interruptable_progress
+
+            try:
+                response = await self.provider.chat(
+                    messages=messages,
+                    tools=self.tools.get_definitions(),
+                    model=self.model,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    on_progress=_stream_progress,
+                    source="main",
+                )
+            finally:
+                for _m in messages:
+                    _m.pop("_image", None)
 
             logger.debug(
                 "LLM response: model={}, has_tool_calls={}, tool_count={}, finish_reason={}",
@@ -554,7 +621,12 @@ class AgentLoop:
                 response.finish_reason,
             )
 
+            if response.finish_reason == "interrupted":
+                interrupted = True
+                break
+
             if response.has_tool_calls:
+                _iter_completed: list[dict[str, Any]] = []
                 clean = self._strip_think(response.content)
                 if clean:
                     reasoning_snippets.append(clean[:200])
@@ -578,13 +650,26 @@ class AgentLoop:
                     tool_call_dicts,
                     reasoning_content=response.reasoning_content,
                 )
+                _iter_completed.append(
+                    {
+                        "role": "assistant",
+                        "content": self._strip_think(response.content) or None,
+                        "tool_calls": tool_call_dicts,
+                    }
+                )
 
                 error_feedback: str | None = None
+                if current_task_ref is not None and current_task_ref in self._interrupted_tasks:
+                    interrupted = True
+                    break
                 for tool_call in response.tool_calls:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
-                    logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
-                    raw_result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    logger.info("🔧 工具调用 / tool: {}({})", tool_call.name, args_str[:200])
+                    tool_task = asyncio.create_task(
+                        self.tools.execute(tool_call.name, tool_call.arguments)
+                    )
+                    raw_result = await self._await_tool_with_interrupt(tool_task, current_task_ref)
                     result_text = raw_result if isinstance(raw_result, str) else str(raw_result)
                     result, budget_event = apply_tool_output_budget(
                         store=_artifact_store,
@@ -604,20 +689,62 @@ class AgentLoop:
                         tool_budget["clipped_chars"] += budget_event.hard_clipped_chars
                     # Detect screenshot image marker → inject as multimodal
                     _screenshot_image_b64: str | None = None
-                    if isinstance(result, str) and result.startswith("__SCREENSHOT__:"):
-                        _ss_path = result[len("__SCREENSHOT__:"):].strip()
+                    if (
+                        tool_call.name == "screenshot"
+                        and isinstance(result, str)
+                        and result.startswith("__SCREENSHOT__:")
+                    ):
+                        marker = result
+                        result = "[screenshot unavailable]"
+                        _ss_path = marker[len("__SCREENSHOT__:") :].strip()
+                        _ss_file = Path(_ss_path).expanduser()
+                        _tmp_dir = Path(tempfile.gettempdir()).resolve()
                         try:
-                            import base64 as _b64mod
-                            with open(_ss_path, "rb") as _sf:
-                                _screenshot_image_b64 = _b64mod.b64encode(_sf.read()).decode()
-                            result = "[screenshot captured]"
-                            import os
-                            os.unlink(_ss_path)
-                        except Exception as _ss_err:
-                            logger.warning("failed to read screenshot {}: {}", _ss_path, _ss_err)
+                            _resolved_parent = _ss_file.resolve(strict=False).parent
+                        except Exception:
+                            _resolved_parent = None
+                        _safe_marker = (
+                            _ss_file.name.startswith("bao_screenshot_")
+                            and _resolved_parent == _tmp_dir
+                        )
+                        if _safe_marker:
+                            try:
+                                import base64 as _b64mod
+
+                                with _ss_file.open("rb") as _sf:
+                                    _screenshot_image_b64 = _b64mod.b64encode(_sf.read()).decode()
+                                result = "[screenshot captured]"
+                            except Exception as _ss_err:
+                                logger.warning(
+                                    "⚠️ 截图读取失败 / screenshot read failed: {}: {}",
+                                    _ss_file,
+                                    _ss_err,
+                                )
+                            finally:
+                                try:
+                                    if _ss_file.exists():
+                                        _ss_file.unlink()
+                                except Exception:
+                                    pass
+                        else:
+                            logger.warning(
+                                "⚠️ 忽略非安全截图路径 / ignored unsafe screenshot path: {}",
+                                _ss_file,
+                            )
                     messages = self.context.add_tool_result(
-                        messages, tool_call.id, tool_call.name, result,
+                        messages,
+                        tool_call.id,
+                        tool_call.name,
+                        result,
                         image_base64=_screenshot_image_b64,
+                    )
+                    _iter_completed.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": tool_call.name,
+                            "content": result,
+                        }
                     )
 
                     result_lower = result.lower() if isinstance(result, str) else ""
@@ -642,11 +769,10 @@ class AgentLoop:
                         consecutive_errors = 0
 
                     # Interrupt: yield to pending user message at tool boundary
-                    if (
-                        current_task_id is not None
-                        and current_task_id in self._interrupted_task_ids
-                    ):
-                        logger.info(
+                    if current_task_ref is not None and current_task_ref in self._interrupted_tasks:
+                        if _iter_completed:
+                            _completed_tool_msgs.extend(_iter_completed)
+                        logger.debug(
                             "Interrupted at tool boundary in session {}", artifact_session_key
                         )
                         interrupted = True
@@ -667,12 +793,14 @@ class AgentLoop:
                     error_feedback = f"The tool returned an error. Analyze what went wrong and try a different approach.{failed_hint}"
                 if error_feedback:
                     messages.append({"role": "user", "content": error_feedback})
+                if _iter_completed and not interrupted:
+                    _completed_tool_msgs.extend(_iter_completed)
                 # Break outer loop if interrupted at tool boundary
-                if current_task_id is not None and current_task_id in self._interrupted_task_ids:
+                if current_task_ref is not None and current_task_ref in self._interrupted_tasks:
                     interrupted = True
                     break
             else:
-                if current_task_id is not None and current_task_id in self._interrupted_task_ids:
+                if current_task_ref is not None and current_task_ref in self._interrupted_tasks:
                     interrupted = True
                     break
                 final_content = self._strip_think(response.content)
@@ -687,6 +815,7 @@ class AgentLoop:
                 total_errors,
                 reasoning_snippets,
                 interrupted,
+                _completed_tool_msgs,
             )
         return final_content, tools_used, tool_trace, total_errors, reasoning_snippets
 
@@ -715,6 +844,15 @@ class AgentLoop:
                 continue
 
             if (msg.content or "").strip().lower() == "/stop":
+                natural_key = self._dispatch_session_key(msg)
+                active_key = self.sessions.get_active_session_key(natural_key)
+                target_keys = [natural_key]
+                if active_key and active_key != natural_key:
+                    target_keys.append(active_key)
+                for target_key in target_keys:
+                    session = self.sessions.get_or_create(target_key)
+                    if self._clear_interactive_state(session):
+                        self.sessions.save(session)
                 await self._handle_stop(msg)
             else:
                 session_key = self._dispatch_session_key(msg)
@@ -726,11 +864,11 @@ class AgentLoop:
                         self._session_generations.get(session_key, 0) + 1
                     )
                     for t in busy_tasks:
-                        self._interrupted_task_ids.add(id(t))
+                        self._interrupted_tasks.add(t)
 
                     running_task = self._session_running_task.get(session_key)
                     if running_task and not running_task.done():
-                        self._interrupted_task_ids.add(id(running_task))
+                        self._interrupted_tasks.add(running_task)
 
                     cmd = (msg.content or "").strip().lower()
                     if msg.channel != "system" and not cmd.startswith("/"):
@@ -738,11 +876,25 @@ class AgentLoop:
                         active_override = self.sessions.get_active_session_key(natural_key)
                         key = active_override or natural_key
                         session = self.sessions.get_or_create(key)
-                        session.add_message("user", msg.content)
+                        pre_saved_token = msg.metadata.get("_pre_saved_token")
+                        if not isinstance(pre_saved_token, str) or not pre_saved_token:
+                            pre_saved_token = uuid.uuid4().hex
+                            msg.metadata["_pre_saved_token"] = pre_saved_token
+                        session.add_message(
+                            "user",
+                            msg.content,
+                            _pre_saved=True,
+                            _pre_saved_token=pre_saved_token,
+                        )
                         self.sessions.save(session)
                         msg.metadata["_pre_saved"] = True
 
-                    logger.info("Soft interrupt requested for busy session {}", session_key)
+                    if getattr(self.provider, "_api_mode", None) == "responses":
+                        for t in busy_tasks:
+                            if not t.done():
+                                t.cancel()
+
+                    logger.debug("Soft interrupt requested for busy session {}", session_key)
 
                 task_gen = self._session_generations.get(session_key, 0)
                 task = asyncio.create_task(
@@ -754,14 +906,14 @@ class AgentLoop:
                 def _on_done(t: asyncio.Task[None], k: str = session_key) -> None:
                     task_list = self._active_tasks.get(k)
                     if not task_list:
-                        self._interrupted_task_ids.discard(id(t))
+                        self._interrupted_tasks.discard(t)
                         return
                     try:
                         task_list.remove(t)
                     except ValueError:
-                        self._interrupted_task_ids.discard(id(t))
+                        self._interrupted_tasks.discard(t)
                         return
-                    self._interrupted_task_ids.discard(id(t))
+                    self._interrupted_tasks.discard(t)
                     if not task_list:
                         self._active_tasks.pop(k, None)
                         self._session_locks.pop(k, None)
@@ -784,11 +936,11 @@ class AgentLoop:
 
             running_task = self._session_running_task.pop(target_key, None)
             if running_task:
-                self._interrupted_task_ids.discard(id(running_task))
+                self._interrupted_tasks.discard(running_task)
 
             tasks = self._active_tasks.get(target_key, [])
             for t in tasks:
-                self._interrupted_task_ids.discard(id(t))
+                self._interrupted_tasks.discard(t)
             cancelled += sum(1 for t in tasks if not t.done() and t.cancel())
             if not any(not t.done() for t in tasks):
                 self._active_tasks.pop(target_key, None)
@@ -800,11 +952,15 @@ class AgentLoop:
 
         total = cancelled + sub_cancelled
         content = f"\u23f9 Stopped {total} task(s)." if total else "No active task to stop."
+        out_meta = dict(msg.metadata or {})
+        reply_to = out_meta.get("reply_to") if isinstance(out_meta.get("reply_to"), str) else None
         await self.bus.publish_outbound(
             OutboundMessage(
                 channel=msg.channel,
                 chat_id=msg.chat_id,
                 content=content,
+                reply_to=reply_to,
+                metadata=out_meta,
             )
         )
 
@@ -826,7 +982,7 @@ class AgentLoop:
                 response = await self._process_message(msg, **kwargs)
                 if response:
                     if self._session_generations.get(dispatch_key, 0) != task_generation:
-                        logger.info(
+                        logger.debug(
                             "Dropping stale response for session {} after /stop", dispatch_key
                         )
                         return
@@ -835,15 +991,15 @@ class AgentLoop:
                         try:
                             await self.on_system_response(response)
                         except Exception as cb_err:
-                            logger.warning("on_system_response callback failed: {}", cb_err)
+                            logger.debug("on_system_response callback failed: {}", cb_err)
                     await self.bus.publish_outbound(response)
             except asyncio.CancelledError:
-                logger.info("Task cancelled for session {}", dispatch_key)
+                logger.debug("Task cancelled for session {}", dispatch_key)
                 raise
             except Exception as e:
-                logger.error("Error processing message: {}", e)
+                logger.error("❌ 消息处理失败 / message error: {}", e)
                 if self._session_generations.get(dispatch_key, 0) != task_generation:
-                    logger.info("Suppressing stale error response for session {}", dispatch_key)
+                    logger.debug("Suppressing stale error response for session {}", dispatch_key)
                     return
                 await self.bus.publish_outbound(
                     OutboundMessage(
@@ -854,7 +1010,7 @@ class AgentLoop:
                 )
             finally:
                 if current_task:
-                    self._interrupted_task_ids.discard(id(current_task))
+                    self._interrupted_tasks.discard(current_task)
                     if self._session_running_task.get(dispatch_key) is current_task:
                         self._session_running_task.pop(dispatch_key, None)
 
@@ -870,7 +1026,7 @@ class AgentLoop:
 
     def stop(self) -> None:
         self._running = False
-        logger.info("Agent loop stopping")
+        logger.info("👋 停止代理 / agent stopping: main loop")
 
     async def _process_message(
         self,
@@ -884,7 +1040,7 @@ class AgentLoop:
             return await self._process_system_message(msg)
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
-        logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
+        logger.info("📨 收到消息 / in: {}:{}: {}", msg.channel, msg.sender_id, preview)
 
         # Layer 1/2: one-time stale artifact cleanup per process lifetime
         if not self._artifact_cleanup_done:
@@ -896,7 +1052,7 @@ class AgentLoop:
                     self.workspace, "_stale_", self._artifact_retention_days
                 ).cleanup_stale()
             except Exception as _e:
-                logger.warning("ctx stale cleanup failed: {}", _e)
+                logger.debug("ctx stale cleanup failed: {}", _e)
         natural_key = session_key or msg.session_key
         active_override = self.sessions.get_active_session_key(natural_key)
         key = active_override or natural_key
@@ -904,6 +1060,8 @@ class AgentLoop:
 
         # Handle slash commands
         cmd = msg.content.strip().lower()
+        if cmd.startswith("/") and self._clear_interactive_state(session):
+            self.sessions.save(session)
         if cmd == "/new":
             if session.messages:
                 old_messages = session.messages.copy()
@@ -920,7 +1078,7 @@ class AgentLoop:
             while self.sessions.session_exists(f"{natural_key}::{name}"):
                 idx += 1
                 name = f"s{idx}"
-            self._create_and_switch(natural_key, name)
+            commands.create_and_switch(self.sessions, natural_key, name)
             return self._reply(msg, f"好的，新对话开始啦「{name}」 🐱")
         if cmd == "/delete":
             active = self.sessions.get_active_session_key(natural_key)
@@ -946,18 +1104,50 @@ class AgentLoop:
             )
 
         if cmd == "/model" or cmd.startswith("/model "):
-            return self._handle_model_command(cmd, msg, session)
+            return commands.handle_model_command(
+                cmd,
+                msg,
+                session,
+                available_models=self.available_models,
+                current_model=self.model,
+                sessions=self.sessions,
+                apply_fn=self._apply_model_switch,
+            )
 
         if cmd == "/session":
-            return self._handle_session_command(msg, natural_key)
+            return commands.handle_session_command(msg, natural_key, sessions=self.sessions)
+
+        if cmd == "/memory":
+            return self._handle_memory_command(msg, session)
 
         pending = session.metadata.pop("_pending_model_select", None)
         pending_session = session.metadata.pop("_pending_session_select", None)
         if pending and cmd.isdigit():
-            return self._switch_model(int(cmd), msg, session)
+            return commands.switch_model(
+                int(cmd),
+                msg,
+                session,
+                available_models=self.available_models,
+                current_model=self.model,
+                sessions=self.sessions,
+                apply_fn=self._apply_model_switch,
+            )
         if pending_session and cmd.isdigit():
             self.sessions.save(session)
-            return self._select_session(int(cmd), msg, natural_key)
+            return commands.select_session(
+                int(cmd),
+                msg,
+                natural_key,
+                sessions=self.sessions,
+            )
+
+        if (
+            session.metadata.get("_pending_memory_list")
+            or session.metadata.get("_pending_memory_detail")
+            or session.metadata.get("_pending_memory_delete")
+            or session.metadata.get("_pending_memory_edit")
+        ):
+            return self._handle_memory_input(msg, session)
 
         # ── File-driven onboarding state machine ──
         # Stage detection: no INSTRUCTIONS.md → lang_select
@@ -981,11 +1171,11 @@ class AgentLoop:
                 try:
                     write_instructions(self.workspace, lang)
                 except Exception as e:
-                    logger.warning("Failed to write instructions template: {}", e)
+                    logger.debug("Failed to write instructions template: {}", e)
                 try:
                     write_heartbeat(self.workspace, lang)
                 except Exception as e:
-                    logger.warning("Failed to write heartbeat template: {}", e)
+                    logger.debug("Failed to write heartbeat template: {}", e)
                 self.context = ContextBuilder(
                     self.workspace, embedding_config=self.embedding_config
                 )
@@ -1020,7 +1210,7 @@ class AgentLoop:
                         self.workspace, embedding_config=self.embedding_config
                     )
                 except Exception as e:
-                    logger.warning("Failed to write persona profile: {}", e)
+                    logger.debug("Failed to write persona profile: {}", e)
             confirm_hint = {
                 "zh": "[系统：以上信息已自动保存，无需操作文件。]\n\n",
                 "en": "[System: Profile saved automatically. No file operations needed.]\n\n",
@@ -1059,8 +1249,30 @@ class AgentLoop:
         )
         related = _results[0] if not isinstance(_results[0], BaseException) else []
         experience = _results[1] if not isinstance(_results[1], BaseException) else []
+        history = session.get_history(max_messages=self.memory_window)
+        if msg.metadata.get("_pre_saved"):
+            token = msg.metadata.get("_pre_saved_token")
+            remove_idx = -1
+            if isinstance(token, str) and token:
+                for idx in range(len(history) - 1, -1, -1):
+                    item = history[idx]
+                    if item.get("role") == "user" and item.get("_pre_saved_token") == token:
+                        remove_idx = idx
+                        break
+            if remove_idx < 0:
+                for idx in range(len(history) - 1, -1, -1):
+                    item = history[idx]
+                    if (
+                        item.get("role") == "user"
+                        and item.get("_pre_saved")
+                        and item.get("content") == msg.content
+                    ):
+                        remove_idx = idx
+                        break
+            if remove_idx >= 0:
+                history = [*history[:remove_idx], *history[remove_idx + 1 :]]
         initial_messages = self.context.build_messages(
-            history=session.get_history(max_messages=self.memory_window),
+            history=history,
             current_message=msg.content,
             media=msg.media if msg.media else None,
             channel=msg.channel,
@@ -1074,11 +1286,14 @@ class AgentLoop:
             session.add_message("user", msg.content)
             self.sessions.save(session)
 
-        async def _bus_progress(content: str) -> None:
-            if content == "\x00":
+        async def _bus_publish(content: str, *, is_tool_hint: bool = False) -> None:
+            if content == "\x00" and not is_tool_hint:
                 return
             meta = dict(msg.metadata or {})
             meta["_progress"] = True
+            if is_tool_hint:
+                logger.debug("Tool hint sent to {}:{}: {}", msg.channel, msg.chat_id, content)
+                meta["_tool_hint"] = True
             await self.bus.publish_outbound(
                 OutboundMessage(
                     channel=msg.channel,
@@ -1088,19 +1303,13 @@ class AgentLoop:
                 )
             )
 
-        async def _bus_tool_hint(content: str) -> None:
-            logger.debug("Tool hint sent to {}:{}: {}", msg.channel, msg.chat_id, content)
-            meta = dict(msg.metadata or {})
-            meta["_progress"] = True
-            meta["_tool_hint"] = True
-            await self.bus.publish_outbound(
-                OutboundMessage(
-                    channel=msg.channel,
-                    chat_id=msg.chat_id,
-                    content=content,
-                    metadata=meta,
-                )
-            )
+        run_result = await self._run_agent_loop(
+            initial_messages,
+            on_progress=on_progress or _bus_publish,
+            on_tool_hint=lambda c: _bus_publish(c, is_tool_hint=True),
+            artifact_session_key=session.key,
+            return_interrupt=True,
+        )
 
         (
             final_content,
@@ -1109,16 +1318,32 @@ class AgentLoop:
             total_errors,
             reasoning_snippets,
             interrupted,
-        ) = await self._run_agent_loop(
-            initial_messages,
-            on_progress=on_progress or _bus_progress,
-            on_tool_hint=_bus_tool_hint,
-            artifact_session_key=session.key,
-            return_interrupt=True,
-        )
+            completed_tool_msgs,
+        ) = run_result
 
         if interrupted:
-            logger.info("Interrupted response dropped for session {}", msg.session_key)
+            if completed_tool_msgs:
+                token = msg.metadata.get("_pre_saved_token")
+                insert_after = -1
+                if token:
+                    for idx, item in enumerate(session.messages):
+                        if item.get("role") == "user" and item.get("_pre_saved_token") == token:
+                            insert_after = idx
+                            break
+                if insert_after < 0:
+                    for idx in range(len(session.messages) - 1, -1, -1):
+                        item = session.messages[idx]
+                        if item.get("role") == "user" and item.get("content") == msg.content:
+                            insert_after = idx
+                            break
+                insert_at = max(0, insert_after + 1)
+                for offset, item in enumerate(completed_tool_msgs):
+                    msg_item = dict(item)
+                    msg_item.setdefault("timestamp", datetime.now().isoformat())
+                    session.messages.insert(insert_at + offset, msg_item)
+                session.updated_at = datetime.now()
+                self.sessions.save(session)
+            logger.debug("Interrupted response dropped for session {}", msg.session_key)
             return None
 
         generation_key = expected_generation_key or msg.session_key
@@ -1126,7 +1351,7 @@ class AgentLoop:
             expected_generation is not None
             and self._session_generations.get(generation_key, 0) != expected_generation
         ):
-            logger.info(
+            logger.debug(
                 "Suppressing stale completion before persistence for session {}", generation_key
             )
             return None
@@ -1138,31 +1363,30 @@ class AgentLoop:
             expected_generation is not None
             and self._session_generations.get(generation_key, 0) != expected_generation
         ):
-            logger.info(
+            logger.debug(
                 "Suppressing stale side-effects before persistence for session {}", generation_key
             )
             return None
 
-        if len(tools_used) >= 2 or total_errors > 0:
-            asyncio.create_task(
-                self._summarize_experience(
-                    msg.content,
-                    final_content,
-                    tools_used,
-                    tool_trace,
-                    total_errors,
-                    reasoning_snippets,
-                )
-            )
-
-        if len(session.messages) % 10 == 0:
-            asyncio.create_task(self._merge_and_cleanup_experiences())
+        self._maybe_learn_experience(
+            session=session,
+            user_request=msg.content,
+            final_response=final_content,
+            tools_used=tools_used,
+            tool_trace=tool_trace,
+            total_errors=total_errors,
+            reasoning_snippets=reasoning_snippets,
+        )
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
-        logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
+        logger.info("💬 回复消息 / out: {}:{}: {}", msg.channel, msg.sender_id, preview)
+
+        persisted_content = final_content
+        if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
+            persisted_content = t.last_sent_summary or final_content
 
         session.add_message(
-            "assistant", final_content, tools_used=tools_used if tools_used else None
+            "assistant", persisted_content, tools_used=tools_used if tools_used else None
         )
 
         self.sessions.save(session)
@@ -1174,6 +1398,7 @@ class AgentLoop:
             return None
 
         out_meta = dict(msg.metadata or {})
+        reply_to = out_meta.get("reply_to") if isinstance(out_meta.get("reply_to"), str) else None
         if any(self._last_tool_budget.values()):
             out_meta["_tool_budget"] = dict(self._last_tool_budget)
 
@@ -1181,11 +1406,12 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=final_content,
+            reply_to=reply_to,
             metadata=out_meta,
         )
 
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
-        logger.info("Processing system message from {}", msg.sender_id)
+        logger.info("📨 收到系统 / system in: {}", msg.sender_id)
 
         if ":" in msg.chat_id:
             origin_channel, origin_chat_id = msg.chat_id.split(":", 1)
@@ -1224,26 +1450,23 @@ class AgentLoop:
         if final_content is None:
             final_content = "Background task completed."
 
-        # Experience learning for system messages (same as normal messages)
-        if len(tools_used) >= 2 or total_errors > 0:
-            asyncio.create_task(
-                self._summarize_experience(
-                    msg.content,
-                    final_content,
-                    tools_used,
-                    tool_trace,
-                    total_errors,
-                    reasoning_snippets,
-                )
-            )
-
-        if len(session.messages) % 10 == 0:
-            asyncio.create_task(self._merge_and_cleanup_experiences())
+        self._maybe_learn_experience(
+            session=session,
+            user_request=msg.content,
+            final_response=final_content,
+            tools_used=tools_used,
+            tool_trace=tool_trace,
+            total_errors=total_errors,
+            reasoning_snippets=reasoning_snippets,
+        )
 
         session.add_message(
             "user", f"[System: {msg.sender_id}] {msg.content}", _source=msg.sender_id
         )
-        session.add_message("assistant", final_content)
+        persisted_content = final_content
+        if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
+            persisted_content = t.last_sent_summary or final_content
+        session.add_message("assistant", persisted_content)
         self.sessions.save(session)
 
         # If message tool already sent content, suppress duplicate outbound
@@ -1252,6 +1475,7 @@ class AgentLoop:
 
         out_meta: dict[str, Any] = dict(msg.metadata or {})
         out_meta["session_key"] = session_key
+        reply_to = out_meta.get("reply_to") if isinstance(out_meta.get("reply_to"), str) else None
         if any(self._last_tool_budget.values()):
             out_meta["_tool_budget"] = dict(self._last_tool_budget)
 
@@ -1259,136 +1483,225 @@ class AgentLoop:
             channel=origin_channel,
             chat_id=origin_chat_id,
             content=final_content,
+            reply_to=reply_to,
             metadata=out_meta,
         )
 
-    def _handle_model_command(
-        self, cmd: str, msg: InboundMessage, session: Session
-    ) -> OutboundMessage:
-        _, _, arg = cmd.partition(" ")
-        if arg.isdigit():
-            return self._switch_model(int(arg), msg, session)
-
-        if not self.available_models:
-            return OutboundMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                content=f"Current model: `{self.model}`\n\nNo alternative models configured. Add `models` list to config.",
-            )
-
-        lines = [f"Current model: `{self.model}`\n"]
-        lines += [
-            f"  {i}. {m}{' ✓' if m == self.model else ''}"
-            for i, m in enumerate(self.available_models, 1)
-        ]
-        lines.append("\nReply with a number to switch.")
-
-        session.metadata["_pending_model_select"] = True
-        self.sessions.save(session)
-        return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content="\n".join(lines))
-
-    def _switch_model(self, idx: int, msg: InboundMessage, session: Session) -> OutboundMessage:
-        if idx < 1 or idx > len(self.available_models):
-            return OutboundMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                content=f"Invalid selection. Choose 1-{len(self.available_models)}.",
-            )
-
-        new_model = self.available_models[idx - 1]
-        self.model = new_model
-
-        if self._config:
-            try:
-                from bao.providers import make_provider
-
-                self.provider = make_provider(self._config, new_model)
-                self.subagents.provider = self.provider
-                self.subagents.model = new_model
-            except Exception as e:
-                logger.warning("Failed to rebuild provider for {}: {}", new_model, e)
-
-        self.sessions.save(session)
-        return OutboundMessage(
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            content=f"Model switched to `{self.model}`",
-        )
-
-    # ------------------------------------------------------------------
-    # /session — multi-conversation switching
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _reply(msg: "InboundMessage", content: str) -> "OutboundMessage":
-        return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content)
+        return commands.reply(msg, content)
 
-    @staticmethod
-    def _format_session_name(key: str, natural_key: str) -> str:
-        if key == natural_key:
-            return "default"
-        prefix = f"{natural_key}::"
-        return key[len(prefix) :] if key.startswith(prefix) else key
+    def _apply_model_switch(self, new_model: str) -> None:
+        old_provider = self.provider
+        old_model = self.model
 
-    def _create_and_switch(self, natural_key: str, name: str) -> str:
-        key = f"{natural_key}::{name}"
-        self.sessions.save(self.sessions.get_or_create(key))
-        self.sessions.set_active_session_key(natural_key, key)
-        return name
+        try:
+            if not self._config:
+                self.model = new_model
+                self.subagents.model = new_model
+                return
 
-    def _handle_session_command(self, msg: InboundMessage, natural_key: str) -> OutboundMessage:
-        sessions = self.sessions.list_sessions_for(natural_key) or [
-            {"key": natural_key, "updated_at": None}
-        ]
-        active = self.sessions.get_active_session_key(natural_key)
-        current_key = active or natural_key
+            from bao.providers import make_provider
 
-        lines = ["📋 会话列表:\n  0. 取消\n"]
-        for i, s in enumerate(sessions, 1):
-            skey = str(s.get("key") or natural_key)
-            metadata = s.get("metadata") or {}
-            title = metadata.get("title")
-            name = title or self._format_session_name(skey, natural_key)
-            marker = " ✓" if skey == current_key else ""
-            updated = s.get("updated_at")
-            ts = f" ({str(updated)[:16]})" if updated else ""
-            lines.append(f"  {i}. {name}{marker}{ts}")
-        lines.append("\n输入数字选择，/new 创建新会话")
+            new_provider = make_provider(self._config, new_model)
+            self.provider = new_provider
+            self.subagents.provider = new_provider
+            self.subagents.model = new_model
+            self.model = new_model
+        except Exception as e:
+            self.provider = old_provider
+            self.subagents.provider = old_provider
+            self.subagents.model = old_model
+            self.model = old_model
+            logger.warning("⚠️ Provider 重建失败 / rebuild failed for {}: {}", new_model, e)
+            raise
 
-        default_session = self.sessions.get_or_create(current_key)
-        default_session.metadata["_pending_session_select"] = True
-        self.sessions.save(default_session)
+    def _clear_memory_state(self, session: Session) -> None:
+        for k in (
+            "_pending_memory_list",
+            "_pending_memory_detail",
+            "_pending_memory_delete",
+            "_pending_memory_edit",
+            "_memory_entries",
+            "_memory_selected_index",
+        ):
+            session.metadata.pop(k, None)
+
+    def _clear_model_session_state(self, session: Session) -> None:
+        session.metadata.pop("_pending_model_select", None)
+        session.metadata.pop("_pending_session_select", None)
+
+    def _clear_interactive_state(self, session: Session) -> bool:
+        keys = (
+            "_pending_memory_list",
+            "_pending_memory_detail",
+            "_pending_memory_delete",
+            "_pending_memory_edit",
+            "_memory_entries",
+            "_memory_selected_index",
+            "_pending_model_select",
+            "_pending_session_select",
+        )
+        if not any(k in session.metadata for k in keys):
+            return False
+        self._clear_memory_state(session)
+        self._clear_model_session_state(session)
+        return True
+
+    def _handle_memory_command(self, msg: InboundMessage, session: Session) -> OutboundMessage:
+        entries = self.context.memory.list_long_term_entries()
+        if not entries:
+            self._clear_memory_state(session)
+            self.sessions.save(session)
+            return self._reply(msg, "暂无记忆 📭")
+
+        self._clear_memory_state(session)
+
+        by_cat: dict[str, list[tuple[int, dict[str, str]]]] = {}
+        for i, e in enumerate(entries, 1):
+            cat = e.get("category", "general")
+            by_cat.setdefault(cat, []).append((i, e))
+
+        lines = ["🧠 记忆列表:\n"]
+        for cat, items in by_cat.items():
+            lines.append(f"[{cat}]")
+            for idx, e in items:
+                content = e.get("content", "")
+                preview = content[:60].replace("\n", " ")
+                if len(content) > 60:
+                    preview += "..."
+                lines.append(f"  {idx}. {preview}")
+            lines.append("")
+
+        lines.append("输入编号查看详情，输入 0 进入删除模式，其他输入退出")
+
+        session.metadata["_pending_memory_list"] = True
+        session.metadata["_memory_entries"] = entries
+        self.sessions.save(session)
 
         return self._reply(msg, "\n".join(lines))
 
-    def _select_session(self, idx: int, msg: InboundMessage, natural_key: str) -> OutboundMessage:
-        if idx == 0:
-            return self._reply(msg, "已取消 👌")
+    def _handle_memory_input(self, msg: InboundMessage, session: Session) -> OutboundMessage:
+        text = msg.content.strip()
+        entries: list[dict[str, str]] = session.metadata.get("_memory_entries", [])
 
-        sessions = self.sessions.list_sessions_for(natural_key) or [
-            {"key": natural_key, "updated_at": None}
-        ]
+        if session.metadata.get("_pending_memory_edit"):
+            idx = session.metadata.get("_memory_selected_index", 0)
+            if 0 < idx <= len(entries):
+                entry = entries[idx - 1]
+                cat = entry.get("category", "general")
+                key = entry.get("key", "")
+                if not key or not self.context.memory.exists_long_term_key(key):
+                    self._clear_memory_state(session)
+                    self.sessions.save(session)
+                    return self._reply(msg, "该记忆已失效，请重新 /memory")
+                if not text:
+                    self._clear_memory_state(session)
+                    self.sessions.save(session)
+                    return self._reply(msg, "内容为空，已取消编辑")
+                if not self.context.memory.delete_long_term_by_key(key):
+                    self._clear_memory_state(session)
+                    self.sessions.save(session)
+                    return self._reply(msg, "该记忆已失效，请重新 /memory")
+                self.context.memory.write_long_term(text, cat)
+                self._clear_memory_state(session)
+                self.sessions.save(session)
+                return self._reply(msg, f"已更新 [{cat}] 记忆 ✅")
+            self._clear_memory_state(session)
+            self.sessions.save(session)
+            return self._reply(msg, "无效操作，已退出记忆管理")
 
-        if idx < 1 or idx > len(sessions):
-            return self._reply(msg, f"无效选择，请输入 0-{len(sessions)}")
+        if session.metadata.get("_pending_memory_delete"):
+            fresh = self.context.memory.list_long_term_entries()
+            fresh_keys = {e.get("key", "") for e in fresh}
+            parts = set(text.split())
+            deleted = 0
+            skipped = 0
+            for p in parts:
+                if p.isdigit():
+                    idx = int(p)
+                    if 0 < idx <= len(entries):
+                        key = entries[idx - 1].get("key", "")
+                        if key and key not in fresh_keys:
+                            skipped += 1
+                            continue
+                        if key:
+                            if self.context.memory.delete_long_term_by_key(key):
+                                deleted += 1
+                                fresh_keys.discard(key)
+            if deleted:
+                asyncio.create_task(
+                    asyncio.to_thread(self.context.memory.embed_long_term_aggregate)
+                )
+            self._clear_memory_state(session)
+            self.sessions.save(session)
+            if deleted:
+                suffix = f"（{skipped} 条已失效跳过）" if skipped else ""
+                return self._reply(msg, f"已删除 {deleted} 条记忆 🗑️{suffix}")
+            if skipped:
+                return self._reply(msg, f"{skipped} 条记忆已失效，未执行删除")
+            return self._reply(msg, "未删除任何记忆，已退出")
 
-        selected = sessions[idx - 1]
-        selected_key = str(selected.get("key") or natural_key)
+        if session.metadata.get("_pending_memory_detail"):
+            if text == "9":
+                session.metadata["_pending_memory_edit"] = True
+                session.metadata.pop("_pending_memory_detail", None)
+                self.sessions.save(session)
+                return self._reply(msg, "请输入新内容替换该条记忆：")
+            if text == "0":
+                idx = session.metadata.get("_memory_selected_index", 0)
+                deleted = False
+                if 0 < idx <= len(entries):
+                    key = entries[idx - 1].get("key", "")
+                    if key:
+                        fresh = self.context.memory.list_long_term_entries()
+                        fresh_keys = {e.get("key", "") for e in fresh}
+                        if key not in fresh_keys:
+                            self._clear_memory_state(session)
+                            self.sessions.save(session)
+                            return self._reply(msg, "该记忆已失效，无需删除")
+                        deleted = self.context.memory.delete_long_term_by_key(key)
+                        if deleted:
+                            asyncio.create_task(
+                                asyncio.to_thread(self.context.memory.embed_long_term_aggregate)
+                            )
+                self._clear_memory_state(session)
+                self.sessions.save(session)
+                if deleted:
+                    return self._reply(msg, "已删除该条记忆 🗑️")
+                return self._reply(msg, "删除失败")
+            return self._handle_memory_command(msg, session)
 
-        active = self.sessions.get_active_session_key(natural_key)
-        current_key = active or natural_key
-        if selected_key == current_key:
-            return self._reply(msg, "已在当前会话 👌")
+        if session.metadata.get("_pending_memory_list"):
+            if text == "0":
+                session.metadata["_pending_memory_delete"] = True
+                session.metadata.pop("_pending_memory_list", None)
+                self.sessions.save(session)
+                return self._reply(msg, "输入要删除的编号（空格分隔可批量删），输入其他退出")
+            if text.isdigit():
+                idx = int(text)
+                if 0 < idx <= len(entries):
+                    entry = entries[idx - 1]
+                    cat = entry.get("category", "general")
+                    content = entry.get("content", "")
+                    session.metadata["_pending_memory_detail"] = True
+                    session.metadata["_memory_selected_index"] = idx
+                    session.metadata.pop("_pending_memory_list", None)
+                    self.sessions.save(session)
+                    return self._reply(
+                        msg,
+                        f"🧠 [{cat}] 记忆详情:\n\n{content}\n\n输入 9 编辑，输入 0 删除，其他返回列表",
+                    )
+                self._clear_memory_state(session)
+                self.sessions.save(session)
+                return self._reply(msg, "无效编号，已退出记忆管理")
+            self._clear_memory_state(session)
+            self.sessions.save(session)
+            return self._reply(msg, "已退出记忆管理 👌")
 
-        if selected_key == natural_key:
-            self.sessions.clear_active_session_key(natural_key)
-        else:
-            self.sessions.set_active_session_key(natural_key, selected_key)
-
-        metadata = selected.get("metadata") or {}
-        title = metadata.get("title")
-        name = title or self._format_session_name(selected_key, natural_key)
-        return self._reply(msg, f"已切换到会话「{name}」 🔄")
+        self._clear_memory_state(session)
+        self.sessions.save(session)
+        return self._reply(msg, "已退出记忆管理 👌")
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> None:
         memory = self.context.memory
@@ -1397,7 +1710,7 @@ class AgentLoop:
             old_messages = session.messages
             keep_count = 0
             logger.info(
-                "Memory consolidation (archive_all): {} total messages archived",
+                "🧠 开始整合 / consolidation start: {} total messages archived",
                 len(session.messages),
             )
         else:
@@ -1425,7 +1738,7 @@ class AgentLoop:
             if not old_messages:
                 return
             logger.info(
-                "Memory consolidation started: {} total, {} new to consolidate, {} keep",
+                "🧠 开始整合 / consolidation start: {} total, {} new to consolidate, {} keep",
                 len(session.messages),
                 len(old_messages),
                 keep_count,
@@ -1440,20 +1753,39 @@ class AgentLoop:
                 f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}"
             )
         conversation = "\n".join(lines)
-        current_memory = memory.read_long_term()
+        current_memory_parts: list[str] = []
+        for category in MEMORY_CATEGORIES:
+            category_memory = memory.read_long_term(category).strip()
+            current_memory_parts.append(f"### {category}\n{category_memory or '(empty)'}")
+        current_memory = "\n\n".join(current_memory_parts)
+
+        caps_text = "\n".join(
+            f'   - "{cat}": <= {MEMORY_CATEGORY_CAPS[cat]} chars' for cat in MEMORY_CATEGORIES
+        )
 
         prompt = f"""You are a memory consolidation agent. Process this conversation and return a JSON object with exactly two keys:
 
-1. "history_entry": A paragraph (2-5 sentences) summarizing the key events/decisions/topics. Start with a timestamp like [YYYY-MM-DD HH:MM].
+1. "history_entry": A paragraph (2-5 sentences) summarizing key events/decisions/topics. Start with a timestamp like [YYYY-MM-DD HH:MM].
 
-2. "memory_updates": An object with categorized memory updates. Keys are categories, values are the updated content for that category. Only include categories that have content. Available categories:
+2. "memory_updates": An object where keys are memory categories and values are the FINAL merged content for that category.
+
+Memory categories:
    - "preference": User preferences, habits, communication style, likes/dislikes
    - "personal": User identity, location, relationships, personal facts
    - "project": Project context, technical decisions, tools/services, codebase info
    - "general": Other durable facts that don't fit above categories
 
-## Current Long-term Memory
-{current_memory or "(empty)"}
+Hard caps per category:
+{caps_text}
+
+Rules for memory_updates:
+   - Merge with existing memory; do not blindly append duplicates.
+   - Keep only durable facts. Remove stale or contradictory items.
+   - Values must contain ONLY category content. Do NOT include headings like "### preference" or markers like "[preference]".
+   - You may set a category to "" to intentionally clear it.
+
+## Current Long-term Memory (by category)
+{current_memory}
 
 ## Conversation to Process
 {conversation}
@@ -1476,14 +1808,14 @@ Respond with ONLY valid JSON, no markdown fences."""
             )
             text = (response.content or "").strip()
             if not text:
-                logger.warning("Memory consolidation: LLM returned empty response, skipping")
+                logger.warning("⚠️ 整合结果为空 / empty response: memory consolidation skipped")
                 return
             if text.startswith("```"):
                 text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             result = json_repair.loads(text)
             if not isinstance(result, dict):
                 logger.warning(
-                    "Memory consolidation: unexpected response type, skipping. Response: {}",
+                    "⚠️ 整合返回异常 / unexpected response: {}",
                     text[:200],
                 )
                 return
@@ -1507,26 +1839,24 @@ Respond with ONLY valid JSON, no markdown fences."""
             else:
                 session.last_consolidated = len(session.messages) - keep_count
             logger.info(
-                "Memory consolidation done: {} messages, last_consolidated={}",
+                "✅ 完成整合 / consolidation done: {} messages, last_consolidated={}",
                 len(session.messages),
                 session.last_consolidated,
             )
         except Exception as e:
-            logger.error("Memory consolidation failed: {}", e)
+            logger.error("❌ 记忆整合失败 / consolidation failed: {}", e)
 
     @staticmethod
     def _parse_llm_json(content: str | None) -> dict[str, Any] | None:
-        text = (content or "").strip()
-        if not text:
-            return None
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        result = json_repair.loads(text)
-        return result if isinstance(result, dict) else None
+        return shared.parse_llm_json(content)
 
     async def _call_utility_llm(self, system: str, prompt: str) -> dict[str, Any] | None:
-        provider = self._utility_provider or self.provider
-        model = self._utility_model or self.model
+        if self._utility_provider is not None and self._utility_model:
+            provider = self._utility_provider
+            model = self._utility_model
+        else:
+            provider = self.provider
+            model = self.model
         response = await provider.chat(
             messages=[
                 {"role": "system", "content": system},
@@ -1567,40 +1897,20 @@ Respond with ONLY valid JSON, no markdown fences."""
                 title = str(title).strip()[:30]
                 session.metadata["title"] = title
                 self.sessions.save(session)
-                logger.info("Session title generated: {} → {}", session.key, title)
+                logger.debug("Session title generated: {} → {}", session.key, title)
         except Exception as e:
             logger.debug("Session title generation failed: {}", e)
 
     async def _call_experience_llm(self, system: str, prompt: str) -> dict[str, Any] | None:
-        mode = (self._experience_mode or "utility").lower()
-        if mode == "none":
-            return None
-
-        use_utility = False
-        if mode == "main":
-            use_utility = False
-        elif mode == "utility":
-            use_utility = self._utility_provider is not None
-        else:
-            use_utility = self._utility_provider is not None
-
-        source = "main" if mode == "main" else "utility"
-        if use_utility and self._utility_provider is not None:
-            provider, model = self._utility_provider, self._utility_model or self.model
-        else:
-            provider, model = self.provider, self.model
-
-        response = await provider.chat(
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
-            model=model,
-            temperature=0.3,
-            max_tokens=512,
-            source=source,
+        return await shared.call_experience_llm(
+            system,
+            prompt,
+            experience_mode=self._experience_mode,
+            provider=self.provider,
+            model=self.model,
+            utility_provider=self._utility_provider,
+            utility_model=self._utility_model,
         )
-        return self._parse_llm_json(response.content)
 
     def _compact_messages(
         self,
@@ -1609,55 +1919,13 @@ Respond with ONLY valid JSON, no markdown fences."""
         last_state_text: str | None,
         artifact_store: "ArtifactStore | None",
     ) -> list[dict[str, Any]]:
-        """Layer 2: 保留最近 N 个 tool 成对消息，归档其余。"""
-        if artifact_store is not None:
-            try:
-                artifact_store.archive_json("evicted_messages", "compacted_context", messages)
-            except Exception as exc:
-                logger.warning("ctx[L2] archive failed: {}", exc)
-        tool_blocks: list[list[dict[str, Any]]] = []
-        i = 0
-        while i < len(messages):
-            msg = messages[i]
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                tc_ids = {tc["id"] for tc in msg["tool_calls"]}
-                block, j = [msg], i + 1
-                while (
-                    j < len(messages)
-                    and messages[j].get("role") == "tool"
-                    and messages[j].get("tool_call_id") in tc_ids
-                ):
-                    block.append(messages[j])
-                    j += 1
-                tool_blocks.append(block)
-                i = j
-            else:
-                i += 1
-        recent_blocks = tool_blocks[-self._compact_keep_blocks :]
-        recent_msgs = [m for block in recent_blocks for m in block]
-        state_note = (
-            f"\n\n[Compacted context. Previous state:\n{last_state_text}\n]"
-            if last_state_text
-            else "\n\n[Compacted context: older messages archived.]"
+        return shared.compact_messages(
+            messages,
+            initial_messages,
+            last_state_text,
+            artifact_store,
+            keep_blocks=self._compact_keep_blocks,
         )
-        system_msgs = [m for m in initial_messages if m.get("role") == "system"]
-        user_msgs = [m for m in initial_messages if m.get("role") == "user"]
-        if user_msgs:
-            original_content = str(user_msgs[0].get("content", ""))
-            if "[Compacted context" in original_content:
-                state_note = ""
-            user_msgs = [
-                {**user_msgs[0], "content": original_content + state_note},
-                *user_msgs[1:],
-            ]
-        new_messages = system_msgs + user_msgs + recent_msgs
-        logger.debug(
-            "ctx[L2] compacted: {} -> {} msgs, {} blocks",
-            len(messages),
-            len(new_messages),
-            len(recent_blocks),
-        )
-        return new_messages
 
     async def _compress_state(
         self,
@@ -1666,192 +1934,59 @@ Respond with ONLY valid JSON, no markdown fences."""
         failed_directions: list[str],
         previous_state: str | None = None,
     ) -> str | None:
-        if self._experience_mode == "none":
-            parts = [f"[Progress] {len(tool_trace)} steps completed"]
-            if failed_directions:
-                parts.append(f"[Failed] {'; '.join(failed_directions[-3:])}")
-            recent = "; ".join(t.split("→")[0].strip() for t in tool_trace[-5:])
-            parts.append(f"[Recent] {recent}")
-            return "\n".join(parts)
-
-        trace_str = "\n".join(tool_trace[-10:])
-        reasoning_str = " | ".join(reasoning_snippets[-5:]) if reasoning_snippets else "none"
-        failed_str = "; ".join(failed_directions[-5:]) if failed_directions else "none"
-        prev_section = (
-            f"\n## Previous State (update this, don't start from scratch)\n{previous_state}"
-            if previous_state
-            else ""
+        return await shared.compress_state(
+            tool_trace,
+            reasoning_snippets,
+            failed_directions,
+            previous_state,
+            experience_mode=self._experience_mode,
+            llm_fn=self._call_experience_llm,
+            label="agent",
         )
-        has_failures = len(failed_directions) >= 2
-        key_count = "4" if has_failures else "3"
-        audit_section = ""
-        if has_failures:
-            audit_section = '\n4. "audit": 1-2 actionable corrections — what specific mistake to avoid and what concrete action to take instead (NOT vague self-criticism). Omit if no clear correction exists.'
-        prompt = f"""Compress this agent execution state into a structured summary. Return JSON with exactly {key_count} keys:
-
-1. "conclusions": What has been established so far — key findings, partial answers, verified facts (2-3 sentences)
-2. "evidence": Sources consulted, tools used successfully, data gathered (1-2 sentences)
-3. "unexplored": Branches mentioned but NOT yet executed, open questions, alternative approaches to try next (1-3 bullet points as a single string){audit_section}
-
-## Execution Trace
-{trace_str}
-
-## Reasoning Steps
-{reasoning_str[:400]}
-
-## Failed Approaches
-{failed_str}{prev_section}
-
-Respond with ONLY valid JSON."""
-        try:
-            result = await self._call_experience_llm(
-                "You are a trajectory compression agent. Respond only with valid JSON.", prompt
-            )
-            if not result:
-                return None
-            parts = []
-            if c := result.get("conclusions"):
-                parts.append(f"[Conclusions] {c}")
-            if e := result.get("evidence"):
-                parts.append(f"[Evidence] {e}")
-            if u := result.get("unexplored"):
-                parts.append(f"[Unexplored branches — prioritize these next] {u}")
-            if a := result.get("audit"):
-                parts.append(f"[Audit — correct these mistakes] {a}")
-            return "\n".join(parts) if parts else None
-        except Exception as e:
-            logger.debug("State compression skipped: {}", e)
-            return None
 
     async def _check_sufficiency(self, user_request: str, tool_trace: list[str]) -> bool:
-        if self._experience_mode == "none":
-            return False
+        return await shared.check_sufficiency(
+            user_request,
+            tool_trace,
+            experience_mode=self._experience_mode,
+            llm_fn=self._call_experience_llm,
+        )
 
-        trace_summary = "; ".join(t.split("→")[0].strip() for t in tool_trace[-8:])
-        prompt = f"""Given the user's request and the tools already executed, is there enough information to provide a complete answer?
-
-User request: {user_request[:300]}
-Steps taken: {trace_summary}
-
-Return JSON: {{"sufficient": true}} or {{"sufficient": false}}"""
-        try:
-            result = await self._call_experience_llm(
-                "You are a task completion verifier. Respond only with valid JSON.", prompt
-            )
-            return bool(result and result.get("sufficient"))
-        except Exception:
-            return False
-
-    async def _summarize_experience(
+    def _maybe_learn_experience(
         self,
+        *,
+        session: Session,
         user_request: str,
         final_response: str,
         tools_used: list[str],
         tool_trace: list[str],
-        total_errors: int = 0,
-        reasoning_snippets: list[str] | None = None,
+        total_errors: int,
+        reasoning_snippets: list[str] | None,
     ) -> None:
-        memory = self.context.memory
-        tools_str = ", ".join(dict.fromkeys(tools_used))
-        trace_str = " → ".join(tool_trace) if tool_trace else "none"
-        reasoning_str = " | ".join(reasoning_snippets[:5]) if reasoning_snippets else "none"
-        prompt = f"""Analyze this completed task and extract reusable lessons. Return a JSON object with exactly six keys:
-
-1. "task": One-sentence description of what the user asked for (max 80 chars)
-2. "outcome": "success" or "partial" or "failed"
-3. "quality": Integer 1-5 rating of how useful this experience would be for future similar tasks (5=highly reusable strategy, 1=trivial or too specific)
-4. "category": One of: "coding", "search", "file", "config", "analysis", "general"
-5. "lessons": 1-3 sentences of actionable lessons learned — what worked, what didn't, what to do differently next time. For successful tasks, also extract the winning strategy that should be reused. Focus on strategies and patterns, not task-specific details.
-6. "keywords": 2-5 short keywords/phrases for future retrieval, comma-separated (e.g. "git rebase, merge conflict, branch cleanup")
-
-If the task was trivial (simple greeting, factual Q&A, no real problem-solving), return {{"skip": true}}.
-
-## User Request
-{user_request[:500]}
-
-## Tools Used
-{tools_str}
-
-## Execution Trace
-{trace_str}
-
-## Reasoning Steps
-{reasoning_str[:600]}
-
-## Final Response (truncated)
-{final_response[:800]}
-
-Respond with ONLY valid JSON, no markdown fences."""
-
-        try:
-            result = await self._call_utility_llm(
-                "You are an experience extraction agent. Respond only with valid JSON.", prompt
-            )
-            if not result or result.get("skip"):
-                return
-            task, lessons = result.get("task", ""), result.get("lessons", "")
-            if task and lessons:
-                outcome = result.get("outcome", "unknown")
-                quality = max(1, min(5, int(result.get("quality", 3))))
-                category = result.get("category", "general")
-                keywords = result.get("keywords", "")
-                reasoning_trace = reasoning_str[:300] if reasoning_snippets else ""
-                memory.append_experience(
-                    task,
-                    outcome,
-                    lessons,
-                    quality=quality,
-                    category=category,
-                    keywords=keywords,
-                    reasoning_trace=reasoning_trace,
-                )
-                logger.info(
-                    "Experience saved: {} [{}] q={} cat={}", task[:60], outcome, quality, category
-                )
-                if outcome == "failed":
-                    await asyncio.to_thread(memory.deprecate_similar, task)
-                elif total_errors == 0:
-                    await asyncio.to_thread(memory.record_reuse, task, True)
-        except Exception as e:
-            logger.debug("Experience extraction skipped: {}", e)
-
-    async def _merge_and_cleanup_experiences(self) -> None:
-        memory = self.context.memory
-        await asyncio.to_thread(memory.cleanup_stale)
-        groups = await asyncio.to_thread(memory.get_merge_candidates)
-        if not groups:
+        if self._experience_mode == "none":
             return
-        for entries in groups[:2]:
-            entries_text = "\n---\n".join(entries[:6])
-            prompt = f"""Merge these similar experience entries into ONE concise high-level principle. Return a JSON object with:
-1. "task": Generalized task description (max 80 chars)
-2. "outcome": "success"
-3. "quality": 5
-4. "category": The shared category
-5. "lessons": 2-3 sentences distilling the common pattern/strategy across all entries
 
-## Entries to Merge
-{entries_text}
+        if len(tools_used) >= 2 or total_errors > 0:
+            asyncio.create_task(
+                experience.summarize_experience(
+                    self.context.memory,
+                    self._call_utility_llm,
+                    user_request,
+                    final_response,
+                    tools_used,
+                    tool_trace,
+                    total_errors,
+                    reasoning_snippets,
+                )
+            )
 
-Respond with ONLY valid JSON, no markdown fences."""
-            try:
-                result = await self._call_utility_llm(
-                    "You are an experience consolidation agent. Respond only with valid JSON.",
-                    prompt,
+        if len(session.messages) % 10 == 0:
+            asyncio.create_task(
+                experience.merge_and_cleanup_experiences(
+                    self.context.memory,
+                    self._call_utility_llm,
                 )
-                if not result:
-                    continue
-                task, lessons = result.get("task", ""), result.get("lessons", "")
-                if not (task and lessons):
-                    continue
-                quality = max(1, min(5, int(result.get("quality", 5))))
-                category = result.get("category", "general")
-                merged = f"Task: {task}\nLessons: {lessons}"
-                await asyncio.to_thread(
-                    memory.replace_merged, entries[:6], merged, category=category, quality=quality
-                )
-            except Exception as e:
-                logger.debug("Experience merge skipped: {}", e)
+            )
 
     async def process_direct(
         self,

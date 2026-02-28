@@ -53,7 +53,7 @@ class ImageGenTool(Tool):
     async def execute(self, prompt: str, aspect_ratio: str = "", **kwargs: Any) -> str:
         url = f"{self._base_url}/models/{self._model}:generateContent?key={self._api_key}"
         payload: dict[str, Any] = {
-            "contents": [{"parts": [{"text": prompt}]}],
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]},
         }
         if aspect_ratio:
@@ -67,7 +67,11 @@ class ImageGenTool(Tool):
 
         if resp.status_code != 200:
             body = resp.text[:300]
-            logger.warning("generate_image API error {}: {}", resp.status_code, body)
+            logger.warning(
+                "⚠️ 图像接口异常 / API error: {} — {}",
+                resp.status_code,
+                body,
+            )
             return f"Error: API returned {resp.status_code}. {body}"
 
         return self._parse_response(resp.json())
@@ -89,7 +93,7 @@ class ImageGenTool(Tool):
                     ) as f:
                         f.write(img_bytes)
                         path = f.name
-                    logger.info("generate_image: saved {} ({} bytes)", path, len(img_bytes))
+                    logger.info("🎨 图像已保存 / saved: {} ({} bytes)", path, len(img_bytes))
                     return f"Image saved: {path}\nSend via message(media=['{path}'])"
 
         # No image — check for text fallback
