@@ -51,14 +51,6 @@ class LLMProvider(ABC):
         for msg in messages:
             content = msg.get("content")
 
-            # None content on a plain assistant message (no tool_calls) crashes
-            # providers with "invalid message content type: <nil>".
-            if content is None and msg.get("role") == "assistant" and not msg.get("tool_calls"):
-                clean = dict(msg)
-                clean["content"] = "(empty)"
-                result.append(clean)
-                continue
-
             if isinstance(content, str) and not content:
                 clean = dict(msg)
                 clean["content"] = None if (msg.get("role") == "assistant" and msg.get("tool_calls")) else "(empty)"
