@@ -1,7 +1,7 @@
 [project]
 name = "bao-ai"
 version = "0.1.4"
-description = "A personal AI assistant that remembers, learns from experience, and never makes the same mistake twice. ~5,300 lines of core code."
+description = "A personal AI assistant that remembers, learns from experience, and never makes the same mistake twice. ~9,300 lines of core code."
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
@@ -45,6 +45,7 @@ dependencies = [
     "mcp>=1.26.0,<2.0.0",
     "json-repair>=0.57.0,<1.0.0",
     "lancedb>=0.20.0",
+    "pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]
@@ -54,7 +55,7 @@ desktop = [
 desktop-automation = [
     "mss>=9.0.0",
     "pyautogui>=0.9.54",
-    "pillow>=10.0.0",
+    "pillow-heif>=0.18.0",
 ]
 dev = [
     "pytest>=9.0.0,<10.0.0",
