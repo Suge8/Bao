@@ -31,8 +31,7 @@ The skill format and metadata structure follow [OpenClaw](https://github.com/ope
 | `pdf` | PDF reading, merging, splitting, OCR |
 | `pptx` | PowerPoint presentation creation and editing |
 | `xlsx` | Excel spreadsheet creation, editing, data cleaning |
-| `opencode` | Production-ready coding copilot flow for OpenCode (plan, implement, verify, iterate) |
-| `codex` | Production-ready coding copilot flow for Codex CLI (execute, continue, inspect details) |
-| `claudecode` | Delegate coding tasks to Claude Code CLI with session continuity and structured output |
+| `coding-agent` | Unified coding agent skill for OpenCode, Codex, and Claude Code (session continuity, retries, structured output) |
+| `image-gen` | AI image generation via Gemini API (text-to-image with aspect ratio control) |
 
-Note: All three coding agents (OpenCode, Codex, Claude Code) are available both as built-in tools in `bao/agent/tools/` and as skills with workflow guidance.
+Note: All three coding backends are available as built-in tools in `bao/agent/tools/` and unified into a single skill with workflow guidance.

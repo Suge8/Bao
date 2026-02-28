@@ -1,207 +1,92 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 520">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 280" width="700" height="280">
   <defs>
-    <style>
-      .t{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif}
-      @keyframes dashFlow{from{stroke-dashoffset:0}to{stroke-dashoffset:-20}}
-      @keyframes expLoop{from{stroke-dashoffset:0}to{stroke-dashoffset:-24}}
-      @keyframes corePulse{
-        0%,100%{stroke:#00d4ff;filter:drop-shadow(0 0 6px #00d4ff33)}
-        50%{stroke:#38bdf8;filter:drop-shadow(0 0 22px #00d4ff77)}
-      }
-      @keyframes nodeIn{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}
-      @keyframes pulse{0%,100%{opacity:.3}50%{opacity:.65}}
-      @keyframes sweep{0%{transform:translateX(-820px)}100%{transform:translateX(820px)}}
-      .flow{stroke:#00d4ff;stroke-width:1.5;fill:none;stroke-dasharray:6 8;animation:dashFlow 2s linear infinite;opacity:.6}
-      .exp{stroke:#22c55e;stroke-width:2;fill:none;stroke-dasharray:8 6;animation:expLoop 2.5s linear infinite;opacity:.5}
-      .core-glow{animation:corePulse 3.5s ease-in-out infinite}
-      .n{animation:nodeIn .6s ease-out both}
-      .n1{animation-delay:.1s}.n2{animation-delay:.2s}.n3{animation-delay:.3s}
-      .n4{animation-delay:.4s}.n5{animation-delay:.5s}
-      .float{animation:pulse 5s ease-in-out infinite}
-      .sweep-line{animation:sweep 4.5s linear infinite}
-    </style>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#0a0e17"/>
-      <stop offset="100%" stop-color="#0d1220"/>
+    <linearGradient id="a-glow" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
     </linearGradient>
-    <linearGradient id="sw" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#22c55e" stop-opacity="0"/>
-      <stop offset="30%" stop-color="#00d4ff" stop-opacity=".5"/>
-      <stop offset="70%" stop-color="#a855f7" stop-opacity=".4"/>
-      <stop offset="100%" stop-color="#f43f5e" stop-opacity="0"/>
+    <linearGradient id="a-arrow" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#6366f1" stop-opacity="0.2"/>
+      <stop offset="50%" stop-color="#8b5cf6" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#a78bfa" stop-opacity="0.2"/>
     </linearGradient>
-    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
-      <circle cx="12" cy="12" r=".4" fill="#1e293b" opacity=".5"/>
-    </pattern>
-    <marker id="ac" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-      <path d="M0,0 L0,6 L8,3z" fill="#00d4ff" opacity=".6"/>
-    </marker>
-    <marker id="ag" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-      <path d="M0,0 L0,6 L8,3z" fill="#22c55e" opacity=".6"/>
-    </marker>
-    <radialGradient id="coreGlow" cx=".5" cy=".5" r=".5">
-      <stop offset="0%" stop-color="#00d4ff" stop-opacity=".05"/>
-      <stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="s1" cx=".2" cy=".3" r=".6">
-      <stop offset="0%" stop-color="#22c55e" stop-opacity=".06"/>
-      <stop offset="100%" stop-color="#22c55e" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="s2" cx=".8" cy=".2" r=".5">
-      <stop offset="0%" stop-color="#a855f7" stop-opacity=".04"/>
-      <stop offset="100%" stop-color="#a855f7" stop-opacity="0"/>
-    </radialGradient>
+    <filter id="a-blur">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
   </defs>
+  <style>
+    @keyframes pulse { 0%,100%{opacity:0.6;transform:scale(1)} 50%{opacity:1;transform:scale(1.08)} }
+    @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+    @keyframes flow { from{stroke-dashoffset:40} to{stroke-dashoffset:0} }
+    @keyframes blink { 0%,100%{opacity:0.4} 50%{opacity:1} }
+    @keyframes float-up { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-4px)} }
+    .node-phone { animation: pulse 3s ease-in-out infinite; transform-origin: 110px 140px; }
+    .node-bao { animation: float-up 4s ease-in-out infinite; }
+    .node-container { animation: pulse 3s ease-in-out infinite 1.5s; transform-origin: 590px 140px; }
+    .gear { animation: spin 8s linear infinite; transform-origin: 350px 120px; }
+    .flow-line { animation: flow 2s linear infinite; }
+    .blink-dot { animation: blink 2s ease-in-out infinite; }
+    .blink-dot2 { animation: blink 2s ease-in-out infinite 0.7s; }
+    .blink-dot3 { animation: blink 2s ease-in-out infinite 1.4s; }
+  </style>
 
-  <!-- Background -->
-  <rect width="800" height="520" fill="url(#bg)" rx="14"/>
-  <rect width="800" height="520" fill="url(#dots)" rx="14"/>
-  <rect width="800" height="520" fill="url(#s1)" rx="14"/>
-  <rect width="800" height="520" fill="url(#s2)" rx="14"/>
+  <rect width="700" height="280" fill="#0d1117" rx="12"/>
 
-  <!-- Sweep -->
-  <rect x="0" y="0" width="820" height="2" fill="url(#sw)" class="sweep-line" rx="1"/>
+  <!-- Flow arrows -->
+  <path class="flow-line" d="M175 140 L270 140" fill="none" stroke="url(#a-arrow)" stroke-width="2" stroke-dasharray="6 4"/>
+  <path class="flow-line" d="M430 140 L520 140" fill="none" stroke="url(#a-arrow)" stroke-width="2" stroke-dasharray="6 4" style="animation-delay:0.5s"/>
 
-  <!-- Particles -->
-  <circle cx="60" cy="60" r="1.2" fill="#22c55e" class="float" opacity=".5"/>
-  <circle cx="740" cy="50" r="1" fill="#00d4ff" class="float" opacity=".4"/>
-  <circle cx="750" cy="480" r="1.3" fill="#a855f7" class="float" opacity=".3"/>
-  <circle cx="50" cy="460" r=".9" fill="#f59e0b" class="float" opacity=".4"/>
+  <!-- Arrow heads -->
+  <polygon points="268,135 278,140 268,145" fill="#8b5cf6" opacity="0.6"/>
+  <polygon points="518,135 528,140 518,145" fill="#8b5cf6" opacity="0.6"/>
 
-  <!-- ═══ 输入 (Left) ═══ -->
-  <g class="n n1">
-    <text x="50" y="84" class="t" fill="#6b7280" font-size="9" font-weight="700" letter-spacing="1" text-anchor="middle">输入</text>
-    <rect x="12" y="96" width="76" height="36" rx="8" fill="#111827" stroke="#1f2937" stroke-width="1"/>
-    <text x="50" y="119" class="t" fill="#d1d5db" font-size="11" font-weight="600" text-anchor="middle">用户</text>
-    <rect x="12" y="146" width="76" height="42" rx="8" fill="#111827" stroke="#1f2937" stroke-width="1"/>
-    <text x="50" y="165" class="t" fill="#d1d5db" font-size="10" font-weight="600" text-anchor="middle">定时任务</text>
-    <text x="50" y="180" class="t" fill="#6b7280" font-size="8" text-anchor="middle">Cron 心跳</text>
+  <!-- Flow dots on arrows -->
+  <circle class="blink-dot" cx="220" cy="140" r="2.5" fill="#a78bfa"/>
+  <circle class="blink-dot2" cx="475" cy="140" r="2.5" fill="#a78bfa"/>
+
+  <!-- Node 1: Phone -->
+  <g class="node-phone">
+    <rect x="70" y="85" width="80" height="110" rx="12" fill="none" stroke="#6366f1" stroke-width="1.5" opacity="0.7"/>
+    <rect x="78" y="100" width="64" height="75" rx="4" fill="#6366f1" opacity="0.1"/>
+    <circle cx="110" cy="185" r="4" fill="none" stroke="#6366f1" stroke-width="1" opacity="0.5"/>
+    <!-- Message bubbles -->
+    <rect x="84" y="108" width="36" height="10" rx="5" fill="#6366f1" opacity="0.4"/>
+    <rect x="96" y="124" width="40" height="10" rx="5" fill="#8b5cf6" opacity="0.3"/>
+    <rect x="84" y="140" width="30" height="10" rx="5" fill="#6366f1" opacity="0.35"/>
+  </g>
+  <text x="110" y="70" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="#9ca3af" font-weight="500">WhatsApp</text>
+  <text x="110" y="84" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" fill="#6b7280">iMessage</text>
+
+  <!-- Node 2: bao process -->
+  <g class="node-bao">
+    <rect x="280" y="90" width="140" height="100" rx="10" fill="#8b5cf6" fill-opacity="0.08" stroke="#8b5cf6" stroke-width="1.5" opacity="0.7"/>
+    <!-- Gear icon -->
+    <g class="gear" opacity="0.5">
+      <circle cx="350" cy="120" r="12" fill="none" stroke="#a78bfa" stroke-width="1.5"/>
+      <circle cx="350" cy="120" r="5" fill="none" stroke="#a78bfa" stroke-width="1"/>
+      <line x1="350" y1="105" x2="350" y2="110" stroke="#a78bfa" stroke-width="1.5"/>
+      <line x1="350" y1="130" x2="350" y2="135" stroke="#a78bfa" stroke-width="1.5"/>
+      <line x1="335" y1="120" x2="340" y2="120" stroke="#a78bfa" stroke-width="1.5"/>
+      <line x1="360" y1="120" x2="365" y2="120" stroke="#a78bfa" stroke-width="1.5"/>
+    </g>
+    <text x="350" y="155" text-anchor="middle" font-family="system-ui, sans-serif" font-size="13" fill="#a78bfa" font-weight="600">bao</text>
+    <text x="350" y="172" text-anchor="middle" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280">SQLite + Router</text>
   </g>
 
-  <!-- ═══ 9 大通道 (Center-Left) ═══ -->
-  <g class="n n2">
-    <text x="170" y="44" class="t" fill="#6b7280" font-size="9" font-weight="700" letter-spacing="1" text-anchor="middle">9 大通道</text>
-    <rect x="110" y="54" width="120" height="260" rx="10" fill="none" stroke="#1f2937" stroke-width="1" stroke-dasharray="4 3"/>
-    <!-- Pills -->
-    <rect x="118" y="66" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="143" y="80" class="t" fill="#9ca3af" font-size="8.5" text-anchor="middle">Telegram</text>
-    <rect x="174" y="66" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="199" y="80" class="t" fill="#9ca3af" font-size="8.5" text-anchor="middle">Discord</text>
-    <rect x="118" y="92" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="143" y="106" class="t" fill="#9ca3af" font-size="8" text-anchor="middle">WhatsApp</text>
-    <rect x="174" y="92" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="199" y="106" class="t" fill="#9ca3af" font-size="8.5" text-anchor="middle">Slack</text>
-    <rect x="118" y="118" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="143" y="132" class="t" fill="#9ca3af" font-size="8.5" text-anchor="middle">飞书</text>
-    <rect x="174" y="118" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="199" y="132" class="t" fill="#9ca3af" font-size="8.5" text-anchor="middle">邮件</text>
-    <rect x="118" y="144" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="143" y="158" class="t" fill="#9ca3af" font-size="8.5" text-anchor="middle">QQ</text>
-    <rect x="174" y="144" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="199" y="158" class="t" fill="#9ca3af" font-size="8.5" text-anchor="middle">钉钉</text>
-    <rect x="146" y="170" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="171" y="184" class="t" fill="#9ca3af" font-size="8.5" text-anchor="middle">Mochat</text>
-    <!-- Bus -->
-    <rect x="118" y="202" width="104" height="24" rx="6" fill="#111827" stroke="#00d4ff" stroke-width=".6"/>
-    <text x="170" y="218" class="t" fill="#00d4ff" font-size="9" font-weight="600" text-anchor="middle">消息总线</text>
-    <!-- Subagent -->
-    <rect x="118" y="238" width="104" height="62" rx="6" fill="#111827" stroke="#3b82f6" stroke-width=".6"/>
-    <text x="170" y="264" class="t" fill="#d1d5db" font-size="10" font-weight="600" text-anchor="middle">子代理</text>
-    <text x="170" y="282" class="t" fill="#6b7280" font-size="8" text-anchor="middle">后台任务执行</text>
-    <text x="170" y="294" class="t" fill="#6b7280" font-size="8" text-anchor="middle">Subagent</text>
+  <!-- Node 3: Container -->
+  <g class="node-container">
+    <rect x="535" y="85" width="120" height="110" rx="10" fill="#6366f1" fill-opacity="0.06" stroke="#6366f1" stroke-width="1.5" opacity="0.7"/>
+    <!-- Container box icon -->
+    <rect x="572" y="105" width="26" height="20" rx="3" fill="none" stroke="#a78bfa" stroke-width="1.2" opacity="0.6"/>
+    <rect x="569" y="102" width="32" height="5" rx="2" fill="none" stroke="#a78bfa" stroke-width="1.2" opacity="0.6"/>
+    <!-- Tool dots -->
+    <circle class="blink-dot" cx="570" cy="145" r="2" fill="#6366f1"/>
+    <circle class="blink-dot2" cx="585" cy="145" r="2" fill="#8b5cf6"/>
+    <circle class="blink-dot3" cx="600" cy="145" r="2" fill="#a78bfa"/>
+    <text x="595" y="170" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="#a78bfa" font-weight="500">Container</text>
+    <text x="595" y="183" text-anchor="middle" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280">Claude Agent</text>
   </g>
 
-  <!-- ═══ AGENT 核心 (Center) ═══ -->
-  <g class="n n3">
-    <text x="355" y="44" class="t" fill="#00d4ff" font-size="9" font-weight="700" letter-spacing="1" text-anchor="middle">AGENT 核心  ~5,300 行</text>
-    <rect x="250" y="54" width="210" height="290" rx="12" fill="#0a0e17" stroke="#00d4ff" stroke-width="2" class="core-glow"/>
-    <rect x="250" y="54" width="210" height="290" rx="12" fill="url(#coreGlow)"/>
-    <!-- Modules -->
-    <rect x="264" y="72" width="182" height="38" rx="6" fill="#111827" stroke="#a855f7" stroke-width=".8"/>
-    <text x="355" y="90" class="t" fill="#e2e8f0" font-size="11" font-weight="600" text-anchor="middle">深度思考协议</text>
-    <text x="355" y="104" class="t" fill="#a855f7" font-size="8" text-anchor="middle">Thinking Protocol</text>
-
-    <rect x="264" y="122" width="182" height="48" rx="6" fill="#111827" stroke="#22c55e" stroke-width=".8"/>
-    <text x="355" y="142" class="t" fill="#e2e8f0" font-size="11" font-weight="600" text-anchor="middle">上下文构建器</text>
-    <text x="355" y="160" class="t" fill="#22c55e" font-size="8" text-anchor="middle">+ 经验注入</text>
-
-    <rect x="264" y="182" width="182" height="48" rx="6" fill="#111827" stroke="#f59e0b" stroke-width=".8"/>
-    <text x="355" y="202" class="t" fill="#e2e8f0" font-size="11" font-weight="600" text-anchor="middle">工具执行器</text>
-    <text x="355" y="220" class="t" fill="#f59e0b" font-size="8" text-anchor="middle">+ 重试 / 反思</text>
-
-    <rect x="264" y="242" width="86" height="36" rx="6" fill="#111827" stroke="#374151" stroke-width=".6"/>
-    <text x="307" y="264" class="t" fill="#9ca3af" font-size="9" font-weight="600" text-anchor="middle">效用模型</text>
-
-    <rect x="360" y="242" width="86" height="36" rx="6" fill="#111827" stroke="#374151" stroke-width=".6"/>
-    <text x="403" y="264" class="t" fill="#9ca3af" font-size="9" font-weight="600" text-anchor="middle">缓存</text>
-
-    <rect x="264" y="290" width="182" height="24" rx="6" fill="#111827" stroke="#374151" stroke-width=".4"/>
-    <text x="355" y="306" class="t" fill="#6b7280" font-size="8" text-anchor="middle">Skills 加载 + 心跳</text>
-  </g>
-
-  <!-- ═══ 资源 (Right) ═══ -->
-  <g class="n n4">
-    <text x="620" y="44" class="t" fill="#6b7280" font-size="9" font-weight="700" letter-spacing="1" text-anchor="middle">资源</text>
-    <!-- Providers -->
-    <rect x="490" y="56" width="260" height="88" rx="8" fill="#111827" stroke="#1f2937" stroke-width="1"/>
-    <text x="620" y="78" class="t" fill="#e2e8f0" font-size="11" font-weight="600" text-anchor="middle">LLM 供应商</text>
-    <text x="620" y="96" class="t" fill="#6b7280" font-size="9" text-anchor="middle">OpenRouter / Anthropic / OpenAI</text>
-    <text x="620" y="112" class="t" fill="#6b7280" font-size="9" text-anchor="middle">DeepSeek / Gemini / Groq / 16+ 总计</text>
-    <text x="620" y="130" class="t" fill="#4b5563" font-size="8" text-anchor="middle">2 步接入你自己的 Provider</text>
-    <!-- MCP -->
-    <rect x="490" y="158" width="260" height="52" rx="8" fill="#111827" stroke="#1f2937" stroke-width="1"/>
-    <text x="620" y="180" class="t" fill="#e2e8f0" font-size="11" font-weight="600" text-anchor="middle">MCP 工具</text>
-    <text x="620" y="198" class="t" fill="#6b7280" font-size="9" text-anchor="middle">stdio + HTTP | 兼容 Claude / Cursor</text>
-    <!-- Skills -->
-    <rect x="490" y="224" width="260" height="52" rx="8" fill="#111827" stroke="#1f2937" stroke-width="1"/>
-    <text x="620" y="246" class="t" fill="#e2e8f0" font-size="11" font-weight="600" text-anchor="middle">Skills 技能</text>
-    <text x="620" y="264" class="t" fill="#6b7280" font-size="9" text-anchor="middle">GitHub / Cron / 天气 / 自定义</text>
-  </g>
-
-  <!-- ═══ 持久层 (Bottom) ═══ -->
-  <g class="n n5">
-    <rect x="12" y="370" width="776" height="136" rx="10" fill="#0a0e17" stroke="#1f2937" stroke-width="1"/>
-    <text x="400" y="394" class="t" fill="#00d4ff" font-size="9" font-weight="700" letter-spacing="1" text-anchor="middle">持久层  —  LanceDB</text>
-
-    <rect x="28" y="408" width="236" height="82" rx="8" fill="#111827" stroke="#1f2937" stroke-width=".6"/>
-    <text x="146" y="432" class="t" fill="#d1d5db" font-size="11" font-weight="600" text-anchor="middle">长期记忆</text>
-    <text x="146" y="450" class="t" fill="#6b7280" font-size="9" text-anchor="middle">用户偏好、项目知识</text>
-    <text x="146" y="466" class="t" fill="#6b7280" font-size="9" text-anchor="middle">自动整合 + 主动清理</text>
-    <text x="146" y="482" class="t" fill="#6b7280" font-size="8" text-anchor="middle">向量 + 关键词双检索</text>
-
-    <rect x="280" y="408" width="220" height="82" rx="8" fill="#111827" stroke="#1f2937" stroke-width=".6"/>
-    <text x="390" y="432" class="t" fill="#d1d5db" font-size="11" font-weight="600" text-anchor="middle">对话历史</text>
-    <text x="390" y="450" class="t" fill="#6b7280" font-size="9" text-anchor="middle">会话上下文</text>
-    <text x="390" y="466" class="t" fill="#6b7280" font-size="9" text-anchor="middle">轨迹压缩</text>
-
-    <rect x="516" y="408" width="256" height="82" rx="8" fill="#111827" stroke="#22c55e" stroke-width=".6"/>
-    <text x="644" y="430" class="t" fill="#22c55e" font-size="11" font-weight="600" text-anchor="middle">经验存储</text>
-    <text x="644" y="448" class="t" fill="#6b7280" font-size="9" text-anchor="middle">教训 / 策略 / 关键词</text>
-    <text x="644" y="464" class="t" fill="#6b7280" font-size="9" text-anchor="middle">置信度校准</text>
-    <text x="644" y="480" class="t" fill="#6b7280" font-size="9" text-anchor="middle">主动遗忘</text>
-  </g>
-
-  <!-- ═══ 连接线 ═══ -->
-  <!-- 输入 → 通道 -->
-  <path d="M88 114 L110 114" class="flow" marker-end="url(#ac)"/>
-  <path d="M88 167 L100 167 L100 180 L110 180" class="flow" marker-end="url(#ac)"/>
-  <!-- 通道 → 核心 -->
-  <path d="M230 190 L250 190" class="flow" marker-end="url(#ac)"/>
-  <!-- 核心 → Providers -->
-  <path d="M460 100 L490 100" class="flow" marker-end="url(#ac)"/>
-  <!-- 核心 → MCP -->
-  <path d="M460 184 L490 184" class="flow" marker-end="url(#ac)"/>
-  <!-- 核心 → Skills -->
-  <path d="M460 250 L490 250" class="flow" marker-end="url(#ac)"/>
-  <!-- 核心 → 持久层 -->
-  <path d="M355 344 L355 370" class="flow" marker-end="url(#ac)"/>
-
-  <!-- ═══ 经验循环 ═══ -->
-  <path d="M650 408 L650 356 L480 356 L480 170 L460 170" class="exp" marker-end="url(#ag)"/>
-  <path d="M430 344 L430 356 L620 356 L620 408" class="exp" marker-end="url(#ag)"/>
-  <rect x="484" y="348" width="84" height="16" rx="8" fill="#22c55e12"/>
-  <text x="526" y="360" class="t" fill="#22c55e" font-size="8" font-weight="600" text-anchor="middle">经验循环</text>
-
-  <!-- Bottom sweep -->
-  <rect x="0" y="518" width="820" height="2" fill="url(#sw)" class="sweep-line" rx="1" style="animation-delay:2.2s"/>
+  <!-- Labels -->
+  <text x="350" y="250" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="#4b5563" letter-spacing="2">消息进 → 轮询检测 → 容器执行 → 结果回手机</text>
 </svg>

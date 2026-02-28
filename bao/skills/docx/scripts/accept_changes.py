@@ -114,18 +114,14 @@ def _setup_libreoffice_macro() -> bool:
         macro_file.write_text(ACCEPT_CHANGES_MACRO)
         return True
     except Exception as e:
-        logger.warning(f"Failed to setup LibreOffice macro: {e}")
+        logger.warning("⚠️ 宏配置失败 / macro setup failed: {}", e)
         return False
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Accept all tracked changes in a DOCX file"
-    )
+    parser = argparse.ArgumentParser(description="Accept all tracked changes in a DOCX file")
     parser.add_argument("input_file", help="Input DOCX file with tracked changes")
-    parser.add_argument(
-        "output_file", help="Output DOCX file (clean, no tracked changes)"
-    )
+    parser.add_argument("output_file", help="Output DOCX file (clean, no tracked changes)")
     args = parser.parse_args()
 
     _, message = accept_changes(args.input_file, args.output_file)

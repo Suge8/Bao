@@ -10,7 +10,7 @@
 
 <br>
 
-**~8,500 行核心代码** · 记忆永不消失 · 经验持续积累 · 智能不断进化
+**~9,300 行核心代码** · 记忆永不消失 · 经验持续积累 · 智能不断进化
 
 [🇨🇳 中文](#为什么选-bao) · [🇺🇸 English](#-english)
 
@@ -94,14 +94,18 @@ bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 
 ### 极致轻量
 
-**~8,500 行核心代码。** 运行 `bash core_agent_lines.sh` 自行验证。
+**~9,300 行核心代码。** 运行 `bash scripts/core_agent_lines.sh` 自行验证。
 
 启动快、占资源少、源码可读。一个完整的 AI 助手框架，体积只有同类项目的 1%。
+
 ### 上下文不会爆炸
+
 内置分层上下文管理，长任务不再耗尽 context window：
+
 - **Layer 1**：tool 输出超过阈值自动外置到本地文件，messages 中只保留预览+指针
-- **Layer 2**：context 过大时自动压实，保留最近 N 对 assistant/tool 消息，严格维护成对完整性
-默认 `auto` 模式，大输出自动外置、长对话自动压实。设为 `"off"` 可关闭。
+- **Layer 2**：context 过大时自动压实，保留最近对话轮次 + 最近工具块，并维持时间线顺序
+  默认 `auto` 模式，大输出自动外置、长对话自动压实。设为 `"off"` 可关闭。
+
 ### 长任务越跑越稳
 
 别的 Agent 跑长任务时越跑越迷。bao 越跑越清醒。
@@ -114,19 +118,19 @@ bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 
 ## 横向对比
 
-| | OpenClaw | **bao** |
-|---|---|---|
-| 语言 | TypeScript | **Python** |
-| 核心代码 | 430,000+ 行 | **~8,500 行** |
-| 记忆 | 仅会话内 | **LanceDB（向量 + 关键词）** |
-| 经验学习 | — | **ExperienceLoop** |
-| 自我反思 | — | **Retry with Reflection** |
-| 开放问题 | 8,400+ | **稳定且专注** |
-| 后台任务 | — | **子代理 + 进度追踪 + 里程碑推送** |
-| 长任务引擎 | — | **轨迹压缩 + 自我纠错 + 充分性检查** |
-| 图像生成 | — | **Gemini API 文生图 + 多平台发送** |
-| 桌面自动化 | — | **7 工具 · 模型无关 · HiDPI 自适应** |
-| 上手时间 | 复杂引导 | **2 分钟** |
+|            | OpenClaw    | **bao**                              |
+| ---------- | ----------- | ------------------------------------ |
+| 语言       | TypeScript  | **Python**                           |
+| 核心代码   | 430,000+ 行 | **~9,300 行**                        |
+| 记忆       | 仅会话内    | **LanceDB（向量 + 关键词）**         |
+| 经验学习   | —           | **ExperienceLoop**                   |
+| 自我反思   | —           | **Retry with Reflection**            |
+| 开放问题   | 8,400+      | **稳定且专注**                       |
+| 后台任务   | —           | **子代理 + 进度追踪 + 里程碑推送**   |
+| 长任务引擎 | —           | **轨迹压缩 + 自我纠错 + 充分性检查** |
+| 图像生成   | —           | **Gemini API 文生图 + 多平台发送**   |
+| 桌面自动化 | —           | **7 工具 · 模型无关 · HiDPI 自适应** |
+| 上手时间   | 复杂引导    | **2 分钟**                           |
 
 <p align="center"><img src="assets/architecture.svg" width="800" alt="架构"></p>
 
@@ -157,7 +161,6 @@ bao
 
 **就这样。2 分钟，一个完整的 AI 助手。**
 
-
 可选：配置一个**效用模型**用于后台任务（经验提取、记忆整合、会话标题生成），节省开销：
 
 ```json
@@ -175,17 +178,17 @@ bao
 
 一份配置，一条命令：`bao`
 
-| 平台 | 配置方式 |
-|------|---------|
-| **Telegram** | @BotFather 获取 Token |
-| **Discord** | Bot Token + Message Content Intent |
-| **WhatsApp** | 扫码连接 |
-| **飞书** | App ID + App Secret |
-| **Slack** | Bot Token + App-Level Token |
-| **Email** | IMAP/SMTP 凭据 |
-| **QQ** | App ID + App Secret |
-| **钉钉** | App Key + App Secret |
-| **iMessage** | 仅 macOS，零配置 |
+| 平台         | 配置方式                           |
+| ------------ | ---------------------------------- |
+| **Telegram** | @BotFather 获取 Token              |
+| **Discord**  | Bot Token + Message Content Intent |
+| **WhatsApp** | 扫码连接                           |
+| **飞书**     | App ID + App Secret                |
+| **Slack**    | Bot Token + App-Level Token        |
+| **Email**    | IMAP/SMTP 凭据                     |
+| **QQ**       | App ID + App Secret                |
+| **钉钉**     | App Key + App Secret               |
+| **iMessage** | 仅 macOS，零配置                   |
 
 每个平台渲染能力不同，bao 心里有数。Telegram 和 Discord 收到格式丰富的 Markdown；Slack 和飞书走各自的标记子集；iMessage、QQ、Email 则是干净的纯文本 — 没有满屏的 `**` 和 `###`。**同一个 AI，9 种最佳阅读体验。**
 
@@ -193,11 +196,11 @@ bao
 
 极简 3 类覆盖 99% 需求。
 
-| 类型 | 支持的模型 | 示例 |
-|------|-----------|------|
+| 类型            | 支持的模型                                                                                                       | 示例                                      |
+| --------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
 | **OpenAI 兼容** | OpenAI、OpenRouter、DeepSeek、Groq、SiliconFlow、火山引擎、DashScope、Moonshot、智谱、Ollama、LM Studio、vLLM 等 | `openai/gpt-4o`、`deepseek/deepseek-chat` |
-| **Anthropic** | Claude 全系列 | `anthropic/claude-sonnet-4-20250514` |
-| **Gemini** | Gemini 全系列 | `gemini/gemini-2.0-flash-exp` |
+| **Anthropic**   | Claude 全系列                                                                                                    | `anthropic/claude-sonnet-4-20250514`      |
+| **Gemini**      | Gemini 全系列                                                                                                    | `gemini/gemini-2.0-flash-exp`             |
 
 Provider 名称可自定义（如 `my-proxy/claude-sonnet-4-6`），前缀自动剥离。所有 Provider 类型均支持第三方代理，SDK 兼容性自动处理。OpenAI 兼容端点额外支持 API 模式自动探测（Responses / Chat Completions）。
 
@@ -233,23 +236,32 @@ docker compose up -d bao-gateway
 
 全平台通用：
 
-| 命令 | 说明 |
-|------|------|
-| `/new` | 新建对话（旧对话自动保留） |
-| `/stop` | 停止当前任务（同会话硬中断，抑制过期响应） |
-| `/session` | 列出所有对话，按编号选择（含自动标题） |
-| `/delete` | 删除当前对话 |
-| `/model` | 切换模型 |
-| `/help` | 显示可用命令 |
+| 命令       | 说明                                       |
+| ---------- | ------------------------------------------ |
+| `/new`     | 新建对话（旧对话自动保留）                 |
+| `/stop`    | 停止当前任务（同会话硬中断，抑制过期响应） |
+| `/session` | 列出所有对话，按编号选择（含自动标题）     |
+| `/delete`  | 删除当前对话                               |
+| `/model`   | 切换模型                                   |
+| `/memory`  | 管理记忆（查看、编辑、删除）               |
+| `/help`    | 显示可用命令                               |
 
 首轮对话后，bao 自动生成简短的会话标题，跟随用户语言。
-同会话新消息默认走工具边界软中断（优先处理新消息）；`/stop` 保留为硬中断。
+同会话新消息默认走协作式软中断（流式阶段 + 工具边界，优先处理新消息）；`/stop` 保留为硬中断。
 
 ## 🖥️ CLI
 
-| 命令 | 说明 |
-|------|------|
+| 命令  | 说明                                   |
+| ----- | -------------------------------------- |
 | `bao` | 启动所有平台通道（首次运行自动初始化） |
+
+## ✅ 测试
+
+```bash
+PYTHONPATH=. uv run pytest tests/ -v
+```
+
+未安装 PySide6 时，桌面相关测试会自动 skip，不影响 core 测试通过。
 
 ## 🖥️ Desktop App (实验性)
 
@@ -261,6 +273,7 @@ uv run python app/main.py
 ```
 
 首次启动自动创建 `~/.bao/config.jsonc` 与 workspace；未配置 Provider/Model 时自动跳转 Settings。详见 [`app/README.md`](app/README.md)。打包说明见 [`docs/desktop-packaging.md`](docs/desktop-packaging.md)。
+
 ## 📁 项目结构
 
 ```
@@ -295,7 +308,7 @@ bao/
 
 <br>
 
-**~8,500 lines of core code** · Memory that persists · Experience that compounds · Intelligence that evolves
+**~9,300 lines of core code** · Memory that persists · Experience that compounds · Intelligence that evolves
 
 </div>
 
@@ -334,7 +347,9 @@ Other agents repeat mistakes. **bao learns from them.**
 - **Dynamic Tool Hints** — tool suggestions follow actual capabilities. Only installed tools get surfaced. Coding agents, search, MCP tools — all injected on demand. Zero hallucinated tool calls
 
 #### Complex Tasks, Zero Blocking
+
 Hand off time-consuming work to a subagent. Keep chatting. No waiting, no window-switching.
+
 - **Background execution** — subagents run independently while the main agent stays responsive to you
 - **Progress on demand** — the main agent calls `check_tasks` to see current phase, tool count, and iteration progress
 - **Milestone updates** — subagents auto-report every 5 iterations. No spam, no missed beats
@@ -342,7 +357,7 @@ Hand off time-consuming work to a subagent. Keep chatting. No waiting, no window
 - **Cancel anytime** — task going sideways? `cancel_task` kills it instantly
 - **Stall detection** — flags a warning if no update in 2+ minutes. Nothing hangs silently
 - **Template policy alignment** — workspace `INSTRUCTIONS.md` now encodes coordinator-first delegation triggers + Definition of Done, aligned with core rule (`check_tasks` is on-demand only)
-One assistant, multiple jobs in flight. **Ask about progress — it always has an answer.**
+  One assistant, multiple jobs in flight. **Ask about progress — it always has an answer.**
 
 #### ⌨️ Built-in Coding Agent Integration
 
@@ -374,36 +389,42 @@ Let AI see your screen and operate your computer. No Anthropic Computer Use requ
 
 #### Ultra Lightweight
 
-**~8,500 lines of core code.** Run `bash core_agent_lines.sh` to verify.
+**~9,300 lines of core code.** Run `bash scripts/core_agent_lines.sh` to verify.
 
 Fast startup. Low resource use. Readable source. A complete AI assistant framework at 1% the size of comparable projects.
+
 ### Context That Doesn't Explode
+
 Built-in layered context management keeps long tasks from exhausting the context window:
+
 - **Layer 1**: Large tool outputs are offloaded to local files; messages retain only a preview + pointer
-- **Layer 2**: When context grows too large, older assistant/tool pairs are archived, preserving strict pairing integrity
-Default `auto` mode auto-offloads large outputs and compacts long conversations. Set `"off"` to disable.
+- **Layer 2**: When context grows too large, context is compacted to keep recent dialogue turns plus recent tool blocks while preserving timeline order
+  Default `auto` mode auto-offloads large outputs and compacts long conversations. Set `"off"` to disable.
+
 ### Long Tasks That Stay on Track
+
 Other agents lose the plot on long tasks. bao gets sharper with every step.
+
 - **Trajectory compression** — Every 5 steps, execution state is auto-compressed into conclusions, evidence, and unexplored branches. No drifting, no forgetting
 - **Self-correction** — After 2+ consecutive failures, the compression pass injects an audit: what went wrong and how to fix it. Zero extra LLM calls, zero added latency
 - **Sufficiency check** — Automatically detects when enough information has been gathered. Stops when done, never wastes steps on dead ends
-Same task, other agents start going in circles at step 10. **bao compresses state, corrects course, and keeps moving.**
+  Same task, other agents start going in circles at step 10. **bao compresses state, corrects course, and keeps moving.**
 
 ### How It Compares
 
-| | OpenClaw | **bao** |
-|---|---|---|
-| Language | TypeScript | **Python** |
-| Core code | 430,000+ lines | **~8,500 lines** |
-| Memory | Session-only | **LanceDB (vector + keyword)** |
-| Experience learning | — | **ExperienceLoop** |
-| Self-reflection | — | **Retry with Reflection** |
-| Open issues | 8,400+ | **Stable & focused** |
-| Background tasks | — | **Subagent + progress tracking + milestone push** |
-| Long-task engine | — | **Trajectory compression + self-correction + sufficiency check** |
-| Image generation | — | **Gemini API text-to-image + multi-platform delivery** |
-| Desktop automation | — | **7 tools · model-agnostic · HiDPI-aware** |
-| Setup time | Complex wizard | **2 minutes** |
+|                     | OpenClaw       | **bao**                                                          |
+| ------------------- | -------------- | ---------------------------------------------------------------- |
+| Language            | TypeScript     | **Python**                                                       |
+| Core code           | 430,000+ lines | **~9,300 lines**                                                 |
+| Memory              | Session-only   | **LanceDB (vector + keyword)**                                   |
+| Experience learning | —              | **ExperienceLoop**                                               |
+| Self-reflection     | —              | **Retry with Reflection**                                        |
+| Open issues         | 8,400+         | **Stable & focused**                                             |
+| Background tasks    | —              | **Subagent + progress tracking + milestone push**                |
+| Long-task engine    | —              | **Trajectory compression + self-correction + sufficiency check** |
+| Image generation    | —              | **Gemini API text-to-image + multi-platform delivery**           |
+| Desktop automation  | —              | **7 tools · model-agnostic · HiDPI-aware**                       |
+| Setup time          | Complex wizard | **2 minutes**                                                    |
 
 <p align="center"><img src="assets/architecture-en.svg" width="800" alt="Architecture"></p>
 
@@ -434,7 +455,6 @@ bao
 
 **That's it. 2 minutes to a working AI assistant.**
 
-
 Optional: configure a **Utility Model** for background tasks (experience extraction, memory consolidation, session title generation) to save costs:
 
 ```json
@@ -452,28 +472,30 @@ Optional: configure a **Utility Model** for background tasks (experience extract
 
 One config, one command: `bao`
 
-| Platform | Setup |
-|----------|-------|
-| **Telegram** | Token from @BotFather |
-| **Discord** | Bot Token + Message Content Intent |
-| **WhatsApp** | Scan QR code |
-| **Feishu** | App ID + App Secret |
-| **Slack** | Bot Token + App-Level Token |
-| **Email** | IMAP/SMTP credentials |
-| **QQ** | App ID + App Secret |
-| **DingTalk** | App Key + App Secret |
-| **iMessage** | macOS only, zero config |
+| Platform     | Setup                              |
+| ------------ | ---------------------------------- |
+| **Telegram** | Token from @BotFather              |
+| **Discord**  | Bot Token + Message Content Intent |
+| **WhatsApp** | Scan QR code                       |
+| **Feishu**   | App ID + App Secret                |
+| **Slack**    | Bot Token + App-Level Token        |
+| **Email**    | IMAP/SMTP credentials              |
+| **QQ**       | App ID + App Secret                |
+| **DingTalk** | App Key + App Secret               |
+| **iMessage** | macOS only, zero config            |
+
 Every platform renders differently — bao knows that. Telegram and Discord get rich Markdown. Slack and Feishu get their native markup. iMessage, QQ, and Email get clean plain text — no raw `**` or `###` cluttering the screen. **One AI, nine tailored reading experiences.**
 
 ### 🤖 Easy LLM Providers config
 
 Covers 99% of what's out there.
 
-| Type | Supported Models | Example |
-|------|------------------|---------|
+| Type                  | Supported Models                                                                                                           | Example                                   |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
 | **OpenAI Compatible** | OpenAI, OpenRouter, DeepSeek, Groq, SiliconFlow, Volcengine, DashScope, Moonshot, Zhipu, Ollama, LM Studio, vLLM, and more | `openai/gpt-4o`, `deepseek/deepseek-chat` |
-| **Anthropic** | Full Claude lineup | `anthropic/claude-sonnet-4-20250514` |
-| **Gemini** | Full Gemini lineup | `gemini/gemini-2.0-flash-exp` |
+| **Anthropic**         | Full Claude lineup                                                                                                         | `anthropic/claude-sonnet-4-20250514`      |
+| **Gemini**            | Full Gemini lineup                                                                                                         | `gemini/gemini-2.0-flash-exp`             |
+
 Provider names are customizable — model prefixes are auto-stripped. All provider types support third-party proxies with automatic SDK compatibility. OpenAI-compatible endpoints also support API mode auto-detection (Responses / Chat Completions).
 
 ### 🔌 MCP Support
@@ -508,31 +530,44 @@ docker compose up -d bao-gateway
 
 Available across all platforms:
 
-| Command | What it does |
-|---------|-------------|
-| `/new` | Start a new conversation (old one is preserved) |
-| `/stop` | Stop the current task (hard interrupt for the current session, stale responses suppressed) |
-| `/session` | List all conversations with auto-generated titles, pick by number |
-| `/delete` | Delete current conversation |
-| `/model` | Switch model |
-| `/help` | Show available commands |
+| Command    | What it does                                                                               |
+| ---------- | ------------------------------------------------------------------------------------------ |
+| `/new`     | Start a new conversation (old one is preserved)                                            |
+| `/stop`    | Stop the current task (hard interrupt for the current session, stale responses suppressed) |
+| `/session` | List all conversations with auto-generated titles, pick by number                          |
+| `/delete`  | Delete current conversation                                                                |
+| `/model`   | Switch model                                                                               |
+| `/memory`  | Manage memories (view, edit, delete)                                                       |
+| `/help`    | Show available commands                                                                    |
 
 After the first exchange, bao auto-generates a short session title using a lightweight model, matching the user's language.
-New messages in the same session use tool-boundary soft interruption by default; `/stop` remains a hard interrupt.
+New messages in the same session use cooperative soft interruption by default (stream phase + tool boundary); `/stop` remains a hard interrupt.
 
 ### 🖥️ CLI
 
-| Command | What it does |
-|---------|-------------|
-| `bao` | Start all platform channels (auto-initializes on first run) |
+| Command | What it does                                                |
+| ------- | ----------------------------------------------------------- |
+| `bao`   | Start all platform channels (auto-initializes on first run) |
+
+### ✅ Tests
+
+```bash
+PYTHONPATH=. uv run pytest tests/ -v
+```
+
+If PySide6 is not installed, desktop-related tests are auto-skipped and won't block core test runs.
 
 ### 🖥️ Desktop App (experimental)
+
 PySide6 + QML desktop client — a pure UI shell for `bao`. All core logic (AgentLoop, Channels, Cron, Heartbeat) reuses `bao/` core, no duplication.
+
 ```bash
 uv sync --extra desktop
 uv run python app/main.py
 ```
+
 First launch auto-creates `~/.bao/config.jsonc` and workspace; redirects to Settings if Provider/Model is not configured. See [`app/README.md`](app/README.md). Packaging guide: [`docs/desktop-packaging.md`](docs/desktop-packaging.md).
+
 ### 📁 Project Structure
 
 ```
