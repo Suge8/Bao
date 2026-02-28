@@ -1,6 +1,7 @@
 """Context builder for assembling agent prompts."""
 
 import base64
+import logging
 import mimetypes
 import platform
 import time
@@ -18,6 +19,7 @@ MAX_MEMORY_ITEMS = 5
 MAX_EXPERIENCE_ITEMS = 3
 MAX_MEMORY_CHARS = 2000
 MAX_EXPERIENCE_CHARS = 1500
+MAX_LONG_TERM_MEMORY_CHARS = 1500
 
 
 def format_current_time(*, include_weekday: bool = True) -> str:
@@ -26,6 +28,7 @@ def format_current_time(*, include_weekday: bool = True) -> str:
     now = datetime.now().strftime(fmt)
     tz = time.strftime("%Z") or "UTC"
     return f"{now} ({tz})"
+
 
 # ---------------------------------------------------------------------------
 # Channel → response format hints injected into runtime context.
@@ -109,7 +112,7 @@ class ContextBuilder:
         if bootstrap:
             parts.append(bootstrap)
 
-        memory = self.memory.get_memory_context()
+        memory = self.memory.get_memory_context(max_chars=MAX_LONG_TERM_MEMORY_CHARS)
         if memory:
             parts.append(f"# Memory\n\n{memory}")
 
@@ -158,7 +161,7 @@ Skills with available="false" need dependencies installed first - you can try in
         if self.tool_hints:
             tool_section = f"\n\n## Tool Strategy\n{chr(10).join(self.tool_hints)}"
 
-        return f"""# bao 🐈
+        return f"""# bao 🍞
 
 You are bao, a personal AI assistant with persistent memory and learning capabilities.
 
@@ -217,7 +220,9 @@ Your workspace is at: {workspace_path}{tool_section}"""
         model: str | None = None,
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
-        system_prompt = self.build_system_prompt(skill_names, model=model, channel=channel, chat_id=chat_id)
+        system_prompt = self.build_system_prompt(
+            skill_names, model=model, channel=channel, chat_id=chat_id
+        )
 
         if related_memory:
             budgeted = self._budget_items(
@@ -251,6 +256,42 @@ Your workspace is at: {workspace_path}{tool_section}"""
 
         return messages
 
+    # Formats natively supported by vision APIs
+    _SUPPORTED_IMAGE_MIMES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
+    _MAX_IMAGE_LONG_EDGE = 1568  # Anthropic internal resize limit
+    _MAX_IMAGE_BYTES = 1_000_000  # 1 MB — skip Pillow for small images
+
+    @staticmethod
+    def _compress_image(p: Path, mime: str) -> tuple[str, str]:
+        """Resize & compress an image to JPEG. Returns (b64, mime)."""
+        from io import BytesIO
+
+        from PIL import Image, ImageOps
+
+        try:
+            from pillow_heif import register_heif_opener
+            register_heif_opener()
+        except ImportError:
+            pass
+
+        with Image.open(p) as img:
+            # Fix EXIF orientation (phone photos / screenshots)
+            img = ImageOps.exif_transpose(img)
+            # Downscale if either dimension exceeds limit
+            max_edge = ContextBuilder._MAX_IMAGE_LONG_EDGE
+            if max(img.size) > max_edge:
+                img.thumbnail((max_edge, max_edge), Image.LANCZOS)
+            # Composite transparent images onto white background
+            if img.mode in ("RGBA", "LA", "PA"):
+                background = Image.new("RGB", img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[-1])
+                img = background
+            elif img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            buf = BytesIO()
+            img.save(buf, format="JPEG", quality=85)
+            return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
+
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
         if not media:
             return text
@@ -261,7 +302,28 @@ Your workspace is at: {workspace_path}{tool_section}"""
             mime, _ = mimetypes.guess_type(path)
             if not p.is_file() or not mime or not mime.startswith("image/"):
                 continue
-            b64 = base64.b64encode(p.read_bytes()).decode()
+
+            needs_transcode = mime not in self._SUPPORTED_IMAGE_MIMES
+            try:
+                needs_compress = p.stat().st_size > self._MAX_IMAGE_BYTES
+            except OSError:
+                continue
+
+            if needs_transcode or needs_compress:
+                try:
+                    b64, mime = self._compress_image(p, mime)
+                except ImportError:
+                    logging.warning("Pillow is not installed; skipping image %s", p)
+                    continue
+                except Exception:
+                    logging.warning("Failed to process image %s", p, exc_info=True)
+                    continue
+            else:
+                try:
+                    b64 = base64.b64encode(p.read_bytes()).decode()
+                except OSError:
+                    continue
+
             images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
 
         if not images:
