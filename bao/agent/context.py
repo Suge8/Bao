@@ -4,6 +4,7 @@ import base64
 import logging
 import mimetypes
 import platform
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -112,9 +113,7 @@ class ContextBuilder:
         if bootstrap:
             parts.append(bootstrap)
 
-        memory = self.memory.get_memory_context(max_chars=MAX_LONG_TERM_MEMORY_CHARS)
-        if memory:
-            parts.append(f"# Memory\n\n{memory}")
+        # Long-term memory injection moved to build_messages() for query-aware filtering
 
         always_skills = self.skills.get_always_skills()
         if always_skills:
@@ -223,6 +222,28 @@ Your workspace is at: {workspace_path}{tool_section}"""
         system_prompt = self.build_system_prompt(
             skill_names, model=model, channel=channel, chat_id=chat_id
         )
+
+        # --- Query-aware long-term memory injection ---
+        ltm = self.memory.get_relevant_memory_context(
+            current_message, max_chars=MAX_LONG_TERM_MEMORY_CHARS
+        )
+        if ltm:
+            system_prompt += f"\n\n# Memory\n\n{ltm}"
+
+        if related_memory and ltm:
+            # Deduplicate: filter related_memory items that overlap with long-term memory
+            # Strip LTM headers (## / [category]) before tokenizing to avoid pollution
+            ltm_clean = re.sub(r"^(##.*|\[\w+\])\s*$", "", ltm, flags=re.MULTILINE)
+            ltm_tokens = set(MemoryStore._tokenize(ltm_clean))
+            deduped: list[str] = []
+            for item in related_memory:
+                item_tokens = set(MemoryStore._tokenize(item))
+                if not item_tokens:
+                    continue
+                overlap = len(item_tokens & ltm_tokens) / len(item_tokens)
+                if overlap < 0.7:
+                    deduped.append(item)
+            related_memory = deduped or None
 
         if related_memory:
             budgeted = self._budget_items(

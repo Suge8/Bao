@@ -67,11 +67,16 @@ class IMessageChannel(BaseChannel):
             else:
                 logger.debug("ℹ️ iMessage 媒体缺失 / media missing: {}", file_path)
 
+    def _service_type(self) -> str:
+        service = (self.config.service or "iMessage").strip()
+        return service if service in {"iMessage", "SMS"} else "iMessage"
+
     async def _send_text(self, buddy: str, text: str) -> None:
         encoded = text.replace("\\", "\\\\").replace('"', '\\"')
+        service = self._service_type()
         script = (
             f'tell application "Messages"\n'
-            f"  set targetService to 1st account whose service type = iMessage\n"
+            f"  set targetService to 1st account whose service type = {service}\n"
             f'  set targetBuddy to buddy "{buddy}" of targetService\n'
             f'  send "{encoded}" to targetBuddy\n'
             f"end tell"
@@ -93,9 +98,10 @@ class IMessageChannel(BaseChannel):
     async def _send_file(self, buddy: str, file_path: str) -> None:
         """Send a file (image/doc) via AppleScript POSIX file."""
         escaped = file_path.replace("\\", "\\\\").replace('"', '\\"')
+        service = self._service_type()
         script = (
             f'tell application "Messages"\n'
-            f"  set targetService to 1st account whose service type = iMessage\n"
+            f"  set targetService to 1st account whose service type = {service}\n"
             f'  set targetBuddy to buddy "{buddy}" of targetService\n'
             f'  send POSIX file "{escaped}" to targetBuddy\n'
             f"end tell"

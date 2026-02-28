@@ -1,10 +1,36 @@
 """Configuration schema using Pydantic."""
 
+import warnings
 from pathlib import Path
+from typing import Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ExperienceModelLiteral = Literal["utility", "main", "none"]
+ContextManagementLiteral = Literal["off", "observe", "auto", "aggressive"]
+ExecSandboxModeLiteral = Literal["full-auto", "semi-auto", "read-only"]
+SlackGroupPolicyLiteral = Literal["mention", "open", "allowlist"]
+SlackDmPolicyLiteral = Literal["open", "allowlist"]
+SlackModeLiteral = Literal["socket"]
+MochatReplyDelayModeLiteral = Literal["off", "non-mention"]
+ProviderTypeLiteral = Literal["openai", "anthropic", "gemini", "openai_codex"]
+ProviderApiModeLiteral = Literal["auto", "responses", "completions"]
+
+
+def _warn_unknown_policy(
+    *, model_name: str, field_name: str, value: str, allowed_values: tuple[str, ...]
+) -> None:
+    if value in allowed_values:
+        return
+    allowed_text = ", ".join(allowed_values)
+    warnings.warn(
+        f"Unknown {model_name}.{field_name} value {value!r}. "
+        f"Allowed values: {allowed_text}. Proceeding for compatibility.",
+        UserWarning,
+        stacklevel=3,
+    )
 
 
 class Base(BaseModel):
@@ -18,7 +44,7 @@ class WhatsAppConfig(Base):
 
     enabled: bool = False
     bridge_url: str = "ws://localhost:3001"
-    bridge_token: str = ""  # Shared token for bridge auth (optional, recommended)
+    bridge_token: SecretStr = SecretStr("")  # Shared token for bridge auth (optional, recommended)
     allow_from: list[str] = Field(default_factory=list)  # Allowed phone numbers
 
 
@@ -26,7 +52,7 @@ class TelegramConfig(Base):
     """Telegram channel configuration."""
 
     enabled: bool = False
-    token: str = ""  # Bot token from @BotFather
+    token: SecretStr = SecretStr("")  # Bot token from @BotFather
     allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs or usernames
     proxy: str | None = (
         None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
@@ -39,11 +65,15 @@ class FeishuConfig(Base):
 
     enabled: bool = False
     app_id: str = ""  # App ID from Feishu Open Platform
-    app_secret: str = ""  # App Secret from Feishu Open Platform
-    encrypt_key: str = ""  # Encrypt Key for event subscription (optional)
-    verification_token: str = ""  # Verification Token for event subscription (optional)
+    app_secret: SecretStr = SecretStr("")  # App Secret from Feishu Open Platform
+    encrypt_key: SecretStr = SecretStr("")  # Encrypt Key for event subscription (optional)
+    verification_token: SecretStr = SecretStr(
+        ""
+    )  # Verification Token for event subscription (optional)
     allow_from: list[str] = Field(default_factory=list)  # Allowed user open_ids
-    react_emoji: str = "THUMBSUP"  # Emoji type for message reactions (e.g. THUMBSUP, OK, DONE, SMILE)
+    react_emoji: str = (
+        "THUMBSUP"  # Emoji type for message reactions (e.g. THUMBSUP, OK, DONE, SMILE)
+    )
 
 
 class DingTalkConfig(Base):
@@ -51,7 +81,7 @@ class DingTalkConfig(Base):
 
     enabled: bool = False
     client_id: str = ""  # AppKey
-    client_secret: str = ""  # AppSecret
+    client_secret: SecretStr = SecretStr("")  # AppSecret
     allow_from: list[str] = Field(default_factory=list)  # Allowed staff_ids
 
 
@@ -59,7 +89,7 @@ class DiscordConfig(Base):
     """Discord channel configuration."""
 
     enabled: bool = False
-    token: str = ""  # Bot token from Discord Developer Portal
+    token: SecretStr = SecretStr("")  # Bot token from Discord Developer Portal
     allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs
     gateway_url: str = "wss://gateway.discord.gg/?v=10&encoding=json"
     intents: int = 37377  # GUILDS + GUILD_MESSAGES + DIRECT_MESSAGES + MESSAGE_CONTENT
@@ -75,7 +105,7 @@ class EmailConfig(Base):
     imap_host: str = ""
     imap_port: int = 993
     imap_username: str = ""
-    imap_password: str = ""
+    imap_password: SecretStr = SecretStr("")
     imap_mailbox: str = "INBOX"
     imap_use_ssl: bool = True
 
@@ -83,7 +113,7 @@ class EmailConfig(Base):
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""
-    smtp_password: str = ""
+    smtp_password: SecretStr = SecretStr("")
     smtp_use_tls: bool = True
     smtp_use_ssl: bool = False
     from_address: str = ""
@@ -127,7 +157,7 @@ class MochatConfig(Base):
     watch_limit: int = 100
     retry_delay_ms: int = 500
     max_retry_attempts: int = 0  # 0 means unlimited retries
-    claw_token: str = ""
+    claw_token: SecretStr = SecretStr("")
     agent_user_id: str = ""
     sessions: list[str] = Field(default_factory=list)
     panels: list[str] = Field(default_factory=list)
@@ -137,6 +167,16 @@ class MochatConfig(Base):
     reply_delay_mode: str = "non-mention"  # off | non-mention
     reply_delay_ms: int = 120000
 
+    @model_validator(mode="after")
+    def _warn_reply_delay_mode(self) -> "MochatConfig":
+        _warn_unknown_policy(
+            model_name="MochatConfig",
+            field_name="reply_delay_mode",
+            value=self.reply_delay_mode,
+            allowed_values=get_args(MochatReplyDelayModeLiteral),
+        )
+        return self
+
 
 class SlackDMConfig(Base):
     """Slack DM policy configuration."""
@@ -145,6 +185,16 @@ class SlackDMConfig(Base):
     policy: str = "open"  # "open" or "allowlist"
     allow_from: list[str] = Field(default_factory=list)  # Allowed Slack user IDs
 
+    @model_validator(mode="after")
+    def _warn_policy(self) -> "SlackDMConfig":
+        _warn_unknown_policy(
+            model_name="SlackDMConfig",
+            field_name="policy",
+            value=self.policy,
+            allowed_values=get_args(SlackDmPolicyLiteral),
+        )
+        return self
+
 
 class SlackConfig(Base):
     """Slack channel configuration."""
@@ -152,8 +202,8 @@ class SlackConfig(Base):
     enabled: bool = False
     mode: str = "socket"  # "socket" supported
     webhook_path: str = "/slack/events"
-    bot_token: str = ""  # xoxb-...
-    app_token: str = ""  # xapp-...
+    bot_token: SecretStr = SecretStr("")  # xoxb-...
+    app_token: SecretStr = SecretStr("")  # xapp-...
     user_token_read_only: bool = True
     reply_in_thread: bool = True
     react_emoji: str = "eyes"
@@ -161,13 +211,29 @@ class SlackConfig(Base):
     group_allow_from: list[str] = Field(default_factory=list)  # Allowed channel IDs if allowlist
     dm: SlackDMConfig = Field(default_factory=SlackDMConfig)
 
+    @model_validator(mode="after")
+    def _warn_policies(self) -> "SlackConfig":
+        _warn_unknown_policy(
+            model_name="SlackConfig",
+            field_name="mode",
+            value=self.mode,
+            allowed_values=get_args(SlackModeLiteral),
+        )
+        _warn_unknown_policy(
+            model_name="SlackConfig",
+            field_name="group_policy",
+            value=self.group_policy,
+            allowed_values=get_args(SlackGroupPolicyLiteral),
+        )
+        return self
+
 
 class QQConfig(Base):
     """QQ channel configuration using botpy SDK."""
 
     enabled: bool = False
     app_id: str = ""
-    secret: str = ""
+    secret: SecretStr = SecretStr("")
     allow_from: list[str] = Field(default_factory=list)
 
 
@@ -203,10 +269,10 @@ class AgentDefaults(Base):
     utility_model: str = ""
     experience_model: str = "utility"  # "utility" | "main" | "none"
     models: list[str] = Field(default_factory=list)
-    max_tokens: int = 8192
+    max_tokens: int = 16000
     temperature: float = 0.1
-    max_tool_iterations: int = 20
-    memory_window: int = 50
+    max_tool_iterations: int = 50
+    memory_window: int = 100
     context_management: str = "auto"  # off | observe | auto | aggressive
     tool_output_preview_chars: int = 3000
     tool_output_offload_chars: int = 8000
@@ -215,7 +281,23 @@ class AgentDefaults(Base):
     context_compact_keep_recent_tool_blocks: int = 6
     artifact_retention_days: int = 7
     send_progress: bool = True
-    send_tool_hints: bool = True
+    send_tool_hints: bool = False
+
+    @model_validator(mode="after")
+    def _warn_policies(self) -> "AgentDefaults":
+        _warn_unknown_policy(
+            model_name="AgentDefaults",
+            field_name="experience_model",
+            value=self.experience_model,
+            allowed_values=get_args(ExperienceModelLiteral),
+        )
+        _warn_unknown_policy(
+            model_name="AgentDefaults",
+            field_name="context_management",
+            value=self.context_management,
+            allowed_values=get_args(ContextManagementLiteral),
+        )
+        return self
 
 
 class AgentsConfig(Base):
@@ -227,11 +309,27 @@ class AgentsConfig(Base):
 class ProviderConfig(Base):
     """LLM provider configuration."""
 
-    type: str = "openai"  # openai | anthropic | gemini
-    api_key: str = ""
+    type: str = "openai"
+    api_key: SecretStr = SecretStr("")
     api_base: str | None = None
     extra_headers: dict[str, str] | None = None
     api_mode: str = "auto"  # auto | responses | completions (openai_compatible only)
+
+    @model_validator(mode="after")
+    def _warn_policies(self) -> "ProviderConfig":
+        _warn_unknown_policy(
+            model_name="ProviderConfig",
+            field_name="type",
+            value=self.type,
+            allowed_values=get_args(ProviderTypeLiteral),
+        )
+        _warn_unknown_policy(
+            model_name="ProviderConfig",
+            field_name="api_mode",
+            value=self.api_mode,
+            allowed_values=get_args(ProviderApiModeLiteral),
+        )
+        return self
 
 
 class HeartbeatConfig(Base):
@@ -253,22 +351,22 @@ class EmbeddingConfig(Base):
     """Embedding model configuration for semantic search."""
 
     model: str = ""
-    api_key: str = ""
+    api_key: SecretStr = SecretStr("")
     base_url: str = ""
     dim: int = 0
 
     @property
     def enabled(self) -> bool:
-        return bool(self.model and self.api_key)
+        return bool(self.model and self.api_key.get_secret_value())
 
 
 class WebSearchConfig(Base):
     """Web search tool configuration."""
 
     provider: str = ""
-    brave_api_key: str = ""
-    tavily_api_key: str = ""
-    exa_api_key: str = ""
+    brave_api_key: SecretStr = SecretStr("")
+    tavily_api_key: SecretStr = SecretStr("")
+    exa_api_key: SecretStr = SecretStr("")
     max_results: int = 5
 
 
@@ -285,6 +383,17 @@ class ExecToolConfig(Base):
     path_append: str = ""
     sandbox_mode: str = "semi-auto"  # full-auto | semi-auto | read-only
 
+    @model_validator(mode="after")
+    def _warn_sandbox_mode(self) -> "ExecToolConfig":
+        _warn_unknown_policy(
+            model_name="ExecToolConfig",
+            field_name="sandbox_mode",
+            value=self.sandbox_mode,
+            allowed_values=get_args(ExecSandboxModeLiteral),
+        )
+        return self
+
+
 class MCPServerConfig(Base):
     """MCP server connection configuration (stdio or HTTP)."""
 
@@ -295,17 +404,20 @@ class MCPServerConfig(Base):
     headers: dict[str, str] = Field(default_factory=dict)  # HTTP: Custom HTTP Headers
     tool_timeout_seconds: int = 30  # Timeout for individual MCP tool calls
 
+
 class ImageGenerationConfig(Base):
     """Image generation tool config. Leave api_key empty to disable."""
 
-    api_key: str = ""
+    api_key: SecretStr = SecretStr("")
     model: str = ""  # Empty → default to gemini-2.0-flash-exp-image-generation inside tool
     base_url: str = ""  # Empty → Google official endpoint
+
 
 class DesktopConfig(Base):
     """Desktop automation tools config. Set enabled=true to activate."""
 
     enabled: bool = False  # Disabled by default for safety
+
 
 class ToolsConfig(Base):
     """Tools configuration."""
@@ -328,6 +440,7 @@ class UIConfig(Base):
 class Config(BaseSettings):
     """Root configuration for bao."""
 
+    config_version: int = Field(default=2, alias="config_version")
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
@@ -354,18 +467,25 @@ class Config(BaseSettings):
         model_prefix = model_str.lower().split("/", 1)[0] if "/" in model_str else ""
         normalized_prefix = model_prefix.replace("-", "_")
         expected_type = spec.provider_type.value
+        allow_no_key = expected_type == "openai_codex"
         # Priority 1: config provider name matches model prefix
         for provider_name, provider in self.providers.items():
-            if provider_name.replace("-", "_") == normalized_prefix and provider.api_key:
+            if (
+                provider_name.replace("-", "_") == normalized_prefix
+                and provider.type == expected_type
+                and (provider.api_key.get_secret_value() or allow_no_key)
+            ):
                 return provider, spec.name
         # Priority 2: matching type with api_key
         for provider in self.providers.values():
-            if provider.type == expected_type and provider.api_key:
+            if provider.type == expected_type and (
+                provider.api_key.get_secret_value() or allow_no_key
+            ):
                 return provider, spec.name
         if expected_type != "openai":
             return None, spec.name
         for provider in self.providers.values():
-            if provider.api_key:
+            if provider.type == "openai" and provider.api_key.get_secret_value():
                 return provider, spec.name
         return None, spec.name
 
@@ -382,7 +502,7 @@ class Config(BaseSettings):
     def get_api_key(self, model: str | None = None) -> str | None:
         """Get API key for the given model. Falls back to first available key."""
         p = self.get_provider(model)
-        return p.api_key if p else None
+        return p.api_key.get_secret_value() if p else None
 
     def get_api_base(self, model: str | None = None) -> str | None:
         from bao.providers.registry import find_by_name

@@ -13,6 +13,7 @@
 ```
 
 启用后：
+
 - `read_file` / `write_file` / `edit_file` 仅能访问 `~/.bao/workspace/` 下的文件
 - `exec` 的工作目录被锁定在工作区内
 - 路径穿越（`../`）会被拦截
@@ -50,13 +51,14 @@
 
 ```bash
 # ✅ 正确：配置文件设置严格权限
-chmod 600 ~/.bao/config.json
+chmod 600 ~/.bao/config.jsonc
 
 # ❌ 错误：硬编码在代码中或提交到 Git
 ```
 
 建议：
-- API Key 存放在 `~/.bao/config.json`，文件权限设为 `0600`
+
+- API Key 存放在 `~/.bao/config.jsonc`，文件权限设为 `0600`
 - 可使用环境变量传入敏感信息
 - 生产环境建议使用 OS Keyring / 密钥管理器
 - 定期轮换 API Key
@@ -72,7 +74,10 @@ chmod 600 ~/.bao/config.json
 - ❌ 不要禁用安全检查
 - ❌ 不要在含敏感数据的系统上未经审查运行
 
+说明：当前子代理默认不对内部目录做额外硬拦截；如果你需要更强隔离，请启用 `restrictToWorkspace` 并通过系统权限限制敏感目录。
+
 **内置拦截的危险命令**：
+
 - `rm -rf /` — 根目录删除
 - Fork 炸弹
 - `mkfs.*` — 文件系统格式化
@@ -87,16 +92,19 @@ chmod 600 ~/.bao/config.json
 - ✅ 通过文件系统权限保护敏感目录
 - ✅ 定期审计日志中的文件操作
 - ✅ 启用 `restrictToWorkspace` 进一步限制
+- ✅ 通过系统权限将 `lancedb/`、`memory/`、`.bao/` 等目录按需设为只读/受限
 - ❌ 不要给予不受限的敏感文件访问权限
 
 ### 6. 网络安全
 
 **API 调用**：
+
 - 所有外部 API 调用默认使用 HTTPS
 - 配置了超时以防止请求挂起
 - 可通过防火墙限制出站连接
 
 **WhatsApp Bridge**：
+
 - Bridge 绑定在 `127.0.0.1:3001`（仅本地访问，外部网络不可达）
 - 配置 `bridgeToken` 启用 Python 与 Node.js 之间的共享密钥认证
 - 认证数据存于 `~/.bao/whatsapp-auth`，权限应为 `0700`
@@ -117,8 +125,8 @@ npm audit fix
 pip install --upgrade bao-ai
 ```
 
- `ws` 已更新至 `>=8.17.1` 修复 DoS 漏洞
- 建议定期执行 `pip-audit` 和 `npm audit`
+`ws` 已更新至 `>=8.17.1` 修复 DoS 漏洞
+建议定期执行 `pip-audit` 和 `npm audit`
 
 ## 生产部署建议
 
@@ -141,7 +149,7 @@ sudo -u bao bao
 
 ```bash
 chmod 700 ~/.bao
-chmod 600 ~/.bao/config.json
+chmod 600 ~/.bao/config.jsonc
 chmod 700 ~/.bao/whatsapp-auth
 ```
 
@@ -154,25 +162,30 @@ chmod 700 ~/.bao/whatsapp-auth
 ## 内置安全控制
 
 ✅ **输入验证**
+
 - 文件操作路径穿越防护
 - 危险命令模式检测
 - HTTP 请求输入长度限制
 
 ✅ **访问认证**
+
 - 基于白名单的访问控制 (`allowFrom`)
 - 认证失败日志记录
 - 默认开放（个人使用），生产环境请配置 `allowFrom`
 
 ✅ **资源保护**
+
 - 命令执行超时（默认 60 秒）
 - 输出截断（10KB 限制）
 - HTTP 请求超时（10-30 秒）
 
 ✅ **工作区沙箱**
+
 - `restrictToWorkspace` 限制所有工具操作在工作区内
 - 路径穿越拦截
 
 ✅ **安全通信**
+
 - 所有外部 API 使用 HTTPS
 - Telegram API 使用 TLS
 - WhatsApp Bridge：仅本地绑定 + 可选 Token 认证
@@ -182,7 +195,7 @@ chmod 700 ~/.bao/whatsapp-auth
 ⚠️ **当前安全限制**：
 
 1. **无内置速率限制** — 用户可发送无限消息（需自行添加）
-2. **明文配置** — API Key 以明文存储（生产环境建议使用 Keyring）
+2. **运行时内存中明文** — SecretStr 防止日志/序列化泄露，但运行时 `.get_secret_value()` 仍为明文（生产环境建议使用 Keyring）
 3. **无会话过期** — 无自动会话超时机制
 4. **有限的命令过滤** — 仅拦截明显的危险模式
 5. **有限的审计日志** — 安全事件日志不完整（可按需增强）
@@ -192,7 +205,7 @@ chmod 700 ~/.bao/whatsapp-auth
 部署 bao 前请确认：
 
 - [ ] API Key 安全存储（未写入代码）
-- [ ] 配置文件权限设为 `0600`
+- [ ] 配置文件权限设为 `0600`（`~/.bao/config.jsonc`）
 - [ ] 所有渠道已配置 `allowFrom` 白名单
 - [ ] 以非 root 用户运行
 - [ ] 文件系统权限正确限制
@@ -215,4 +228,4 @@ chmod 700 ~/.bao/whatsapp-auth
 
 ## 更新记录
 
-**最后更新**：2026-02-20
+**最后更新**：2026-02-28

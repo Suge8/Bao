@@ -115,6 +115,11 @@ class MessageTool(Tool):
         channel = channel or default_channel
         chat_id = chat_id or default_chat_id
         message_id = message_id or default_message_id
+        if not isinstance(message_id, str):
+            message_id = None
+
+        default_target = channel == default_channel and chat_id == default_chat_id
+        effective_reply_to = reply_to or (message_id if default_target else None)
 
         if channel == "desktop":
             return "Error: message tool cannot send to desktop channel. Reply normally instead."
@@ -135,10 +140,10 @@ class MessageTool(Tool):
             channel=channel,
             chat_id=chat_id,
             content=content,
-            reply_to=reply_to or message_id,
+            reply_to=effective_reply_to,
             media=media or [],
             metadata={
-                "message_id": message_id,
+                "message_id": effective_reply_to,
             },
         )
 

@@ -267,7 +267,7 @@ class MochatChannel(BaseChannel):
 
     async def start(self) -> None:
         """Start Mochat channel workers and websocket connection."""
-        if not self.config.claw_token:
+        if not self.config.claw_token.get_secret_value():
             logger.error("❌ Mochat 配置缺失 / config missing: claw_token not configured")
             return
 
@@ -314,7 +314,7 @@ class MochatChannel(BaseChannel):
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send outbound message to session or panel."""
-        if not self.config.claw_token:
+        if not self.config.claw_token.get_secret_value():
             logger.warning("⚠️ Mochat 令牌缺失 / token missing: skip send")
             return
 
@@ -378,7 +378,9 @@ class MochatChannel(BaseChannel):
             if MSGPACK_AVAILABLE:
                 serializer = "msgpack"
             else:
-                logger.warning("⚠️ Mochat Msgpack 未安装 / msgpack missing: socket_disable_msgpack=false, using JSON")
+                logger.warning(
+                    "⚠️ Mochat Msgpack 未安装 / msgpack missing: socket_disable_msgpack=false, using JSON"
+                )
 
         client = socketio.AsyncClient(
             reconnection=True,
@@ -436,7 +438,7 @@ class MochatChannel(BaseChannel):
                 socket_url,
                 transports=["websocket"],
                 socketio_path=socket_path,
-                auth={"token": self.config.claw_token},
+                auth={"token": self.config.claw_token.get_secret_value()},
                 wait_timeout=max(1.0, self.config.socket_connect_timeout_ms / 1000.0),
             )
             return True
@@ -483,7 +485,9 @@ class MochatChannel(BaseChannel):
             },
         )
         if not ack.get("result"):
-            logger.error("❌ Mochat 订阅会话失败 / subscribe failed: {}", ack.get("message", "unknown error"))
+            logger.error(
+                "❌ Mochat 订阅会话失败 / subscribe failed: {}", ack.get("message", "unknown error")
+            )
             return False
 
         data = ack.get("data")
@@ -505,7 +509,9 @@ class MochatChannel(BaseChannel):
             return True
         ack = await self._socket_call("com.claw.im.subscribePanels", {"panelIds": panel_ids})
         if not ack.get("result"):
-            logger.error("❌ Mochat 订阅面板失败 / subscribe failed: {}", ack.get("message", "unknown error"))
+            logger.error(
+                "❌ Mochat 订阅面板失败 / subscribe failed: {}", ack.get("message", "unknown error")
+            )
             return False
         return True
 
@@ -967,7 +973,7 @@ class MochatChannel(BaseChannel):
             url,
             headers={
                 "Content-Type": "application/json",
-                "X-Claw-Token": self.config.claw_token,
+                "X-Claw-Token": self.config.claw_token.get_secret_value(),
             },
             json=payload,
         )

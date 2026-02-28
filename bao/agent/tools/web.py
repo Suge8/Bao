@@ -216,9 +216,11 @@ def _apply_filters(text: str, level: str) -> tuple[str, bool]:
 class WebSearchTool(Tool):
     """Search the web using Brave, Tavily, or Exa API."""
 
-    name = "web_search"
-    description = "Search the web. ALWAYS use this instead of exec+curl. Returns titles, URLs, and snippets."
-    parameters = {
+    _NAME = "web_search"
+    _DESCRIPTION = (
+        "Search the web. ALWAYS use this instead of exec+curl. Returns titles, URLs, and snippets."
+    )
+    _PARAMETERS: dict[str, Any] = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "Search query"},
@@ -232,20 +234,47 @@ class WebSearchTool(Tool):
         "required": ["query"],
     }
 
+    @property
+    def name(self) -> str:
+        return self._NAME
+
+    @property
+    def description(self) -> str:
+        return self._DESCRIPTION
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return self._PARAMETERS
+
     def __init__(self, search_config: "WebSearchConfig | None" = None):
         self.provider = search_config.provider if search_config else ""
-        self.brave_key = (search_config.brave_api_key if search_config else None) or os.environ.get(
-            "BRAVE_API_KEY", ""
-        )
+        brave_key = search_config.brave_api_key.get_secret_value() if search_config else None
+        self.brave_key = brave_key or os.environ.get("BRAVE_API_KEY", "")
         self.tavily_key = (
-            search_config.tavily_api_key if search_config else None
+            search_config.tavily_api_key.get_secret_value() if search_config else None
         ) or os.environ.get("TAVILY_API_KEY", "")
         self.max_results = search_config.max_results if search_config else 5
-        self.exa_key = (search_config.exa_api_key if search_config else None) or os.environ.get(
-            "EXA_API_KEY", ""
-        )
+        exa_key = search_config.exa_api_key.get_secret_value() if search_config else None
+        self.exa_key = exa_key or os.environ.get("EXA_API_KEY", "")
+        self.exa_max_characters = 1000
 
-    async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> str:
+        unexpected = sorted(set(kwargs) - {"query", "count"})
+        if unexpected:
+            return f"Error: Unexpected parameter(s): {', '.join(unexpected)}"
+
+        query_raw = kwargs.get("query", "")
+        query = query_raw if isinstance(query_raw, str) else str(query_raw)
+        if not query.strip():
+            return "Error: Missing required parameter 'query'"
+
+        count_raw = kwargs.get("count")
+        if isinstance(count_raw, bool) or (
+            count_raw is not None and not isinstance(count_raw, int)
+        ):
+            return "Error: Invalid parameter 'count': must be integer"
+        count = count_raw if isinstance(count_raw, int) else None
+
         n = min(max(count or self.max_results, 1), 10)
         p = (self.provider or "").lower()
         dispatch = {"tavily": self._tavily, "brave": self._brave, "exa": self._exa}
@@ -303,7 +332,7 @@ class WebSearchTool(Tool):
             answer = data.get("answer", "")
             out = self._format(query, results, n)
             if answer:
-                out = f"AI Answer: {answer}\n\n{out}"
+                out = f"[AI Summary] {answer}\n\n---\n\n{out}"
             return out
         except Exception as e:
             return f"Error: {e}"
@@ -313,7 +342,11 @@ class WebSearchTool(Tool):
             async with httpx.AsyncClient() as client:
                 r = await client.post(
                     "https://api.exa.ai/search",
-                    json={"query": query, "numResults": n, "contents": {"text": {"maxCharacters": 300}}},
+                    json={
+                        "query": query,
+                        "numResults": n,
+                        "contents": {"text": {"maxCharacters": self.exa_max_characters}},
+                    },
                     headers={"x-api-key": self.exa_key, "Content-Type": "application/json"},
                     timeout=15.0,
                 )
@@ -332,15 +365,16 @@ class WebSearchTool(Tool):
             return f"Error: {e}"
 
     @staticmethod
-    def _format(query: str, results: list[dict], n: int) -> str:
+    def _format(query: str, results: list[dict[str, str]], n: int) -> str:
         if not results:
             return f"No results for: {query}"
         lines = [f"Results for: {query}\n"]
         for i, item in enumerate(results[:n], 1):
-            lines.append(f"{i}. {item.get('title', '')}\n   {item.get('url', '')}")
+            lines.append(f"[{i}] {item.get('title', '')}\n   {item.get('url', '')}")
             if desc := item.get("description"):
                 lines.append(f"   {desc}")
-        return "\n".join(lines)
+            lines.append("")
+        return "\n".join(lines).rstrip()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -353,11 +387,9 @@ _FILTER_LEVELS = ("none", "standard", "aggressive")
 class WebFetchTool(Tool):
     """Fetch and extract content from a URL using Readability."""
 
-    name = "web_fetch"
-    description = (
-        "Fetch a URL and extract readable content as markdown or text."
-    )
-    parameters = {
+    _NAME = "web_fetch"
+    _DESCRIPTION = "Fetch a URL and extract readable content as markdown or text."
+    _PARAMETERS: dict[str, Any] = {
         "type": "object",
         "properties": {
             "url": {"type": "string", "description": "URL to fetch"},
@@ -378,22 +410,88 @@ class WebFetchTool(Tool):
         "required": ["url"],
     }
 
+    @property
+    def name(self) -> str:
+        return self._NAME
+
+    @property
+    def description(self) -> str:
+        return self._DESCRIPTION
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return self._PARAMETERS
+
     def __init__(self, max_chars: int = 50000):
         self.max_chars = max_chars
 
-    async def execute(
-        self,
-        url: str,
-        extractMode: str = "markdown",
-        maxChars: int | None = None,
-        filterLevel: str = "none",
-        **kwargs: Any,
-    ) -> str:
+    async def execute(self, **kwargs: Any) -> str:
         from readability import Document
 
-        max_chars = maxChars or self.max_chars
-        if filterLevel not in _FILTER_LEVELS:
-            filterLevel = "none"
+        unexpected = sorted(set(kwargs) - {"url", "extractMode", "maxChars", "filterLevel"})
+        if unexpected:
+            return json.dumps(
+                {
+                    "error": f"Unexpected parameter(s): {', '.join(unexpected)}",
+                    "url": str(kwargs.get("url", "")),
+                },
+                ensure_ascii=False,
+            )
+
+        url_raw = kwargs.get("url", "")
+        url = url_raw if isinstance(url_raw, str) else str(url_raw)
+
+        extract_mode_raw = kwargs.get("extractMode", "markdown")
+        if not isinstance(extract_mode_raw, str):
+            return json.dumps(
+                {"error": "Invalid parameter 'extractMode': must be string", "url": url},
+                ensure_ascii=False,
+            )
+        extract_mode = extract_mode_raw.strip().lower()
+        if extract_mode not in ("markdown", "text"):
+            return json.dumps(
+                {
+                    "error": "Invalid parameter 'extractMode': must be one of [markdown, text]",
+                    "url": url,
+                },
+                ensure_ascii=False,
+            )
+
+        max_chars_raw = kwargs.get("maxChars")
+        if isinstance(max_chars_raw, bool) or (
+            max_chars_raw is not None and not isinstance(max_chars_raw, int)
+        ):
+            return json.dumps(
+                {"error": "Invalid parameter 'maxChars': must be integer", "url": url},
+                ensure_ascii=False,
+            )
+        if isinstance(max_chars_raw, int) and max_chars_raw < 100:
+            return json.dumps(
+                {"error": "Invalid parameter 'maxChars': must be >= 100", "url": url},
+                ensure_ascii=False,
+            )
+        max_chars_arg = max_chars_raw if isinstance(max_chars_raw, int) else None
+
+        filter_level_raw = kwargs.get("filterLevel", "none")
+        if not isinstance(filter_level_raw, str):
+            return json.dumps(
+                {"error": "Invalid parameter 'filterLevel': must be string", "url": url},
+                ensure_ascii=False,
+            )
+        filter_level = filter_level_raw.strip().lower()
+        if filter_level not in _FILTER_LEVELS:
+            return json.dumps(
+                {
+                    "error": (
+                        "Invalid parameter 'filterLevel': "
+                        "must be one of [none, standard, aggressive]"
+                    ),
+                    "url": url,
+                },
+                ensure_ascii=False,
+            )
+
+        max_chars = max_chars_arg or self.max_chars
 
         is_valid, error_msg = _validate_url(url)
         if not is_valid:
@@ -415,23 +513,23 @@ class WebFetchTool(Tool):
                 text, extractor = json.dumps(r.json(), indent=2, ensure_ascii=False), "json"
             elif "text/html" in ctype or r.text[:256].lower().startswith(("<!doctype", "<html")):
                 raw_html = r.text
-                if filterLevel != "none":
+                if filter_level != "none":
                     raw_html = _preclean_html(raw_html)
 
                 doc = Document(raw_html)
                 summary = doc.summary()
                 content = (
                     self._to_markdown(summary)
-                    if extractMode == "markdown"
+                    if extract_mode == "markdown"
                     else _strip_tags(summary)
                 )
                 text = f"# {doc.title()}\n\n{content}" if doc.title() else content
                 extractor = "readability"
-                text, filtered = _apply_filters(text, filterLevel)
+                text, filtered = _apply_filters(text, filter_level)
             else:
                 text, extractor = r.text, "raw"
 
-            if filterLevel != "none":
+            if filter_level != "none":
                 text, truncated = _smart_truncate(text, max_chars)
             else:
                 truncated = len(text) > max_chars
@@ -444,7 +542,7 @@ class WebFetchTool(Tool):
                     "finalUrl": str(r.url),
                     "status": r.status_code,
                     "extractor": extractor,
-                    "filterLevel": filterLevel,
+                    "filterLevel": filter_level,
                     "filtered": filtered,
                     "truncated": truncated,
                     "length": len(text),

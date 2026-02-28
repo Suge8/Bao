@@ -32,7 +32,9 @@ class SlackChannel(BaseChannel):
 
     async def start(self) -> None:
         """Start the Slack Socket Mode client."""
-        if not self.config.bot_token or not self.config.app_token:
+        bot_token = self.config.bot_token.get_secret_value()
+        app_token = self.config.app_token.get_secret_value()
+        if not bot_token or not app_token:
             logger.error("❌ 未配置 / not configured: Slack token")
             return
         if self.config.mode != "socket":
@@ -41,9 +43,9 @@ class SlackChannel(BaseChannel):
 
         self._running = True
 
-        self._web_client = AsyncWebClient(token=self.config.bot_token)
+        self._web_client = AsyncWebClient(token=bot_token)
         self._socket_client = SocketModeClient(
-            app_token=self.config.app_token,
+            app_token=app_token,
             web_client=self._web_client,
         )
 

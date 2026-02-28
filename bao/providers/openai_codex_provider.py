@@ -5,13 +5,19 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Awaitable, Callable
 
 import httpx
 from loguru import logger
-
 from oauth_cli_kit import get_token as get_codex_token
+
 from bao.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from bao.providers.retry import (
+    ProgressCallbackError,
+    StreamInterruptedError,
+    emit_progress,
+    safe_error_text,
+)
 
 DEFAULT_CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
 DEFAULT_ORIGINATOR = "bao"
@@ -30,13 +36,23 @@ class OpenAICodexProvider(LLMProvider):
         tools: list[dict[str, Any]] | None = None,
         model: str | None = None,
         max_tokens: int = 4096,
-        temperature: float = 0.7,
+        temperature: float = 0.1,
+        on_progress: Callable[[str], Awaitable[None]] | None = None,
+        **kwargs: Any,
     ) -> LLMResponse:
+        del max_tokens, temperature
         model = model or self.default_model
+        del kwargs
         system_prompt, input_items = _convert_messages(messages)
 
         token = await asyncio.to_thread(get_codex_token)
-        headers = _build_headers(token.account_id, token.access)
+        account_id = token.account_id or ""
+        if not account_id:
+            return LLMResponse(
+                content="Error calling Codex: missing account id from oauth token",
+                finish_reason="error",
+            )
+        headers = _build_headers(account_id, token.access)
 
         body: dict[str, Any] = {
             "model": _strip_model_prefix(model),
@@ -47,19 +63,19 @@ class OpenAICodexProvider(LLMProvider):
             "text": {"verbosity": "medium"},
             "include": ["reasoning.encrypted_content"],
             "prompt_cache_key": _prompt_cache_key(messages),
-            "tool_choice": "auto",
-            "parallel_tool_calls": True,
         }
 
         if tools:
             body["tools"] = _convert_tools(tools)
+            body["tool_choice"] = "auto"
+            body["parallel_tool_calls"] = True
 
         url = DEFAULT_CODEX_URL
 
         try:
             try:
                 content, tool_calls, finish_reason = await _request_codex(
-                    url, headers, body, verify=True
+                    url, headers, body, verify=True, on_progress=on_progress
                 )
             except Exception as e:
                 if "CERTIFICATE_VERIFY_FAILED" not in str(e):
@@ -68,16 +84,26 @@ class OpenAICodexProvider(LLMProvider):
                     "⚠️ Codex 证书校验失败 / TLS verify failed: retrying with verify=False"
                 )
                 content, tool_calls, finish_reason = await _request_codex(
-                    url, headers, body, verify=False
+                    url, headers, body, verify=False, on_progress=on_progress
                 )
             return LLMResponse(
                 content=content,
                 tool_calls=tool_calls,
                 finish_reason=finish_reason,
             )
+        except asyncio.CancelledError:
+            raise
+        except ProgressCallbackError as exc:
+            if isinstance(exc, StreamInterruptedError):
+                return LLMResponse(content=None, finish_reason="interrupted")
+            cause = exc.__cause__ or exc
+            return LLMResponse(
+                content=f"Error calling Codex progress callback: {safe_error_text(cause)}",
+                finish_reason="error",
+            )
         except Exception as e:
             return LLMResponse(
-                content=f"Error calling Codex: {str(e)}",
+                content=f"Error calling Codex: {safe_error_text(e)}",
                 finish_reason="error",
             )
 
@@ -108,6 +134,7 @@ async def _request_codex(
     headers: dict[str, str],
     body: dict[str, Any],
     verify: bool,
+    on_progress: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[str, list[ToolCallRequest], str]:
     async with httpx.AsyncClient(timeout=60.0, verify=verify) as client:
         async with client.stream("POST", url, headers=headers, json=body) as response:
@@ -116,7 +143,7 @@ async def _request_codex(
                 raise RuntimeError(
                     _friendly_error(response.status_code, text.decode("utf-8", "ignore"))
                 )
-            return await _consume_sse(response)
+            return await _consume_sse(response, on_progress=on_progress)
 
 
 def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -139,13 +166,31 @@ def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return converted
 
 
+def _flush_pending_images(input_items: list[dict[str, Any]], pending_images: list[str]) -> None:
+    if not pending_images:
+        return
+    image_content: list[dict[str, Any]] = [
+        {"type": "input_text", "text": "[screenshot from tool above]"},
+    ]
+    for ib64 in pending_images:
+        image_content.append(
+            {"type": "input_image", "image_url": f"data:image/jpeg;base64,{ib64}", "detail": "auto"}
+        )
+    input_items.append({"role": "user", "content": image_content})
+    pending_images.clear()
+
+
 def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
     system_prompt = ""
     input_items: list[dict[str, Any]] = []
+    pending_images: list[str] = []
 
     for idx, msg in enumerate(messages):
         role = msg.get("role")
         content = msg.get("content")
+
+        if role != "tool" and pending_images:
+            _flush_pending_images(input_items, pending_images)
 
         if role == "system":
             system_prompt = content if isinstance(content, str) else ""
@@ -170,6 +215,16 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[st
             # Then handle tool calls.
             for tool_call in msg.get("tool_calls", []) or []:
                 fn = tool_call.get("function") or {}
+                name = fn.get("name")
+                if not name:
+                    continue
+                raw_args = fn.get("arguments")
+                if isinstance(raw_args, str):
+                    arguments = raw_args
+                else:
+                    arguments = json.dumps(
+                        raw_args if raw_args is not None else {}, ensure_ascii=False
+                    )
                 call_id, item_id = _split_tool_call_id(tool_call.get("id"))
                 call_id = call_id or f"call_{idx}"
                 item_id = item_id or f"fc_{idx}"
@@ -178,8 +233,8 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[st
                         "type": "function_call",
                         "id": item_id,
                         "call_id": call_id,
-                        "name": fn.get("name"),
-                        "arguments": fn.get("arguments") or "{}",
+                        "name": name,
+                        "arguments": arguments,
                     }
                 )
             continue
@@ -196,7 +251,13 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[st
                     "output": output_text,
                 }
             )
+            img_b64 = msg.get("_image")
+            if isinstance(img_b64, str) and img_b64:
+                pending_images.append(img_b64)
             continue
+
+    if pending_images:
+        _flush_pending_images(input_items, pending_images)
 
     return system_prompt, input_items
 
@@ -254,7 +315,10 @@ async def _iter_sse(response: httpx.Response) -> AsyncGenerator[dict[str, Any], 
         buffer.append(line)
 
 
-async def _consume_sse(response: httpx.Response) -> tuple[str, list[ToolCallRequest], str]:
+async def _consume_sse(
+    response: httpx.Response,
+    on_progress: Callable[[str], Awaitable[None]] | None = None,
+) -> tuple[str, list[ToolCallRequest], str]:
     content = ""
     tool_calls: list[ToolCallRequest] = []
     tool_call_buffers: dict[str, dict[str, Any]] = {}
@@ -274,7 +338,9 @@ async def _consume_sse(response: httpx.Response) -> tuple[str, list[ToolCallRequ
                     "arguments": item.get("arguments") or "",
                 }
         elif event_type == "response.output_text.delta":
-            content += event.get("delta") or ""
+            delta = event.get("delta") or ""
+            content += delta
+            await emit_progress(on_progress, delta)
         elif event_type == "response.function_call_arguments.delta":
             call_id = event.get("call_id")
             if call_id and call_id in tool_call_buffers:
@@ -298,7 +364,7 @@ async def _consume_sse(response: httpx.Response) -> tuple[str, list[ToolCallRequ
                 tool_calls.append(
                     ToolCallRequest(
                         id=f"{call_id}|{buf.get('id') or item.get('id') or 'fc_0'}",
-                        name=buf.get("name") or item.get("name"),
+                        name=str(buf.get("name") or item.get("name") or "unknown_tool"),
                         arguments=args,
                     )
                 )

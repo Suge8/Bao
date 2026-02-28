@@ -12,6 +12,14 @@ services:
     command: []
     restart: unless-stopped
     ports:
+    # 环境变量覆盖配置文件 | Env vars override config file
+    # 命名规则 Naming: BAO_{SECTION}__{FIELD} (snake_case, 双下划线分隔层级)
+    # 示例 Examples:
+    #   BAO_AGENTS__DEFAULTS__MODEL=anthropic/claude-sonnet-4-20250514
+    #   BAO_PROVIDERS__MYKEY__API_KEY=sk-xxx
+    #   BAO_PROVIDERS__MYKEY__TYPE=openai
+    # env_file:
+    #   - .env  # 取消注释以从 .env 文件加载 | Uncomment to load from .env
       - 18790:18790
     deploy:
       resources:

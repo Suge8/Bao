@@ -1,13 +1,25 @@
+import importlib
 import importlib.resources
 import json
-import re
+import os
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from bao.config.schema import Config
 
+
+class ConfigLoadError(Exception):
+    """Raised when config file exists but cannot be parsed/validated."""
+
+
 _JSONC_TEMPLATE = """\
 {
+  // 💡 环境变量可覆盖此文件中的任何配置 | Env vars override any config below
+  //    命名 Naming: BAO_{SECTION}__{FIELD}  (snake_case, 双下划线分隔层级)
+  //    示例 Examples: BAO_AGENTS__DEFAULTS__MODEL=xxx  BAO_PROVIDERS__NAME__API_KEY=sk-xxx
+  //
   // ───────────────────────────────────────────────────────────────
   //  🤖 Agent 配置 | Agent Settings
   // ───────────────────────────────────────────────────────────────
@@ -201,7 +213,7 @@ _JSONC_TEMPLATE = """\
       "search": {
         "provider": "",
         "tavilyApiKey": "",
-        "braveApiKey": ""
+        "braveApiKey": "",
         "exaApiKey": ""
       }
     },
@@ -242,131 +254,6 @@ _JSONC_TEMPLATE = """\
 """
 
 
-def _read_workspace_template(filename: str, lang: str = "zh") -> str:
-    """Read a template from bao/templates/workspace/{lang}/ via importlib.resources."""
-    return (
-        importlib.resources.files("bao.templates.workspace")
-        .joinpath(lang)
-        .joinpath(filename)
-        .read_text(encoding="utf-8")
-    )
-
-
-LANG_PICKER = "嗨 👋 请选择语言 / Pick your language:\n\n1. 中文\n2. English"
-PERSONA_GREETING: dict[str, str] = {
-    "zh": (
-        "嘿 👋 我是运行在 bao 框架里的 AI 搭子，还没名字呢～\n\n"
-        "正式开工之前，先对个暗号：\n\n"
-        "1. 给我起个名字呗？\n"
-        "2. 你叫啥？怎么称呼你舒服怎么来～\n"
-        "3. 平时聊天习惯？随意唠 / 说重点 / 正经点\n\n"
-        "4. 一般喜欢做啥？想我以后帮你什么？\n\n"
-    ),
-    "en": (
-        "Hey 👋 I'm ur AI buddy running on the bao framework — still unnamed tho~\n\n"
-        "Before we get rolling, quick intro:\n\n"
-        "1. Wanna give me a name?\n"
-        "2. What do I call you? Whatever feels right~\n"
-        "3. How do you like to chat? Chill / straight to the point / keep it professional\n\n"
-        "4. What do you usually like to do? What do you want me to help you with in the future?\n\n"
-    ),
-}
-
-
-def detect_onboarding_stage(workspace: Path) -> str:
-    """Detect onboarding stage from file existence.
-    Returns:
-        'lang_select'  — no INSTRUCTIONS.md yet
-        'persona_setup' — has INSTRUCTIONS.md but no PERSONA.md
-        'ready'        — both files exist
-    """
-    if not (workspace / "INSTRUCTIONS.md").exists():
-        return "lang_select"
-    if not (workspace / "PERSONA.md").exists():
-        return "persona_setup"
-    return "ready"
-
-
-def infer_language(workspace: Path) -> str:
-    """Infer language from INSTRUCTIONS.md first line. Defaults to 'zh'."""
-    inst = workspace / "INSTRUCTIONS.md"
-    if not inst.exists():
-        return "zh"
-    first_line = inst.read_text(encoding="utf-8").split("\n", 1)[0]
-    return "en" if first_line.strip().lower().startswith("# instructions") else "zh"
-
-
-def write_instructions(workspace: Path, lang: str) -> None:
-    """Write INSTRUCTIONS.md in the chosen language (deferred until onboarding)."""
-    tpl = _read_workspace_template("INSTRUCTIONS.md", lang)
-    (workspace / "INSTRUCTIONS.md").write_text(tpl, encoding="utf-8")
-
-
-def write_heartbeat(workspace: Path, lang: str) -> None:
-    """Write HEARTBEAT.md in the chosen language (deferred until onboarding)."""
-    tpl = _read_workspace_template("HEARTBEAT.md", lang)
-    hp = workspace / "HEARTBEAT.md"
-    if not hp.exists():
-        hp.write_text(tpl, encoding="utf-8")
-
-
-def write_persona_profile(workspace: Path, lang: str, profile: dict[str, str]) -> None:
-    """Write extracted user profile into PERSONA.md, replacing template placeholders."""
-    persona = workspace / "PERSONA.md"
-    base = _read_workspace_template("PERSONA.md", lang)
-    content = base
-    user_name = profile.get("user_name", "")
-    style = profile.get("style", "")
-    role = profile.get("role", "")
-    interests = profile.get("interests", "")
-    nickname = profile.get("user_nickname", "")
-    bot_name = profile.get("bot_name", "")
-
-    if lang == "zh":
-        replacements = {
-            "（你的名字）": user_name,
-            "（随意/正式）": style,
-            "（你的角色，如开发者、研究员）": role,
-            "（你关注的话题）": interests,
-        }
-    else:
-        replacements = {
-            "(your name)": user_name,
-            "(casual/formal)": style,
-            "(your role, e.g. developer, researcher)": role,
-            "(topics you care about)": interests,
-        }
-    for old, new in replacements.items():
-        if new:
-            content = content.replace(old, new)
-    # Update bot name in Identity section if provided
-    if bot_name:
-        if lang == "zh":
-            content = content.replace(
-                "我是运行在 bao 框架里的一个轻量级全能 AGENT。",
-                f"我是{bot_name}，运行在 bao 框架里的一个轻量级全能 AGENT。",
-            )
-        else:
-            content = content.replace(
-                "I am bao, a lightweight AI assistant.",
-                f"I am {bot_name}, a lightweight AI assistant.",
-            )
-    # Append user nickname if provided
-    if nickname and nickname != user_name:
-        name_val = user_name
-        if lang == "zh":
-            content = content.replace(
-                f"- **姓名**：{name_val}",
-                f"- **姓名**：{name_val}（称呼：{nickname}）",
-            )
-        else:
-            content = content.replace(
-                f"- **Name**: {name_val}",
-                f"- **Name**: {name_val} (call me: {nickname})",
-            )
-    persona.write_text(content, encoding="utf-8")
-
-
 def get_config_path() -> Path:
     base = Path.home() / ".bao"
     jsonc = base / "config.jsonc"
@@ -396,6 +283,71 @@ def ensure_first_run() -> bool:
     return True
 
 
+def _handle_config_error(path: Path, error: Exception) -> Config:
+    """Handle config parse/validation failure: backup, warn, and optionally raise."""
+    # Backup broken file
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup = path.with_suffix(f".broken.{ts}{path.suffix}")
+    try:
+        shutil.copy2(path, backup)
+    except OSError:
+        backup = None
+
+    backup_msg = f"  备份 Backup: {backup}" if backup else ""
+    msg = (
+        f"\n⚠️  配置文件解析失败 / Config file parse error\n"
+        f"  文件 File: {path}\n"
+        f"  错误 Error: {error}\n"
+        f"{backup_msg}"
+    )
+
+    strict = os.environ.get("BAO_CONFIG_STRICT", "1") != "0"
+    if strict:
+        raise ConfigLoadError(
+            f"Failed to load config from {path}: {error}\n"
+            f"Set BAO_CONFIG_STRICT=0 to fall back to defaults."
+        ) from error
+
+    print(msg)
+    print("  ⚡ BAO_CONFIG_STRICT=0 → 使用默认配置继续 / Using defaults\n")
+    return Config()
+
+
+def _apply_env_overlay(data: dict[str, Any]) -> dict[str, Any]:
+    """Deep-merge BAO_* env vars into config data. Env wins over file."""
+    from pydantic.alias_generators import to_camel
+
+    prefix = "BAO_"
+    delimiter = "__"
+    for key, value in os.environ.items():
+        if not key.startswith(prefix):
+            continue
+        parts = key[len(prefix):].lower().split(delimiter.lower())
+        if not parts or not parts[-1]:
+            continue
+        # Navigate to parent dict, creating intermediates as needed
+        target = data
+        for part in parts[:-1]:
+            camel = to_camel(part)
+            # Match existing key (camelCase or snake_case)
+            if camel in target and isinstance(target[camel], dict):
+                target = target[camel]
+            elif part in target and isinstance(target[part], dict):
+                target = target[part]
+            else:
+                target[camel] = {}
+                target = target[camel]
+        # Set leaf value — try JSON parse for booleans/numbers/arrays
+        leaf = to_camel(parts[-1])
+        if leaf not in target and parts[-1] in target:
+            leaf = parts[-1]  # fallback to snake_case if already present
+        try:
+            target[leaf] = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            target[leaf] = value
+    return data
+
+
 def load_config(config_path: Path | None = None) -> Config:
     path = config_path or get_config_path()
 
@@ -405,11 +357,10 @@ def load_config(config_path: Path | None = None) -> Config:
             text = _strip_jsonc_comments(text)
             data = json.loads(text)
             data = _migrate_config(data)
+            data = _apply_env_overlay(data)
             return Config.model_validate(data)
-        except (json.JSONDecodeError, ValueError) as e:
-            print(f"Warning: Failed to load config from {path}: {e}")
-            print("Using default configuration.")
-        return Config()
+        except Exception as e:
+            return _handle_config_error(path, e)
 
     # Auto-init: first run — create config + workspace + templates, then exit cleanly
     ensure_first_run()
@@ -423,6 +374,37 @@ def load_config(config_path: Path | None = None) -> Config:
     raise SystemExit(0)
 
 
+
+
+def _dump_with_secrets(config: Config) -> dict[str, Any]:
+    """Dump config to dict with SecretStr values exposed (for file persistence)."""
+    from pydantic import BaseModel, SecretStr
+
+    def _walk(obj: Any) -> Any:
+        if isinstance(obj, SecretStr):
+            return obj.get_secret_value()
+        if isinstance(obj, BaseModel):
+            data = obj.model_dump(by_alias=True)
+            for field_name in obj.model_fields:
+                val = getattr(obj, field_name)
+                if not isinstance(val, (SecretStr, BaseModel, dict)):
+                    continue
+                fi = obj.model_fields[field_name]
+                key = fi.alias or field_name
+                if key not in data and hasattr(obj.model_config, 'get'):
+                    gen = obj.model_config.get('alias_generator')
+                    if gen:
+                        key = gen(field_name)
+                if key in data:
+                    data[key] = _walk(val)
+            return data
+        if isinstance(obj, dict):
+            return {k: _walk(v) for k, v in obj.items()}
+        return obj
+
+    return _walk(config)
+
+
 def save_config(config: Config, config_path: Path | None = None) -> None:
     path = config_path or get_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -433,7 +415,7 @@ def save_config(config: Config, config_path: Path | None = None) -> None:
     if path.suffix == ".jsonc" and not path.exists():
         path.write_text(_JSONC_TEMPLATE, encoding="utf-8")
     else:
-        data = config.model_dump(by_alias=True)
+        data = _dump_with_secrets(config)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
@@ -454,33 +436,86 @@ def _ensure_workspace(config: Config) -> None:
 
 
 def _strip_jsonc_comments(text: str) -> str:
-    return re.sub(
-        r'"(?:[^"\\]|\\.)*"|//[^\n]*|/\*[\s\S]*?\*/',
-        lambda m: m.group() if m.group().startswith('"') else "",
-        text,
-    )
+    normal = 0
+    in_string = 1
+    escape = 2
+    line_comment = 3
+    block_comment = 4
+
+    state = normal
+    block_depth = 0
+    i = 0
+    n = len(text)
+    out: list[str] = []
+
+    while i < n:
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+
+        if state == normal:
+            if ch == '"':
+                out.append(ch)
+                state = in_string
+                i += 1
+                continue
+            if ch == "/" and nxt == "/":
+                state = line_comment
+                i += 2
+                continue
+            if ch == "/" and nxt == "*":
+                state = block_comment
+                block_depth = 1
+                i += 2
+                continue
+            out.append(ch)
+            i += 1
+            continue
+
+        if state == in_string:
+            out.append(ch)
+            if ch == "\\":
+                state = escape
+            elif ch == '"':
+                state = normal
+            i += 1
+            continue
+
+        if state == escape:
+            out.append(ch)
+            state = in_string
+            i += 1
+            continue
+
+        if state == line_comment:
+            if ch == "\n":
+                out.append(ch)
+                state = normal
+            i += 1
+            continue
+
+        if ch == "/" and nxt == "*":
+            block_depth += 1
+            i += 2
+            continue
+        if ch == "*" and nxt == "/":
+            block_depth -= 1
+            i += 2
+            if block_depth == 0:
+                state = normal
+            continue
+        i += 1
+
+    if state == 4 or block_depth != 0:  # block_comment
+        raise ValueError("Unterminated block comment in config file")
+
+    return "".join(out)
 
 
 def _migrate_config(data: dict[str, Any]) -> dict[str, Any]:
-    # --- providers: old fixed-key format → new dict+type format ---
-    providers = data.get("providers", {})
-    old_key_map = {"openaiCompatible": "openai", "openai_compatible": "openai"}
-    for old_key, new_name in old_key_map.items():
-        if old_key in providers:
-            cfg = providers.pop(old_key)
-            cfg.setdefault("type", "openai")
-            providers.setdefault(new_name, cfg)
-    for name in ("anthropic", "gemini"):
-        if name in providers and isinstance(providers[name], dict):
-            providers[name].setdefault("type", name)
-    # --- tools migrations ---
-    tools = data.get("tools", {})
-    exec_cfg = tools.get("exec", {})
-    if "restrictToWorkspace" in exec_cfg and "restrictToWorkspace" not in tools:
-        tools["restrictToWorkspace"] = exec_cfg.pop("restrictToWorkspace")
-    search = tools.get("web", {}).get("search", {})
-    if "apiKey" in search and "braveApiKey" not in search:
-        search["braveApiKey"] = search.pop("apiKey")
-    if "tavilyKey" in search and "tavilyApiKey" not in search:
-        search["tavilyApiKey"] = search.pop("tavilyKey")
+    """Apply versioned migrations and print warnings."""
+    migrate_config = importlib.import_module("bao.config.migrations").migrate_config
+
+    data, warnings = migrate_config(data)
+    for w in warnings:
+        print(f"  ℹ️  {w}")
     return data

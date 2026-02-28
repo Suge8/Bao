@@ -1,7 +1,7 @@
 """Tests for Layer 2: messages compaction."""
 
-import json
 import importlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -164,6 +164,52 @@ def test_compact_messages_includes_state_note(tmp_path: Path) -> None:
     assert len(user_msgs) >= 1
     assert state_text in user_msgs[0]["content"]
     assert "Compacted context" in user_msgs[0]["content"]
+
+
+def test_compact_messages_avoids_appending_note_to_state_message(tmp_path: Path) -> None:
+    loop = _make_loop(tmp_path)
+
+    initial = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "original request"},
+    ]
+    messages = _build_messages_with_tool_pairs(6)
+    messages.append({"role": "user", "content": "[State after 5 steps]\nabc"})
+    state_text = "abc"
+
+    compacted = loop._compact_messages(messages, initial, state_text, None)
+    user_msgs = [m for m in compacted if m.get("role") == "user"]
+    assert user_msgs
+
+    state_msgs = [m for m in user_msgs if str(m.get("content", "")).startswith("[State after")]
+    assert state_msgs
+    assert "Compacted context" not in state_msgs[-1]["content"]
+
+    compact_note_count = sum(
+        1 for m in user_msgs if "Compacted context" in str(m.get("content", ""))
+    )
+    assert compact_note_count == 1
+
+
+def test_compact_messages_refreshes_existing_compacted_state_note(tmp_path: Path) -> None:
+    loop = _make_loop(tmp_path)
+
+    initial = [
+        {"role": "system", "content": "sys"},
+        {
+            "role": "user",
+            "content": "original request\n\n[Compacted context. Previous state:\nOLD\n]",
+        },
+    ]
+    messages = _build_messages_with_tool_pairs(4)
+    state_text = "NEW"
+
+    compacted = loop._compact_messages(messages, initial, state_text, None)
+    user_msgs = [m for m in compacted if m.get("role") == "user"]
+    assert user_msgs
+    content = user_msgs[0]["content"]
+    assert "NEW" in content
+    assert "OLD" not in content
 
 
 @pytest.mark.asyncio

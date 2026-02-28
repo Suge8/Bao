@@ -44,7 +44,7 @@ class ChannelManager:
                 self.channels["telegram"] = TelegramChannel(
                     self.config.channels.telegram,
                     self.bus,
-                    groq_api_key=groq_cfg.api_key if groq_cfg else "",
+                    groq_api_key=groq_cfg.api_key.get_secret_value() if groq_cfg else "",
                 )
                 logger.debug("Telegram channel enabled")
             except ImportError as e:
@@ -73,10 +73,13 @@ class ChannelManager:
         # Feishu channel
         if self.config.channels.feishu.enabled:
             try:
-                from bao.channels.feishu import FeishuChannel
+                from bao.channels.feishu import FEISHU_AVAILABLE, FeishuChannel
 
-                self.channels["feishu"] = FeishuChannel(self.config.channels.feishu, self.bus)
-                logger.debug("Feishu channel enabled")
+                if FEISHU_AVAILABLE:
+                    self.channels["feishu"] = FeishuChannel(self.config.channels.feishu, self.bus)
+                    logger.debug("Feishu channel enabled")
+                else:
+                    logger.warning("⚠️ 通道不可用 / unavailable: Feishu sdk missing")
             except ImportError as e:
                 logger.warning("⚠️ 通道不可用 / unavailable: Feishu {}", e)
 
@@ -93,10 +96,15 @@ class ChannelManager:
         # DingTalk channel
         if self.config.channels.dingtalk.enabled:
             try:
-                from bao.channels.dingtalk import DingTalkChannel
+                from bao.channels.dingtalk import DINGTALK_AVAILABLE, DingTalkChannel
 
-                self.channels["dingtalk"] = DingTalkChannel(self.config.channels.dingtalk, self.bus)
-                logger.debug("DingTalk channel enabled")
+                if DINGTALK_AVAILABLE:
+                    self.channels["dingtalk"] = DingTalkChannel(
+                        self.config.channels.dingtalk, self.bus
+                    )
+                    logger.debug("DingTalk channel enabled")
+                else:
+                    logger.warning("⚠️ 通道不可用 / unavailable: DingTalk sdk missing")
             except ImportError as e:
                 logger.warning("⚠️ 通道不可用 / unavailable: DingTalk {}", e)
 
@@ -123,13 +131,16 @@ class ChannelManager:
         # QQ channel
         if self.config.channels.qq.enabled:
             try:
-                from bao.channels.qq import QQChannel
+                from bao.channels.qq import QQ_AVAILABLE, QQChannel
 
-                self.channels["qq"] = QQChannel(
-                    self.config.channels.qq,
-                    self.bus,
-                )
-                logger.debug("QQ channel enabled")
+                if QQ_AVAILABLE:
+                    self.channels["qq"] = QQChannel(
+                        self.config.channels.qq,
+                        self.bus,
+                    )
+                    logger.debug("QQ channel enabled")
+                else:
+                    logger.warning("⚠️ 通道不可用 / unavailable: QQ sdk missing")
             except ImportError as e:
                 logger.warning("⚠️ 通道不可用 / unavailable: QQ {}", e)
 

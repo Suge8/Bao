@@ -261,7 +261,7 @@ async def test_mcp_connected_true_when_some_succeed(monkeypatch: Any, tmp_path: 
         await loop._mcp_stack.aclose()
 
 
-async def test_mcp_no_tools_does_not_retry_after_successful_connect(
+async def test_mcp_no_tools_retries_on_next_connect_attempt(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
     calls = {"count": 0}
@@ -282,7 +282,7 @@ async def test_mcp_no_tools_does_not_retry_after_successful_connect(
     await loop._connect_mcp()
     await loop._connect_mcp()
 
-    assert calls["count"] == 1
+    assert calls["count"] == 2
     assert loop._mcp_connected is False
     assert loop._mcp_connect_succeeded is True
     assert loop._mcp_stack is None

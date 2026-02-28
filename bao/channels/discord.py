@@ -62,7 +62,7 @@ class DiscordChannel(BaseChannel):
 
     async def start(self) -> None:
         """Start the Discord gateway connection."""
-        if not self.config.token:
+        if not self.config.token.get_secret_value():
             logger.error("❌ 未配置 / not configured: Discord token")
             return
 
@@ -108,7 +108,8 @@ class DiscordChannel(BaseChannel):
             return
 
         url = f"{DISCORD_API_BASE}/channels/{msg.chat_id}/messages"
-        headers = {"Authorization": f"Bot {self.config.token}"}
+        token = self.config.token.get_secret_value()
+        headers = {"Authorization": f"Bot {token}"}
 
         try:
             chunks = _split_message(msg.content or "")
@@ -215,7 +216,7 @@ class DiscordChannel(BaseChannel):
         identify = {
             "op": 2,
             "d": {
-                "token": self.config.token,
+                "token": self.config.token.get_secret_value(),
                 "intents": self.config.intents,
                 "properties": {
                     "os": "bao",
@@ -233,7 +234,7 @@ class DiscordChannel(BaseChannel):
         resume = {
             "op": 6,
             "d": {
-                "token": self.config.token,
+                "token": self.config.token.get_secret_value(),
                 "session_id": self._session_id,
                 "seq": self._seq,
             },
@@ -308,7 +309,8 @@ class DiscordChannel(BaseChannel):
                 logger.warning("⚠️ 下载失败 / attachment failed: {}", e)
                 content_parts.append(f"[attachment: {filename} - download failed]")
 
-        reply_to = (payload.get("referenced_message") or {}).get("id")
+        reply_to = str(payload.get("id") or "")
+        referenced_message_id = (payload.get("referenced_message") or {}).get("id")
 
         await self._start_typing(channel_id)
 
@@ -320,7 +322,10 @@ class DiscordChannel(BaseChannel):
             metadata={
                 "message_id": str(payload.get("id", "")),
                 "guild_id": payload.get("guild_id"),
-                "reply_to": reply_to,
+                "reply_to": reply_to or None,
+                "referenced_message_id": str(referenced_message_id)
+                if referenced_message_id
+                else None,
             },
         )
 
@@ -330,7 +335,8 @@ class DiscordChannel(BaseChannel):
 
         async def typing_loop() -> None:
             url = f"{DISCORD_API_BASE}/channels/{channel_id}/typing"
-            headers = {"Authorization": f"Bot {self.config.token}"}
+            token = self.config.token.get_secret_value()
+            headers = {"Authorization": f"Bot {token}"}
             consecutive_failures = 0
             while self._running:
                 try:

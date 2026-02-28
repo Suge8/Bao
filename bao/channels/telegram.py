@@ -137,7 +137,8 @@ class TelegramChannel(BaseChannel):
 
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
-        if not self.config.token:
+        token = self.config.token.get_secret_value()
+        if not token:
             logger.error("❌ 未配置 / not configured: Telegram token")
             return
 
@@ -147,9 +148,7 @@ class TelegramChannel(BaseChannel):
         req = HTTPXRequest(
             connection_pool_size=16, pool_timeout=5.0, connect_timeout=30.0, read_timeout=30.0
         )
-        builder = (
-            Application.builder().token(self.config.token).request(req).get_updates_request(req)
-        )
+        builder = Application.builder().token(token).request(req).get_updates_request(req)
         if self.config.proxy:
             builder = builder.proxy(self.config.proxy).get_updates_proxy(self.config.proxy)
         self._app = builder.build()
@@ -258,8 +257,15 @@ class TelegramChannel(BaseChannel):
 
         reply_params = None
         if self.config.reply_to_message:
-            reply_to_message_id = msg.metadata.get("message_id")
-            if reply_to_message_id:
+            reply_to_raw = msg.reply_to or msg.metadata.get("message_id")
+            reply_to_message_id = None
+            if isinstance(reply_to_raw, int) and not isinstance(reply_to_raw, bool):
+                reply_to_message_id = reply_to_raw
+            elif isinstance(reply_to_raw, str):
+                raw = reply_to_raw.strip()
+                if raw.lstrip("-").isdigit():
+                    reply_to_message_id = int(raw)
+            if reply_to_message_id is not None:
                 reply_params = ReplyParameters(
                     message_id=reply_to_message_id, allow_sending_without_reply=True
                 )
@@ -359,6 +365,13 @@ class TelegramChannel(BaseChannel):
         user = update.effective_user
         chat_id = message.chat_id
         sender_id = self._sender_id(user)
+
+        if not self.is_allowed(sender_id):
+            logger.warning(
+                "⚠️ 访问拒绝 / access denied: sender={} channel=telegram",
+                sender_id,
+            )
+            return
 
         # Store chat_id for replies
         self._chat_ids[sender_id] = chat_id

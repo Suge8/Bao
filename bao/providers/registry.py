@@ -16,6 +16,7 @@ class ProviderType(Enum):
 
     OPENAI = "openai"
     OPENAI_COMPATIBLE = "openai"
+    OPENAI_CODEX = "openai_codex"
     ANTHROPIC = "anthropic"
     GEMINI = "gemini"
 
@@ -56,6 +57,12 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     ),
     # === OpenAI-Compatible Providers (default, catch-all) ===
     # These all use the OpenAI-compatible provider with different api_base
+    ProviderSpec(
+        name="openai_codex",
+        provider_type=ProviderType.OPENAI_CODEX,
+        keywords=("openai-codex", "openai_codex", "codex"),
+        display_name="OpenAI Codex",
+    ),
     ProviderSpec(
         name="openai",
         provider_type=ProviderType.OPENAI_COMPATIBLE,

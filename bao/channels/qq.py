@@ -63,22 +63,28 @@ class QQChannel(BaseChannel):
             logger.error("❌ 未安装 / sdk missing: pip install qq-botpy")
             return
 
-        if not self.config.app_id or not self.config.secret:
+        secret = self.config.secret.get_secret_value()
+        if not self.config.app_id or not secret:
             logger.error("❌ 未配置 / not configured: QQ app_id/secret")
             return
 
         self._running = True
-        BotClass = _make_bot_class(self)
-        self._client = BotClass()
+        bot_class = _make_bot_class(self)
+        self._client = bot_class()
 
         self._bot_task = asyncio.create_task(self._run_bot())
         logger.info("📡 已启动 / bot started: C2C private message")
+        try:
+            await self._bot_task
+        except asyncio.CancelledError:
+            pass
 
     async def _run_bot(self) -> None:
         """Run the bot connection with auto-reconnect."""
+        secret = self.config.secret.get_secret_value()
         while self._running:
             try:
-                await self._client.start(appid=self.config.app_id, secret=self.config.secret)
+                await self._client.start(appid=self.config.app_id, secret=secret)
             except Exception as e:
                 logger.warning("⚠️ 连接异常 / bot error: {}", e)
             if self._running:

@@ -48,10 +48,11 @@ class WhatsAppChannel(BaseChannel):
                 async with websockets.connect(bridge_url) as ws:
                     self._ws = ws
                     # Send auth token if configured
-                    if self.config.bridge_token:
+                    bridge_token = self.config.bridge_token.get_secret_value()
+                    if bridge_token:
                         await ws.send(
                             json.dumps(
-                                {"type": "auth", "token": self.config.bridge_token},
+                                {"type": "auth", "token": bridge_token},
                                 ensure_ascii=False,
                             )
                         )
@@ -140,10 +141,23 @@ class WhatsAppChannel(BaseChannel):
         if msg_type == "message":
             pn = data.get("pn", "")
             sender = data.get("sender", "")
+            participant = data.get("participant", "")
             content = data.get("content", "")
-            user_id = pn if pn else sender
+            is_group = bool(data.get("isGroup", False))
+
+            if is_group and participant:
+                user_id = participant
+            else:
+                user_id = pn if pn else sender
             sender_id = user_id.split("@")[0] if "@" in user_id else user_id
             logger.debug("Sender {}", sender)
+
+            if not self.is_allowed(sender_id):
+                logger.warning(
+                    "⚠️ 访问拒绝 / access denied: sender={} channel=whatsapp",
+                    sender_id,
+                )
+                return
 
             # Save media from bridge if present
             media_paths: list[str] = []
@@ -163,7 +177,8 @@ class WhatsAppChannel(BaseChannel):
                 metadata={
                     "message_id": data.get("id"),
                     "timestamp": data.get("timestamp"),
-                    "is_group": data.get("isGroup", False),
+                    "is_group": is_group,
+                    "participant": participant,
                 },
             )
 

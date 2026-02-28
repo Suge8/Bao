@@ -13,11 +13,13 @@ if TYPE_CHECKING:
     from bao.config.schema import Config
     from bao.providers.anthropic_provider import AnthropicProvider
     from bao.providers.gemini_provider import GeminiProvider
+    from bao.providers.openai_codex_provider import OpenAICodexProvider
     from bao.providers.openai_provider import OpenAICompatibleProvider
 
 __all__ = [
     "LLMProvider",
     "LLMResponse",
+    "OpenAICodexProvider",
     "OpenAICompatibleProvider",
     "AnthropicProvider",
     "GeminiProvider",
@@ -25,7 +27,7 @@ __all__ = [
 ]
 
 
-_VALID_PROVIDER_TYPES = frozenset({"openai", "anthropic", "gemini"})
+_VALID_PROVIDER_TYPES = frozenset({"openai", "openai_codex", "anthropic", "gemini"})
 _VERSION_SEGMENT_RE = re.compile(r"^v\d+(?:[a-z0-9-]*)?$", re.IGNORECASE)
 
 
@@ -65,7 +67,7 @@ def make_provider(config: "Config", model: str | None = None) -> LLMProvider:
             "No model configured. Set agents.defaults.model in config.jsonc"
         )
     provider_config = config.get_provider(model)
-    if not provider_config or not provider_config.api_key:
+    if not provider_config:
         raise ValueError(
             f"未找到模型 '{model}' 对应的 Provider 或缺少 API Key\n"
             f"No provider with API key found for model '{model}'"
@@ -77,11 +79,23 @@ def make_provider(config: "Config", model: str | None = None) -> LLMProvider:
             f"有效值 Valid values: {', '.join(sorted(_VALID_PROVIDER_TYPES))}"
         )
     spec = find_by_model(model)
+    if provider_type == "openai_codex":
+        from bao.providers.openai_codex_provider import OpenAICodexProvider
+
+        return OpenAICodexProvider(default_model=model)
+
+    api_key = provider_config.api_key.get_secret_value()
+    if not api_key:
+        raise ValueError(
+            f"未找到模型 '{model}' 对应的 Provider 或缺少 API Key\n"
+            f"No provider with API key found for model '{model}'"
+        )
+
     if provider_type == "anthropic":
         from bao.providers.anthropic_provider import AnthropicProvider
 
         return AnthropicProvider(
-            api_key=provider_config.api_key,
+            api_key=api_key,
             default_model=model,
             base_url=provider_config.api_base,
         )
@@ -89,7 +103,7 @@ def make_provider(config: "Config", model: str | None = None) -> LLMProvider:
         from bao.providers.gemini_provider import GeminiProvider
 
         return GeminiProvider(
-            api_key=provider_config.api_key,
+            api_key=api_key,
             default_model=model,
             base_url=provider_config.api_base,
         )
@@ -101,7 +115,7 @@ def make_provider(config: "Config", model: str | None = None) -> LLMProvider:
         spec.default_api_base if spec else "",
     )
     return OpenAICompatibleProvider(
-        api_key=provider_config.api_key,
+        api_key=api_key,
         api_base=api_base,
         default_model=model,
         extra_headers=provider_config.extra_headers,

@@ -49,18 +49,19 @@ bao 不一样。它**记得住**、**学得会**、**能进化**。
 
 - **Retry with Reflection** — 工具报错自动重试。连续 3 次失败后，不是盲目重来，而是反思策略、换条路走
 - **Dynamic Tool Hints** — 工具提示跟着实际能力走。装了什么用什么，没装的绝不提。编程代理、搜索、MCP 工具全部按需注入，杜绝幻觉调用
+- **Search/FETCH Error Semantics** — `web_search` 仅把显式错误前缀判定为失败，避免结果摘要里的 `failed/exception` 误触发；`web_fetch` 参数严格校验并返回结构化错误 JSON，降低静默失败
 
 ### 复杂任务不阻塞
 
-把耗时任务丢给子代理，主对话继续聊。不用干等，不用切窗口。
+把耗时任务交给子代理：你继续聊，它在后台把活做完。需要时问一次进度，它就能讲清楚。
 
 - **后台执行** — 子代理独立运行，主代理随时响应你的新消息
 - **进度可查** — 主代理调用 `check_tasks` 即可查看子代理当前阶段、已用工具数、迭代轮次
 - **里程碑推送** — 子代理每 5 轮自动汇报一次进展，不刷屏，关键节点不遗漏
-- **长任务增强** — 子代理同步支持轨迹压缩 + 充分性检查 + 上下文压实，复杂任务更不易跑偏
-- **随时取消** — 任务跑偏了？`cancel_task` 一键终止
-- **卡死检测** — 超过 2 分钟无更新自动标记警告，不会悄悄挂住
-- **模板策略对齐** — workspace `INSTRUCTIONS.md` 内置“协调者优先 + 委派触发 + 完成定义（DoD）”，并与 core 规则对齐（`check_tasks` 仅按需查询）
+- **续接上次结果** — 可在前序任务结论基础上继续推进，不用从头讲背景
+- **长任务引擎** — 轨迹压缩 + 充分性检查 + 上下文压实，复杂任务更稳、更专注
+- **随时取消** — 任务跑偏了？`cancel_task` 一键止损；超过 2 分钟无更新会标记警告
+- **更高自由度** — 子代理对内部目录不做额外硬拦截；需要收敛权限时可配合 `restrictToWorkspace` 与系统文件权限
 
 一个助手，同时处理多件事。**你问进度，它答得上来。**
 
@@ -106,15 +107,16 @@ bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 - **Layer 2**：context 过大时自动压实，保留最近对话轮次 + 最近工具块，并维持时间线顺序
   默认 `auto` 模式，大输出自动外置、长对话自动压实。设为 `"off"` 可关闭。
 
-### 长任务越跑越稳
+### 长任务引擎
 
-别的 Agent 跑长任务时越跑越迷。bao 越跑越清醒。
+把复杂任务交给 bao，不靠“多跑几步”碰运气，而是靠稳定的长程执行能力：
 
-- **轨迹压缩** — 每 5 步自动压实执行状态，保留结论、证据和未探索分支。不会因为步骤多而迷失方向
-- **自我纠错** — 连续失败 2 次后，压缩时自动注入审计指令：哪里错了、怎么纠正。零额外 LLM 调用，不加延迟不加开销
-- **充分性检查** — 自动判断已有信息是否足够回答。够了就停，不多走一步废路
+- **越跑越稳** — 每 5 步自动压缩轨迹，保留结论、证据和未探索分支，方向不丢
+- **够了就收** — 充分性检查命中后优先收口，避免无效工具调用；若最终回答为空，会自动回退一次补齐结果
+- **错了就改** — 连续失败时自动注入审计纠偏，失败路径去重，减少重复试错
+- **预算可控** — 上下文分层压实与状态刷新协同工作，长任务更省 token
 
-同样的任务，别人的 Agent 在第 10 步开始兆圈。**bao 在第 10 步压缩状态、纠正方向、继续前进。**
+一句话：**长任务不漂移、不中断、不空转。**
 
 ## 横向对比
 
@@ -345,18 +347,19 @@ Other agents repeat mistakes. **bao learns from them.**
 
 - **Retry with Reflection** — auto-retries on tool errors. After 3 consecutive failures, it doesn't just retry blindly — it rethinks the strategy and tries a different approach
 - **Dynamic Tool Hints** — tool suggestions follow actual capabilities. Only installed tools get surfaced. Coding agents, search, MCP tools — all injected on demand. Zero hallucinated tool calls
+- **Search/FETCH Error Semantics** — `web_search` only treats explicit error prefixes as failures (so snippets containing `failed/exception` don't cause false positives); `web_fetch` enforces strict parameter validation and returns structured JSON errors to reduce silent failures
 
 #### Complex Tasks, Zero Blocking
 
-Hand off time-consuming work to a subagent. Keep chatting. No waiting, no window-switching.
+Hand off time-consuming work to a subagent: keep chatting while it works in the background. Ask once, get a clear status update.
 
 - **Background execution** — subagents run independently while the main agent stays responsive to you
 - **Progress on demand** — the main agent calls `check_tasks` to see current phase, tool count, and iteration progress
 - **Milestone updates** — subagents auto-report every 5 iterations. No spam, no missed beats
-- **Long-task engine parity** — subagents now support trajectory compression + sufficiency checks + context compaction for steadier long runs
-- **Cancel anytime** — task going sideways? `cancel_task` kills it instantly
-- **Stall detection** — flags a warning if no update in 2+ minutes. Nothing hangs silently
-- **Template policy alignment** — workspace `INSTRUCTIONS.md` now encodes coordinator-first delegation triggers + Definition of Done, aligned with core rule (`check_tasks` is on-demand only)
+- **Resume from prior results** — continue from a previous task without re-explaining context
+- **Long-task engine parity** — trajectory compression + sufficiency checks + context compaction for steadier, more focused long runs
+- **Cancel anytime** — task going sideways? `cancel_task` stops it; stalls (2+ minutes) get flagged
+- **More freedom** — no extra hard block on internal dirs in subagent flow; use `restrictToWorkspace` and OS permissions when you need tighter control
   One assistant, multiple jobs in flight. **Ask about progress — it always has an answer.**
 
 #### ⌨️ Built-in Coding Agent Integration
@@ -401,14 +404,16 @@ Built-in layered context management keeps long tasks from exhausting the context
 - **Layer 2**: When context grows too large, context is compacted to keep recent dialogue turns plus recent tool blocks while preserving timeline order
   Default `auto` mode auto-offloads large outputs and compacts long conversations. Set `"off"` to disable.
 
-### Long Tasks That Stay on Track
+### Long-Task Engine
 
-Other agents lose the plot on long tasks. bao gets sharper with every step.
+For complex runs, bao doesn't rely on luck. It uses a compact, production-ready long-task engine:
 
-- **Trajectory compression** — Every 5 steps, execution state is auto-compressed into conclusions, evidence, and unexplored branches. No drifting, no forgetting
-- **Self-correction** — After 2+ consecutive failures, the compression pass injects an audit: what went wrong and how to fix it. Zero extra LLM calls, zero added latency
-- **Sufficiency check** — Automatically detects when enough information has been gathered. Stops when done, never wastes steps on dead ends
-  Same task, other agents start going in circles at step 10. **bao compresses state, corrects course, and keeps moving.**
+- **Stays on track** — Every 5 steps, trajectory state is compressed into conclusions, evidence, and unexplored branches
+- **Stops when enough** — Sufficiency checks prioritize early finish; if a forced final comes back empty, bao automatically allows one recovery pass
+- **Self-corrects quickly** — Consecutive failures trigger audit-style correction, with deduplicated failed paths to avoid repeated dead ends
+- **Token-aware by default** — Layered compaction and refreshed state notes keep long runs focused and cost-efficient
+
+In short: **less drift, fewer wasted calls, stronger final answers.**
 
 ### How It Compares
 

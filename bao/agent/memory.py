@@ -26,6 +26,8 @@ _SAMPLE = [
         "outcome": "",
         "deprecated": False,
         "updated_at": "",
+        "last_hit_at": "",
+        "hit_count": 0,
     }
 ]
 
@@ -43,6 +45,14 @@ MEMORY_CATEGORY_CAPS = {
     "personal": 300,
     "project": 500,
     "general": 300,
+}
+
+# Category importance weights for rerank scoring (higher = more important to retain)
+_CATEGORY_WEIGHTS: dict[str, float] = {
+    "preference": 1.0,
+    "project": 0.8,
+    "personal": 0.6,
+    "general": 0.4,
 }
 
 
@@ -90,9 +100,12 @@ class MemoryStore:
             probe = tbl.search().limit(1).to_list()
             if probe and "quality" not in probe[0]:
                 return self._migrate_schema(tbl)
+            # Check for newer columns added after columnar migration
+            if probe and "hit_count" not in probe[0]:
+                return self._backfill_new_columns(tbl)
             return tbl
         except Exception:
-            return self._db.create_table("memory", data=_SAMPLE)
+            return ensure_table(self._db, "memory", list(_SAMPLE))
 
     def _migrate_schema(self, old_tbl):
         """Migrate from text-based to columnar schema."""
@@ -111,6 +124,8 @@ class MemoryStore:
                     "successes": 0,
                     "outcome": "",
                     "deprecated": False,
+                    "last_hit_at": "",
+                    "hit_count": 0,
                 }
                 # Ensure long_term rows get proper category and key
                 if r.get("type") == "long_term":
@@ -166,12 +181,43 @@ class MemoryStore:
             logger.error("❌ 迁移失败 / schema migration failed: {}", e)
             return old_tbl
 
+    def _backfill_new_columns(self, tbl):
+        """Backfill missing columns (last_hit_at, hit_count) for existing columnar tables."""
+        try:
+            rows = tbl.search().limit(10000).to_list()
+            patched = []
+            for r in rows:
+                row = dict(r)
+                row.setdefault("last_hit_at", "")
+                row.setdefault("hit_count", 0)
+                # Strip LanceDB internal fields
+                row.pop("_distance", None)
+                row.pop("_relevance_score", None)
+                row.pop("vector", None)
+                patched.append(row)
+            if not patched:
+                patched = list(_SAMPLE)
+            try:
+                self._db.drop_table("memory_backfill")
+            except Exception:
+                pass
+            self._db.create_table("memory_backfill", data=patched)
+            self._db.drop_table("memory")
+            tbl = self._db.create_table("memory", data=patched)
+            self._db.drop_table("memory_backfill")
+            logger.info("🔀 补齐新列 / backfilled new columns: {} rows", len(patched))
+            return tbl
+        except Exception as e:
+            logger.error("❌ 补齐新列失败 / backfill failed: {}", e)
+            return tbl
+
     def _init_embedding(self, cfg: Any) -> None:
         try:
+            api_key = cfg.api_key.get_secret_value()
             model_lower = cfg.model.lower()
             if "gemini" in model_lower or "models/embedding" in model_lower:
                 name = cfg.model if cfg.model.startswith("models/") else f"models/{cfg.model}"
-                self._embed_fn = _GeminiEmbedding(model=name, api_key=cfg.api_key)
+                self._embed_fn = _GeminiEmbedding(model=name, api_key=api_key)
                 backend = "gemini-genai"
             else:
                 from lancedb.embeddings import get_registry
@@ -197,7 +243,7 @@ class MemoryStore:
     @staticmethod
     def _resolve_embedding_backend(registry: Any, cfg: Any) -> tuple[str, dict[str, Any]]:
         # LanceDB requires `$var:` references for sensitive keys, resolved via registry
-        registry.set_var(_ENV_KEY, cfg.api_key)
+        registry.set_var(_ENV_KEY, cfg.api_key.get_secret_value())
         kwargs: dict[str, Any] = {"name": cfg.model, "api_key": f"$var:{_ENV_KEY}"}
         if cfg.base_url:
             registry.set_var(_ENV_BASE, cfg.base_url)
@@ -259,6 +305,8 @@ class MemoryStore:
             "outcome": "",
             "deprecated": False,
             "updated_at": extra.pop("updated_at", datetime.now().isoformat()),
+            "last_hit_at": extra.pop("last_hit_at", ""),
+            "hit_count": extra.pop("hit_count", 0),
         }
         row.update(extra)
         return row
@@ -284,6 +332,138 @@ class MemoryStore:
         if cut > max_chars // 2:
             return normalized[:cut].rstrip() + "…"
         return normalized[: max_chars - 1].rstrip() + "…"
+
+    def _update_hit_stats(self, rows: list[dict[str, Any]]) -> None:
+        """Increment hit_count and update last_hit_at for retrieved rows (best-effort)."""
+        now = datetime.now().isoformat()
+        with self._store_lock:
+            for r in rows:
+                key = r.get("key")
+                if not key:
+                    continue
+                try:
+                    key_safe = key.replace("'", "''")
+                    # Snapshot before delete so we can restore on add failure
+                    self._tbl.delete(f"key = '{key_safe}'")
+                    row = self._make_row(
+                        key=key,
+                        content=r.get("content", ""),
+                        type_=r.get("type", ""),
+                        category=r.get("category", ""),
+                        quality=r.get("quality", 0),
+                        uses=r.get("uses", 0),
+                        successes=r.get("successes", 0),
+                        outcome=r.get("outcome", ""),
+                        deprecated=r.get("deprecated", False),
+                        updated_at=r.get("updated_at", now),
+                        last_hit_at=now,
+                        hit_count=r.get("hit_count", 0) + 1,
+                    )
+                    try:
+                        self._tbl.add([row])
+                    except Exception:
+                        # add failed after delete — restore original row to prevent data loss
+                        try:
+                            self._tbl.add(
+                                [
+                                    self._make_row(
+                                        key=key,
+                                        content=r.get("content", ""),
+                                        type_=r.get("type", ""),
+                                        **{
+                                            k: r.get(k, v)
+                                            for k, v in {
+                                                "category": "",
+                                                "quality": 0,
+                                                "uses": 0,
+                                                "successes": 0,
+                                                "outcome": "",
+                                                "deprecated": False,
+                                                "updated_at": "",
+                                                "last_hit_at": "",
+                                                "hit_count": 0,
+                                            }.items()
+                                        },
+                                    )
+                                ]
+                            )
+                        except Exception:
+                            logger.warning("⚠️ hit_stats: failed to restore row key={}", key)
+                except Exception as e:
+                    logger.debug("hit_stats update skipped for key={}: {}", key, e)
+
+    def _rerank_candidates(
+        self,
+        candidates: list[dict[str, Any]],
+        *,
+        limit: int,
+        has_vector_score: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Multi-factor rule-based rerank. No external model needed.
+
+        Factors: semantic distance (if available), recency, quality/importance, reliability.
+        """
+        now = datetime.now()
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for r in candidates:
+            if r.get("deprecated"):
+                continue
+            # Factor 1: semantic (vector distance — lower is better, invert to score)
+            if has_vector_score and "_distance" in r:
+                # LanceDB distance is L2; typical range 0~2. Normalize to 0~1 score.
+                semantic = max(0.0, 1.0 - r["_distance"] / 2.0)
+            else:
+                semantic = 0.5  # neutral when no vector score
+
+            # Factor 2: recency (exponential decay)
+            days_old = self._days_since(r.get("updated_at", ""), now)
+            recency = exp(-days_old / 90)
+
+            # Factor 3: importance (category weight + quality)
+            cat = r.get("category") or "general"
+            cat_weight = _CATEGORY_WEIGHTS.get(cat, 0.4)
+            quality = r.get("quality", 3) / 5.0
+            importance = 0.5 * cat_weight + 0.5 * quality
+
+            # Factor 4: reliability (Laplace-smoothed success rate)
+            # For non-experience rows (uses=0, successes=0), this yields 0.5 (neutral),
+            # which is intentional — reliability only differentiates experience rows.
+            reliability = self._confidence(r)
+
+            score = 0.35 * semantic + 0.25 * recency + 0.25 * importance + 0.15 * reliability
+            scored.append((score, r))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [r for _, r in scored[:limit]]
+
+    def _enrich_for_rerank(self, vec_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Cross-reference vector results with main table to get columnar metadata for rerank."""
+        try:
+            with self._store_lock:
+                main_rows = self._tbl.search().where("type != '_init_'").limit(500).to_list()
+            # Build (content, type) keyed map to avoid cross-type mismatches
+            content_map: dict[tuple[str, str], dict[str, Any]] = {}
+            for r in main_rows:
+                c = r.get("content", "")
+                t = r.get("type", "")
+                if c:
+                    content_map[(c, t)] = r
+            enriched = []
+            for vr in vec_rows:
+                vc = vr.get("content", "")
+                vt = vr.get("type", "")
+                matched = content_map.get((vc, vt))
+                if matched:
+                    merged = dict(matched)
+                    if "_distance" in vr:
+                        merged["_distance"] = vr["_distance"]
+                    enriched.append(merged)
+                elif vc:
+                    # No main-table match; keep vector row with distance
+                    enriched.append(vr)
+            return enriched
+        except Exception:
+            return vec_rows
 
     # ── Long-term memory (categorized) ──
 
@@ -470,6 +650,7 @@ class MemoryStore:
             logger.warning("⚠️ 向量写入失败 / embedding store failed: {}", e)
 
     def search_memory(self, query: str, limit: int = 5) -> list[str]:
+        """Two-stage retrieval: wide recall → multi-factor rerank → top-k."""
         embed_fn = self._embed_fn
         if embed_fn and self._vec_tbl:
             try:
@@ -479,13 +660,22 @@ class MemoryStore:
                         return self._fallback_text_search(
                             query, limit=limit, exclude_types=["experience", "long_term"]
                         )
-                    rows = (
+                    # Stage 1: wide recall
+                    vec_rows = (
                         self._vec_tbl.search(vec)
                         .where("type NOT IN ('experience', 'long_term')")
-                        .limit(limit)
+                        .limit(limit * 3)
                         .to_list()
                     )
-                    return [r["content"] for r in rows if r.get("content")]
+                if vec_rows:
+                    # Enrich with main table metadata for rerank
+                    enriched = self._enrich_for_rerank(vec_rows)
+                    if enriched:
+                        # Stage 2: rerank
+                        reranked = self._rerank_candidates(
+                            enriched, limit=limit, has_vector_score=True
+                        )
+                        return [r["content"] for r in reranked if r.get("content")]
             except Exception as e:
                 logger.warning("⚠️ 语义检索失败 / semantic search failed: {}", e)
         return self._fallback_text_search(
@@ -532,11 +722,13 @@ class MemoryStore:
         return (successes + 1) / (uses + 2)  # Laplace smoothing
 
     def search_experience(self, query: str, limit: int = 3) -> list[str]:
+        """Search experiences with scoring + conflict detection + hit tracking."""
         with self._store_lock:
             candidates = self._fetch_experience_candidates(query, limit * 5)
             now = datetime.now()
-            positive: list[tuple[float, str, str, str]] = []
-            warnings: list[tuple[float, str, str]] = []
+            # (score, row_dict, content, category, outcome)
+            positive: list[tuple[float, dict[str, Any], str, str, str]] = []
+            warnings: list[tuple[float, dict[str, Any], str, str]] = []
             for r in candidates:
                 if "quality" not in r and "outcome" not in r and "updated_at" not in r:
                     continue
@@ -550,16 +742,17 @@ class MemoryStore:
                 content = r.get("content") or ""
                 outcome = r.get("outcome", "")
                 if outcome == "failed":
-                    warnings.append((score, content, r.get("category") or "general"))
+                    warnings.append((score, r, content, r.get("category") or "general"))
                 else:
                     positive.append(
-                        (score, content, r.get("category") or "general", outcome or "success")
+                        (score, r, content, r.get("category") or "general", outcome or "success")
                     )
             positive.sort(key=lambda x: x[0], reverse=True)
             warnings.sort(key=lambda x: x[0], reverse=True)
             results: list[str] = []
+            hit_rows: list[dict[str, Any]] = []
             seen_categories: dict[str, str] = {}
-            for _, content, cat, outcome_str in positive:
+            for _, row, content, cat, outcome_str in positive:
                 if len(results) >= limit - 1:
                     break
                 prev = seen_categories.get(cat)
@@ -567,9 +760,15 @@ class MemoryStore:
                     content = f"\u26a1 CONFLICTING experience (category '{cat}'):\n{content}"
                 seen_categories.setdefault(cat, outcome_str)
                 results.append(content)
+                hit_rows.append(row)
             if warnings:
-                results.append(f"\u26a0\ufe0f WARNING from past failure:\n{warnings[0][1]}")
-            return results[:limit]
+                results.append(f"\u26a0\ufe0f WARNING from past failure:\n{warnings[0][2]}")
+                hit_rows.append(warnings[0][1])
+            final = results[:limit]
+        # Update hit stats outside the main lock (best-effort)
+        if hit_rows:
+            self._update_hit_stats(hit_rows)
+        return final
 
     def _fetch_experience_candidates(self, query: str, fetch: int) -> list[dict[str, Any]]:
         """Fetch experience candidates via vector or BM25 fallback."""
@@ -759,10 +958,18 @@ class MemoryStore:
                     is_dep = r.get("deprecated", False)
                     quality = r.get("quality", 3)
                     uses = r.get("uses", 0)
+                    hit_count = r.get("hit_count", 0)
+                    has_hit_tracking = bool(r.get("last_hit_at"))
                     if quality >= 5 and uses >= 3 and not is_dep:
                         continue
-                    should_remove = (is_dep and days_old > max_deprecated_days) or (
-                        quality <= 1 and days_old > max_low_quality_days
+                    should_remove = (
+                        (is_dep and days_old > max_deprecated_days)
+                        or (quality <= 1 and days_old > max_low_quality_days)
+                        # New rules only apply to rows that have been through the hit-tracking
+                        # era (last_hit_at non-empty). Pre-migration rows with hit_count=0
+                        # are NOT considered "never retrieved" — they simply predate tracking.
+                        or (has_hit_tracking and hit_count == 0 and days_old > 60 and quality <= 2)
+                        or (has_hit_tracking and hit_count <= 1 and days_old > 120 and quality <= 3)
                     )
                     if should_remove and (key := r.get("key")):
                         self._tbl.delete(f"key = '{key}'")
@@ -826,14 +1033,51 @@ class MemoryStore:
 
     @staticmethod
     def _tokenize(text: str) -> list[str]:
-        """Split text into lowercase tokens, stripping punctuation and filtering short ones."""
-        return [
-            w
-            for raw in text.split()
-            if len(raw) >= 2
-            for w in [raw.lower().strip(".,;:!?()[]{}\"'`~")]
-            if len(w) >= 2
-        ]
+        """Split text into tokens. Handles both space-separated and CJK text.
+
+        For space-separated languages: lowercase, strip punctuation, filter short tokens.
+        For CJK characters: extract character bigrams per segment (no cross-boundary).
+        For mixed tokens (e.g. 'Python编程'): extract both Latin and CJK parts.
+        """
+        tokens: list[str] = []
+        for raw in text.split():
+            if len(raw) < 2:
+                continue
+            w = raw.lower().strip(".,;:!?()[]{}\"'`~")
+            if len(w) < 2:
+                continue
+            has_cjk = any(
+                "\u4e00" <= c <= "\u9fff" or "\u3040" <= c <= "\u30ff" or "\uac00" <= c <= "\ud7af"
+                for c in w
+            )
+            if not has_cjk:
+                tokens.append(w)
+                continue
+            # Mixed/CJK token: extract both Latin and CJK parts per segment
+            seg_cjk: list[str] = []
+            latin_buf: list[str] = []
+            for c in w:
+                if (
+                "\u4e00" <= c <= "\u9fff" or "\u3040" <= c <= "\u30ff" or "\uac00" <= c <= "\ud7af"
+                ):
+                    if latin_buf:
+                        latin = "".join(latin_buf)
+                        if len(latin) >= 2:
+                            tokens.append(latin)
+                        latin_buf = []
+                    seg_cjk.append(c)
+                else:
+                    latin_buf.append(c)
+            if latin_buf:
+                latin = "".join(latin_buf)
+                if len(latin) >= 2:
+                    tokens.append(latin)
+            # Bigrams per segment (no cross-boundary with other tokens)
+            for i in range(len(seg_cjk) - 1):
+                tokens.append(seg_cjk[i] + seg_cjk[i + 1])
+            if len(seg_cjk) <= 4:
+                tokens.extend(seg_cjk)
+        return tokens
 
     @staticmethod
     def _bm25_rank(
@@ -935,6 +1179,65 @@ class MemoryStore:
                 if share <= 1:
                     continue
                 content = content[: share - 1] + "…"
+            budgeted.append(f"[{cat}] {content}")
+
+        result = "\n".join(budgeted)
+        return f"{header}{result}" if budgeted else ""
+
+    def get_relevant_memory_context(self, query: str, max_chars: int | None = None) -> str:
+        """Like get_memory_context but filters categories by relevance to query.
+        Categories with no keyword overlap are skipped, saving tokens.
+        Falls back to full injection if query is too short to filter reliably.
+        """
+        if not query:
+            return self.get_memory_context(max_chars=max_chars)
+        query_tokens = set(self._tokenize(query))
+        if not query_tokens:
+            return self.get_memory_context(max_chars=max_chars)
+
+        parts: list[tuple[str, str]] = []
+        for cat in MEMORY_CATEGORIES:
+            content = self.read_long_term(cat).strip()
+            if not content:
+                continue
+            content_tokens = set(self._tokenize(content))
+            overlap = len(query_tokens & content_tokens)
+            # Low threshold: even 1 shared keyword is enough to include
+            if overlap >= 1:
+                parts.append((cat, content))
+
+        if not parts:
+            # No category matched — fall back to full context to avoid empty memory
+            return self.get_memory_context(max_chars=max_chars)
+
+        # Reuse the same budget logic as get_memory_context
+        header = "## Long-term Memory\n"
+        if max_chars is None:
+            result = "\n".join(f"[{cat}] {content}" for cat, content in parts)
+            return f"{header}{result}"
+
+        if max_chars <= len(header):
+            return ""
+
+        body_budget = max_chars - len(header)
+        prefix_overhead = sum(len(f"[{cat}] ") for cat, _ in parts) + max(0, len(parts) - 1)
+        usable = body_budget - prefix_overhead
+        if usable <= 0:
+            return ""
+
+        total_raw = sum(len(c) for _, c in parts)
+        budgeted: list[str] = []
+        for cat, content in parts:
+            if total_raw <= usable:
+                budgeted.append(f"[{cat}] {content}")
+                continue
+            share = int(usable * len(content) / total_raw)
+            if share <= 0:
+                continue
+            if len(content) > share:
+                if share <= 1:
+                    continue
+                content = content[: share - 1] + "\u2026"
             budgeted.append(f"[{cat}] {content}")
 
         result = "\n".join(budgeted)

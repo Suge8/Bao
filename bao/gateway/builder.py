@@ -84,16 +84,43 @@ def build_gateway_stack(config: Any, provider: Any) -> GatewayStack:
 
     cron.on_job = on_cron_job
 
+    def _extract_primary_id(raw_uid: Any) -> str:
+        return str(raw_uid or "").split("|", 1)[0].strip()
+
+    def _is_telegram_chat_id(chat_id: str) -> bool:
+        return bool(chat_id) and chat_id.lstrip("-").isdigit()
+
+    def _iter_heartbeat_targets() -> list[tuple[str, str]]:
+        targets: list[tuple[str, str]] = []
+
+        for ch_name in ("telegram", "feishu", "dingtalk", "qq", "imessage", "email"):
+            ch_cfg = getattr(config.channels, ch_name, None)
+            if not (
+                ch_cfg and getattr(ch_cfg, "enabled", False) and getattr(ch_cfg, "allow_from", None)
+            ):
+                continue
+            chat_id = _extract_primary_id(ch_cfg.allow_from[0])
+            if ch_name == "telegram" and not _is_telegram_chat_id(chat_id):
+                continue
+            if chat_id:
+                targets.append((ch_name, chat_id))
+
+        wa_cfg = getattr(config.channels, "whatsapp", None)
+        if wa_cfg and getattr(wa_cfg, "enabled", False) and getattr(wa_cfg, "allow_from", None):
+            bare = _extract_primary_id(wa_cfg.allow_from[0])
+            if bare:
+                wa_chat_id = bare if "@" in bare else f"{bare}@s.whatsapp.net"
+                targets.append(("whatsapp", wa_chat_id))
+
+        return targets
+
     # --- heartbeat ---
     async def on_heartbeat_execute(tasks: str) -> str:
         """Phase 2: execute heartbeat tasks through the full agent loop."""
         channel, chat_id = "cli", "direct"
-        for ch_name in ("telegram", "whatsapp", "discord", "slack", "feishu", "dingtalk", "qq"):
-            ch_cfg = getattr(config.channels, ch_name, None)
-            if ch_cfg and getattr(ch_cfg, "enabled", False) and getattr(ch_cfg, "allow_from", None):
-                channel = ch_name
-                chat_id = ch_cfg.allow_from[0].split("|")[0]
-                break
+        targets = _iter_heartbeat_targets()
+        if targets:
+            channel, chat_id = targets[0]
 
         async def _silent(*_args, **_kwargs):
             pass
@@ -108,14 +135,14 @@ def build_gateway_stack(config: Any, provider: Any) -> GatewayStack:
 
     async def on_heartbeat_notify(response: str) -> None:
         """Deliver heartbeat result to the first available channel."""
-        for ch_name in ("telegram", "whatsapp", "discord", "slack", "feishu", "dingtalk", "qq"):
-            ch_cfg = getattr(config.channels, ch_name, None)
-            if ch_cfg and getattr(ch_cfg, "enabled", False) and getattr(ch_cfg, "allow_from", None):
-                chat_id = ch_cfg.allow_from[0].split("|")[0]
-                await bus.publish_outbound(
-                    OutboundMessage(channel=ch_name, chat_id=chat_id, content=response)
-                )
-                return
+        targets = _iter_heartbeat_targets()
+        if not targets:
+            return
+
+        ch_name, chat_id = targets[0]
+        await bus.publish_outbound(
+            OutboundMessage(channel=ch_name, chat_id=chat_id, content=response)
+        )
 
     hb_cfg = config.gateway.heartbeat
     heartbeat = HeartbeatService(
@@ -171,6 +198,9 @@ async def send_startup_greeting(
     def _extract_primary_id(raw_uid: Any) -> str:
         return str(raw_uid or "").split("|", 1)[0].strip()
 
+    def _is_telegram_chat_id(chat_id: str) -> bool:
+        return bool(chat_id) and chat_id.lstrip("-").isdigit()
+
     targets: list[tuple[str, str]] = []
     seen_targets: set[tuple[str, str]] = set()
 
@@ -197,7 +227,10 @@ async def send_startup_greeting(
         if not (cfg.enabled and cfg.allow_from):
             continue
         for uid in cfg.allow_from:
-            _add_target(name, _extract_primary_id(uid))
+            target = _extract_primary_id(uid)
+            if name == "telegram" and not _is_telegram_chat_id(target):
+                continue
+            _add_target(name, target)
 
     # WhatsApp: phone -> JID (skip if already a JID)
     wa = config.channels.whatsapp
@@ -210,7 +243,7 @@ async def send_startup_greeting(
             jid = bare if "@" in bare else f"{bare}@s.whatsapp.net"
             _add_target("whatsapp", jid)
 
-    from bao.config.loader import (
+    from bao.config.onboarding import (
         LANG_PICKER,
         PERSONA_GREETING,
         detect_onboarding_stage,

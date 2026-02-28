@@ -29,13 +29,18 @@ from bao.providers.retry import (
     should_retry_exception,
 )
 
-_ALLOWED_MSG_KEYS = frozenset(
-    {"role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content"}
-)
+_ALLOWED_MSG_KEYS = frozenset({"role", "content", "tool_calls", "tool_call_id", "name"})
 
 _PROBE_FALLBACK_CODES = frozenset({404, 405, 501})
 _MAX_RETRIES = DEFAULT_MAX_RETRIES
 _BASE_DELAY = DEFAULT_BASE_DELAY
+
+
+class _ResponsesHTTPStatusError(RuntimeError):
+    def __init__(self, response: httpx.Response):
+        self.status_code = response.status_code
+        self.response = response
+        super().__init__(f"Responses API HTTP {response.status_code}: {response.text[:500]}")
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -121,9 +126,35 @@ class OpenAICompatibleProvider(LLMProvider):
                     new_content = [
                         {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
                     ]
-                else:
+                elif isinstance(content, list) and content:
                     new_content = list(content)
-                    new_content[-1] = {**new_content[-1], "cache_control": {"type": "ephemeral"}}
+                    last_block = new_content[-1]
+                    if isinstance(last_block, dict):
+                        new_content[-1] = {**last_block, "cache_control": {"type": "ephemeral"}}
+                    else:
+                        new_content.append(
+                            {
+                                "type": "text",
+                                "text": str(last_block),
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        )
+                elif isinstance(content, list):
+                    new_content = [
+                        {
+                            "type": "text",
+                            "text": "",
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ]
+                else:
+                    new_content = [
+                        {
+                            "type": "text",
+                            "text": str(content or ""),
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ]
                 new_messages.append({**msg, "content": new_content})
             else:
                 new_messages.append(msg)
@@ -142,6 +173,8 @@ class OpenAICompatibleProvider(LLMProvider):
         for msg in messages:
             img_b64 = msg.get("_image")
             clean = {k: v for k, v in msg.items() if k in _ALLOWED_MSG_KEYS}
+            if clean.get("role") == "tool":
+                clean.pop("name", None)
             if clean.get("role") == "assistant" and "content" not in clean:
                 clean["content"] = None
             # Flush pending screenshot images before non-tool message
@@ -439,8 +472,6 @@ class OpenAICompatibleProvider(LLMProvider):
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         source: str = "main",
     ) -> LLMResponse:
-        del on_progress
-
         allow_fallback = self._api_mode == "auto"
         body = self._build_responses_body(model, messages, tools, max_tokens, temperature)
         url = f"{self._effective_base.rstrip('/')}/responses"
@@ -448,6 +479,16 @@ class OpenAICompatibleProvider(LLMProvider):
 
         last_err: Exception | None = None
         for attempt in range(_MAX_RETRIES + 1):
+            try:
+                await emit_progress_reset(on_progress)
+            except ProgressCallbackError as exc:
+                if isinstance(exc, StreamInterruptedError):
+                    return LLMResponse(content=None, finish_reason="interrupted")
+                cause = exc.__cause__ or exc
+                return LLMResponse(
+                    content=f"Error calling LLM progress callback: {safe_error_text(cause)}",
+                    finish_reason="error",
+                )
             try:
                 async with httpx.AsyncClient(timeout=120.0) as client:
                     resp = await client.post(url, headers=headers, json=body)
@@ -482,7 +523,7 @@ class OpenAICompatibleProvider(LLMProvider):
                         tools,
                         max_tokens,
                         temperature,
-                        None,
+                        on_progress,
                         source,
                     )
 
@@ -525,7 +566,7 @@ class OpenAICompatibleProvider(LLMProvider):
                             tools,
                             max_tokens,
                             temperature,
-                            None,
+                            on_progress,
                             source,
                         )
 
@@ -534,7 +575,7 @@ class OpenAICompatibleProvider(LLMProvider):
                         finish_reason="error",
                     )
 
-            status_err = RuntimeError(f"Responses API HTTP {resp.status_code}: {resp.text[:500]}")
+            status_err = _ResponsesHTTPStatusError(resp)
             last_err = status_err
             if resp.status_code in _PROBE_FALLBACK_CODES and allow_fallback:
                 logger.debug(
@@ -549,7 +590,7 @@ class OpenAICompatibleProvider(LLMProvider):
                     tools,
                     max_tokens,
                     temperature,
-                    None,
+                    on_progress,
                     source,
                 )
 
@@ -580,7 +621,7 @@ class OpenAICompatibleProvider(LLMProvider):
                     tools,
                     max_tokens,
                     temperature,
-                    None,
+                    on_progress,
                     source,
                 )
 

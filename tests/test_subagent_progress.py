@@ -2,16 +2,23 @@
 
 import asyncio
 import importlib
+import json
 import pathlib
 import tempfile
 import time
+import uuid
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from bao.agent.subagent import SubagentManager, TaskStatus
-from bao.agent.tools.task_status import CancelTaskTool, CheckTasksTool, _format_brief, _format_detailed
+from bao.agent.tools.task_status import (
+    CancelTaskTool,
+    CheckTasksTool,
+    _format_brief,
+    _format_detailed,
+)
 from bao.bus.events import OutboundMessage
 from bao.bus.queue import MessageBus
-from bao.providers.base import LLMResponse
+from bao.providers.base import LLMResponse, ToolCallRequest
 
 pytest = importlib.import_module("pytest")
 
@@ -112,15 +119,363 @@ async def test_call_experience_llm_utility_mode_falls_back_to_main(bus, tmp_path
 
 
 def test_subagent_error_detection_avoids_no_errors_false_positive():
-    assert not SubagentManager._has_tool_error("All checks passed, no errors found.")
-    assert SubagentManager._has_tool_error("Error: permission denied")
+    assert not SubagentManager._has_tool_error(
+        "web_search", "How to fix failed login error in Django"
+    )
+    assert SubagentManager._has_tool_error("web_search", "Error: provider timeout")
+    assert SubagentManager._has_tool_error(
+        "web_fetch", '{"error": "URL validation failed: Missing domain"}'
+    )
+    assert SubagentManager._has_tool_error("exec", "Error: permission denied")
 
 
-def test_is_protected_write_path(manager):
-    assert manager._is_protected_write_path("lancedb/data.arrow")
-    assert manager._is_protected_write_path("memory/MEMORY.md")
-    assert manager._is_protected_write_path(".bao/context/trace.txt")
-    assert not manager._is_protected_write_path("src/main.py")
+def test_subagent_error_detection_exec_exit_code_marker():
+    assert SubagentManager._has_tool_error("exec", "stdout\nExit code: 1\n")
+
+
+def test_subagent_error_detection_coding_agent_json_status():
+    assert SubagentManager._has_tool_error("coding_agent", '{"status":"error","exit_code":1}')
+
+
+def test_subagent_error_detection_coding_agent_prefixed_json():
+    payload = 'summary: {"status":"error","exitCode":1}'
+    assert SubagentManager._has_tool_error("coding_agent", payload)
+
+
+def test_subagent_strip_think_matches_main_behavior():
+    assert SubagentManager._strip_think("<think>hidden</think> visible") == "visible"
+    assert SubagentManager._strip_think("<think>only hidden</think>") is None
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_recent_action_redacts_exec_command(bus, tmp_path):
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    call_count = 0
+
+    async def fake_chat(*, messages, **kwargs):
+        del messages, kwargs
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="tc_1",
+                        name="exec",
+                        arguments={"command": "echo super-secret-token"},
+                    )
+                ],
+            )
+        return LLMResponse(content="done")
+
+    provider.chat = fake_chat
+    manager = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=bus,
+        model="test-model",
+    )
+    manager._task_statuses["t1"] = TaskStatus(
+        task_id="t1",
+        label="exec",
+        task_description="run command",
+        origin={"channel": "tg", "chat_id": "1"},
+    )
+
+    await manager._run_subagent("t1", "run command", "exec", {"channel": "tg", "chat_id": "1"})
+
+    st = manager.get_task_status("t1")
+    assert st is not None
+    assert any(action.startswith("exec(<redacted:") for action in st.recent_actions)
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_sufficiency_true_disables_tools(bus, tmp_path):
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    call_count = 0
+    final_tools = None
+
+    async def fake_chat(*, messages, **kwargs):
+        del messages
+        nonlocal call_count, final_tools
+        if kwargs.get("source") == "utility":
+            return LLMResponse(content='{"sufficient": false}')
+        if call_count < 8:
+            call_count += 1
+            return LLMResponse(
+                content=f"step-{call_count}",
+                tool_calls=[
+                    ToolCallRequest(
+                        id=f"tc_{call_count}",
+                        name="exec",
+                        arguments={"command": 'python -c "print(1)"'},
+                    )
+                ],
+            )
+        final_tools = kwargs.get("tools")
+        return LLMResponse(content="done")
+
+    provider.chat = fake_chat
+    manager = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=bus,
+        model="test-model",
+    )
+    manager._task_statuses["t1"] = TaskStatus(
+        task_id="t1",
+        label="stop",
+        task_description="run then stop",
+        origin={"channel": "tg", "chat_id": "1"},
+    )
+
+    async def fake_check(
+        user_request: str, trace: list[str], last_state_text: str | None = None
+    ) -> bool:
+        del user_request, trace, last_state_text
+        return True
+
+    setattr(manager, "_check_sufficiency", fake_check)
+    await manager._run_subagent("t1", "run then stop", "stop", {"channel": "tg", "chat_id": "1"})
+
+    assert final_tools == []
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_empty_final_allows_one_tool_backoff(bus, tmp_path):
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    call_count = 0
+    empty_final_sent = False
+    tools_history: list[object] = []
+
+    async def fake_chat(*, messages, **kwargs):
+        del messages
+        nonlocal call_count, empty_final_sent
+        tools_history.append(kwargs.get("tools", "__missing__"))
+        if kwargs.get("source") == "utility":
+            return LLMResponse(content='{"sufficient": false}')
+        if call_count < 2:
+            call_count += 1
+            return LLMResponse(
+                content=f"step-{call_count}",
+                tool_calls=[
+                    ToolCallRequest(
+                        id=f"tc_{call_count}_{idx}",
+                        name="exec",
+                        arguments={"command": 'python -c "print(1)"'},
+                    )
+                    for idx in range(4)
+                ],
+            )
+        if not empty_final_sent:
+            empty_final_sent = True
+            return LLMResponse(content="")
+        return LLMResponse(content="done")
+
+    provider.chat = fake_chat
+    manager = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=bus,
+        model="test-model",
+    )
+    manager._task_statuses["t1"] = TaskStatus(
+        task_id="t1",
+        label="backoff",
+        task_description="backoff test",
+        origin={"channel": "tg", "chat_id": "1"},
+    )
+
+    async def fake_check(
+        user_request: str, trace: list[str], last_state_text: str | None = None
+    ) -> bool:
+        del user_request, trace, last_state_text
+        return True
+
+    setattr(manager, "_check_sufficiency", fake_check)
+    await manager._run_subagent("t1", "backoff test", "backoff", {"channel": "tg", "chat_id": "1"})
+
+    assert [] in tools_history
+    empty_idx = tools_history.index([])
+    assert any(t not in ([], None, "__missing__") for t in tools_history[empty_idx + 1 :])
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_sufficiency_uses_trace_window(bus, tmp_path):
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    call_count = 0
+
+    async def fake_chat(*, messages, **kwargs):
+        del messages, kwargs
+        nonlocal call_count
+        if call_count < 9:
+            call_count += 1
+            return LLMResponse(
+                content=f"step-{call_count}",
+                tool_calls=[
+                    ToolCallRequest(
+                        id=f"tc_{call_count}",
+                        name="exec",
+                        arguments={"command": 'python -c "print(1)"'},
+                    )
+                ],
+            )
+        return LLMResponse(content="done")
+
+    provider.chat = fake_chat
+    manager = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=bus,
+        model="test-model",
+    )
+    manager._task_statuses["t1"] = TaskStatus(
+        task_id="t1",
+        label="trace",
+        task_description="trace window",
+        origin={"channel": "tg", "chat_id": "1"},
+    )
+    captured_lengths: list[int] = []
+
+    async def fake_check(
+        user_request: str, trace: list[str], last_state_text: str | None = None
+    ) -> bool:
+        del user_request, last_state_text
+        captured_lengths.append(len(trace))
+        return False
+
+    setattr(manager, "_check_sufficiency", fake_check)
+    await manager._run_subagent("t1", "trace window", "trace", {"channel": "tg", "chat_id": "1"})
+
+    assert captured_lengths
+    assert captured_lengths[0] >= 8
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_allows_write_when_path_not_first_arg(bus, tmp_path):
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    captured_messages = []
+    call_count = 0
+
+    async def fake_chat(*, messages, **kwargs):
+        del kwargs
+        nonlocal call_count
+        call_count += 1
+        captured_messages.append(list(messages))
+        if call_count == 1:
+            return LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="tc_1",
+                        name="write_file",
+                        arguments={"content": "secret", "path": "lancedb/data.arrow"},
+                    )
+                ],
+            )
+        return LLMResponse(content="done")
+
+    provider.chat = fake_chat
+    manager = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=bus,
+        model="test-model",
+    )
+    manager._task_statuses["t1"] = TaskStatus(
+        task_id="t1",
+        label="write",
+        task_description="try write",
+        origin={"channel": "tg", "chat_id": "1"},
+    )
+
+    await manager._run_subagent("t1", "write task", "write", {"channel": "tg", "chat_id": "1"})
+
+    assert (tmp_path / "lancedb" / "data.arrow").exists()
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_allows_exec_command_touching_protected_paths(bus, tmp_path):
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    captured_messages = []
+    call_count = 0
+
+    async def fake_chat(*, messages, **kwargs):
+        del kwargs
+        nonlocal call_count
+        call_count += 1
+        captured_messages.append(list(messages))
+        if call_count == 1:
+            return LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="tc_exec_1",
+                        name="exec",
+                        arguments={"command": "ls memory || true"},
+                    )
+                ],
+            )
+        return LLMResponse(content="done")
+
+    provider.chat = fake_chat
+    manager = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=bus,
+        model="test-model",
+    )
+    manager._task_statuses["t1"] = TaskStatus(
+        task_id="t1",
+        label="exec",
+        task_description="try exec",
+        origin={"channel": "tg", "chat_id": "1"},
+    )
+
+    await manager._run_subagent("t1", "exec task", "exec", {"channel": "tg", "chat_id": "1"})
+
+    assert len(captured_messages) >= 2
+    tool_msgs = [m for m in captured_messages[1] if m.get("role") == "tool"]
+    assert tool_msgs
+    assert (
+        "exec access to protected paths is blocked"
+        not in str(tool_msgs[-1].get("content", "")).lower()
+    )
+
+
+def test_redact_tool_args_for_log_hides_write_contents(manager):
+    redacted = manager._redact_tool_args_for_log(
+        "write_file",
+        {"path": "src/a.py", "content": "secret", "old_text": "abc", "new_text": "xyz"},
+    )
+    payload = json.loads(redacted)
+    assert payload["path"] == "src/a.py"
+    assert payload["content"] == "<redacted:6 chars>"
+    assert payload["old_text"] == "<redacted:3 chars>"
+    assert payload["new_text"] == "<redacted:3 chars>"
+
+
+def test_redact_tool_args_for_log_hides_exec_command(manager):
+    redacted = manager._redact_tool_args_for_log(
+        "exec",
+        {"command": "echo secret", "timeout": 5},
+    )
+    payload = json.loads(redacted)
+    assert payload["command"] == "<redacted:11 chars>"
+    assert payload["timeout"] == 5
 
 
 @pytest.mark.asyncio
@@ -157,6 +512,32 @@ async def test_run_subagent_keeps_artifacts_after_completion(bus, tmp_path, monk
     assert status.status == "completed"
 
 
+@pytest.mark.asyncio
+async def test_run_subagent_keeps_completed_status_when_announce_fails(bus, tmp_path):
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    provider.chat = AsyncMock(return_value=LLMResponse(content="done"))
+    manager = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=bus,
+        model="test-model",
+    )
+    manager.bus.publish_inbound = AsyncMock(side_effect=RuntimeError("bus down"))
+    manager._task_statuses["t1"] = TaskStatus(
+        task_id="t1",
+        label="check",
+        task_description="d",
+        origin={"channel": "tg", "chat_id": "1"},
+    )
+
+    await manager._run_subagent("t1", "simple task", "check", {"channel": "tg", "chat_id": "1"})
+
+    status = manager.get_task_status("t1")
+    assert status is not None
+    assert status.status == "completed"
+
+
 # ---------------------------------------------------------------------------
 # SubagentManager: spawn creates TaskStatus
 # ---------------------------------------------------------------------------
@@ -180,6 +561,34 @@ async def test_spawn_creates_status(manager):
     assert st.status == "running"
     assert st.task_description == "Summarize the README"
     assert st.origin == {"channel": "telegram", "chat_id": "c1"}
+
+
+@pytest.mark.asyncio
+async def test_spawn_task_id_has_12_chars(manager):
+    result = await manager.spawn(task="Summarize")
+    task_id = result.split("task_id=")[1].split(" ", 1)[0]
+    assert len(task_id) == 12
+    assert "-" not in task_id
+
+
+@pytest.mark.asyncio
+async def test_spawn_task_id_retries_on_collision(manager):
+    manager._task_statuses["aaaaaaaaaaaa"] = TaskStatus(
+        task_id="aaaaaaaaaaaa",
+        label="existing",
+        task_description="d",
+        origin={"channel": "tg", "chat_id": "1"},
+    )
+    with patch(
+        "bao.agent.subagent.uuid.uuid4",
+        side_effect=[
+            uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+        ],
+    ):
+        result = await manager.spawn(task="Summarize")
+    task_id = result.split("task_id=")[1].split(" ", 1)[0]
+    assert task_id == "bbbbbbbbbbbb"
 
 
 # ---------------------------------------------------------------------------
@@ -210,8 +619,6 @@ def test_update_status_nonexistent(manager):
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_cancel_running_task(manager):
-    """cancel_task should cancel the asyncio task and update status."""
-
     async def _hang():
         await asyncio.sleep(3600)
 
@@ -224,9 +631,35 @@ async def test_cancel_running_task(manager):
         origin={"channel": "tg", "chat_id": "1"},
     )
     result = await manager.cancel_task("t1")
-    assert "cancelled" in result.lower()
-    assert manager._task_statuses["t1"].status == "cancelled"
-    assert "t1" not in manager._running_tasks
+    assert "cancellation requested" in result.lower()
+    assert manager._task_statuses["t1"].status == "running"
+    assert manager._task_statuses["t1"].phase == "cancel_requested"
+    assert "t1" in manager._running_tasks
+    with pytest.raises(asyncio.CancelledError):
+        await bg
+
+
+@pytest.mark.asyncio
+async def test_cancel_task_does_not_override_completed_status(manager):
+    async def _hang():
+        await asyncio.sleep(3600)
+
+    bg = asyncio.create_task(_hang())
+    manager._running_tasks["t1"] = bg
+    manager._task_statuses["t1"] = TaskStatus(
+        task_id="t1",
+        label="done",
+        task_description="already done",
+        origin={"channel": "tg", "chat_id": "1"},
+        status="completed",
+    )
+
+    result = await manager.cancel_task("t1")
+    assert "cancellation requested" in result.lower()
+    assert manager._task_statuses["t1"].status == "completed"
+
+    with pytest.raises(asyncio.CancelledError):
+        await bg
 
 
 @pytest.mark.asyncio
@@ -371,7 +804,6 @@ def test_format_status_no_warning_when_completed():
     assert "⚠️" not in out
 
 
-
 # ---------------------------------------------------------------------------
 # CheckTasksTool
 # ---------------------------------------------------------------------------
@@ -445,7 +877,9 @@ async def test_cancel_task_tool(manager):
     )
     tool = CancelTaskTool(manager)
     result = await tool.execute(task_id="t1")
-    assert "cancelled" in result.lower()
+    assert "cancellation requested" in result.lower()
+    with pytest.raises(asyncio.CancelledError):
+        await bg
 
 
 # ---------------------------------------------------------------------------
@@ -530,7 +964,7 @@ def test_format_status_truncates_long_summary():
     assert "..." in out
     # Should contain exactly 300 X's + '...'
     result_idx = out.index("result:")
-    summary_part = out[result_idx + 8:]  # after 'result: '
+    summary_part = out[result_idx + 8 :]  # after 'result: '
     assert summary_part.strip().startswith("X" * 300)
     assert summary_part.strip().endswith("...")
 
@@ -548,6 +982,35 @@ def test_format_status_no_summary_for_running():
     )
     out = _format_brief(st)
     assert "result:" not in out
+
+
+def test_format_status_sanitizes_pipe_in_result_summary():
+    st = TaskStatus(
+        task_id="t1",
+        label="report",
+        task_description="d",
+        origin={"channel": "tg", "chat_id": "1"},
+        status="completed",
+        phase="completed",
+        result_summary="A|B|C",
+    )
+    out = _format_brief(st)
+    assert "A/B/C" in out
+    assert "A|B|C" not in out
+
+
+def test_format_status_sanitizes_pipe_in_recent_actions():
+    st = TaskStatus(
+        task_id="t1",
+        label="running",
+        task_description="d",
+        origin={"channel": "tg", "chat_id": "1"},
+        status="running",
+    )
+    st.recent_actions = ["exec(ls|wc)"]
+    out = _format_detailed(st)
+    assert "exec(ls/wc)" in out
+    assert "exec(ls|wc)" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -904,11 +1367,18 @@ async def test_spawn_context_from_completed_task(manager):
             context_from="prev01",
         )
         assert result.startswith("Spawned task_id=")
+        task_id = result.split("task_id=")[1].split(" ", 1)[0]
+        spawned = manager.get_task_status(task_id)
+        assert spawned is not None
+        assert spawned.resume_context is not None
+        assert "Analyze the auth module" in spawned.resume_context
+        assert "JWT with 24h expiry" in spawned.resume_context
         # Wait for asyncio.create_task to schedule the call
         await asyncio.sleep(0.05)
         mock_run.assert_called_once()
         # context_from is the 5th positional arg (task_id, task, label, origin, context_from)
         assert mock_run.call_args[0][4] == "prev01"
+
 
 @pytest.mark.asyncio
 async def test_spawn_context_from_missing_task(manager):
@@ -921,6 +1391,18 @@ async def test_spawn_context_from_missing_task(manager):
     # Should still spawn successfully — context_from miss is silent degradation
     assert result.startswith("Spawned task_id=")
     assert len(manager.get_all_statuses()) == 1
+
+
+@pytest.mark.asyncio
+async def test_spawn_context_from_warning_sanitizes_visible_text(manager):
+    result = await manager.spawn(
+        task="Do something new",
+        label="new task",
+        context_from="bad|id\nnext",
+    )
+    assert "context_from=bad/id next" in result
+    assert "bad|id" not in result
+    assert "\n" not in result
 
 
 @pytest.mark.asyncio
@@ -971,7 +1453,9 @@ async def test_context_from_injects_resume_into_messages(manager):
 
     manager.provider.chat = fake_chat
     await manager._run_subagent(
-        "new01", "Refactor auth", "follow-up",
+        "new01",
+        "Refactor auth",
+        "follow-up",
         {"channel": "gateway", "chat_id": "direct"},
         context_from="done01",
     )
@@ -983,3 +1467,38 @@ async def test_context_from_injects_resume_into_messages(manager):
     assert "Continuing from previous task" in msgs[1]["content"]
     assert "Analyze the auth module" in msgs[1]["content"]
     assert "JWT with 24h expiry" in msgs[1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_context_from_uses_snapshot_even_if_source_missing(manager):
+    manager._task_statuses["new01"] = TaskStatus(
+        task_id="new01",
+        label="follow-up",
+        task_description="Refactor auth",
+        origin={"channel": "gateway", "chat_id": "direct"},
+        resume_context=(
+            "[Continuing from previous task (done01)]\n"
+            "Previous task: Analyze the auth module\n"
+            "Previous result: Auth module uses JWT with 24h expiry."
+        ),
+    )
+    captured_messages = []
+
+    async def fake_chat(*, messages, **kwargs):
+        captured_messages.append(list(messages))
+        return LLMResponse(content="Done.", tool_calls=[])
+
+    manager.provider.chat = fake_chat
+    await manager._run_subagent(
+        "new01",
+        "Refactor auth",
+        "follow-up",
+        {"channel": "gateway", "chat_id": "direct"},
+        context_from="done01",
+    )
+
+    assert len(captured_messages) >= 1
+    msgs = captured_messages[0]
+    assert len(msgs) >= 3
+    assert msgs[1]["role"] == "user"
+    assert "Continuing from previous task (done01)" in msgs[1]["content"]

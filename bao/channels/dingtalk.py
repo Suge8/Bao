@@ -70,9 +70,7 @@ class baoDingTalkHandler(CallbackHandler):
 
             # Forward to bao via _on_message (non-blocking).
             # Store reference to prevent GC before task completes.
-            task = asyncio.create_task(
-                self.channel._on_message(content, sender_id, sender_name)
-            )
+            task = asyncio.create_task(self.channel._on_message(content, sender_id, sender_name))
             self.channel._background_tasks.add(task)
             task.add_done_callback(self.channel._background_tasks.discard)
 
@@ -117,7 +115,8 @@ class DingTalkChannel(BaseChannel):
                 logger.error("❌ 钉钉 SDK 未安装 / sdk missing: pip install dingtalk-stream")
                 return
 
-            if not self.config.client_id or not self.config.client_secret:
+            client_secret = self.config.client_secret.get_secret_value()
+            if not self.config.client_id or not client_secret:
                 logger.error("❌ 钉钉配置缺失 / config missing: client_id and client_secret")
                 return
 
@@ -128,7 +127,7 @@ class DingTalkChannel(BaseChannel):
                 "📡 钉钉开始连接 / stream init: client_id={}...",
                 self.config.client_id,
             )
-            credential = Credential(self.config.client_id, self.config.client_secret)
+            credential = Credential(self.config.client_id, client_secret)
             self._client = DingTalkStreamClient(credential)
 
             # Register standard handler
@@ -170,7 +169,7 @@ class DingTalkChannel(BaseChannel):
         url = "https://api.dingtalk.com/v1.0/oauth2/accessToken"
         data = {
             "appKey": self.config.client_id,
-            "appSecret": self.config.client_secret,
+            "appSecret": self.config.client_secret.get_secret_value(),
         }
 
         if not self._http:

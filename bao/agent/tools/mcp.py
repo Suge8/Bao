@@ -35,6 +35,17 @@ def _slim_schema(schema: Any, max_description_chars: int = 150) -> Any:
     return schema
 
 
+def _normalize_name_fragment(value: str, fallback: str) -> str:
+    lowered = value.lower()
+    chars = [ch if (ch.isalnum() or ch == "_") else "_" for ch in lowered]
+    compact = "_".join(part for part in "".join(chars).split("_") if part)
+    if not compact:
+        compact = fallback
+    if compact[0].isdigit():
+        compact = f"n_{compact}"
+    return compact[:32]
+
+
 class MCPToolWrapper(Tool):
     """Wraps a single MCP server tool as a bao Tool."""
 
@@ -63,7 +74,7 @@ class MCPToolWrapper(Tool):
         else:
             self._description = description
             self._parameters = parameters
-        self._timeout = timeout
+        self._timeout = timeout if isinstance(timeout, int) and timeout > 0 else 30
 
     @property
     def name(self) -> str:
@@ -126,6 +137,11 @@ async def connect_mcp_servers(
                 if isinstance(cfg.tool_timeout_seconds, int) and cfg.tool_timeout_seconds > 0
                 else 30
             )
+            tool_timeout = (
+                cfg.tool_timeout_seconds
+                if isinstance(cfg.tool_timeout_seconds, int) and cfg.tool_timeout_seconds > 0
+                else 30
+            )
             if cfg.command:
                 params = StdioServerParameters(
                     command=cfg.command, args=cfg.args, env=cfg.env or None
@@ -175,11 +191,14 @@ async def connect_mcp_servers(
                     )
                     break
 
-                base_name = f"mcp_{name}_{tool_def.name}"
+                server_part = _normalize_name_fragment(name, "server")
+                tool_part = _normalize_name_fragment(str(tool_def.name), "tool")
+                base_name = f"mcp_{server_part}_{tool_part}"[:64]
                 wrapper_name = base_name
                 collision_index = 1
                 while wrapper_name in pending_names or registry.has(wrapper_name):
-                    wrapper_name = f"{base_name}_{collision_index}"
+                    suffix = f"_{collision_index}"
+                    wrapper_name = f"{base_name[: max(1, 64 - len(suffix))]}{suffix}"
                     collision_index += 1
                 pending_names.add(wrapper_name)
 
@@ -187,7 +206,7 @@ async def connect_mcp_servers(
                     session,
                     name,
                     tool_def,
-                    timeout=cfg.tool_timeout_seconds,
+                    timeout=tool_timeout,
                     slim_schema=slim_schema,
                     name_override=wrapper_name,
                 )

@@ -221,12 +221,17 @@ class AgentLoop:
                         "for enhanced orchestration mode."
                     )
         # Image generation (conditional: only when API key is configured)
-        if self._image_generation_config and self._image_generation_config.api_key:
+        image_api_key = (
+            self._image_generation_config.api_key.get_secret_value()
+            if self._image_generation_config
+            else ""
+        )
+        if self._image_generation_config and image_api_key:
             from bao.agent.tools.image_gen import ImageGenTool
 
             self.tools.register(
                 ImageGenTool(
-                    api_key=self._image_generation_config.api_key,
+                    api_key=image_api_key,
                     model=self._image_generation_config.model,
                     base_url=self._image_generation_config.base_url,
                 )
@@ -261,7 +266,9 @@ class AgentLoop:
             "- spawn: delegate multi-step or time-consuming work. Returns task_id for "
             "check_tasks/cancel_task. Pass context_from=<task_id> to give the subagent context "
             "from a previous task's result. When spawning coding tasks, describe clearly — "
-            "subagents can use coding tools if available."
+            "subagents can use coding tools if available.\n"
+            "- check_tasks: use ONLY when the user explicitly asks about task progress. "
+            "Do NOT poll proactively or call in a loop."
         )
         mem = self.context.memory
         self.tools.register(RememberTool(memory=mem))
@@ -302,12 +309,7 @@ class AgentLoop:
                 )
 
     async def _connect_mcp(self) -> None:
-        if (
-            self._mcp_connected
-            or self._mcp_connect_succeeded
-            or self._mcp_connecting
-            or not self._mcp_servers
-        ):
+        if self._mcp_connected or self._mcp_connecting or not self._mcp_servers:
             return
         self._mcp_connecting = True
         from bao.agent.tools.mcp import connect_mcp_servers
@@ -344,11 +346,17 @@ class AgentLoop:
         self,
         channel: str,
         chat_id: str,
-        message_id: str | None = None,
+        message_id: str | int | None = None,
         session_key: str | None = None,
     ) -> None:
+        if isinstance(message_id, bool) or message_id is None:
+            normalized_message_id = None
+        elif isinstance(message_id, (str, int)):
+            normalized_message_id = str(message_id)
+        else:
+            normalized_message_id = None
         if (t := self.tools.get("message")) and isinstance(t, MessageTool):
-            t.set_context(channel, chat_id, message_id)
+            t.set_context(channel, chat_id, normalized_message_id)
         if (t := self.tools.get("spawn")) and isinstance(t, SpawnTool):
             t.set_context(channel, chat_id, session_key=session_key)
         if (t := self.tools.get("cron")) and isinstance(t, CronTool):
@@ -507,6 +515,11 @@ class AgentLoop:
         consecutive_errors = 0
         total_errors = 0
         failed_directions: list[str] = []
+        total_tool_steps_for_sufficiency = 0
+        next_sufficiency_at = 8
+        force_final_response = False
+        force_final_backoff_used = False
+        sufficiency_trace: list[str] = []
         last_state_attempt_at = 0
         last_state_text: str | None = None
         current_task = asyncio.current_task()
@@ -553,22 +566,32 @@ class AgentLoop:
                 )
                 last_state_attempt_at = len(tool_trace)
                 if state:
+                    steps_before_reset = len(tool_trace)
                     messages.append(
                         {
                             "role": "user",
-                            "content": f"[State after {len(tool_trace)} steps]\n{state}\n\nUse this state freely — adopt useful parts, ignore irrelevant ones, and prioritize unexplored branches.",
+                            "content": f"[State after {steps_before_reset} steps]\n{state}\n\nUse this state freely — adopt useful parts, ignore irrelevant ones, and prioritize unexplored branches.",
                         }
                     )
                     last_state_text = state
+                    # RE-TRAC reset: state becomes the new starting point
+                    tool_trace.clear()
+                    reasoning_snippets.clear()
+                    failed_directions.clear()
+                    consecutive_errors = 0
+                    last_state_attempt_at = 0
 
-            if len(tool_trace) >= 8 and len(tool_trace) % 4 == 0:
-                if await self._check_sufficiency(user_request, tool_trace):
+            if total_tool_steps_for_sufficiency >= next_sufficiency_at:
+                if await self._check_sufficiency(user_request, sufficiency_trace, last_state_text):
                     messages.append(
                         {
                             "role": "user",
                             "content": "You now have sufficient information. Provide your final answer.",
                         }
                     )
+                    force_final_response = True
+                while next_sufficiency_at <= total_tool_steps_for_sufficiency:
+                    next_sufficiency_at += 4
 
             if self._ctx_mgmt in ("auto", "aggressive"):
                 try:
@@ -602,7 +625,7 @@ class AgentLoop:
             try:
                 response = await self.provider.chat(
                     messages=messages,
-                    tools=self.tools.get_definitions(),
+                    tools=[] if force_final_response else self.tools.get_definitions(),
                     model=self.model,
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
@@ -664,8 +687,12 @@ class AgentLoop:
                     break
                 for tool_call in response.tool_calls:
                     tools_used.append(tool_call.name)
-                    args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
-                    logger.info("🔧 工具调用 / tool: {}({})", tool_call.name, args_str[:200])
+                    args_preview = shared.summarize_tool_args_for_trace(
+                        tool_call.name,
+                        tool_call.arguments,
+                        max_len=200,
+                    )
+                    logger.info("🔧 工具调用 / tool: {}({})", tool_call.name, args_preview)
                     tool_task = asyncio.create_task(
                         self.tools.execute(tool_call.name, tool_call.arguments)
                     )
@@ -747,24 +774,38 @@ class AgentLoop:
                         }
                     )
 
-                    result_lower = result.lower() if isinstance(result, str) else ""
-                    has_error = bool(result_lower) and any(
-                        kw in result_lower for kw in _ERROR_KEYWORDS
+                    has_error = shared.has_tool_error(
+                        tool_call.name,
+                        result_text,
+                        _ERROR_KEYWORDS,
                     )
 
-                    tool_trace.append(
-                        f"{tool_call.name}({args_str[:60]}) → {'ERROR' if has_error else 'ok'}: {(result or '')[:100]}"
+                    trace_idx = len(tool_trace) + 1
+                    trace_entry = shared.build_tool_trace_entry(
+                        trace_idx,
+                        tool_call.name,
+                        args_preview,
+                        has_error,
+                        result,
                     )
+                    tool_trace.append(trace_entry)
+                    sufficiency_trace.append(trace_entry)
+                    if len(sufficiency_trace) > 32:
+                        del sufficiency_trace[:-32]
+                    total_tool_steps_for_sufficiency += 1
 
                     if has_error:
                         total_errors += 1
                         consecutive_errors += 1
-                        first_arg = (
-                            next(iter(tool_call.arguments.values()), "")
-                            if tool_call.arguments
-                            else ""
+                        failed_preview = shared.summarize_tool_args_for_trace(
+                            tool_call.name,
+                            tool_call.arguments,
+                            max_len=80,
                         )
-                        failed_directions.append(f"{tool_call.name}({str(first_arg)[:80]})")
+                        shared.push_failed_direction(
+                            failed_directions,
+                            f"{tool_call.name}({failed_preview})",
+                        )
                     else:
                         consecutive_errors = 0
 
@@ -803,7 +844,21 @@ class AgentLoop:
                 if current_task_ref is not None and current_task_ref in self._interrupted_tasks:
                     interrupted = True
                     break
-                final_content = self._strip_think(response.content)
+                clean_final = self._strip_think(response.content)
+                if force_final_response and not force_final_backoff_used and not clean_final:
+                    force_final_response = False
+                    force_final_backoff_used = True
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your previous final response was empty. "
+                                "If more evidence is needed, use tools briefly and then provide a complete final answer."
+                            ),
+                        }
+                    )
+                    continue
+                final_content = clean_final
                 break
 
         self._last_tool_budget = tool_budget
@@ -1153,7 +1208,7 @@ class AgentLoop:
         # Stage detection: no INSTRUCTIONS.md → lang_select
         #                 no PERSONA.md     → persona_setup
         #                 both exist        → ready
-        from bao.config.loader import (
+        from bao.config.onboarding import (
             LANG_PICKER,
             PERSONA_GREETING,
             detect_onboarding_stage,
@@ -1165,7 +1220,7 @@ class AgentLoop:
         )
         if onboarding_stage == "lang_select":
             if cmd in ("1", "2"):
-                from bao.config.loader import write_heartbeat, write_instructions
+                from bao.config.onboarding import write_heartbeat, write_instructions
 
                 lang = "zh" if cmd == "1" else "en"
                 try:
@@ -1202,7 +1257,7 @@ class AgentLoop:
             except Exception:
                 profile = None
             if profile:
-                from bao.config.loader import write_persona_profile
+                from bao.config.onboarding import write_persona_profile
 
                 try:
                     write_persona_profile(self.workspace, lang, profile)
@@ -1783,6 +1838,11 @@ Rules for memory_updates:
    - Keep only durable facts. Remove stale or contradictory items.
    - Values must contain ONLY category content. Do NOT include headings like "### preference" or markers like "[preference]".
    - You may set a category to "" to intentionally clear it.
+   - ONLY memorize facts that are likely useful across multiple future sessions.
+   - DO NOT memorize: transient chat content, debugging details, one-off commands, temporary file paths, or emotional reactions.
+   - DO NOT memorize anything already covered by PERSONA.md (name, role, location, language — these are static profile).
+   - If a fact is already present in existing memory with equivalent meaning, do NOT add a rephrased duplicate.
+   - When in doubt, prefer NOT writing over writing — false negatives are cheaper than noise.
 
 ## Current Long-term Memory (by category)
 {current_memory}
@@ -1944,12 +2004,15 @@ Respond with ONLY valid JSON, no markdown fences."""
             label="agent",
         )
 
-    async def _check_sufficiency(self, user_request: str, tool_trace: list[str]) -> bool:
+    async def _check_sufficiency(
+        self, user_request: str, tool_trace: list[str], last_state_text: str | None = None
+    ) -> bool:
         return await shared.check_sufficiency(
             user_request,
             tool_trace,
             experience_mode=self._experience_mode,
             llm_fn=self._call_experience_llm,
+            last_state_text=last_state_text,
         )
 
     def _maybe_learn_experience(
@@ -1966,7 +2029,7 @@ Respond with ONLY valid JSON, no markdown fences."""
         if self._experience_mode == "none":
             return
 
-        if len(tools_used) >= 2 or total_errors > 0:
+        if len(tools_used) >= 3 or total_errors >= 2:
             asyncio.create_task(
                 experience.summarize_experience(
                     self.context.memory,

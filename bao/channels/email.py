@@ -133,7 +133,9 @@ class EmailChannel(BaseChannel):
                 subject = override
 
         email_msg = EmailMessage()
-        email_msg["From"] = self.config.from_address or self.config.smtp_username or self.config.imap_username
+        email_msg["From"] = (
+            self.config.from_address or self.config.smtp_username or self.config.imap_username
+        )
         email_msg["To"] = to_addr
         email_msg["Subject"] = subject
         email_msg.set_content(msg.content or "")
@@ -151,17 +153,19 @@ class EmailChannel(BaseChannel):
 
     def _validate_config(self) -> bool:
         missing = []
+        imap_password = self.config.imap_password.get_secret_value()
+        smtp_password = self.config.smtp_password.get_secret_value()
         if not self.config.imap_host:
             missing.append("imap_host")
         if not self.config.imap_username:
             missing.append("imap_username")
-        if not self.config.imap_password:
+        if not imap_password:
             missing.append("imap_password")
         if not self.config.smtp_host:
             missing.append("smtp_host")
         if not self.config.smtp_username:
             missing.append("smtp_username")
-        if not self.config.smtp_password:
+        if not smtp_password:
             missing.append("smtp_password")
 
         if missing:
@@ -171,20 +175,21 @@ class EmailChannel(BaseChannel):
 
     def _smtp_send(self, msg: EmailMessage) -> None:
         timeout = 30
+        smtp_password = self.config.smtp_password.get_secret_value()
         if self.config.smtp_use_ssl:
             with smtplib.SMTP_SSL(
                 self.config.smtp_host,
                 self.config.smtp_port,
                 timeout=timeout,
             ) as smtp:
-                smtp.login(self.config.smtp_username, self.config.smtp_password)
+                smtp.login(self.config.smtp_username, smtp_password)
                 smtp.send_message(msg)
             return
 
         with smtplib.SMTP(self.config.smtp_host, self.config.smtp_port, timeout=timeout) as smtp:
             if self.config.smtp_use_tls:
                 smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self.config.smtp_username, self.config.smtp_password)
+            smtp.login(self.config.smtp_username, smtp_password)
             smtp.send_message(msg)
 
     def _fetch_new_messages(self) -> list[dict[str, Any]]:
@@ -232,6 +237,7 @@ class EmailChannel(BaseChannel):
         """Fetch messages by arbitrary IMAP search criteria."""
         messages: list[dict[str, Any]] = []
         mailbox = self.config.imap_mailbox or "INBOX"
+        imap_password = self.config.imap_password.get_secret_value()
 
         if self.config.imap_use_ssl:
             client = imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port)
@@ -239,7 +245,7 @@ class EmailChannel(BaseChannel):
             client = imaplib.IMAP4(self.config.imap_host, self.config.imap_port)
 
         try:
-            client.login(self.config.imap_username, self.config.imap_password)
+            client.login(self.config.imap_username, imap_password)
             status, _ = client.select(mailbox)
             if status != "OK":
                 return messages
@@ -307,7 +313,9 @@ class EmailChannel(BaseChannel):
                     self._processed_uids.add(uid)
                     # mark_seen is the primary dedup; this set is a safety net
                     if len(self._processed_uids) > self._MAX_PROCESSED_UIDS:
-                        self._processed_uids = set(list(self._processed_uids)[len(self._processed_uids) // 2:])
+                        self._processed_uids = set(
+                            list(self._processed_uids)[len(self._processed_uids) // 2 :]
+                        )
 
                 if mark_seen:
                     client.store(imap_id, "+FLAGS", "\\Seen")
@@ -328,7 +336,11 @@ class EmailChannel(BaseChannel):
     @staticmethod
     def _extract_message_bytes(fetched: list[Any]) -> bytes | None:
         for item in fetched:
-            if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], (bytes, bytearray)):
+            if (
+                isinstance(item, tuple)
+                and len(item) >= 2
+                and isinstance(item[1], (bytes, bytearray))
+            ):
                 return bytes(item[1])
         return None
 

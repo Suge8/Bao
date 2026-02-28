@@ -36,8 +36,10 @@ class CheckTasksTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str:
         task_id = kwargs.get("task_id")
-        if task_id is not None and not isinstance(task_id, str):
-            return "Error: task_id must be a string"
+        if task_id is not None:
+            task_id = str(task_id).strip()
+            if not task_id:
+                return "Error: task_id must be a non-empty string"
         if task_id:
             st = self._manager.get_task_status(task_id)
             if not st:
@@ -58,8 +60,11 @@ class CheckTasksTool(Tool):
                 parts.append(_format_brief(s))
         if finished:
             nl = "\n" if running else ""
-            parts.append(f"{nl}Recent finished ({len(finished)}):")
-            for s in sorted(finished, key=lambda x: x.updated_at, reverse=True)[:5]:
+            shown = sorted(finished, key=lambda x: x.updated_at, reverse=True)[:5]
+            total = len(finished)
+            count_hint = f" — showing {len(shown)} of {total}" if total > 5 else ""
+            parts.append(f"{nl}Recent finished ({total}){count_hint}:")
+            for s in shown:
                 parts.append(_format_brief(s))
         return "\n".join(parts)
 
@@ -91,6 +96,8 @@ class CancelTaskTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str:
         task_id = kwargs.get("task_id")
+        if task_id is not None:
+            task_id = str(task_id).strip()
         if not isinstance(task_id, str) or not task_id:
             return "Error: task_id is required"
         return await self._manager.cancel_task(task_id)
@@ -102,7 +109,7 @@ def _format_brief(st: "TaskStatus") -> str:
     elapsed = max(0, int(now - st.started_at))
     mins, secs = divmod(elapsed, 60)
     time_str = f"{mins}m{secs}s" if mins else f"{secs}s"
-    label = st.label.replace("\n", " ").replace("\r", "")
+    label = st.label.replace("\n", " ").replace("\r", "").replace("|", "/")
     stale_warning = ""
     if st.status == "running" and now - st.updated_at > 120:
         stale_warning = " ⚠️ stale"
@@ -116,7 +123,7 @@ def _format_brief(st: "TaskStatus") -> str:
     else:
         line = f"  [{st.task_id}] {label} | {st.status} | {time_str}"
         if st.result_summary:
-            cleaned = st.result_summary.replace("\n", " ").replace("\r", "")
+            cleaned = st.result_summary.replace("\n", " ").replace("\r", "").replace("|", "/")
             summary = cleaned[:80]
             if len(cleaned) > 80:
                 summary += "..."
@@ -130,7 +137,7 @@ def _format_detailed(st: "TaskStatus") -> str:
     elapsed = max(0, int(now - st.started_at))
     mins, secs = divmod(elapsed, 60)
     time_str = f"{mins}m{secs}s" if mins else f"{secs}s"
-    label = st.label.replace("\n", " ").replace("\r", "")
+    label = st.label.replace("\n", " ").replace("\r", "").replace("|", "/")
     stale_warning = ""
     if st.status == "running" and now - st.updated_at > 120:
         stale_warning = " ⚠️ no update for >2min"
@@ -141,12 +148,15 @@ def _format_detailed(st: "TaskStatus") -> str:
         f" | {st.tool_steps} tools | phase: {st.phase} | {time_str}{stale_warning}"
     )
     if st.result_summary and st.status in ("completed", "failed"):
-        cleaned = st.result_summary.replace("\n", " ").replace("\r", "")
+        cleaned = st.result_summary.replace("\n", " ").replace("\r", "").replace("|", "/")
         summary = cleaned[:300]
         if len(cleaned) > 300:
             summary += "..."
         line += f"\n  result: {summary}"
     recent_actions = getattr(st, "recent_actions", [])
     if recent_actions and st.status == "running":
-        line += "\n  recent: " + "; ".join(str(a).replace("\n", " ").replace("\r", "") for a in recent_actions[-3:])
+        line += "\n  recent: " + "; ".join(
+            str(a).replace("\n", " ").replace("\r", "").replace("|", "/")
+            for a in recent_actions[-3:]
+        )
     return line

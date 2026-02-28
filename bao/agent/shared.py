@@ -6,6 +6,8 @@ Both classes retain thin wrapper methods that delegate here.
 
 from __future__ import annotations
 
+import json
+import re
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 import json_repair
@@ -29,6 +31,132 @@ def parse_llm_json(content: str | None) -> dict[str, Any] | None:
         text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
     result = json_repair.loads(text)
     return result if isinstance(result, dict) else None
+
+
+def has_tool_error(tool_name: str, result: str, error_keywords: tuple[str, ...]) -> bool:
+    result_lower = (result or "").lower().strip()
+    if not result_lower:
+        return False
+
+    result_normalized = result_lower.lstrip()
+
+    if tool_name == "web_search":
+        return result_normalized.startswith("error:") or result_normalized.startswith(
+            "error executing"
+        )
+
+    if tool_name == "web_fetch":
+        if result_normalized.startswith("error:") or result_normalized.startswith(
+            "error executing"
+        ):
+            return True
+        if result_normalized.startswith("{"):
+            try:
+                payload = json.loads(result_normalized)
+            except json.JSONDecodeError:
+                payload = None
+                if re.match(r'^\{\s*"error"\s*:', result_normalized):
+                    return True
+            if isinstance(payload, dict) and payload.get("error"):
+                return True
+        return False
+
+    if tool_name == "exec":
+        exit_match = re.search(r"exit\s*code\s*:\s*(-?\d+)", result_normalized)
+        if exit_match:
+            try:
+                if int(exit_match.group(1)) != 0:
+                    return True
+            except ValueError:
+                pass
+        return any(kw in result_lower for kw in error_keywords)
+
+    if tool_name in {"coding_agent", "coding_agent_details"}:
+        payload = None
+        if result_normalized.startswith("{"):
+            try:
+                payload = json.loads(result_normalized)
+            except json.JSONDecodeError:
+                payload = None
+        if payload is None and "{" in result_normalized and "}" in result_normalized:
+            start = result_normalized.find("{")
+            end = result_normalized.rfind("}") + 1
+            if 0 <= start < end:
+                try:
+                    payload = json.loads(result_normalized[start:end])
+                except json.JSONDecodeError:
+                    payload = None
+        if isinstance(payload, dict):
+            status = payload.get("status")
+            if isinstance(status, str) and status.lower() in {"error", "failed"}:
+                return True
+            if payload.get("error"):
+                return True
+            for key in ("exit_code", "exitcode", "returncode", "return_code"):
+                code = payload.get(key)
+                if isinstance(code, int) and code != 0:
+                    return True
+            for key in ("timed_out", "timedout"):
+                timed_out = payload.get(key)
+                if isinstance(timed_out, bool) and timed_out:
+                    return True
+        return any(kw in result_lower for kw in error_keywords)
+
+    return any(kw in result_lower for kw in error_keywords)
+
+
+def sanitize_trace_text(text: Any, max_len: int) -> str:
+    normalized = str(text or "").replace("\r", " ").replace("\n", " ").strip()
+    compact = " ".join(normalized.split())
+    return compact[:max_len]
+
+
+def summarize_tool_args_for_trace(
+    tool_name: str,
+    args: dict[str, Any] | None,
+    *,
+    max_len: int = 60,
+) -> str:
+    payload = args or {}
+    if tool_name in {"write_file", "edit_file"}:
+        path = payload.get("path")
+        return sanitize_trace_text(path if isinstance(path, str) else "<redacted>", max_len)
+    if tool_name == "exec":
+        command = payload.get("command")
+        if isinstance(command, str):
+            return f"<redacted:{len(command)} chars>"
+
+    first_arg = next(iter(payload.values()), "") if payload else ""
+    return sanitize_trace_text(first_arg, max_len)
+
+
+def build_tool_trace_entry(
+    trace_idx: int,
+    tool_name: str,
+    args_preview: str,
+    has_error: bool,
+    result: Any,
+    *,
+    result_max_len: int = 100,
+) -> str:
+    safe_args = sanitize_trace_text(args_preview, 60)
+    safe_result = sanitize_trace_text(result, result_max_len)
+    return (
+        f"T{trace_idx} {tool_name}({safe_args}) → {'ERROR' if has_error else 'ok'}: {safe_result}"
+    )
+
+
+def push_failed_direction(
+    failed_directions: list[str],
+    entry: str,
+    *,
+    max_items: int = 20,
+) -> None:
+    if failed_directions and failed_directions[-1] == entry:
+        return
+    failed_directions.append(entry)
+    if len(failed_directions) > max_items:
+        del failed_directions[:-max_items]
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +219,37 @@ async def call_experience_llm(
 ExperienceLLMFn = Callable[[str, str], Awaitable[dict[str, Any] | None]]
 
 
+def _validate_state(
+    result: dict[str, Any],
+    tool_trace: list[str],
+    failed_directions: list[str],
+) -> dict[str, Any]:
+    """Validate compressed state; fill missing fields with rule-based fallback."""
+    if not result.get("conclusions"):
+        recent = "; ".join(t.split("\u2192")[0].strip() for t in tool_trace[-5:])
+        result["conclusions"] = (
+            f"{len(tool_trace)} steps completed. Recent: {recent}"
+            if recent
+            else f"{len(tool_trace)} steps completed."
+        )
+    if not result.get("evidence"):
+        ok_steps = [t for t in tool_trace if "\u2192 ok" in t]
+        result["evidence"] = (
+            "; ".join(s.split("\u2192")[0].strip() for s in ok_steps[-3:])
+            or "no successful steps yet"
+        )
+    if not result.get("unexplored"):
+        if failed_directions:
+            result["unexplored"] = (
+                f"Retry with different approach: {'; '.join(failed_directions[-2:])}"
+            )
+        else:
+            result["unexplored"] = (
+                "Review last 3 tool steps, verify remaining requirements, then answer."
+            )
+    return result
+
+
 async def compress_state(
     tool_trace: list[str],
     reasoning_snippets: list[str],
@@ -131,9 +290,9 @@ async def compress_state(
         f"Compress this {label} execution state into a structured summary."
         f" Return JSON with exactly {key_count} keys:\n\n"
         '1. "conclusions": What has been established so far \u2014 key findings, partial answers, verified facts (2-3 sentences)\n'
-        '2. "evidence": Sources consulted, tools used successfully, data gathered (1-2 sentences)\n'
-        '3. "unexplored": Branches mentioned but NOT yet executed, open questions, alternative approaches to try next'
-        f" (1-3 bullet points as a single string){audit_section}\n\n"
+        '2. "evidence": Reference specific trace steps by T# number (e.g. "T1 confirmed X, T3 revealed Y"). Sources consulted, data gathered (1-2 sentences)\n'
+        '3. "unexplored": Actionable next steps as imperative commands (e.g. "Run search for X", "Read file Y to check Z").'
+        f" Each item must be a concrete action, not a vague description (1-3 bullet points as a single string){audit_section}\n\n"
         f"## Execution Trace\n{trace_str}\n\n"
         f"## Reasoning Steps\n{reasoning_str[:400]}\n\n"
         f"## Failed Approaches\n{failed_str}{prev_section}\n\n"
@@ -146,15 +305,19 @@ async def compress_state(
         )
         if not result:
             return None
+        # Wave 3: validate + rule-based fallback for missing fields
+        result = _validate_state(result, tool_trace, failed_directions)
         parts = []
         if c := result.get("conclusions"):
-            parts.append(f"[Conclusions] {c}")
+            parts.append(f"[Conclusions] {sanitize_trace_text(c, 500)}")
         if e := result.get("evidence"):
-            parts.append(f"[Evidence] {e}")
+            parts.append(f"[Evidence] {sanitize_trace_text(e, 500)}")
         if u := result.get("unexplored"):
-            parts.append(f"[Unexplored branches \u2014 prioritize these next] {u}")
+            parts.append(
+                f"[Unexplored branches \u2014 prioritize these next] {sanitize_trace_text(u, 500)}"
+            )
         if a := result.get("audit"):
-            parts.append(f"[Audit \u2014 correct these mistakes] {a}")
+            parts.append(f"[Audit \u2014 correct these mistakes] {sanitize_trace_text(a, 500)}")
         return "\n".join(parts) if parts else None
     except Exception as exc:
         logger.debug("{} state compression skipped: {}", label.capitalize(), exc)
@@ -172,17 +335,43 @@ async def check_sufficiency(
     *,
     experience_mode: str | None,
     llm_fn: ExperienceLLMFn,
+    last_state_text: str | None = None,
 ) -> bool:
     """Check if enough information has been gathered to answer the request."""
     if experience_mode == "none":
         return False
 
     trace_summary = "; ".join(t.split("\u2192")[0].strip() for t in tool_trace[-8:])
+    open_items = ""
+    conclusions = ""
+    evidence = ""
+    if last_state_text:
+        for line in last_state_text.splitlines():
+            line_text = line.strip()
+            if not open_items and line_text.startswith("[Unexplored"):
+                open_items = line_text
+            elif not conclusions and line_text.startswith("[Conclusions]"):
+                conclusions = line_text
+            elif not evidence and line_text.startswith("[Evidence]"):
+                evidence = line_text
+    open_section = f"\nOpen items from last state: {open_items}\n" if open_items else ""
+    state_section = ""
+    if conclusions or evidence:
+        pieces = []
+        if conclusions:
+            pieces.append(f"State conclusions: {conclusions}")
+        if evidence:
+            pieces.append(f"State evidence: {evidence}")
+        state_section = "\n" + "\n".join(pieces) + "\n"
     prompt = (
         "Given the user's request and the tools already executed,"
         " is there enough information to provide a complete answer?\n\n"
         f"User request: {user_request[:300]}\n"
-        f"Steps taken: {trace_summary}\n\n"
+        f"Steps taken: {trace_summary}\n"
+        f"{state_section}"
+        f"{open_section}\n"
+        "Open items may be stale if already addressed in recent steps.\n"
+        "If there are open items that are critical to the request, answer false.\n"
         'Return JSON: {"sufficient": true} or {"sufficient": false}'
     )
     try:
@@ -190,7 +379,16 @@ async def check_sufficiency(
             "You are a task completion verifier. Respond only with valid JSON.",
             prompt,
         )
-        return bool(result and result.get("sufficient"))
+        value = result.get("sufficient") if result else None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered == "true":
+                return True
+            if lowered == "false":
+                return False
+        return False
     except Exception:
         return False
 
@@ -254,14 +452,25 @@ def compact_messages(
     recent_msg_ids = {id(m) for m in recent_msgs}
     timeline_msgs = [m for m in messages if id(m) in kept_dialogue_ids or id(m) in recent_msg_ids]
     if timeline_msgs:
+        appended = False
         for idx in range(len(timeline_msgs) - 1, -1, -1):
             item = timeline_msgs[idx]
             if item.get("role") != "user":
                 continue
             original_content = str(item.get("content", ""))
-            if "[Compacted context" not in original_content:
-                timeline_msgs[idx] = {**item, "content": original_content + state_note}
+            if "[Compacted context" in original_content:
+                base = original_content.split("\n\n[Compacted context", 1)[0].rstrip()
+                refreshed = (base + state_note) if base else state_note.strip()
+                timeline_msgs[idx] = {**item, "content": refreshed}
+                appended = True
+                break
+            if original_content.lstrip().startswith("[State after "):
+                continue
+            timeline_msgs[idx] = {**item, "content": original_content + state_note}
+            appended = True
             break
+        if not appended:
+            timeline_msgs.append({"role": "user", "content": state_note.strip()})
     new_messages = system_msgs + timeline_msgs
     log_prefix = f"{label} " if label else ""
     logger.debug(
