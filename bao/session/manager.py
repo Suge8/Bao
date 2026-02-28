@@ -1,13 +1,12 @@
 import json
-from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
-from bao.utils.db import get_db, ensure_table
-
+from bao.utils.db import ensure_table, get_db
 
 # legacy safety net — runtime context is no longer injected as user message,
 # but keep filtering in case old sessions contain such entries.
@@ -149,9 +148,9 @@ class SessionManager:
                     session = self._load_legacy_jsonl(path, key)
                     if session:
                         self.save(session)
-                        logger.info("Migrated legacy session {} to LanceDB", key)
+                        logger.debug("🗂️ 旧会话已迁 / migrated: {} to LanceDB", key)
                 except Exception:
-                    logger.exception("Failed to migrate legacy session {}", key)
+                    logger.exception("❌ 旧会话迁移失败 / migration failed: {}", key)
 
     @staticmethod
     def _load_legacy_jsonl(path: Path, key: str) -> "Session | None":
@@ -181,7 +180,7 @@ class SessionManager:
                 last_consolidated=last_consolidated,
             )
         except Exception as e:
-            logger.warning("Failed to load legacy session {}: {}", key, e)
+            logger.warning("⚠️ 旧会话加载失败 / load failed: {} — {}", key, e)
             return None
 
     def get_or_create(self, key: str) -> Session:
@@ -233,47 +232,75 @@ class SessionManager:
                 last_consolidated=meta.get("last_consolidated", 0),
             )
         except Exception as e:
-            logger.warning("Failed to load session {}: {}", key, e)
+            logger.warning("⚠️ 会话加载失败 / load failed: {} — {}", key, e)
             return None
 
     def save(self, session: Session) -> None:
         safe = _escape(session.key)
+        prev_meta: list[dict[str, Any]] = []
+        prev_msgs: list[dict[str, Any]] = []
         try:
-            self._meta_tbl.delete(f"session_key = '{safe}'")
+            prev_meta = self._meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
         except Exception:
-            pass
+            prev_meta = []
         try:
-            self._msg_tbl.delete(f"session_key = '{safe}'")
+            prev_msgs = self._msg_tbl.search().where(f"session_key = '{safe}'").to_list()
         except Exception:
-            pass
+            prev_msgs = []
 
-        self._meta_tbl.add(
-            [
-                {
-                    "session_key": session.key,
-                    "created_at": session.created_at.isoformat(),
-                    "updated_at": session.updated_at.isoformat(),
-                    "metadata_json": json.dumps(session.metadata, ensure_ascii=False),
-                    "last_consolidated": session.last_consolidated,
-                }
-            ]
-        )
+        try:
+            try:
+                self._meta_tbl.delete(f"session_key = '{safe}'")
+            except Exception:
+                pass
+            try:
+                self._msg_tbl.delete(f"session_key = '{safe}'")
+            except Exception:
+                pass
 
-        if session.messages:
-            rows = []
-            for i, msg in enumerate(session.messages):
-                extra = {k: v for k, v in msg.items() if k not in ("role", "content", "timestamp")}
-                rows.append(
+            self._meta_tbl.add(
+                [
                     {
                         "session_key": session.key,
-                        "idx": i,
-                        "role": msg["role"],
-                        "content": msg.get("content", ""),
-                        "timestamp": msg.get("timestamp", ""),
-                        "extra_json": json.dumps(extra, ensure_ascii=False) if extra else "{}",
+                        "created_at": session.created_at.isoformat(),
+                        "updated_at": session.updated_at.isoformat(),
+                        "metadata_json": json.dumps(session.metadata, ensure_ascii=False),
+                        "last_consolidated": session.last_consolidated,
                     }
-                )
-            self._msg_tbl.add(rows)
+                ]
+            )
+
+            if session.messages:
+                rows = []
+                for i, msg in enumerate(session.messages):
+                    extra = {
+                        k: v for k, v in msg.items() if k not in ("role", "content", "timestamp")
+                    }
+                    rows.append(
+                        {
+                            "session_key": session.key,
+                            "idx": i,
+                            "role": msg["role"],
+                            "content": msg.get("content", ""),
+                            "timestamp": msg.get("timestamp", ""),
+                            "extra_json": json.dumps(extra, ensure_ascii=False) if extra else "{}",
+                        }
+                    )
+                self._msg_tbl.add(rows)
+        except Exception:
+            try:
+                self._meta_tbl.delete(f"session_key = '{safe}'")
+            except Exception:
+                pass
+            try:
+                self._msg_tbl.delete(f"session_key = '{safe}'")
+            except Exception:
+                pass
+            if prev_meta:
+                self._meta_tbl.add(prev_meta)
+            if prev_msgs:
+                self._msg_tbl.add(prev_msgs)
+            raise
 
         self._cache[session.key] = session
 
