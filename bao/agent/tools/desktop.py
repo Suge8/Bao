@@ -168,7 +168,13 @@ def _take_screenshot_sync(
         path = f.name
 
     b64 = base64.b64encode(jpeg_bytes).decode("ascii")
-    logger.info("screenshot: {}x{} → {} ({}KB)", img.width, img.height, path, len(jpeg_bytes) // 1024)
+    logger.info(
+        "🖥️ 截屏完成 / screenshot: {}×{} → {} ({}KB)",
+        img.width,
+        img.height,
+        path,
+        len(jpeg_bytes) // 1024,
+    )
     return path, b64
 
 
@@ -212,7 +218,7 @@ class ScreenshotTool(Tool):
             path, _b64 = await asyncio.to_thread(_take_screenshot_sync, region)
             return f"__SCREENSHOT__:{path}"
         except Exception as e:
-            logger.error("screenshot failed: {}", e)
+            logger.warning("⚠️ 截屏失败 / screenshot failed: {}", e)
             return f"Error: screenshot failed \u2014 {e}"
 
 
@@ -253,10 +259,10 @@ class ClickTool(Tool):
             _ensure_deps()
             lx, ly = _to_logical(x, y)
             await asyncio.to_thread(_pyautogui.click, lx, ly, clicks=clicks, button=button)
-            logger.info("click: ({},{}) -> logical ({},{}) button={}", x, y, lx, ly, button)
+            logger.info("🖱️ 点击操作 / click: ({},{}) button={}", x, y, button)
             return f"Clicked ({x}, {y}) button={button} clicks={clicks}"
         except Exception as e:
-            logger.error("click failed: {}", e)
+            logger.warning("⚠️ 点击失败 / click failed: {}", e)
             return f"Error: click failed \u2014 {e}"
 
 
@@ -314,10 +320,10 @@ class TypeTextTool(Tool):
             else:
                 await asyncio.to_thread(_pyautogui.typewrite, text, interval=0.02)
             preview = text[:50] + ("..." if len(text) > 50 else "")
-            logger.info("type_text: {!r}", preview)
+            logger.info("⌨️ 输入文本 / type text: {!r}", preview)
             return f"Typed: {preview}"
         except Exception as e:
-            logger.error("type_text failed: {}", e)
+            logger.warning("⚠️ 输入失败 / type failed: {}", e)
             return f"Error: type_text failed \u2014 {e}"
 
 
@@ -354,10 +360,10 @@ class KeyPressTool(Tool):
                 await asyncio.to_thread(_pyautogui.press, parts[0])
             else:
                 await asyncio.to_thread(_pyautogui.hotkey, *parts)
-            logger.info("key_press: {}", keys_str)
+            logger.info("⌨️ 按键操作 / key press: {}", keys_str)
             return f"Pressed: {keys_str}"
         except Exception as e:
-            logger.error("key_press failed: {}", e)
+            logger.warning("⚠️ 按键失败 / key failed: {}", e)
             return f"Error: key_press failed \u2014 {e}"
 
 
@@ -392,10 +398,10 @@ class ScrollTool(Tool):
                 await asyncio.to_thread(_pyautogui.scroll, amount, lx, ly)
             else:
                 await asyncio.to_thread(_pyautogui.scroll, amount)
-            logger.info("scroll: amount={}", amount)
+            logger.info("🖱️ 滚动操作 / scroll: amount={}", amount)
             return f"Scrolled {amount}"
         except Exception as e:
-            logger.error("scroll failed: {}", e)
+            logger.warning("⚠️ 滚动失败 / scroll failed: {}", e)
             return f"Error: scroll failed \u2014 {e}"
 
 
@@ -435,10 +441,10 @@ class DragTool(Tool):
             await asyncio.to_thread(
                 _pyautogui.drag, ltx - lfx, lty - lfy, duration=duration,
             )
-            logger.info("drag: ({},{}) -> ({},{}) duration={}", fx, fy, tx, ty, duration)
+            logger.info("🖱️ 拖拽操作 / drag: ({},{}) -> ({},{}) duration={}", fx, fy, tx, ty, duration)
             return f"Dragged ({fx},{fy}) -> ({tx},{ty})"
         except Exception as e:
-            logger.error("drag failed: {}", e)
+            logger.warning("⚠️ 拖拽失败 / drag failed: {}", e)
             return f"Error: drag failed \u2014 {e}"
 
 
@@ -479,8 +485,8 @@ class GetScreenInfoTool(Tool):
                 f"Platform: {platform.system()}\n"
                 f"HiDPI scale: {_scale()}"
             )
-            logger.info("get_screen_info: {}x{}", sw, sh)
+            logger.info("🖥️ 屏幕信息 / screen info: {}×{}", sw, sh)
             return info
         except Exception as e:
-            logger.error("get_screen_info failed: {}", e)
+            logger.warning("⚠️ 获取失败 / info failed: {}", e)
             return f"Error: get_screen_info failed \u2014 {e}"
