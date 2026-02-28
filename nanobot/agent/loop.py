@@ -224,6 +224,12 @@ class AgentLoop:
                     )
             else:
                 clean = self._strip_think(response.content)
+                # Don't persist error responses to session history — they can
+                # poison the context and cause permanent 400 loops (#1303).
+                if response.finish_reason == "error":
+                    logger.error("LLM returned error: {}", (clean or "")[:200])
+                    final_content = clean or "Sorry, I encountered an error calling the AI model."
+                    break
                 messages = self.context.add_assistant_message(
                     messages, clean, reasoning_content=response.reasoning_content,
                 )
@@ -445,6 +451,8 @@ class AgentLoop:
         for m in messages[skip:]:
             entry = {k: v for k, v in m.items() if k != "reasoning_content"}
             role, content = entry.get("role"), entry.get("content")
+            if role == "assistant" and not content and not entry.get("tool_calls"):
+                continue  # skip empty assistant messages — they poison session context
             if role == "tool" and isinstance(content, str) and len(content) > self._TOOL_RESULT_MAX_CHARS:
                 entry["content"] = content[:self._TOOL_RESULT_MAX_CHARS] + "\n... (truncated)"
             elif role == "user":
