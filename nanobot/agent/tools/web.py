@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from loguru import logger
 
 from nanobot.agent.tools.base import Tool
 
@@ -57,9 +58,10 @@ class WebSearchTool(Tool):
         "required": ["query"]
     }
 
-    def __init__(self, api_key: str | None = None, max_results: int = 5):
+    def __init__(self, api_key: str | None = None, max_results: int = 5, proxy: str | None = None):
         self._init_api_key = api_key
         self.max_results = max_results
+        self.proxy = proxy
 
     @property
     def api_key(self) -> str:
@@ -71,12 +73,16 @@ class WebSearchTool(Tool):
             return (
                 "Error: Brave Search API key not configured. "
                 "Set it in ~/.nanobot/config.json under tools.web.search.apiKey "
-                "(or export BRAVE_API_KEY), then restart the gateway."
+                "(or export BRAIVE_API_KEY), then restart the gateway."
             )
 
         try:
             n = min(max(count or self.max_results, 1), 10)
-            async with httpx.AsyncClient() as client:
+            if self.proxy:
+                logger.info("WebSearch: using proxy {} for query: {}", self.proxy, query[:50])
+            else:
+                logger.debug("WebSearch: direct connection for query: {}", query[:50])
+            async with httpx.AsyncClient(proxy=self.proxy) as client:
                 r = await client.get(
                     "https://api.search.brave.com/res/v1/web/search",
                     params={"q": query, "count": n},
@@ -95,7 +101,11 @@ class WebSearchTool(Tool):
                 if desc := item.get("description"):
                     lines.append(f"   {desc}")
             return "\n".join(lines)
+        except httpx.ProxyError as e:
+            logger.error("WebSearch proxy error: {}", e)
+            return f"Proxy error: {e}"
         except Exception as e:
+            logger.error("WebSearch error: {}", e)
             return f"Error: {e}"
 
 
@@ -114,8 +124,9 @@ class WebFetchTool(Tool):
         "required": ["url"]
     }
 
-    def __init__(self, max_chars: int = 50000):
+    def __init__(self, max_chars: int = 50000, proxy: str | None = None):
         self.max_chars = max_chars
+        self.proxy = proxy
 
     async def execute(self, url: str, extractMode: str = "markdown", maxChars: int | None = None, **kwargs: Any) -> str:
         from readability import Document
@@ -128,10 +139,15 @@ class WebFetchTool(Tool):
             return json.dumps({"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False)
 
         try:
+            if self.proxy:
+                logger.info("WebFetch: using proxy {} for {}", self.proxy, url)
+            else:
+                logger.debug("WebFetch: direct connection for {}", url)
             async with httpx.AsyncClient(
                 follow_redirects=True,
                 max_redirects=MAX_REDIRECTS,
-                timeout=30.0
+                timeout=30.0,
+                proxy=self.proxy,
             ) as client:
                 r = await client.get(url, headers={"User-Agent": USER_AGENT})
                 r.raise_for_status()
@@ -156,7 +172,11 @@ class WebFetchTool(Tool):
 
             return json.dumps({"url": url, "finalUrl": str(r.url), "status": r.status_code,
                               "extractor": extractor, "truncated": truncated, "length": len(text), "text": text}, ensure_ascii=False)
+        except httpx.ProxyError as e:
+            logger.error("WebFetch proxy error for {}: {}", url, e)
+            return json.dumps({"error": f"Proxy error: {e}", "url": url}, ensure_ascii=False)
         except Exception as e:
+            logger.error("WebFetch error for {}: {}", url, e)
             return json.dumps({"error": str(e), "url": url}, ensure_ascii=False)
 
     def _to_markdown(self, html: str) -> str:
