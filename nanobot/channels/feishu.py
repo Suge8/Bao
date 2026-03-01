@@ -326,13 +326,14 @@ class FeishuChannel(BaseChannel):
             await asyncio.sleep(1)
 
     async def stop(self) -> None:
-        """Stop the Feishu bot."""
+        """
+        Stop the Feishu bot.
+
+        Notice: lark.ws.Client does not expose stop method， simply exiting the program will close the client.
+
+        Reference: https://github.com/larksuite/oapi-sdk-python/blob/v2_main/lark_oapi/ws/client.py#L86
+        """
         self._running = False
-        if self._ws_client:
-            try:
-                self._ws_client.stop()
-            except Exception as e:
-                logger.warning("Error stopping WebSocket client: {}", e)
         logger.info("Feishu bot stopped")
 
     def _add_reaction_sync(self, message_id: str, emoji_type: str) -> None:
