@@ -6,7 +6,7 @@ metadata: {"bao":{"emoji":"⌨️","requires":{"bins_any":["opencode","codex","c
 
 # Coding Agent Skill
 
-Delegate programming tasks to AI coding agents through the unified `coding_agent` tool. The tool routes to whichever backend is installed: OpenCode (`opencode`), Codex (`codex`), or Claude Code (`claudecode`). All backends share the same parameter interface, with a few backend-specific extras.
+Delegate programming tasks to AI coding agents through the unified `coding_agent` tool. The tool routes to whichever backend is installed: OpenCode (`opencode`), Codex (`codex`), or Claude Code (`claudecode`). All backends share the same parameter interface, with a few backend-specific extras. Session continuity is backend-scoped: each backend keeps its own per-chat session chain.
 
 ## When to Use
 
@@ -33,7 +33,7 @@ Do NOT use when:
 | `prompt` | string | yes | — | Task description. Be specific, reference files. |
 | `project_path` | string | no | workspace | Project directory to operate in. |
 | `session_id` | string | no | — | Explicit session ID to continue. |
-| `continue_session` | boolean | no | true | Auto-resume the previous session for this chat. |
+| `continue_session` | boolean | no | true | Auto-resume the previous session for this chat on the selected backend. |
 | `model` | string | no | — | Override model (e.g. `anthropic/claude-sonnet-4-20250514`, `o4-mini`). |
 | `timeout_seconds` | integer | no | 600 | Execution timeout. Range: 30–1800 (up to 30 minutes). |
 | `response_format` | string | no | `hybrid` | Output format: `hybrid`, `json`, or `text`. |
@@ -45,10 +45,10 @@ Do NOT use when:
 
 | Parameter | Backend | Type | Default | Description |
 |-----------|---------|------|---------|-------------|
-| `opencode_agent` | opencode | string | — | Agent type: `build` (default, full access) or `plan` (read-only analysis). |
-| `fork` | opencode | boolean | false | Fork from existing session instead of continuing in-place. |
-| `sandbox` | codex | string | — | `read-only`, `workspace-write`, or `danger-full-access`. |
-| `full_auto` | codex | boolean | false | Skip approval prompts for unattended execution. |
+| `opencode_agent` | opencode | string | — | Agent type: `build` (default, full access) or `plan` (read-only analysis). Ignored unless `agent="opencode"`. |
+| `fork` | opencode | boolean | false | Fork from existing session instead of continuing in-place. Ignored unless `agent="opencode"`. |
+| `sandbox` | codex | string | — | `read-only`, `workspace-write`, or `danger-full-access`. Ignored unless `agent="codex"`. |
+| `full_auto` | codex | boolean | false | Skip approval prompts for unattended execution. Ignored unless `agent="codex"`. |
 
 ### coding_agent_details
 
@@ -58,11 +58,14 @@ Fetch cached stdout/stderr from a previous run.
 |-----------|------|----------|---------|-------------|
 | `request_id` | string | no | — | Specific request to fetch details for. |
 | `session_id` | string | no | — | Fetch latest run for this session. |
+| `agent` | string | no | — | Backend filter for `session_id` lookup: `opencode`, `codex`, `claudecode`. |
 | `max_chars` | integer | no | 12000 | Max chars (200–50000). |
 | `include_stderr` | boolean | no | true | Include stderr content. |
 | `response_format` | string | no | hybrid | Return format. |
 
 If neither is provided, returns the latest run for the current chat.
+
+If only `session_id` is provided and multiple backends match, the tool returns an ambiguity error; pass `agent` to disambiguate.
 
 ## One-Shot Task
 
@@ -75,7 +78,9 @@ Use coding_agent with:
 
 ## Multi-Turn Workflow
 
-Sessions persist per chat. With `continue_session: true` (the default), follow-ups automatically resume the same session.
+Sessions persist per chat per backend. With `continue_session: true` (the default), follow-ups automatically resume the same backend session.
+
+Session cache is in-memory, isolated per backend, and capped at 256 chat contexts per backend with least-recently-used eviction.
 
 ```
 # Round 1 — implement
@@ -91,7 +96,7 @@ Use coding_agent with:
 
 To target a specific session explicitly, pass `session_id`. To branch off without affecting the original, pass `fork: true` (opencode only).
 
-**Session discipline**: ALWAYS pass `continue_session: true` when following up. This preserves context and avoids redundant file reads.
+**Session discipline**: ALWAYS pass `continue_session: true` when following up on the same backend. This preserves context and avoids redundant file reads.
 
 ## Backend-Specific Features
 
@@ -175,5 +180,5 @@ claude config set --global permission_mode bypassPermissions
 2. **Call** `coding_agent` with the appropriate backend and parameters.
 3. **Relay** the response to the user. Never silently discard output.
 4. **If agent asks a question** or proposes a plan, forward it to the user.
-5. **For follow-ups**, call again with `continue_session: true`.
+5. **For follow-ups on the same backend**, call again with `continue_session: true`.
 6. **If a run fails**, use `coding_agent_details` for diagnostics before retrying.
