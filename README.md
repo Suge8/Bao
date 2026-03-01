@@ -30,6 +30,8 @@ bao 不一样。它**记得住**、**学得会**、**能进化**。
 
 基于 **LanceDB** 的持久化记忆 — 向量搜索 + 关键词降级，双检索架构。有没有 Embedding 模型都能用。
 
+向量表与主记忆表按 `key` 强一致同步，启动时自动校验维度并在不匹配时重建回填；Embedding 调用内置轻量超时与重试，长期运行更稳。
+
 你的偏好、你的项目、你的习惯，bao 全部记住。旧上下文自动整合，重要信息跨会话、跨重启永久留存，过时内容主动清理。
 
 ### 经验持续积累
@@ -49,7 +51,6 @@ bao 不一样。它**记得住**、**学得会**、**能进化**。
 
 - **Retry with Reflection** — 工具报错自动重试。连续 3 次失败后，不是盲目重来，而是反思策略、换条路走
 - **Dynamic Tool Hints** — 工具提示跟着实际能力走。装了什么用什么，没装的绝不提。编程代理、搜索、MCP 工具全部按需注入，杜绝幻觉调用
-- **Search/FETCH Error Semantics** — `web_search` 仅把显式错误前缀判定为失败，避免结果摘要里的 `failed/exception` 误触发；`web_fetch` 参数严格校验并返回结构化错误 JSON，降低静默失败
 
 ### 复杂任务不阻塞
 
@@ -93,6 +94,23 @@ bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 - **轻量依赖** — 仅需 `mss` + `pyautogui` + `Pillow`，通过 `uv sync --extra desktop-automation` 安装
 - **安全默认关闭** — `config.tools.desktop.enabled: false`，显式开启才注册工具
 
+### 🧩 可扩展技能系统
+
+17 个内置技能（编程代理、图像生成、PDF、浏览器自动化、天气、定时任务等），开箱即用。想加自己的？放到 `~/.bao/workspace/skills/` 即可，运行时自动加载。
+
+- **零配置** — 内置技能随 bao 安装自动可用，无需额外设置
+- **用户技能** — 在 workspace 中添加自定义技能，格式与内置技能一致
+- **动态注入** — 技能描述自动压缩为单行摘要注入 system prompt，不浪费 token
+
+### 🗜️ Token 极致压缩
+
+同样的能力，更少的 token 开销。bao 在提示词层面做了系统性压缩：
+
+- **工具描述精简（MVD）** — 每个内置工具的 description 压缩为 1 句话，详细用法放 system prompt 的 tool_hints 区域
+- **编程代理合并** — 6 个编程工具合并为 2 个（`coding_agent` + `coding_agent_details`），减少工具列表膨胀
+- **MCP Schema 瘦身** — `mcpSlimSchema` 剥离冗余元数据，`mcpMaxTools` 限制注册总量，并支持按 server 覆盖
+- **技能摘要压缩** — 技能描述取首句或 60 字符截断，换行归一化为单行格式
+
 ### 极致轻量
 
 **~9,300 行核心代码。** 运行 `bash scripts/core_agent_lines.sh` 自行验证。
@@ -132,6 +150,8 @@ bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 | 长任务引擎 | —           | **轨迹压缩 + 自我纠错 + 充分性检查** |
 | 图像生成   | —           | **Gemini API 文生图 + 多平台发送**   |
 | 桌面自动化 | —           | **7 工具 · 模型无关 · HiDPI 自适应** |
+| 技能系统   | —           | **17 内置 + 用户自定义 · 动态加载**  |
+| Token 压缩 | —           | **MVD 精简 + Schema 瘦身 + 工具合并**|
 | 上手时间   | 复杂引导    | **2 分钟**                           |
 
 <p align="center"><img src="assets/architecture.svg" width="800" alt="架构"></p>
@@ -196,13 +216,14 @@ bao
 
 ## 🤖 LLM Provider
 
-极简 3 类覆盖 99% 需求。
+极简 4 类覆盖 99% 需求。
 
 | 类型            | 支持的模型                                                                                                       | 示例                                      |
 | --------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
 | **OpenAI 兼容** | OpenAI、OpenRouter、DeepSeek、Groq、SiliconFlow、火山引擎、DashScope、Moonshot、智谱、Ollama、LM Studio、vLLM 等 | `openai/gpt-4o`、`deepseek/deepseek-chat` |
 | **Anthropic**   | Claude 全系列                                                                                                    | `anthropic/claude-sonnet-4-20250514`      |
 | **Gemini**      | Gemini 全系列                                                                                                    | `gemini/gemini-2.0-flash-exp`             |
+| **Codex OAuth** | 通过 ChatGPT 订阅 OAuth 认证，无需 API Key                                                                      | `openai-codex/gpt-5.1-codex`             |
 
 Provider 名称可自定义（如 `my-proxy/claude-sonnet-4-6`），前缀自动剥离。所有 Provider 类型均支持第三方代理，SDK 兼容性自动处理。OpenAI 兼容端点额外支持 API 模式自动探测（Responses / Chat Completions）。
 
@@ -213,19 +234,28 @@ Model Context Protocol — 接入任何工具生态。配置兼容 **Claude Desk
 ```json
 {
   "tools": {
+    "toolExposure": {
+      "mode": "off",
+      "bundles": ["core", "web", "desktop", "code"]
+    },
     "mcpMaxTools": 50,
     "mcpSlimSchema": true,
     "mcpServers": {
       "filesystem": {
         "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"],
+        "slimSchema": false,
+        "maxTools": 16
       }
     }
   }
 }
 ```
 
-`mcpMaxTools` 用于限制 MCP 工具总注册数（`0` 表示不限制）；`mcpSlimSchema` 用于精简 MCP schema 的冗余元数据，减少 token 占用。
+`toolExposure.mode` 支持 `off`（全量工具）和 `auto`（按关键词启用 bundle）；`toolExposure.bundles` 支持 `core/web/desktop/code` 开关。
+`mcpMaxTools` 用于限制 MCP 工具总注册数（`0` 表示不限制）；`mcpSlimSchema` 用于精简 MCP schema 的冗余元数据，减少 token 占用。`mcpServers.<name>.slimSchema/maxTools` 可按 server 覆盖全局策略。
+
+默认会记录每轮 tools schema 的体积与质量代理指标到 debug 日志和 session metadata（含 post-error 调用代理，不注入 LLM 上下文，不额外消耗 prompt token）。
 
 ## 🐳 Docker
 
@@ -242,13 +272,15 @@ docker compose up -d bao-gateway
 | ---------- | ------------------------------------------ |
 | `/new`     | 新建对话（旧对话自动保留）                 |
 | `/stop`    | 停止当前任务（同会话硬中断，抑制过期响应） |
-| `/session` | 列出所有对话，按编号选择（含自动标题）     |
+| `/session` | 列出所有对话，按编号选择（含自动标题与相对时间） |
 | `/delete`  | 删除当前对话                               |
 | `/model`   | 切换模型                                   |
 | `/memory`  | 管理记忆（查看、编辑、删除）               |
 | `/help`    | 显示可用命令                               |
 
-首轮对话后，bao 自动生成简短的会话标题，跟随用户语言。
+`/new` 触发旧会话整合时带有去重签名（消息总数 + 尾消息时间戳），同一快照不会重复归档，避免 history 摘要噪音。
+
+会话标题会在首个或第二个用户轮次后异步生成：过滤问候语后，基于首个非问候用户消息及其后续助手回复生成；失败时回退为用户文本截断。
 同会话新消息默认走协作式软中断（流式阶段 + 工具边界，优先处理新消息）；`/stop` 保留为硬中断。
 
 ## 🖥️ CLI
@@ -263,6 +295,12 @@ docker compose up -d bao-gateway
 PYTHONPATH=. uv run pytest tests/ -v
 ```
 
+```bash
+uv run python tests/measure_prompt_size.py
+```
+
+用于诊断提示词与工具 schema 的体积分布（skills summary、active skills、bootstrap、runtime tools、MCP 配置状态）。
+
 未安装 PySide6 时，桌面相关测试会自动 skip，不影响 core 测试通过。
 
 ## 🖥️ Desktop App (实验性)
@@ -276,6 +314,11 @@ uv run python app/main.py
 
 首次启动自动创建 `~/.bao/config.jsonc` 与 workspace；未配置 Provider/Model 时自动跳转 Settings。详见 [`app/README.md`](app/README.md)。打包说明见 [`docs/desktop-packaging.md`](docs/desktop-packaging.md)。
 
+## 🔒 安全
+
+bao 内置工作区沙箱、渠道白名单、危险命令拦截、SecretStr 凭据保护等多层安全机制。
+
+完整安全配置与部署检查清单见 [`SECURITY.md`](SECURITY.md)。
 ## 📁 项目结构
 
 ```
@@ -288,7 +331,7 @@ bao/
 │   └── tools/      # 内置工具（Shell、文件、Web、图像生成、桌面自动化、编程代理、MCP）
 ├── skills/         # 可扩展技能系统
 ├── channels/       # 9 大平台集成
-├── providers/      # 3 种 LLM Provider
+├── providers/      # 4 种 LLM Provider
 ├── session/        # 多会话管理（LanceDB 持久化）
 ├── bus/            # 异步消息路由
 ├── cron/           # 定时任务
@@ -347,7 +390,6 @@ Other agents repeat mistakes. **bao learns from them.**
 
 - **Retry with Reflection** — auto-retries on tool errors. After 3 consecutive failures, it doesn't just retry blindly — it rethinks the strategy and tries a different approach
 - **Dynamic Tool Hints** — tool suggestions follow actual capabilities. Only installed tools get surfaced. Coding agents, search, MCP tools — all injected on demand. Zero hallucinated tool calls
-- **Search/FETCH Error Semantics** — `web_search` only treats explicit error prefixes as failures (so snippets containing `failed/exception` don't cause false positives); `web_fetch` enforces strict parameter validation and returns structured JSON errors to reduce silent failures
 
 #### Complex Tasks, Zero Blocking
 
@@ -389,6 +431,22 @@ Let AI see your screen and operate your computer. No Anthropic Computer Use requ
 - **Retina/HiDPI aware** — automatic coordinate mapping between screenshot space and input space. Pixel-perfect on high-DPI displays
 - **Lightweight deps** — just `mss` + `pyautogui` + `Pillow`, installed via `uv sync --extra desktop-automation`
 - **Off by default** — `config.tools.desktop.enabled: false`. Explicit opt-in only
+#### 🧩 Extensible Skill System
+
+17 built-in skills (coding agents, image generation, PDF, browser automation, weather, cron, and more) ready out of the box. Want your own? Drop it into `~/.bao/workspace/skills/` — bao picks it up at runtime.
+
+- **Zero config** — built-in skills are available the moment bao is installed
+- **User skills** — add custom skills to your workspace in the same format as built-ins
+- **Dynamic injection** — skill descriptions are auto-compressed into one-line summaries for the system prompt, saving tokens
+
+#### 🗜️ Aggressive Token Compression
+
+Same capabilities, fewer tokens. bao applies systematic compression at the prompt level:
+
+- **Minimum Viable Descriptions (MVD)** — every built-in tool description is compressed to a single sentence; detailed usage goes into system prompt tool_hints
+- **Coding agent consolidation** — 6 coding tools merged into 2 (`coding_agent` + `coding_agent_details`), cutting tool-list bloat
+- **MCP Schema slimming** — `mcpSlimSchema` strips redundant metadata, `mcpMaxTools` caps total registrations, and per-server overrides are supported
+- **Skill summary compression** — skill descriptions are truncated to the first sentence or 60 characters, normalized to single-line format
 
 #### Ultra Lightweight
 
@@ -430,6 +488,8 @@ In short: **less drift, fewer wasted calls, stronger final answers.**
 | Image generation    | —              | **Gemini API text-to-image + multi-platform delivery**           |
 | Desktop automation  | —              | **7 tools · model-agnostic · HiDPI-aware**                       |
 | Setup time          | Complex wizard | **2 minutes**                                                    |
+| Skill system        | —              | **17 built-in + user-defined · dynamic loading**                 |
+| Token compression   | —              | **MVD + schema slimming + tool consolidation**                   |
 
 <p align="center"><img src="assets/architecture-en.svg" width="800" alt="Architecture"></p>
 
@@ -493,13 +553,14 @@ Every platform renders differently — bao knows that. Telegram and Discord get 
 
 ### 🤖 Easy LLM Providers config
 
-Covers 99% of what's out there.
+Covers 99% of what's out there, plus an OAuth option.
 
 | Type                  | Supported Models                                                                                                           | Example                                   |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
 | **OpenAI Compatible** | OpenAI, OpenRouter, DeepSeek, Groq, SiliconFlow, Volcengine, DashScope, Moonshot, Zhipu, Ollama, LM Studio, vLLM, and more | `openai/gpt-4o`, `deepseek/deepseek-chat` |
 | **Anthropic**         | Full Claude lineup                                                                                                         | `anthropic/claude-sonnet-4-20250514`      |
 | **Gemini**            | Full Gemini lineup                                                                                                         | `gemini/gemini-2.0-flash-exp`             |
+| **Codex OAuth**       | Auth via ChatGPT subscription, no API Key needed                                                                           | `openai-codex/gpt-5.1-codex`             |
 
 Provider names are customizable — model prefixes are auto-stripped. All provider types support third-party proxies with automatic SDK compatibility. OpenAI-compatible endpoints also support API mode auto-detection (Responses / Chat Completions).
 
@@ -510,19 +571,28 @@ Model Context Protocol — plug into any tool ecosystem. Config format is **comp
 ```json
 {
   "tools": {
+    "toolExposure": {
+      "mode": "off",
+      "bundles": ["core", "web", "desktop", "code"]
+    },
     "mcpMaxTools": 50,
     "mcpSlimSchema": true,
     "mcpServers": {
       "filesystem": {
         "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"],
+        "slimSchema": false,
+        "maxTools": 16
       }
     }
   }
-
-`mcpMaxTools` caps the total number of MCP tools registered (`0` = unlimited). `mcpSlimSchema` strips redundant schema metadata to reduce token usage.
 }
 ```
+
+`toolExposure.mode` supports `off` (all tools) and `auto` (keyword-based bundle activation). `toolExposure.bundles` supports `core/web/desktop/code` switches.
+`mcpMaxTools` caps the total number of MCP tools registered (`0` = unlimited). `mcpSlimSchema` strips redundant schema metadata to reduce token usage. `mcpServers.<name>.slimSchema/maxTools` can override global behavior per server.
+
+By default, per-turn tool schema size and quality proxy metrics are recorded in debug logs and session metadata (including a post-error-call proxy; not injected into LLM context, so no prompt token overhead).
 
 ### 🐳 Docker
 
@@ -539,13 +609,15 @@ Available across all platforms:
 | ---------- | ------------------------------------------------------------------------------------------ |
 | `/new`     | Start a new conversation (old one is preserved)                                            |
 | `/stop`    | Stop the current task (hard interrupt for the current session, stale responses suppressed) |
-| `/session` | List all conversations with auto-generated titles, pick by number                          |
+| `/session` | List all conversations with auto-generated titles and relative timestamps, pick by number   |
 | `/delete`  | Delete current conversation                                                                |
 | `/model`   | Switch model                                                                               |
 | `/memory`  | Manage memories (view, edit, delete)                                                       |
 | `/help`    | Show available commands                                                                    |
 
-After the first exchange, bao auto-generates a short session title using a lightweight model, matching the user's language.
+`/new` now deduplicates archive-all consolidation using a lightweight snapshot signature (message count + tail timestamp), preventing duplicate history summaries for unchanged sessions.
+
+Session titles are generated asynchronously after the first or second user turn: greetings are filtered, then the first non-greeting user message is paired with its following assistant reply; if generation fails, it falls back to truncated user text.
 New messages in the same session use cooperative soft interruption by default (stream phase + tool boundary); `/stop` remains a hard interrupt.
 
 ### 🖥️ CLI
@@ -560,6 +632,13 @@ New messages in the same session use cooperative soft interruption by default (s
 PYTHONPATH=. uv run pytest tests/ -v
 ```
 
+```bash
+uv run python tests/measure_prompt_size.py
+```
+
+Use this to inspect prompt/schema size distribution (skills summary, active skills, bootstrap,
+runtime tools, and MCP config state).
+
 If PySide6 is not installed, desktop-related tests are auto-skipped and won't block core test runs.
 
 ### 🖥️ Desktop App (experimental)
@@ -573,6 +652,9 @@ uv run python app/main.py
 
 First launch auto-creates `~/.bao/config.jsonc` and workspace; redirects to Settings if Provider/Model is not configured. See [`app/README.md`](app/README.md). Packaging guide: [`docs/desktop-packaging.md`](docs/desktop-packaging.md).
 
+### 🔒 Security
+bao includes workspace sandboxing, channel allowlists, dangerous command interception, SecretStr credential protection, and more.
+Full security configuration and deployment checklist: [`SECURITY.md`](SECURITY.md).
 ### 📁 Project Structure
 
 ```
@@ -585,7 +667,7 @@ bao/
 │   └── tools/      # Built-in tools (shell, files, web, image gen, desktop automation, coding agents, MCP)
 ├── skills/         # Extensible skill system
 ├── channels/       # 9 platform integrations
-├── providers/      # 3 LLM provider types
+├── providers/      # 4 LLM provider types
 ├── session/        # Multi-session management (LanceDB persistence)
 ├── bus/            # Async message routing
 ├── cron/           # Scheduled tasks

@@ -1,82 +1,195 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 180" width="700" height="180">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480">
   <defs>
-    <linearGradient id="f-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#6366f1" stop-opacity="0.12"/>
-      <stop offset="100%" stop-color="#8b5cf6" stop-opacity="0.06"/>
+    <style>
+      .t{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif}
+      @keyframes shimmer{0%{opacity:.4}50%{opacity:.8}100%{opacity:.4}}
+      .acc{animation:shimmer 4s ease-in-out infinite}
+    </style>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#090d14"/>
+      <stop offset="100%" stop-color="#0f1520"/>
+    </linearGradient>
+    <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22c55e" stop-opacity=".12"/>
+      <stop offset="100%" stop-color="#22c55e" stop-opacity=".02"/>
+    </linearGradient>
+    <linearGradient id="g2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#00d4ff" stop-opacity=".10"/>
+      <stop offset="100%" stop-color="#00d4ff" stop-opacity=".02"/>
+    </linearGradient>
+    <linearGradient id="g3" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#a855f7" stop-opacity=".10"/>
+      <stop offset="100%" stop-color="#a855f7" stop-opacity=".02"/>
+    </linearGradient>
+    <linearGradient id="g4" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f59e0b" stop-opacity=".10"/>
+      <stop offset="100%" stop-color="#f59e0b" stop-opacity=".02"/>
+    </linearGradient>
+    <linearGradient id="g5" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3b82f6" stop-opacity=".10"/>
+      <stop offset="100%" stop-color="#3b82f6" stop-opacity=".02"/>
+    </linearGradient>
+    <linearGradient id="g6" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f43f5e" stop-opacity=".10"/>
+      <stop offset="100%" stop-color="#f43f5e" stop-opacity=".02"/>
+    </linearGradient>
+    <linearGradient id="topAccent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#22c55e" stop-opacity="0"/>
+      <stop offset="25%" stop-color="#22c55e" stop-opacity=".6"/>
+      <stop offset="50%" stop-color="#00d4ff" stop-opacity=".5"/>
+      <stop offset="75%" stop-color="#a855f7" stop-opacity=".4"/>
+      <stop offset="100%" stop-color="#a855f7" stop-opacity="0"/>
     </linearGradient>
   </defs>
-  <style>
-    @keyframes card-float {
-      0%, 100% { transform: translateY(0); }
-      50% { transform: translateY(-5px); }
-    }
-    .card-1 { animation: card-float 5s ease-in-out infinite; }
-    .card-2 { animation: card-float 5s ease-in-out infinite 0.8s; }
-    .card-3 { animation: card-float 5s ease-in-out infinite 1.6s; }
-    .card-4 { animation: card-float 5s ease-in-out infinite 2.4s; }
-    @keyframes icon-pulse {
-      0%, 100% { opacity: 0.7; }
-      50% { opacity: 1; }
-    }
-    .icon-glow { animation: icon-pulse 3s ease-in-out infinite; }
-    .icon-glow2 { animation: icon-pulse 3s ease-in-out infinite 0.8s; }
-    .icon-glow3 { animation: icon-pulse 3s ease-in-out infinite 1.6s; }
-    .icon-glow4 { animation: icon-pulse 3s ease-in-out infinite 2.4s; }
-  </style>
 
-  <rect width="700" height="180" fill="#0d1117" rx="12"/>
+  <!-- Background -->
+  <rect width="800" height="480" fill="url(#bg)" rx="16"/>
 
-  <!-- Card 1: Messages -->
-  <g class="card-1">
-    <rect x="30" y="30" width="145" height="120" rx="10" fill="url(#f-grad)" stroke="#6366f1" stroke-width="1" stroke-opacity="0.3"/>
-    <!-- Chat bubble icon -->
-    <g class="icon-glow" transform="translate(102, 65)">
-      <path d="M-14-10 h28 a4 4 0 0 1 4 4 v14 a4 4 0 0 1-4 4 h-16 l-8 6 v-6 h-4 a4 4 0 0 1-4-4 v-14 a4 4 0 0 1 4-4z" fill="none" stroke="#a78bfa" stroke-width="1.5"/>
-      <line x1="-8" y1="-2" x2="8" y2="-2" stroke="#a78bfa" stroke-width="1" opacity="0.6"/>
-      <line x1="-8" y1="4" x2="4" y2="4" stroke="#a78bfa" stroke-width="1" opacity="0.4"/>
+  <!-- Subtle top accent line -->
+  <rect x="80" y="0" width="640" height="1.5" fill="url(#topAccent)" rx="1" class="acc"/>
+
+  <!-- ═══ BENTO GRID: 3 cols, asymmetric ═══ -->
+  <!-- Row 1: [HERO 2-col span] [Tall right] -->
+  <!-- Row 2: [Small left] [Small mid] [Tall right cont.] -->
+
+  <!-- ████ CARD 1: 经验学习 — HERO (2-col span, row 1) ████ -->
+  <g transform="translate(16,16)" class="b1">
+    <rect width="504" height="200" rx="14" fill="#111720" stroke="#1c2535" stroke-width="1"/>
+    <rect width="504" height="200" rx="14" fill="url(#g1)"/>
+    <!-- Accent bar -->
+    <rect x="0" y="0" width="3" height="200" rx="1.5" fill="#22c55e" opacity=".7"/>
+    <!-- Icon -->
+    <g transform="translate(28,28)">
+      <circle cx="24" cy="24" r="24" fill="#22c55e08" stroke="#22c55e" stroke-width="1.2" opacity=".8"/>
+      <path d="M16 20a10 10 0 0 1 16 0" stroke="#22c55e" stroke-width="2" fill="none" stroke-linecap="round"/>
+      <path d="M32 28a10 10 0 0 1-16 0" stroke="#22c55e" stroke-width="2" fill="none" stroke-linecap="round"/>
+      <polygon points="32,18 32,22 29,20" fill="#22c55e"/>
+      <polygon points="16,30 16,26 19,28" fill="#22c55e"/>
     </g>
-    <text x="102" y="105" text-anchor="middle" font-family="system-ui, sans-serif" font-size="12" fill="#c4b5fd" font-weight="600">手机遥控</text>
-    <text x="102" y="122" text-anchor="middle" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280">WhatsApp / iMessage</text>
+    <!-- Text -->
+    <text x="88" y="44" class="t" fill="#f0f6fc" font-size="18" font-weight="700">经验学习</text>
+    <text x="88" y="63" class="t" fill="#22c55e" font-size="11" opacity=".7">ExperienceLoop</text>
+    <text x="28" y="100" class="t" fill="#b8bfc9" font-size="12.5" letter-spacing=".2">闭环经验引擎 — 每次任务自动提取教训与策略，</text>
+    <text x="28" y="120" class="t" fill="#b8bfc9" font-size="12.5" letter-spacing=".2">遇到类似问题时检索并注入。置信度校准、冲突检测、</text>
+    <text x="28" y="140" class="t" fill="#b8bfc9" font-size="12.5" letter-spacing=".2">负面学习、主动遗忘 — 别的 Agent 重复犯错，bao 进化。</text>
+    <!-- Tags -->
+    <rect x="28" y="162" width="56" height="22" rx="11" fill="none" stroke="#22c55e" stroke-width=".6" opacity=".5"/>
+    <text x="56" y="177" class="t" text-anchor="middle" font-size="9.5" fill="#22c55e" font-weight="500" opacity=".8">闭环</text>
+    <rect x="92" y="162" width="72" height="22" rx="11" fill="none" stroke="#22c55e" stroke-width=".6" opacity=".5"/>
+    <text x="128" y="177" class="t" text-anchor="middle" font-size="9.5" fill="#22c55e" font-weight="500" opacity=".8">置信校准</text>
+    <rect x="172" y="162" width="72" height="22" rx="11" fill="none" stroke="#22c55e" stroke-width=".6" opacity=".5"/>
+    <text x="208" y="177" class="t" text-anchor="middle" font-size="9.5" fill="#22c55e" font-weight="500" opacity=".8">主动遗忘</text>
+    <rect x="252" y="162" width="72" height="22" rx="11" fill="none" stroke="#22c55e" stroke-width=".6" opacity=".5"/>
+    <text x="288" y="177" class="t" text-anchor="middle" font-size="9.5" fill="#22c55e" font-weight="500" opacity=".8">负面学习</text>
   </g>
 
-  <!-- Card 2: Security -->
-  <g class="card-2">
-    <rect x="195" y="30" width="145" height="120" rx="10" fill="url(#f-grad)" stroke="#6366f1" stroke-width="1" stroke-opacity="0.3"/>
-    <!-- Shield icon -->
-    <g class="icon-glow2" transform="translate(267, 65)">
-      <path d="M0-14 l14 6 v8 c0 8-6 14-14 18 c-8-4-14-10-14-18 v-8z" fill="none" stroke="#a78bfa" stroke-width="1.5"/>
-      <polyline points="-5,2 -1,7 7,-3" fill="none" stroke="#a78bfa" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- ████ CARD 2: 持久记忆 — Tall right (spans 2 rows) ████ -->
+  <g transform="translate(532,16)" class="b2">
+    <rect width="252" height="308" rx="14" fill="#111720" stroke="#1c2535" stroke-width="1"/>
+    <rect width="252" height="308" rx="14" fill="url(#g2)"/>
+    <rect x="0" y="0" width="3" height="308" rx="1.5" fill="#00d4ff" opacity=".7"/>
+    <!-- Icon -->
+    <g transform="translate(24,24)">
+      <circle cx="20" cy="20" r="20" fill="#00d4ff08" stroke="#00d4ff" stroke-width="1.2" opacity=".8"/>
+      <ellipse cx="20" cy="15" rx="9" ry="4.5" fill="none" stroke="#00d4ff" stroke-width="1.5"/>
+      <path d="M11 15v9c0 2.5 4 4.5 9 4.5s9-2 9-4.5v-9" fill="none" stroke="#00d4ff" stroke-width="1.5"/>
+      <path d="M11 20c0 2.5 4 4.5 9 4.5s9-2 9-4.5" fill="none" stroke="#00d4ff" stroke-width="1" opacity=".4"/>
     </g>
-    <text x="267" y="105" text-anchor="middle" font-family="system-ui, sans-serif" font-size="12" fill="#c4b5fd" font-weight="600">容器隔离</text>
-    <text x="267" y="122" text-anchor="middle" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280">OS 级沙箱，Bash 也安全</text>
+    <text x="72" y="38" class="t" fill="#f0f6fc" font-size="16" font-weight="700">持久记忆</text>
+    <text x="72" y="54" class="t" fill="#00d4ff" font-size="10.5" opacity=".7">LanceDB</text>
+    <text x="24" y="84" class="t" fill="#b8bfc9" font-size="11.5">向量搜索 + 关键词降级</text>
+    <text x="24" y="102" class="t" fill="#b8bfc9" font-size="11.5">双检索架构，有没有</text>
+    <text x="24" y="120" class="t" fill="#b8bfc9" font-size="11.5">Embedding 模型都能用。</text>
+    <text x="24" y="148" class="t" fill="#b8bfc9" font-size="11.5">跨会话、跨重启，记住</text>
+    <text x="24" y="166" class="t" fill="#b8bfc9" font-size="11.5">偏好、项目、习惯。</text>
+    <text x="24" y="194" class="t" fill="#b8bfc9" font-size="11.5">自动整合旧上下文，</text>
+    <text x="24" y="212" class="t" fill="#b8bfc9" font-size="11.5">保留重要的，主动清理</text>
+    <text x="24" y="230" class="t" fill="#b8bfc9" font-size="11.5">过时的。</text>
+    <text x="24" y="258" class="t" fill="#8492a6" font-size="10" font-style="italic">用得越久，它越懂你。</text>
+    <!-- Tags -->
+    <rect x="24" y="274" width="60" height="20" rx="10" fill="none" stroke="#00d4ff" stroke-width=".6" opacity=".5"/>
+    <text x="54" y="288" class="t" text-anchor="middle" font-size="9" fill="#00d4ff" font-weight="500" opacity=".8">向量</text>
+    <rect x="92" y="274" width="60" height="20" rx="10" fill="none" stroke="#00d4ff" stroke-width=".6" opacity=".5"/>
+    <text x="122" y="288" class="t" text-anchor="middle" font-size="9" fill="#00d4ff" font-weight="500" opacity=".8">关键词</text>
+    <rect x="160" y="274" width="68" height="20" rx="10" fill="none" stroke="#00d4ff" stroke-width=".6" opacity=".5"/>
+    <text x="194" y="288" class="t" text-anchor="middle" font-size="9" fill="#00d4ff" font-weight="500" opacity=".8">持久化</text>
   </g>
 
-  <!-- Card 3: Scheduler -->
-  <g class="card-3">
-    <rect x="360" y="30" width="145" height="120" rx="10" fill="url(#f-grad)" stroke="#6366f1" stroke-width="1" stroke-opacity="0.3"/>
-    <!-- Clock icon -->
-    <g class="icon-glow3" transform="translate(432, 65)">
-      <circle cx="0" cy="0" r="13" fill="none" stroke="#a78bfa" stroke-width="1.5"/>
-      <line x1="0" y1="-1" x2="0" y2="-8" stroke="#a78bfa" stroke-width="1.5" stroke-linecap="round"/>
-      <line x1="0" y1="-1" x2="6" y2="3" stroke="#a78bfa" stroke-width="1.5" stroke-linecap="round"/>
-      <circle cx="0" cy="-1" r="1.5" fill="#a78bfa"/>
+  <!-- ████ CARD 3: 深度思考 — Row 2 Left ████ -->
+  <g transform="translate(16,228)" class="b3">
+    <rect width="252" height="236" rx="14" fill="#111720" stroke="#1c2535" stroke-width="1"/>
+    <rect width="252" height="236" rx="14" fill="url(#g3)"/>
+    <rect x="0" y="0" width="3" height="236" rx="1.5" fill="#a855f7" opacity=".7"/>
+    <g transform="translate(24,24)">
+      <circle cx="18" cy="18" r="18" fill="#a855f708" stroke="#a855f7" stroke-width="1.2" opacity=".8"/>
+      <path d="M13 22c-1.2-3 0-7.5 5-9.5s8 .5 9 4.2 0 6.5-3 8.5c-1 .8-1.6 1.8-1.6 3v.8" fill="none" stroke="#a855f7" stroke-width="1.8" stroke-linecap="round"/>
+      <circle cx="18" cy="31" r="1" fill="#a855f7"/>
     </g>
-    <text x="432" y="105" text-anchor="middle" font-family="system-ui, sans-serif" font-size="12" fill="#c4b5fd" font-weight="600">全自动任务</text>
-    <text x="432" y="122" text-anchor="middle" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280">定时跑，不用你盯着</text>
+    <text x="68" y="38" class="t" fill="#f0f6fc" font-size="16" font-weight="700">深度思考</text>
+    <text x="68" y="54" class="t" fill="#a855f7" font-size="10.5" opacity=".7">Thinking Protocol</text>
+    <text x="24" y="82" class="t" fill="#b8bfc9" font-size="11.5">System Prompt 内置深度</text>
+    <text x="24" y="100" class="t" fill="#b8bfc9" font-size="11.5">推理协议，零额外 API</text>
+    <text x="24" y="118" class="t" fill="#b8bfc9" font-size="11.5">调用开销，回答质量</text>
+    <text x="24" y="136" class="t" fill="#b8bfc9" font-size="11.5">显著提升。</text>
+    <text x="24" y="166" class="t" fill="#8492a6" font-size="10" font-style="italic">不是更贵的模型，</text>
+    <text x="24" y="182" class="t" fill="#8492a6" font-size="10" font-style="italic">而是让模型更会思考。</text>
+    <rect x="24" y="202" width="56" height="20" rx="10" fill="none" stroke="#a855f7" stroke-width=".6" opacity=".5"/>
+    <text x="52" y="216" class="t" text-anchor="middle" font-size="9" fill="#a855f7" font-weight="500" opacity=".8">零开销</text>
+    <rect x="88" y="202" width="68" height="20" rx="10" fill="none" stroke="#a855f7" stroke-width=".6" opacity=".5"/>
+    <text x="122" y="216" class="t" text-anchor="middle" font-size="9" fill="#a855f7" font-weight="500" opacity=".8">深度推理</text>
   </g>
 
-  <!-- Card 4: Web -->
-  <g class="card-4">
-    <rect x="525" y="30" width="145" height="120" rx="10" fill="url(#f-grad)" stroke="#6366f1" stroke-width="1" stroke-opacity="0.3"/>
-    <!-- Globe icon -->
-    <g class="icon-glow4" transform="translate(597, 65)">
-      <circle cx="0" cy="0" r="13" fill="none" stroke="#a78bfa" stroke-width="1.5"/>
-      <ellipse cx="0" cy="0" rx="6" ry="13" fill="none" stroke="#a78bfa" stroke-width="1" opacity="0.6"/>
-      <line x1="-13" y1="0" x2="13" y2="0" stroke="#a78bfa" stroke-width="1" opacity="0.5"/>
-      <line x1="-11" y1="-6" x2="11" y2="-6" stroke="#a78bfa" stroke-width="0.8" opacity="0.4"/>
-      <line x1="-11" y1="6" x2="11" y2="6" stroke="#a78bfa" stroke-width="0.8" opacity="0.4"/>
+  <!-- ████ CARD 4: 自我纠错 — Row 2 Mid-left ████ -->
+  <g transform="translate(280,228)" class="b4">
+    <rect width="240" height="112" rx="14" fill="#111720" stroke="#1c2535" stroke-width="1"/>
+    <rect width="240" height="112" rx="14" fill="url(#g4)"/>
+    <rect x="0" y="0" width="3" height="112" rx="1.5" fill="#f59e0b" opacity=".7"/>
+    <g transform="translate(24,22)">
+      <circle cx="16" cy="16" r="16" fill="#f59e0b08" stroke="#f59e0b" stroke-width="1.2" opacity=".8"/>
+      <path d="M10 16a8 8 0 1 1 4 6.8" fill="none" stroke="#f59e0b" stroke-width="1.8" stroke-linecap="round"/>
+      <polygon points="12,23 16,23 14,27" fill="#f59e0b"/>
+      <circle cx="16" cy="16" r="2.5" fill="#f59e0b"/>
     </g>
-    <text x="597" y="105" text-anchor="middle" font-family="system-ui, sans-serif" font-size="12" fill="#c4b5fd" font-weight="600">网络 + 浏览器</text>
-    <text x="597" y="122" text-anchor="middle" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280">搜索、抓取、截图</text>
+    <text x="64" y="34" class="t" fill="#f0f6fc" font-size="15" font-weight="700">自我纠错</text>
+    <text x="64" y="50" class="t" fill="#f59e0b" font-size="10" opacity=".7">Retry / Reflection</text>
+    <text x="24" y="74" class="t" fill="#b8bfc9" font-size="11">自动检测工具错误并重试，连续 3 次失败</text>
+    <text x="24" y="92" class="t" fill="#b8bfc9" font-size="11">后升级为深度反思策略。失败是反思的起点。</text>
+  </g>
+
+  <!-- ████ CARD 5: MCP 生态 — Row 3 Mid-left ████ -->
+  <g transform="translate(280,352)" class="b5">
+    <rect width="240" height="112" rx="14" fill="#111720" stroke="#1c2535" stroke-width="1"/>
+    <rect width="240" height="112" rx="14" fill="url(#g5)"/>
+    <rect x="0" y="0" width="3" height="112" rx="1.5" fill="#3b82f6" opacity=".7"/>
+    <g transform="translate(24,22)">
+      <circle cx="16" cy="16" r="16" fill="#3b82f608" stroke="#3b82f6" stroke-width="1.2" opacity=".8"/>
+      <rect x="9" y="9" width="14" height="10" rx="2" fill="none" stroke="#3b82f6" stroke-width="1.5"/>
+      <line x1="13" y1="9" x2="13" y2="6" stroke="#3b82f6" stroke-width="1.8" stroke-linecap="round"/>
+      <line x1="19" y1="9" x2="19" y2="6" stroke="#3b82f6" stroke-width="1.8" stroke-linecap="round"/>
+      <line x1="16" y1="19" x2="16" y2="26" stroke="#3b82f6" stroke-width="1.8" stroke-linecap="round"/>
+    </g>
+    <text x="64" y="34" class="t" fill="#f0f6fc" font-size="15" font-weight="700">MCP 生态</text>
+    <text x="64" y="50" class="t" fill="#3b82f6" font-size="10" opacity=".7">Model Context Protocol</text>
+    <text x="24" y="74" class="t" fill="#b8bfc9" font-size="11">接入任何工具生态，配置兼容 Claude Desktop</text>
+    <text x="24" y="92" class="t" fill="#b8bfc9" font-size="11">和 Cursor。stdio + HTTP，即插即用。</text>
+  </g>
+
+  <!-- ████ CARD 6: 极致轻量 — Row 3 Right ████ -->
+  <g transform="translate(532,336)" class="b6">
+    <rect width="252" height="128" rx="14" fill="#111720" stroke="#1c2535" stroke-width="1"/>
+    <rect width="252" height="128" rx="14" fill="url(#g6)"/>
+    <rect x="0" y="0" width="3" height="128" rx="1.5" fill="#f43f5e" opacity=".7"/>
+    <g transform="translate(24,22)">
+      <circle cx="16" cy="16" r="16" fill="#f43f5e08" stroke="#f43f5e" stroke-width="1.2" opacity=".8"/>
+      <polygon points="18,6 11,19 15,19 13,28 22,15 18,15" fill="#f43f5e"/>
+    </g>
+    <text x="64" y="34" class="t" fill="#f0f6fc" font-size="15" font-weight="700">极致轻量</text>
+    <text x="64" y="50" class="t" fill="#f43f5e" font-size="10" opacity=".7">~5,300 Lines</text>
+    <text x="24" y="76" class="t" fill="#b8bfc9" font-size="11">完整 AI 助手框架，仅 ~5,300 行核心代码。</text>
+    <text x="24" y="94" class="t" fill="#b8bfc9" font-size="11">比 OpenClaw 轻 99%，2 分钟上手。</text>
+    <rect x="24" y="106" width="56" height="18" rx="9" fill="none" stroke="#f43f5e" stroke-width=".6" opacity=".5"/>
+    <text x="52" y="119" class="t" text-anchor="middle" font-size="9" fill="#f43f5e" font-weight="500" opacity=".8">轻 99%</text>
+    <rect x="88" y="106" width="72" height="18" rx="9" fill="none" stroke="#f43f5e" stroke-width=".6" opacity=".5"/>
+    <text x="124" y="119" class="t" text-anchor="middle" font-size="9" fill="#f43f5e" font-weight="500" opacity=".8">2 分钟上手</text>
   </g>
 </svg>
