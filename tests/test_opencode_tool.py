@@ -46,7 +46,9 @@ def test_opencode_tool_rejects_path_outside_workspace() -> None:
         workspace = Path(d)
         outside = workspace.parent
         tool = OpenCodeTool(workspace=workspace, allowed_dir=workspace)
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             result = _run(tool.execute(prompt="hello", project_path=str(outside)))
     assert "outside the allowed workspace" in result
 
@@ -68,7 +70,9 @@ def test_opencode_tool_success_sets_session_from_title() -> None:
 
         tool = OpenCodeTool(workspace=Path(d))
         tool.set_context("telegram", "u1")
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
                 with patch.object(OpenCodeTool, "_resolve_session_by_title", _fake_resolve):
                     result = _run(tool.execute(prompt="Implement feature"))
@@ -96,7 +100,9 @@ def test_opencode_tool_continue_uses_chat_specific_session() -> None:
 
         tool = OpenCodeTool(workspace=Path(d))
         tool.set_context("telegram", "alice")
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
                 with patch.object(OpenCodeTool, "_resolve_session_by_title", _fake_resolve):
                     _run(tool.execute(prompt="first"))
@@ -121,7 +127,9 @@ def test_opencode_tool_failure_returns_hints() -> None:
             }
 
         tool = OpenCodeTool(workspace=Path(d))
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
                 result = _run(tool.execute(prompt="x"))
 
@@ -141,7 +149,9 @@ def test_opencode_tool_explicit_session_id_takes_priority() -> None:
 
         tool = OpenCodeTool(workspace=Path(d))
         tool.set_context("telegram", "alice")
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
                 _run(tool.execute(prompt="first", session_id="sess-explicit"))
 
@@ -168,7 +178,9 @@ def test_opencode_tool_continue_false_starts_new_session() -> None:
 
         tool = OpenCodeTool(workspace=Path(d))
         tool.set_context("telegram", "alice")
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
                 with patch.object(OpenCodeTool, "_resolve_session_by_title", _fake_resolve):
                     _run(tool.execute(prompt="first"))
@@ -179,6 +191,47 @@ def test_opencode_tool_continue_false_starts_new_session() -> None:
     assert "--session" not in calls[0]
 
 
+def test_opencode_tool_session_cache_evicts_lru_context() -> None:
+    with tempfile.TemporaryDirectory() as d:
+
+        async def _fake_run(cmd: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:
+            del cmd, cwd, timeout_seconds
+            return {"timed_out": False, "returncode": 0, "stdout": "ok", "stderr": ""}
+
+        async def _fake_resolve_after_success(
+            self: OpenCodeTool,
+            stdout_text: str,
+            resolved_session: str | None,
+            cwd: Path,
+            exec_state: dict[str, Any],
+            timeout: int,
+        ) -> str | None:
+            del stdout_text, resolved_session, cwd, exec_state, timeout
+            return f"sess-{self._context_key.get()}"
+
+        tool = OpenCodeTool(workspace=Path(d))
+        with patch("bao.agent.tools.coding_agent_base._SESSION_CACHE_LIMIT", 2):
+            with patch(
+                "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+            ):
+                with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
+                    with patch.object(
+                        OpenCodeTool,
+                        "_resolve_session_after_success",
+                        _fake_resolve_after_success,
+                    ):
+                        tool.set_context("telegram", "alice")
+                        _run(tool.execute(prompt="alice-1"))
+                        tool.set_context("telegram", "bob")
+                        _run(tool.execute(prompt="bob-1"))
+                        tool.set_context("telegram", "alice")
+                        _run(tool.execute(prompt="alice-2", continue_session=True))
+                        tool.set_context("telegram", "carol")
+                        _run(tool.execute(prompt="carol-1"))
+
+    assert set(tool._session_by_context.keys()) == {"telegram:alice", "telegram:carol"}
+
+
 def test_opencode_tool_timeout_returns_actionable_error() -> None:
     with tempfile.TemporaryDirectory() as d:
 
@@ -187,7 +240,9 @@ def test_opencode_tool_timeout_returns_actionable_error() -> None:
             return {"timed_out": True, "returncode": None, "stdout": "", "stderr": ""}
 
         tool = OpenCodeTool(workspace=Path(d))
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
                 result = _run(tool.execute(prompt="x", timeout_seconds=45))
 
@@ -209,7 +264,9 @@ def test_opencode_tool_json_response_contains_structured_fields() -> None:
             return "sess-55"
 
         tool = OpenCodeTool(workspace=Path(d))
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
                 with patch.object(OpenCodeTool, "_resolve_session_by_title", _fake_resolve):
                     result = _run(tool.execute(prompt="x", response_format="json"))
@@ -250,7 +307,9 @@ def test_opencode_tool_retries_transient_failure_once_by_default() -> None:
             return "sess-r"
 
         tool = OpenCodeTool(workspace=Path(d))
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
                 with patch.object(OpenCodeTool, "_resolve_session_by_title", _fake_resolve):
                     result = _run(tool.execute(prompt="x", response_format="json"))
@@ -261,10 +320,67 @@ def test_opencode_tool_retries_transient_failure_once_by_default() -> None:
     assert len(calls) == 2
 
 
+def test_opencode_tool_retries_once_when_cached_session_is_stale() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        calls: list[list[str]] = []
+
+        async def _fake_run(cmd: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:
+            del cwd, timeout_seconds
+            calls.append(cmd)
+            if len(calls) == 1:
+                return {
+                    "timed_out": False,
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": "session not found",
+                }
+            return {"timed_out": False, "returncode": 0, "stdout": "ok", "stderr": ""}
+
+        async def _fake_resolve_after_success(
+            self: OpenCodeTool,
+            *,
+            stdout_text: str,
+            resolved_session: str | None,
+            cwd: Path,
+            exec_state: dict[str, Any],
+            timeout: int,
+        ) -> str | None:
+            del self, stdout_text, resolved_session, cwd, exec_state, timeout
+            return "sess-fresh"
+
+        tool = OpenCodeTool(workspace=Path(d))
+        tool.set_context("telegram", "alice")
+        tool._session_by_context["telegram:alice"] = "sess-stale"
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
+            with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
+                with patch.object(
+                    OpenCodeTool,
+                    "_resolve_session_after_success",
+                    _fake_resolve_after_success,
+                ):
+                    result = _run(tool.execute(prompt="retry stale", response_format="json"))
+
+    payload = json.loads(result)
+    assert payload["status"] == "success"
+    assert payload["attempts"] == 1
+    assert len(calls) == 2
+
+    assert "--session" in calls[0]
+    stale_idx = calls[0].index("--session")
+    assert calls[0][stale_idx + 1] == "sess-stale"
+
+    assert "--session" not in calls[1]
+    assert "--title" in calls[1]
+
+
 def test_opencode_tool_rejects_invalid_timeout_type() -> None:
     with tempfile.TemporaryDirectory() as d:
         tool = OpenCodeTool(workspace=Path(d))
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             result = _run(tool.execute(prompt="x", timeout_seconds="120"))
     assert "timeout_seconds must be an integer" in result
 
@@ -283,7 +399,9 @@ def test_opencode_tool_hybrid_format_contains_meta_prefix() -> None:
             return "sess-meta"
 
         tool = OpenCodeTool(workspace=Path(d))
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
                 with patch.object(OpenCodeTool, "_resolve_session_by_title", _fake_resolve):
                     result = _run(tool.execute(prompt="x", response_format="hybrid"))
@@ -310,7 +428,9 @@ def test_opencode_tool_respects_max_output_chars() -> None:
             return "sess-limit"
 
         tool = OpenCodeTool(workspace=Path(d))
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
                 with patch.object(OpenCodeTool, "_resolve_session_by_title", _fake_resolve):
                     result = _run(
@@ -342,7 +462,9 @@ def test_opencode_tool_include_details_returns_full_payload_output() -> None:
             return "sess-details"
 
         tool = OpenCodeTool(workspace=Path(d))
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
                 with patch.object(OpenCodeTool, "_resolve_session_by_title", _fake_resolve):
                     result = _run(
@@ -355,10 +477,40 @@ def test_opencode_tool_include_details_returns_full_payload_output() -> None:
     assert payload["details_hint"] is None
 
 
+def test_opencode_tool_resolve_session_by_title_falls_back_to_larger_window() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        calls: list[list[str]] = []
+
+        async def _fake_run(cmd: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:
+            del cwd, timeout_seconds
+            calls.append(cmd)
+            if cmd[-1] == "20":
+                sessions = [{"id": "sess-old", "title": "other-title"}]
+            else:
+                sessions = [{"id": "sess-target", "title": "target-title"}]
+            return {
+                "timed_out": False,
+                "returncode": 0,
+                "stdout": json.dumps(sessions),
+                "stderr": "",
+            }
+
+        tool = OpenCodeTool(workspace=Path(d))
+        with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
+            session_id = _run(tool._resolve_session_by_title(Path(d), "target-title", 30))
+
+    assert session_id == "sess-target"
+    assert len(calls) == 2
+    assert calls[0][-1] == "20"
+    assert calls[1][-1] == "100"
+
+
 def test_opencode_tool_rejects_invalid_response_format() -> None:
     with tempfile.TemporaryDirectory() as d:
         tool = OpenCodeTool(workspace=Path(d))
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             result = _run(tool.execute(prompt="x", response_format="yaml"))
     assert "response_format must be one of" in result
 
@@ -366,7 +518,9 @@ def test_opencode_tool_rejects_invalid_response_format() -> None:
 def test_opencode_tool_rejects_invalid_max_output_chars_type() -> None:
     with tempfile.TemporaryDirectory() as d:
         tool = OpenCodeTool(workspace=Path(d))
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             result = _run(tool.execute(prompt="x", max_output_chars="400"))
     assert "max_output_chars must be an integer" in result
 
@@ -403,7 +557,9 @@ def test_opencode_details_fetch_by_request_id() -> None:
         details_tool = OpenCodeDetailsTool()
         tool.set_context("telegram", "alice")
         details_tool.set_context("telegram", "alice")
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
                 with patch.object(OpenCodeTool, "_resolve_session_by_title", _fake_resolve):
                     payload_raw = _run(tool.execute(prompt="x", response_format="json"))
@@ -434,7 +590,9 @@ def test_opencode_details_defaults_to_latest_context_record() -> None:
         details_tool = OpenCodeDetailsTool()
         tool.set_context("telegram", "bob")
         details_tool.set_context("telegram", "bob")
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
                 with patch.object(OpenCodeTool, "_resolve_session_by_title", _fake_resolve):
                     _run(tool.execute(prompt="x", response_format="json"))
@@ -460,7 +618,9 @@ def test_opencode_details_blocks_cross_context_request_id() -> None:
         details_tool = OpenCodeDetailsTool()
         tool.set_context("telegram", "alice")
         details_tool.set_context("telegram", "alice")
-        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"):
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
             with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
                 with patch.object(OpenCodeTool, "_resolve_session_by_title", _fake_resolve):
                     payload_raw = _run(tool.execute(prompt="x", response_format="json"))

@@ -28,6 +28,7 @@ from bao.agent.tools.base import Tool
 
 _DETAIL_CACHE_LIMIT = 128
 _DETAIL_CACHE_TEXT_MAX = 120_000
+_SESSION_CACHE_LIMIT = 256
 
 
 class _DetailRecord(TypedDict):
@@ -415,6 +416,9 @@ class BaseCodingAgentTool(Tool, ABC):
         if not resolved_session and continue_session:
             async with self._lock:
                 resolved_session = self._session_by_context.get(context_key)
+                if resolved_session:
+                    self._session_by_context.pop(context_key, None)
+                    self._session_by_context[context_key] = resolved_session
 
         session_from_cache = bool(resolved_session and not session_id)
 
@@ -556,6 +560,11 @@ class BaseCodingAgentTool(Tool, ABC):
 
             if active_session:
                 async with self._lock:
+                    if context_key in self._session_by_context:
+                        self._session_by_context.pop(context_key, None)
+                    elif len(self._session_by_context) >= _SESSION_CACHE_LIMIT:
+                        lru_victim_context = next(iter(self._session_by_context))
+                        self._session_by_context.pop(lru_victim_context, None)
                     self._session_by_context[context_key] = active_session
 
             body = final_output.strip() or "(no output)"
@@ -834,9 +843,7 @@ class BaseCodingAgentTool(Tool, ABC):
                         await _fire_cb(on_line, cleaned)
             return "".join(buf)
 
-        async def _fire_cb(
-            cb: Callable[[str], Awaitable[None] | None], text: str
-        ) -> None:
+        async def _fire_cb(cb: Callable[[str], Awaitable[None] | None], text: str) -> None:
             try:
                 maybe = cb(text)
                 if inspect.isawaitable(maybe):

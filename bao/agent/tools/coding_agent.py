@@ -20,9 +20,21 @@ class CodingAgentTool(Tool):
 
     def _init_backends(self) -> None:
         backend_specs = [
-            ("opencode", "opencode", "bao.agent.tools.opencode", "OpenCodeTool", "OpenCodeDetailsTool"),
+            (
+                "opencode",
+                "opencode",
+                "bao.agent.tools.opencode",
+                "OpenCodeTool",
+                "OpenCodeDetailsTool",
+            ),
             ("codex", "codex", "bao.agent.tools.codex", "CodexTool", "CodexDetailsTool"),
-            ("claudecode", "claude", "bao.agent.tools.claudecode", "ClaudeCodeTool", "ClaudeCodeDetailsTool"),
+            (
+                "claudecode",
+                "claude",
+                "bao.agent.tools.claudecode",
+                "ClaudeCodeTool",
+                "ClaudeCodeDetailsTool",
+            ),
         ]
 
         for name, binary, module_path, tool_cls_name, details_cls_name in backend_specs:
@@ -129,21 +141,21 @@ class CodingAgentTool(Tool):
             props["sandbox"] = {
                 "type": "string",
                 "enum": ["read-only", "workspace-write", "danger-full-access"],
-                "description": "Codex sandbox mode (codex only)",
+                "description": "Codex sandbox mode. Ignored unless agent='codex'.",
             }
             props["full_auto"] = {
                 "type": "boolean",
-                "description": "Codex full-auto mode (codex only)",
+                "description": "Codex full-auto mode. Ignored unless agent='codex'.",
             }
 
         if "opencode" in self._backends:
             props["opencode_agent"] = {
                 "type": "string",
-                "description": "OpenCode agent type, e.g. build, plan (opencode only)",
+                "description": "OpenCode agent type (e.g. build, plan). Ignored unless agent='opencode'.",
             }
             props["fork"] = {
                 "type": "boolean",
-                "description": "Fork session when continuing (opencode only)",
+                "description": "Fork session when continuing. Ignored unless agent='opencode'.",
             }
 
         return {
@@ -171,13 +183,18 @@ class CodingAgentTool(Tool):
             if oc_agent is not None:
                 kwargs["agent"] = oc_agent
 
-        _param_backend = {"sandbox": "codex", "full_auto": "codex",
-                          "opencode_agent": "opencode", "fork": "opencode"}
+        _param_backend = {
+            "sandbox": "codex",
+            "full_auto": "codex",
+            "opencode_agent": "opencode",
+            "fork": "opencode",
+        }
         for key in _param_backend:
             if key in kwargs and agent_name != _param_backend[key]:
                 kwargs.pop(key, None)
 
         return await backend.execute(**kwargs)
+
 
 class CodingAgentDetailsTool(Tool):
     def __init__(self, parent: CodingAgentTool):
@@ -210,6 +227,11 @@ class CodingAgentDetailsTool(Tool):
                     "type": "string",
                     "description": "Session ID fallback",
                 },
+                "agent": {
+                    "type": "string",
+                    "enum": self._parent.available_backends,
+                    "description": "Optional backend filter to disambiguate session_id lookups",
+                },
                 "max_chars": {
                     "type": "integer",
                     "minimum": 200,
@@ -232,8 +254,25 @@ class CodingAgentDetailsTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         request_id = kwargs.get("request_id")
         session_id = kwargs.get("session_id")
+        agent_filter = kwargs.get("agent")
 
-        for agent_name, cache in self._parent._detail_caches.items():
+        if agent_filter is not None and not isinstance(agent_filter, str):
+            return "Error: agent must be a string"
+        if isinstance(agent_filter, str) and agent_filter not in self._parent._backends:
+            available = ", ".join(self._parent._backends.keys()) or "none"
+            return f"Error: agent must be one of: {available}"
+
+        target_agents = (
+            [agent_filter]
+            if isinstance(agent_filter, str)
+            else list(self._parent._detail_caches.keys())
+        )
+        matches: list[tuple[str, Any, Any]] = []
+
+        for agent_name in target_agents:
+            cache = self._parent._detail_caches.get(agent_name)
+            if cache is None:
+                continue
             backend = self._parent._backends.get(agent_name)
             if backend is None:
                 continue
@@ -245,8 +284,19 @@ class CodingAgentDetailsTool(Tool):
             )
             if not record:
                 continue
-
             details_tool = self._parent._details_tools.get(agent_name)
+            matches.append((agent_name, record, details_tool))
+
+        if not request_id and session_id and not isinstance(agent_filter, str) and len(matches) > 1:
+            backends = ", ".join(name for name, _, _ in matches)
+            return (
+                "Ambiguous session_id across backends. "
+                f"Matched backends: {backends}. "
+                "Please provide agent to disambiguate."
+            )
+
+        if matches:
+            agent_name, record, details_tool = matches[0]
             if details_tool is not None:
                 return await details_tool.execute(**kwargs)
 
