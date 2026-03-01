@@ -113,7 +113,7 @@
 
   <!-- ═══ AGENT 核心 (Center) ═══ -->
   <g class="n n3">
-    <text x="355" y="44" class="t" fill="#00d4ff" font-size="9" font-weight="700" letter-spacing="1" text-anchor="middle">AGENT 核心  ~5,300 行</text>
+    <text x="355" y="44" class="t" fill="#00d4ff" font-size="9" font-weight="700" letter-spacing="1" text-anchor="middle">AGENT 核心  ~12,000 行</text>
     <rect x="250" y="54" width="210" height="290" rx="12" fill="#0a0e17" stroke="#00d4ff" stroke-width="2" class="core-glow"/>
     <rect x="250" y="54" width="210" height="290" rx="12" fill="url(#coreGlow)"/>
     <!-- Modules -->

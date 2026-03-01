@@ -35,7 +35,7 @@ Do NOT use when:
 | `session_id` | string | no | — | Explicit session ID to continue. |
 | `continue_session` | boolean | no | true | Auto-resume the previous session for this chat on the selected backend. |
 | `model` | string | no | — | Override model (e.g. `anthropic/claude-sonnet-4-20250514`, `o4-mini`). |
-| `timeout_seconds` | integer | no | 600 | Execution timeout. Range: 30–1800 (up to 30 minutes). |
+| `timeout_seconds` | integer | no | 1800 | Optional execution timeout. Usually omit this and use the 30-minute default. Range: 30–1800. |
 | `response_format` | string | no | `hybrid` | Output format: `hybrid`, `json`, or `text`. |
 | `max_retries` | integer | no | 1 | Retry attempts on transient failures. Range: 0–2. |
 | `max_output_chars` | integer | no | 4000 | Max chars for stdout/stderr. Range: 200–50000. |
@@ -151,7 +151,7 @@ claude config set --global permission_mode bypassPermissions
 2. **Reference files by path.** Explicit paths help the agent find the right code.
 3. **One task per call.** Focused steps produce better results.
 4. **Plan before big changes.** Use `opencode_agent: "plan"` or a review prompt first.
-5. **Set timeouts proportionally.** Quick edits: 120s. Multi-file refactors: 600s. Large migrations: 1200s+.
+5. **Prefer the default timeout.** Usually omit `timeout_seconds` and use the 30-minute default. Only set it when the user explicitly asks for a non-default limit.
 6. **Keep `include_details: false`** for routine tasks. Pull details only when debugging.
 
 ## Error Handling
@@ -161,7 +161,7 @@ claude config set --global permission_mode bypassPermissions
 | `missing_binary` | CLI not on PATH | Install the required CLI (see below) |
 | `auth_not_configured` | No LLM provider/API key | Run auth setup for the specific backend |
 | `permission_prompt_blocked` | Permission config missing | Configure project permissions (see backend sections) |
-| `timeout` | Exceeded `timeout_seconds` | Split task or increase timeout (max 1800s) |
+| `timeout` | Exceeded `timeout_seconds` | Split the task, or adjust `timeout_seconds` when the user explicitly asks for a non-default limit (range: 30–1800s). |
 | `execution_failed` | Generic failure | Use `coding_agent_details` to inspect full output |
 
 **Installation commands:**

@@ -250,6 +250,25 @@ def test_opencode_tool_timeout_returns_actionable_error() -> None:
     assert "increase timeout_seconds" in result
 
 
+def test_opencode_tool_timeout_at_max_avoids_increase_hint() -> None:
+    with tempfile.TemporaryDirectory() as d:
+
+        async def _fake_run(cmd: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:
+            del cmd, cwd, timeout_seconds
+            return {"timed_out": True, "returncode": None, "stdout": "", "stderr": ""}
+
+        tool = OpenCodeTool(workspace=Path(d))
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
+            with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
+                result = _run(tool.execute(prompt="x"))
+
+    assert "timed out after 1800 seconds" in result
+    assert "already at the 1800-second maximum" in result
+    assert "increase timeout_seconds" not in result
+
+
 def test_opencode_tool_json_response_contains_structured_fields() -> None:
     with tempfile.TemporaryDirectory() as d:
 

@@ -22,7 +22,7 @@ class CodexTool(BaseCodingAgentTool):
         self,
         workspace: Path,
         allowed_dir: Path | None = None,
-        default_timeout_seconds: int = 600,
+        default_timeout_seconds: int = 1800,
     ):
         super().__init__(
             workspace=workspace,
@@ -95,7 +95,7 @@ class CodexTool(BaseCodingAgentTool):
                     "type": "integer",
                     "minimum": 30,
                     "maximum": 1800,
-                    "description": "Execution timeout in seconds (default 600)",
+                    "description": "Execution timeout in seconds (default 1800)",
                 },
                 "response_format": {
                     "type": "string",
@@ -162,9 +162,7 @@ class CodexTool(BaseCodingAgentTool):
         sandbox = extra_params.get("sandbox")
         full_auto = extra_params.get("full_auto", False)
 
-        tmp = tempfile.NamedTemporaryFile(
-            prefix="bao_codex_last_", suffix=".txt", delete=False
-        )
+        tmp = tempfile.NamedTemporaryFile(prefix="bao_codex_last_", suffix=".txt", delete=False)
         output_file = tmp.name
         tmp.close()
 
@@ -189,9 +187,7 @@ class CodexTool(BaseCodingAgentTool):
         cmd.append(prompt)
         return cmd, {"output_file": output_file}
 
-    async def _extract_output(
-        self, *, stdout_text: str, exec_state: dict[str, Any]
-    ) -> str:
+    async def _extract_output(self, *, stdout_text: str, exec_state: dict[str, Any]) -> str:
         """On success: file > JSONL > raw. On failure: JSONL > raw > file."""
         output_file = exec_state.get("output_file", "")
         is_failure = exec_state.get("_returncode", 0) != 0
@@ -305,8 +301,14 @@ class CodexTool(BaseCodingAgentTool):
         for obj in rows:
             sid = CodexTool._find_first_string_by_keys(
                 obj,
-                ("thread_id", "threadId", "session_id", "sessionId",
-                 "conversation_id", "conversationId"),
+                (
+                    "thread_id",
+                    "threadId",
+                    "session_id",
+                    "sessionId",
+                    "conversation_id",
+                    "conversationId",
+                ),
             )
             if sid:
                 return sid
@@ -320,9 +322,13 @@ class CodexTool(BaseCodingAgentTool):
             msg = CodexTool._find_first_string_by_keys(
                 obj,
                 (
-                    "final_message", "finalMessage",
-                    "last_message", "lastMessage",
-                    "message", "content", "text",
+                    "final_message",
+                    "finalMessage",
+                    "last_message",
+                    "lastMessage",
+                    "message",
+                    "content",
+                    "text",
                 ),
             )
             if msg:

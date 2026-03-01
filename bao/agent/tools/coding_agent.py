@@ -112,7 +112,7 @@ class CodingAgentTool(Tool):
                 "type": "integer",
                 "minimum": 30,
                 "maximum": 1800,
-                "description": "Timeout in seconds (default 600)",
+                "description": "Timeout in seconds (optional, default 1800)",
             },
             "response_format": {
                 "type": "string",

@@ -29,6 +29,8 @@ from bao.agent.tools.base import Tool
 _DETAIL_CACHE_LIMIT = 128
 _DETAIL_CACHE_TEXT_MAX = 120_000
 _SESSION_CACHE_LIMIT = 256
+_MIN_TOOL_TIMEOUT_SECONDS = 30
+_MAX_TOOL_TIMEOUT_SECONDS = 1800
 
 
 class _DetailRecord(TypedDict):
@@ -165,13 +167,15 @@ class BaseCodingAgentTool(Tool, ABC):
         self,
         workspace: Path,
         allowed_dir: Path | None = None,
-        default_timeout_seconds: int = 600,
+        default_timeout_seconds: int = 1800,
         *,
         detail_cache: DetailCache | None = None,
     ):
         self.workspace: Path = Path(workspace).resolve()
         self.allowed_dir: Path | None = Path(allowed_dir).resolve() if allowed_dir else None
-        self.default_timeout_seconds: int = max(30, int(default_timeout_seconds))
+        self.default_timeout_seconds: int = max(
+            _MIN_TOOL_TIMEOUT_SECONDS, int(default_timeout_seconds)
+        )
         self._channel: ContextVar[str] = ContextVar("coding_channel", default="gateway")
         self._chat_id: ContextVar[str] = ContextVar("coding_chat_id", default="direct")
         self._context_key: ContextVar[str] = ContextVar(
@@ -359,7 +363,10 @@ class BaseCodingAgentTool(Tool, ABC):
 
         request_id = uuid.uuid4().hex
         context_key = self._context_key.get()
-        timeout = max(30, min(int(timeout_raw or self.default_timeout_seconds), 1800))
+        timeout = max(
+            _MIN_TOOL_TIMEOUT_SECONDS,
+            min(int(timeout_raw or self.default_timeout_seconds), _MAX_TOOL_TIMEOUT_SECONDS),
+        )
         extra_params = kwargs  # subclass reads its own extras from here
 
         # 3. Binary check
@@ -477,7 +484,7 @@ class BaseCodingAgentTool(Tool, ABC):
                     status="timeout",
                     message=(
                         f"Error: {self._tool_label} timed out after {timeout} seconds. "
-                        "Try narrowing the task, or increase timeout_seconds."
+                        f"{self._timeout_error_guidance(timeout)}"
                     ),
                     project_path=str(cwd),
                     timeout_seconds=timeout,
@@ -494,7 +501,7 @@ class BaseCodingAgentTool(Tool, ABC):
                     command_preview=command_preview,
                     response_format=response_format,
                     extra_params=extra_params,
-                    hints=["Split the task into smaller steps or raise timeout_seconds."],
+                    hints=[self._timeout_retry_hint(timeout)],
                 )
 
             stdout_text = result["stdout"]
@@ -630,6 +637,30 @@ class BaseCodingAgentTool(Tool, ABC):
 
     # -- internal helpers --
 
+    def _timeout_error_guidance(self, timeout_seconds: int) -> str:
+        if timeout_seconds < _MAX_TOOL_TIMEOUT_SECONDS:
+            return "Try narrowing the task, or increase timeout_seconds."
+        return (
+            "Try narrowing or splitting the task; timeout_seconds is already at "
+            f"the {_MAX_TOOL_TIMEOUT_SECONDS}-second maximum."
+        )
+
+    def _timeout_retry_hint(self, timeout_seconds: int) -> str:
+        if timeout_seconds < _MAX_TOOL_TIMEOUT_SECONDS:
+            return "Split the task into smaller steps or raise timeout_seconds."
+        return (
+            "Split the task into smaller steps; timeout_seconds is already at "
+            f"the {_MAX_TOOL_TIMEOUT_SECONDS}-second maximum."
+        )
+
+    def _transient_retry_hint(self, timeout_seconds: int) -> str:
+        if timeout_seconds < _MAX_TOOL_TIMEOUT_SECONDS:
+            return "Transient failure detected; retry the same task or increase timeout_seconds."
+        return (
+            "Transient failure detected; retry the same task or split it into smaller steps "
+            f"(timeout_seconds is already at the {_MAX_TOOL_TIMEOUT_SECONDS}-second maximum)."
+        )
+
     def _error_response(
         self,
         *,
@@ -719,9 +750,7 @@ class BaseCodingAgentTool(Tool, ABC):
         err = stderr_text.strip()
         hints = self._build_failure_hints(out, err)
         if not hints and self._is_transient_failure(out, err):
-            hints.append(
-                "Transient failure detected; retry the same task or increase timeout_seconds."
-            )
+            hints.append(self._transient_retry_hint(timeout_seconds))
         summary = self._summarize_output(final_output, err)
         details_available = bool(final_output or err)
         details_hint = self._build_details_hint(

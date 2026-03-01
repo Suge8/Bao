@@ -106,7 +106,7 @@
 
   <!-- AGENT Core (Center) -->
   <g>
-    <text x="355" y="44" class="t" fill="#00d4ff" font-size="9" font-weight="700" letter-spacing="1" text-anchor="middle">AGENT CORE  ~5,300 lines</text>
+    <text x="355" y="44" class="t" fill="#00d4ff" font-size="9" font-weight="700" letter-spacing="1" text-anchor="middle">AGENT CORE  ~12,000 lines</text>
     <rect x="250" y="54" width="210" height="290" rx="12" fill="#0a0e17" stroke="#00d4ff" stroke-width="2" class="core-glow"/>
     <rect x="250" y="54" width="210" height="290" rx="12" fill="url(#coreGlow)"/>
     <rect x="264" y="72" width="182" height="38" rx="6" fill="#111827" stroke="#a855f7" stroke-width=".8"/>

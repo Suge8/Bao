@@ -1,7 +1,7 @@
 [project]
 name = "bao-ai"
 version = "0.1.4"
-description = "A personal AI assistant that remembers, learns from experience, and never makes the same mistake twice. ~9,300 lines of core code."
+description = "A personal AI assistant that remembers, learns from experience, and never makes the same mistake twice."
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [

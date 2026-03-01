@@ -21,7 +21,7 @@ class ClaudeCodeTool(BaseCodingAgentTool):
         self,
         workspace: Path,
         allowed_dir: Path | None = None,
-        default_timeout_seconds: int = 600,
+        default_timeout_seconds: int = 1800,
     ):
         super().__init__(
             workspace=workspace,
@@ -83,7 +83,7 @@ class ClaudeCodeTool(BaseCodingAgentTool):
                     "type": "integer",
                     "minimum": 30,
                     "maximum": 1800,
-                    "description": "Execution timeout in seconds (default 600)",
+                    "description": "Execution timeout in seconds (default 1800)",
                 },
                 "response_format": {
                     "type": "string",

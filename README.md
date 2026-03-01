@@ -10,7 +10,7 @@
 
 <br>
 
-**~9,300 行核心代码** · 记忆永不消失 · 经验持续积累 · 智能不断进化
+**记得住 · 学得会 · 能进化** · 持久记忆 · 经验引擎 · 子代理并行 · 长任务不漂移 · 9 大平台 · MCP 生态
 
 [🇨🇳 中文](#为什么选-bao) · [🇺🇸 English](#-english)
 
@@ -70,7 +70,7 @@ bao 不一样。它**记得住**、**学得会**、**能进化**。
 
 bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），**有什么用什么，没装不注入**。主代理和子代理同步生效。
 
-- **一句话委托** — 把编程任务交给专业代理，支持会话续接、重试与超时保护
+- **一句话委托** — 把编程任务交给专业代理，支持会话续接、重试与超时保护（默认 30 分钟，按需覆盖）
 - **结果分级** — 默认返回精简摘要省 token；需要排错时按 ID 拉取完整输出
 - **内置 Skill** — 每个代理配套标准化工作流（需求澄清 → 实现 → 验证），降低误操作
 - **子代理同步** — 后台子代理也能调用编程工具，复杂项目多线程推进
@@ -111,9 +111,9 @@ bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 - **MCP Schema 瘦身** — `mcpSlimSchema` 剥离冗余元数据，`mcpMaxTools` 限制注册总量，并支持按 server 覆盖
 - **技能摘要压缩** — 技能描述取首句或 60 字符截断，换行归一化为单行格式
 
-### 极致轻量
+### 精悍轻量
 
-**~9,300 行核心代码。** 运行 `bash scripts/core_agent_lines.sh` 自行验证。
+**~12,000 行核心代码。** 运行 `bash scripts/core_agent_lines.sh` 自行验证。
 
 启动快、占资源少、源码可读。一个完整的 AI 助手框架，体积只有同类项目的 1%。
 
@@ -141,7 +141,7 @@ bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 |            | OpenClaw    | **bao**                              |
 | ---------- | ----------- | ------------------------------------ |
 | 语言       | TypeScript  | **Python**                           |
-| 核心代码   | 430,000+ 行 | **~9,300 行**                        |
+| 核心代码   | 430,000+ 行 | **~12,000 行**                       |
 | 记忆       | 仅会话内    | **LanceDB（向量 + 关键词）**         |
 | 经验学习   | —           | **ExperienceLoop**                   |
 | 自我反思   | —           | **Retry with Reflection**            |
@@ -353,7 +353,7 @@ bao/
 
 <br>
 
-**~9,300 lines of core code** · Memory that persists · Experience that compounds · Intelligence that evolves
+**Remembers · Learns · Evolves** · Persistent memory · Experience engine · Sub-agents · Long-task control · 9 platforms · MCP tools
 
 </div>
 
@@ -408,7 +408,7 @@ Hand off time-consuming work to a subagent: keep chatting while it works in the 
 
 bao auto-detects installed coding CLIs (OpenCode, Codex, Claude Code) — **use what's there, skip what's not**. Works for both the main agent and subagents.
 
-- **One-line delegation** — hand off coding tasks to specialized agents with session continuity, retries, and timeout safety
+- **One-line delegation** — hand off coding tasks to specialized agents with session continuity, retries, and timeout safety (30-minute default timeout, override only when needed)
 - **Tiered output** — compact summaries by default to save tokens; pull full stdout/stderr by ID when debugging
 - **Built-in Skills** — each agent comes with a standardized workflow (clarify → implement → verify) for reliable execution
 - **Subagent parity** — background subagents can also invoke coding tools for parallel multi-track development
@@ -448,9 +448,9 @@ Same capabilities, fewer tokens. bao applies systematic compression at the promp
 - **MCP Schema slimming** — `mcpSlimSchema` strips redundant metadata, `mcpMaxTools` caps total registrations, and per-server overrides are supported
 - **Skill summary compression** — skill descriptions are truncated to the first sentence or 60 characters, normalized to single-line format
 
-#### Ultra Lightweight
+#### Lean & Compact
 
-**~9,300 lines of core code.** Run `bash scripts/core_agent_lines.sh` to verify.
+**~12,000 lines of core code.** Run `bash scripts/core_agent_lines.sh` to verify.
 
 Fast startup. Low resource use. Readable source. A complete AI assistant framework at 1% the size of comparable projects.
 
@@ -478,7 +478,7 @@ In short: **less drift, fewer wasted calls, stronger final answers.**
 |                     | OpenClaw       | **bao**                                                          |
 | ------------------- | -------------- | ---------------------------------------------------------------- |
 | Language            | TypeScript     | **Python**                                                       |
-| Core code           | 430,000+ lines | **~9,300 lines**                                                 |
+| Core code           | 430,000+ lines | **~12,000 lines**                                                |
 | Memory              | Session-only   | **LanceDB (vector + keyword)**                                   |
 | Experience learning | —              | **ExperienceLoop**                                               |
 | Self-reflection     | —              | **Retry with Reflection**                                        |
