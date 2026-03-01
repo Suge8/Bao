@@ -7,6 +7,7 @@ mutable state is passed explicitly via parameters.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Callable
 
 from loguru import logger
@@ -39,6 +40,32 @@ def format_session_name(key: str, natural_key: str) -> str:
         return "default"
     prefix = f"{natural_key}::"
     return key[len(prefix) :] if key.startswith(prefix) else key
+
+
+def format_relative_time(updated: str | None) -> str:
+    if not updated:
+        return ""
+    raw = str(updated)
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        now = datetime.now(tz=dt.tzinfo)
+        secs = max(0, int((now - dt).total_seconds()))
+        if secs < 60:
+            return " (刚刚)"
+        if secs < 3600:
+            return f" ({secs // 60}分钟前)"
+        if secs < 86400:
+            return f" ({secs // 3600}小时前)"
+        if secs < 172800:
+            return " (昨天)"
+        days = secs // 86400
+        if days < 7:
+            return f" ({days}天前)"
+        if dt.year == now.year:
+            return f" ({dt.month}月{dt.day}日)"
+        return f" ({dt.strftime('%Y-%m-%d')})"
+    except Exception:
+        return f" ({raw[:16]})"
 
 
 def create_and_switch(sessions: SessionManager, natural_key: str, name: str) -> str:
@@ -146,8 +173,7 @@ def handle_session_command(
         title = metadata.get("title")
         name = title or format_session_name(skey, natural_key)
         marker = " ✓" if skey == current_key else ""
-        updated = s.get("updated_at")
-        ts = f" ({str(updated)[:16]})" if updated else ""
+        ts = format_relative_time(s.get("updated_at"))
         lines.append(f"  {i}. {name}{marker}{ts}")
     lines.append("\n输入数字选择，/new 创建新会话")
 

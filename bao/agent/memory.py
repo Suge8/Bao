@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Sized
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime
 from math import exp, log
 from pathlib import Path
@@ -33,6 +36,12 @@ _SAMPLE = [
 
 _ENV_KEY = "BAO_EMBEDDING_API_KEY"
 _ENV_BASE = "BAO_EMBEDDING_BASE_URL"
+
+_DEFAULT_EMBED_TIMEOUT_S = 15
+_DEFAULT_EMBED_RETRY_ATTEMPTS = 2
+_DEFAULT_EMBED_RETRY_BACKOFF_MS = 200
+_BACKFILL_SCAN_LIMIT = 20000
+_MIGRATION_CHUNK_SIZE = 1000
 
 # Quality -> retention period (days). Higher quality decays slower.
 _RETENTION_DAYS = {5: 365, 4: 180, 3: 90, 2: 30, 1: 14}
@@ -83,12 +92,18 @@ class _GeminiEmbedding:
 
 
 class MemoryStore:
+    _EMBED_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="bao-embed")
+    _MEMORY_BG_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="bao-memory-bg")
+
     def __init__(self, workspace: Path, embedding_config: Any | None = None):
         self._store_lock = threading.RLock()
         self._db = get_db(workspace)
         self._tbl = self._ensure_migrated_table()
         self._embed_fn = None
         self._vec_tbl = None
+        self._embed_timeout_s = _DEFAULT_EMBED_TIMEOUT_S
+        self._embed_retry_attempts = _DEFAULT_EMBED_RETRY_ATTEMPTS
+        self._embed_retry_backoff_ms = _DEFAULT_EMBED_RETRY_BACKOFF_MS
         if embedding_config and getattr(embedding_config, "enabled", False):
             self._init_embedding(embedding_config)
         self._migrate_legacy(workspace)
@@ -110,9 +125,21 @@ class MemoryStore:
     def _migrate_schema(self, old_tbl):
         """Migrate from text-based to columnar schema."""
         try:
-            rows = old_tbl.search().limit(10000).to_list()
-            migrated = []
-            for r in rows:
+            rows = old_tbl.search().to_list()
+            # Clean up residual temp table from previous failed migration
+            try:
+                self._db.drop_table("memory_migrated")
+            except Exception:
+                pass
+
+            self._db.create_table("memory_migrated", data=list(_SAMPLE))
+            staged = self._db.open_table("memory_migrated")
+            staged.delete("key = '_init_'")
+
+            batch: list[dict[str, Any]] = []
+            migrated_count = 0
+            source_rows = rows or list(_SAMPLE)
+            for r in source_rows:
                 new_row = {
                     "key": r.get("key", ""),
                     "content": r.get("content", ""),
@@ -127,13 +154,12 @@ class MemoryStore:
                     "last_hit_at": "",
                     "hit_count": 0,
                 }
-                # Ensure long_term rows get proper category and key
                 if r.get("type") == "long_term":
                     new_row["category"] = "general"
                     if new_row["key"] == "long_term":
                         new_row["key"] = "long_term_general"
                 if r.get("type") == "experience":
-                    content = r.get("content", "")
+                    content = str(r.get("content", ""))
                     new_row["deprecated"] = content.startswith("[Deprecated]")
                     if new_row["deprecated"]:
                         content = content[len("[Deprecated]") :].strip()
@@ -156,26 +182,26 @@ class MemoryStore:
                     if trace:
                         parts.append(f"Trace: {trace}")
                     new_row["content"] = "\n".join(parts) if parts else content
-                migrated.append(new_row)
-            if not migrated:
-                migrated = list(_SAMPLE)
-            # Clean up residual temp table from previous failed migration
-            try:
-                self._db.drop_table("memory_migrated")
-            except Exception:
-                pass
-            # Create new table first, then drop old — avoids data loss if create fails
-            self._db.create_table("memory_migrated", data=migrated)
+                batch.append(new_row)
+                if len(batch) >= _MIGRATION_CHUNK_SIZE:
+                    staged.add(batch)
+                    migrated_count += len(batch)
+                    batch = []
+            if batch:
+                staged.add(batch)
+                migrated_count += len(batch)
+
+            staged_rows = staged.search().to_list()
             self._db.drop_table("memory")
             # LanceDB has no rename; recreate with correct name
-            tbl = self._db.create_table("memory", data=migrated)
+            tbl = self._db.create_table("memory", data=staged_rows)
             self._db.drop_table("memory_migrated")
             # Drop stale vectors so _backfill_embeddings rebuilds with new content format
             try:
                 self._db.drop_table("memory_vectors")
             except Exception:
                 pass
-            logger.info("🔀 迁移结构 / schema migrated: {} rows", len(migrated))
+            logger.info("🔀 迁移结构 / schema migrated: {} rows", migrated_count)
             return tbl
         except Exception as e:
             logger.error("❌ 迁移失败 / schema migration failed: {}", e)
@@ -184,28 +210,40 @@ class MemoryStore:
     def _backfill_new_columns(self, tbl):
         """Backfill missing columns (last_hit_at, hit_count) for existing columnar tables."""
         try:
-            rows = tbl.search().limit(10000).to_list()
-            patched = []
-            for r in rows:
-                row = dict(r)
-                row.setdefault("last_hit_at", "")
-                row.setdefault("hit_count", 0)
-                # Strip LanceDB internal fields
-                row.pop("_distance", None)
-                row.pop("_relevance_score", None)
-                row.pop("vector", None)
-                patched.append(row)
-            if not patched:
-                patched = list(_SAMPLE)
+            rows = tbl.search().to_list()
             try:
                 self._db.drop_table("memory_backfill")
             except Exception:
                 pass
-            self._db.create_table("memory_backfill", data=patched)
+
+            self._db.create_table("memory_backfill", data=list(_SAMPLE))
+            staged = self._db.open_table("memory_backfill")
+            staged.delete("key = '_init_'")
+
+            batch: list[dict[str, Any]] = []
+            patched_count = 0
+            source_rows = rows or list(_SAMPLE)
+            for r in source_rows:
+                row = dict(r)
+                row.setdefault("last_hit_at", "")
+                row.setdefault("hit_count", 0)
+                row.pop("_distance", None)
+                row.pop("_relevance_score", None)
+                row.pop("vector", None)
+                batch.append(row)
+                if len(batch) >= _MIGRATION_CHUNK_SIZE:
+                    staged.add(batch)
+                    patched_count += len(batch)
+                    batch = []
+            if batch:
+                staged.add(batch)
+                patched_count += len(batch)
+
+            staged_rows = staged.search().to_list()
             self._db.drop_table("memory")
-            tbl = self._db.create_table("memory", data=patched)
+            tbl = self._db.create_table("memory", data=staged_rows)
             self._db.drop_table("memory_backfill")
-            logger.info("🔀 补齐新列 / backfilled new columns: {} rows", len(patched))
+            logger.info("🔀 补齐新列 / backfilled new columns: {} rows", patched_count)
             return tbl
         except Exception as e:
             logger.error("❌ 补齐新列失败 / backfill failed: {}", e)
@@ -213,6 +251,15 @@ class MemoryStore:
 
     def _init_embedding(self, cfg: Any) -> None:
         try:
+            self._embed_timeout_s = max(
+                1, int(getattr(cfg, "timeout_seconds", _DEFAULT_EMBED_TIMEOUT_S))
+            )
+            self._embed_retry_attempts = max(
+                1, int(getattr(cfg, "retry_attempts", _DEFAULT_EMBED_RETRY_ATTEMPTS))
+            )
+            self._embed_retry_backoff_ms = max(
+                0, int(getattr(cfg, "retry_backoff_ms", _DEFAULT_EMBED_RETRY_BACKOFF_MS))
+            )
             api_key = cfg.api_key.get_secret_value()
             model_lower = cfg.model.lower()
             if "gemini" in model_lower or "models/embedding" in model_lower:
@@ -226,19 +273,116 @@ class MemoryStore:
                 backend, kwargs = self._resolve_embedding_backend(registry, cfg)
                 self._embed_fn = registry.get(backend).create(**kwargs)
             # Probe actual dim with a test embedding (some backends report wrong ndims)
-            probe = self._embed_fn.compute_source_embeddings(["dim probe"])
+            probe = self._compute_source_embeddings(["dim probe"])
             first = probe[0] if probe else None
             ndim = len(first) if isinstance(first, Sized) else 0
+            if ndim <= 0:
+                raise ValueError("embedding dimension probe returned empty vector")
             self._vec_tbl = ensure_table(
                 self._db,
                 "memory_vectors",
-                [{"content": "", "type": "long_term", "vector": [0.0] * ndim}],
+                [{"key": "_init_", "content": "", "type": "long_term", "vector": [0.0] * ndim}],
             )
+            if self._vector_table_needs_rebuild(expected_dim=ndim):
+                self._rebuild_vector_table(ndim)
             logger.debug("Embedding enabled: {} via {} (dim={})", cfg.model, backend, ndim)
             self._backfill_embeddings()
         except Exception as e:
             logger.warning("⚠️ 向量初始化失败 / embedding init failed: {}", e)
             self._embed_fn = None
+            self._vec_tbl = None
+
+    @staticmethod
+    def _run_with_timeout(timeout_s: int, fn: Callable[[], Any]) -> Any:
+        fut = MemoryStore._EMBED_EXECUTOR.submit(fn)
+        try:
+            return fut.result(timeout=timeout_s)
+        except FuturesTimeoutError as exc:
+            fut.cancel()
+            raise TimeoutError(f"Embedding request timed out after {timeout_s}s") from exc
+
+    @staticmethod
+    def _is_retryable_embedding_error(exc: Exception) -> bool:
+        if isinstance(exc, TimeoutError | FuturesTimeoutError):
+            return True
+        msg = str(exc).lower()
+        retry_markers = (
+            "timeout",
+            "timed out",
+            "rate limit",
+            "too many requests",
+            "429",
+            "503",
+            "connection",
+            "temporarily unavailable",
+            "service unavailable",
+        )
+        return any(marker in msg for marker in retry_markers)
+
+    def _call_embedding_with_retry(self, fn: Callable[[], Any], *, op: str) -> Any:
+        attempts = self._embed_retry_attempts
+        last_exc: Exception | None = None
+        for idx in range(attempts):
+            try:
+                return self._run_with_timeout(self._embed_timeout_s, fn)
+            except Exception as exc:
+                last_exc = exc
+                is_last = idx >= attempts - 1
+                if is_last or not self._is_retryable_embedding_error(exc):
+                    raise
+                sleep_s = (self._embed_retry_backoff_ms / 1000.0) * (2**idx)
+                if sleep_s > 0:
+                    logger.debug("Embedding {} retry {}/{} after {}", op, idx + 1, attempts, exc)
+                    time.sleep(sleep_s)
+        if last_exc is not None:
+            raise last_exc
+
+    def _compute_source_embeddings(self, texts: list[str]) -> list[list[float]]:
+        embed_fn = self._embed_fn
+        if not embed_fn:
+            return []
+        assert embed_fn is not None
+        return self._call_embedding_with_retry(
+            lambda: embed_fn.compute_source_embeddings(texts),
+            op="source",
+        )
+
+    def _compute_query_embeddings(self, query: str) -> list[list[float]]:
+        embed_fn = self._embed_fn
+        if not embed_fn:
+            return []
+        assert embed_fn is not None
+        return self._call_embedding_with_retry(
+            lambda: embed_fn.compute_query_embeddings(query),
+            op="query",
+        )
+
+    def _vector_table_needs_rebuild(self, *, expected_dim: int) -> bool:
+        if not self._vec_tbl:
+            return False
+        try:
+            rows = self._vec_tbl.search().limit(3).to_list()
+        except Exception:
+            return True
+        if not rows:
+            return False
+        sample = rows[0]
+        if "key" not in sample:
+            return True
+        vec = sample.get("vector")
+        current_dim = len(vec) if isinstance(vec, Sized) else 0
+        if current_dim <= 0:
+            return True
+        return current_dim != expected_dim
+
+    def _rebuild_vector_table(self, ndim: int) -> None:
+        self._db.drop_table("memory_vectors")
+        self._vec_tbl = ensure_table(
+            self._db,
+            "memory_vectors",
+            [{"key": "_init_", "content": "", "type": "long_term", "vector": [0.0] * ndim}],
+        )
+        logger.info("🔁 重建向量表 / vector table rebuilt (dim={})", ndim)
 
     @staticmethod
     def _resolve_embedding_backend(registry: Any, cfg: Any) -> tuple[str, dict[str, Any]]:
@@ -256,25 +400,62 @@ class MemoryStore:
         if not self._embed_fn or not self._vec_tbl:
             return
         try:
-            if any(v.get("content", "").strip() for v in self._vec_tbl.search().limit(2).to_list()):
-                return
-            rows = self._tbl.search().where("type != '_init_'").limit(500).to_list()
-            count = 0
+            with self._store_lock:
+                rows = self._tbl.search().where("type != '_init_'").to_list()
+            main_by_key: dict[str, dict[str, Any]] = {}
             for r in rows:
+                key = r.get("key", "")
                 content = r.get("content", "").strip()
                 type_ = r.get("type", "")
-                if not content or not type_:
-                    continue
-                try:
-                    vec = self._embed_fn.compute_source_embeddings([content])[0]
-                    self._vec_tbl.add([{"content": content, "type": type_, "vector": vec}])
+                if key and content and type_:
+                    main_by_key[key] = r
+            with self._store_lock:
+                vec_rows = self._vec_tbl.search().to_list()
+            vec_by_key = {
+                r.get("key", ""): r for r in vec_rows if r.get("key") and r.get("key") != "_init_"
+            }
+
+            count = 0
+            refresh_count = 0
+            for key, r in main_by_key.items():
+                content = r.get("content", "")
+                type_ = r.get("type", "")
+                existing = vec_by_key.get(key)
+                if not existing:
+                    self._store_vector_for_row(key=key, content=content, type_=type_)
                     count += 1
-                except Exception:
                     continue
+                if existing.get("content", "") != content or existing.get("type", "") != type_:
+                    self._store_vector_for_row(key=key, content=content, type_=type_)
+                    refresh_count += 1
             if count:
                 logger.info("🧠 补全向量 / embeddings backfilled: {} records", count)
+            if refresh_count:
+                logger.info("♻️ 刷新向量 / embeddings refreshed: {} records", refresh_count)
         except Exception as e:
             logger.warning("⚠️ 向量补全失败 / embedding backfill failed: {}", e)
+
+    def _delete_vector_by_key(self, key: str) -> None:
+        if not self._vec_tbl or not key:
+            return
+        key_safe = key.replace("'", "''")
+        with self._store_lock:
+            if not self._vec_tbl:
+                return
+            self._vec_tbl.delete(f"key = '{key_safe}'")
+
+    def _store_vector_for_row(self, *, key: str, content: str, type_: str) -> None:
+        if not self._vec_tbl or not self._embed_fn or not key or not content.strip() or not type_:
+            return
+        vectors = self._compute_source_embeddings([content])
+        vec = vectors[0] if vectors else None
+        if not isinstance(vec, Sized) or len(vec) == 0:
+            raise ValueError("embedding returned empty vector")
+        with self._store_lock:
+            if not self._vec_tbl:
+                return
+            self._delete_vector_by_key(key)
+            self._vec_tbl.add([{"key": key, "content": content, "type": type_, "vector": vec}])
 
     def _migrate_legacy(self, workspace: Path) -> None:
         mem_file = workspace / "memory" / "MEMORY.md"
@@ -439,9 +620,20 @@ class MemoryStore:
     def _enrich_for_rerank(self, vec_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Cross-reference vector results with main table to get columnar metadata for rerank."""
         try:
+            keys = [str(vr.get("key", "")) for vr in vec_rows if vr.get("key")]
             with self._store_lock:
-                main_rows = self._tbl.search().where("type != '_init_'").limit(500).to_list()
-            # Build (content, type) keyed map to avoid cross-type mismatches
+                key_map: dict[str, dict[str, Any]] = {}
+                for key in keys:
+                    key_safe = key.replace("'", "''")
+                    rows = self._tbl.search().where(f"key = '{key_safe}'").limit(1).to_list()
+                    if rows:
+                        key_map[key] = rows[0]
+                needs_fallback = any(not vr.get("key") for vr in vec_rows)
+                main_rows = (
+                    self._tbl.search().where("type != '_init_'").limit(500).to_list()
+                    if needs_fallback
+                    else []
+                )
             content_map: dict[tuple[str, str], dict[str, Any]] = {}
             for r in main_rows:
                 c = r.get("content", "")
@@ -450,17 +642,15 @@ class MemoryStore:
                     content_map[(c, t)] = r
             enriched = []
             for vr in vec_rows:
+                key = vr.get("key", "")
                 vc = vr.get("content", "")
                 vt = vr.get("type", "")
-                matched = content_map.get((vc, vt))
+                matched = key_map.get(key) if key else content_map.get((vc, vt))
                 if matched:
                     merged = dict(matched)
                     if "_distance" in vr:
                         merged["_distance"] = vr["_distance"]
                     enriched.append(merged)
-                elif vc:
-                    # No main-table match; keep vector row with distance
-                    enriched.append(vr)
             return enriched
         except Exception:
             return vec_rows
@@ -565,7 +755,7 @@ class MemoryStore:
                         )
                     ]
                 )
-        self._embed_long_term_aggregate()
+        self._schedule_long_term_embedding()
 
     def write_categorized_memory(self, updates: dict[str, Any]) -> None:
         """Write multiple memory categories at once."""
@@ -598,54 +788,67 @@ class MemoryStore:
                             )
                         ]
                     )
-        self._embed_long_term_aggregate()
+        self._schedule_long_term_embedding()
 
     def append_history(self, entry: str) -> None:
         cleaned = entry.rstrip()
+        row_key = ""
         with self._store_lock:
             ts = datetime.now().isoformat()
+            row_key = f"history_{ts}"
             self._tbl.add(
                 [
                     self._make_row(
-                        key=f"history_{ts}",
+                        key=row_key,
                         content=cleaned,
                         type_="history",
                         updated_at=ts,
                     )
                 ]
             )
-        self._embed_and_store(cleaned, "history")
+        self._embed_and_store(key=row_key, content=cleaned, type_="history")
 
     def _embed_long_term_aggregate(self) -> None:
         """Rebuild long_term vector from all categories combined."""
         aggregated = self.read_long_term()  # all categories
         if aggregated:
-            self._embed_and_store(aggregated, "long_term")
+            self._embed_and_store(
+                key="long_term_aggregate",
+                content=aggregated,
+                type_="long_term",
+            )
         elif self._vec_tbl:
             try:
                 with self._store_lock:
                     rows = self._tbl.search().where("type = 'long_term'").limit(20).to_list()
                     has_content = any(r.get("content", "").strip() for r in rows) if rows else False
                     if not has_content and self._vec_tbl:
-                        self._vec_tbl.delete("type = 'long_term'")
+                        self._delete_vector_by_key("long_term_aggregate")
             except Exception as e:
                 logger.warning("⚠️ 长期向量清理失败 / long-term vector clear failed: {}", e)
 
     def embed_long_term_aggregate(self) -> None:
         self._embed_long_term_aggregate()
 
-    def _embed_and_store(self, content: str, type_: str) -> None:
-        embed_fn = self._embed_fn
-        if not embed_fn or not self._vec_tbl or not content.strip():
+    def _schedule_long_term_embedding(self) -> None:
+        if not self._embed_fn or not self._vec_tbl:
+            return
+
+        fut = self._MEMORY_BG_EXECUTOR.submit(self._embed_long_term_aggregate)
+
+        def _log_if_failed(future) -> None:
+            try:
+                future.result()
+            except Exception as e:
+                logger.warning("⚠️ 长期向量异步更新失败 / async long-term embedding failed: {}", e)
+
+        fut.add_done_callback(_log_if_failed)
+
+    def _embed_and_store(self, *, key: str, content: str, type_: str) -> None:
+        if not self._embed_fn or not self._vec_tbl or not content.strip():
             return
         try:
-            vec = embed_fn.compute_source_embeddings([content])[0]
-            with self._store_lock:
-                if not self._vec_tbl:
-                    return
-                if type_ == "long_term":
-                    self._vec_tbl.delete("type = 'long_term'")
-                self._vec_tbl.add([{"content": content, "type": type_, "vector": vec}])
+            self._store_vector_for_row(key=key, content=content, type_=type_)
         except Exception as e:
             logger.warning("⚠️ 向量写入失败 / embedding store failed: {}", e)
 
@@ -654,7 +857,10 @@ class MemoryStore:
         embed_fn = self._embed_fn
         if embed_fn and self._vec_tbl:
             try:
-                vec = embed_fn.compute_query_embeddings(query)[0]
+                vectors = self._compute_query_embeddings(query)
+                vec = vectors[0] if vectors else None
+                if not isinstance(vec, Sized) or len(vec) == 0:
+                    raise ValueError("query embedding returned empty vector")
                 with self._store_lock:
                     if not self._vec_tbl:
                         return self._fallback_text_search(
@@ -693,8 +899,10 @@ class MemoryStore:
         keywords: str = "",
         reasoning_trace: str = "",
     ) -> None:
+        row_key = ""
         with self._store_lock:
             ts = datetime.now().isoformat()
+            row_key = f"experience_{ts}"
             parts = [f"Task: {task}", f"Lessons: {lessons}"]
             if keywords:
                 parts.append(f"Keywords: {keywords}")
@@ -704,7 +912,7 @@ class MemoryStore:
             self._tbl.add(
                 [
                     self._make_row(
-                        key=f"experience_{ts}",
+                        key=row_key,
                         content=content,
                         type_="experience",
                         category=category,
@@ -714,7 +922,7 @@ class MemoryStore:
                     )
                 ]
             )
-        self._embed_and_store(content, "experience")
+        self._embed_and_store(key=row_key, content=content, type_="experience")
 
     def _confidence(self, row: dict[str, Any]) -> float:
         uses = row.get("uses", 0)
@@ -774,7 +982,10 @@ class MemoryStore:
         """Fetch experience candidates via vector or BM25 fallback."""
         if self._embed_fn and self._vec_tbl:
             try:
-                vec = self._embed_fn.compute_query_embeddings(query)[0]
+                vectors = self._compute_query_embeddings(query)
+                vec = vectors[0] if vectors else None
+                if not isinstance(vec, Sized) or len(vec) == 0:
+                    raise ValueError("query embedding returned empty vector")
                 vec_rows = (
                     self._vec_tbl.search(vec).where("type = 'experience'").limit(fetch).to_list()
                 )
@@ -794,7 +1005,25 @@ class MemoryStore:
     def _enrich_vector_results(self, vec_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Cross-reference vector results with main table to get columnar metadata."""
         try:
-            main_rows = self._tbl.search().where("type = 'experience'").limit(500).to_list()
+            keys = [str(vr.get("key", "")) for vr in vec_rows if vr.get("key")]
+            key_map: dict[str, dict[str, Any]] = {}
+            with self._store_lock:
+                for key in keys:
+                    key_safe = key.replace("'", "''")
+                    rows = (
+                        self._tbl.search()
+                        .where(f"type = 'experience' AND key = '{key_safe}'")
+                        .limit(1)
+                        .to_list()
+                    )
+                    if rows:
+                        key_map[key] = rows[0]
+                needs_fallback = any(not vr.get("key") for vr in vec_rows)
+                main_rows = (
+                    self._tbl.search().where("type = 'experience'").limit(500).to_list()
+                    if needs_fallback
+                    else []
+                )
             content_map: dict[str, dict[str, Any]] = {}
             for r in main_rows:
                 c = r.get("content", "")
@@ -802,9 +1031,11 @@ class MemoryStore:
                     content_map[c] = r
             enriched = []
             for vr in vec_rows:
+                key = vr.get("key", "")
                 vc = vr.get("content", "")
-                if vc and vc in content_map:
-                    enriched.append(content_map[vc])
+                matched = key_map.get(key) if key else content_map.get(vc)
+                if matched:
+                    enriched.append(matched)
             return enriched
         except Exception:
             return []
@@ -973,6 +1204,7 @@ class MemoryStore:
                     )
                     if should_remove and (key := r.get("key")):
                         self._tbl.delete(f"key = '{key}'")
+                        self._delete_vector_by_key(key)
                         removed += 1
                 if removed:
                     logger.info("🧹 清理经验 / stale experiences cleaned: {}", removed)
@@ -1005,6 +1237,7 @@ class MemoryStore:
         category: str = "general",
         quality: int = 4,
     ) -> None:
+        merged_key = ""
         with self._store_lock:
             try:
                 rows = self._tbl.search().where("type = 'experience'").limit(200).to_list()
@@ -1012,11 +1245,13 @@ class MemoryStore:
                 for entry in old_entries:
                     if key := content_to_key.get(entry):
                         self._tbl.delete(f"key = '{key}'")
+                        self._delete_vector_by_key(key)
                 ts = datetime.now().isoformat()
+                merged_key = f"experience_merged_{ts}"
                 self._tbl.add(
                     [
                         self._make_row(
-                            key=f"experience_merged_{ts}",
+                            key=merged_key,
                             content=merged_content,
                             type_="experience",
                             category=category,
@@ -1029,7 +1264,7 @@ class MemoryStore:
             except Exception as e:
                 logger.warning("⚠️ 合并经验失败 / experience merge failed: {}", e)
                 return
-        self._embed_and_store(merged_content, "experience")
+        self._embed_and_store(key=merged_key, content=merged_content, type_="experience")
 
     @staticmethod
     def _tokenize(text: str) -> list[str]:
@@ -1058,7 +1293,9 @@ class MemoryStore:
             latin_buf: list[str] = []
             for c in w:
                 if (
-                "\u4e00" <= c <= "\u9fff" or "\u3040" <= c <= "\u30ff" or "\uac00" <= c <= "\ud7af"
+                    "\u4e00" <= c <= "\u9fff"
+                    or "\u3040" <= c <= "\u30ff"
+                    or "\uac00" <= c <= "\ud7af"
                 ):
                     if latin_buf:
                         latin = "".join(latin_buf)

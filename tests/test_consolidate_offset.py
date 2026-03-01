@@ -1,7 +1,8 @@
 """Test session management with cache-friendly message handling."""
 
-import pytest
 from pathlib import Path
+
+from bao.agent.loop import _archive_all_signature
 from bao.session.manager import Session, SessionManager
 
 # Test constants
@@ -26,7 +27,9 @@ def create_session_with_messages(key: str, count: int, role: str = "user") -> Se
     return session
 
 
-def assert_messages_content(messages: list, start_index: int, end_index: int) -> None:
+def assert_messages_content(
+    messages: list[dict[str, str]], start_index: int, end_index: int
+) -> None:
     """Assert that messages contain expected content from start to end index.
 
     Args:
@@ -39,7 +42,9 @@ def assert_messages_content(messages: list, start_index: int, end_index: int) ->
     assert messages[-1]["content"] == f"msg{end_index}"
 
 
-def get_old_messages(session: Session, last_consolidated: int, keep_count: int) -> list:
+def get_old_messages(
+    session: Session, last_consolidated: int, keep_count: int
+) -> list[dict[str, str]]:
     """Extract messages that would be consolidated using the standard slice logic.
 
     Args:
@@ -156,12 +161,9 @@ class TestSessionImmutableHistory:
 class TestSessionPersistence:
     """Test Session persistence and reload."""
 
-    @pytest.fixture
-    def temp_manager(self, tmp_path):
-        return SessionManager(Path(tmp_path))
-
-    def test_persistence_roundtrip(self, temp_manager):
+    def test_persistence_roundtrip(self, tmp_path):
         """Test that messages persist across save/load."""
+        temp_manager = SessionManager(Path(tmp_path))
         session1 = create_session_with_messages("test:persistence", 20)
         temp_manager.save(session1)
 
@@ -170,8 +172,9 @@ class TestSessionPersistence:
         assert session2.messages[0]["content"] == "msg0"
         assert session2.messages[-1]["content"] == "msg19"
 
-    def test_get_history_after_reload(self, temp_manager):
+    def test_get_history_after_reload(self, tmp_path):
         """Test that get_history works correctly after reload."""
+        temp_manager = SessionManager(Path(tmp_path))
         session1 = create_session_with_messages("test:reload", 30)
         temp_manager.save(session1)
 
@@ -181,7 +184,7 @@ class TestSessionPersistence:
         assert history[0]["content"] == "msg20"
         assert history[-1]["content"] == "msg29"
 
-    def test_clear_resets_session(self, temp_manager):
+    def test_clear_resets_session(self, tmp_path):
         """Test that clear() properly resets session."""
         session = create_session_with_messages("test:clear", 10)
         assert len(session.messages) == 10
@@ -302,17 +305,34 @@ class TestArchiveAllMode:
 
         assert session.last_consolidated == 0
 
-    def test_archive_all_resets_last_consolidated(self):
-        """Test that archive_all mode resets last_consolidated to 0."""
+    def test_archive_all_keeps_last_consolidated_unchanged(self):
+        """Test that archive_all mode does not mutate source session cursor."""
         session = create_session_with_messages("test:reset", 40)
         session.last_consolidated = 15
 
         archive_all = True
         if archive_all:
-            session.last_consolidated = 0
+            pass
 
-        assert session.last_consolidated == 0
+        assert session.last_consolidated == 15
         assert len(session.messages) == 40
+
+    def test_archive_all_signature_changes_when_messages_change(self):
+        session = create_session_with_messages("test:archive_sig", 2)
+        sig1 = _archive_all_signature(session.messages)
+        session.add_message("assistant", "tail")
+        sig2 = _archive_all_signature(session.messages)
+
+        assert sig1
+        assert sig2
+        assert sig1 != sig2
+
+    def test_archive_all_signature_stable_without_new_messages(self):
+        session = create_session_with_messages("test:archive_sig_stable", 3)
+        sig1 = _archive_all_signature(session.messages)
+        sig2 = _archive_all_signature(session.messages)
+
+        assert sig1 == sig2
 
     def test_archive_all_vs_normal_consolidation(self):
         """Test difference between archive_all and normal consolidation."""

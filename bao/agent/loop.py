@@ -40,6 +40,137 @@ if TYPE_CHECKING:
 
 
 _ERROR_KEYWORDS = ("error:", "traceback", "failed", "exception", "permission denied")
+_TOOL_OBS_LAST_KEY = "_tool_observability_last"
+_TOOL_OBS_RECENT_KEY = "_tool_observability_recent"
+_TOOL_OBS_RECENT_LIMIT = 20
+_TOOL_BUNDLE_CORE = "core"
+_TOOL_BUNDLE_WEB = "web"
+_TOOL_BUNDLE_DESKTOP = "desktop"
+_TOOL_BUNDLE_CODE = "code"
+_TOOL_BUNDLES = frozenset(
+    {_TOOL_BUNDLE_CORE, _TOOL_BUNDLE_WEB, _TOOL_BUNDLE_DESKTOP, _TOOL_BUNDLE_CODE}
+)
+_WEB_SIGNAL_TOKENS = (
+    "http://",
+    "https://",
+    "www.",
+    "网页",
+    "网站",
+    "url",
+    "搜索",
+    "search",
+    "crawl",
+    "fetch",
+    "浏览",
+)
+_DESKTOP_SIGNAL_TOKENS = (
+    "desktop",
+    "screen",
+    "screenshot",
+    "click",
+    "type",
+    "drag",
+    "scroll",
+    "键盘",
+    "屏幕",
+    "截图",
+    "点击",
+    "输入",
+)
+_CODE_SIGNAL_TOKENS = (
+    "code",
+    "repo",
+    "git",
+    "test",
+    "debug",
+    "refactor",
+    "python",
+    "javascript",
+    "typescript",
+    "bash",
+    "文件",
+    "代码",
+    "脚本",
+    "函数",
+    "修复",
+)
+_CORE_TOOL_NAMES = frozenset(
+    {
+        "message",
+        "spawn",
+        "check_tasks",
+        "cancel_task",
+        "remember",
+        "forget",
+        "update_memory",
+        "cron",
+        "generate_image",
+    }
+)
+_WEB_TOOL_NAMES = frozenset({"web_search", "web_fetch"})
+_DESKTOP_TOOL_NAMES = frozenset(
+    {
+        "screenshot",
+        "click",
+        "type_text",
+        "key_press",
+        "scroll",
+        "drag",
+        "get_screen_info",
+    }
+)
+_CODE_TOOL_NAMES = frozenset(
+    {
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_dir",
+        "exec",
+        "coding_agent",
+        "coding_agent_details",
+    }
+)
+
+_GREETING_WORDS = frozenset(
+    {
+        "hi",
+        "hello",
+        "hey",
+        "yo",
+        "你好",
+        "您好",
+        "在吗",
+        "忙吗",
+        "嗯",
+        "ok",
+        "好",
+        "好的",
+        "哈喽",
+        "嘿",
+        "哈",
+        "嗨",
+    }
+)
+
+
+def _extract_text(content: Any) -> str:
+    """Extract text from message content (str or multimodal list)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            str(p.get("text") or "")
+            for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+    return str(content) if content else ""
+
+
+def _archive_all_signature(messages: list[dict[str, Any]]) -> str:
+    if not messages:
+        return ""
+    tail_ts = str(messages[-1].get("timestamp", ""))
+    return f"{len(messages)}:{tail_ts}"
 
 
 class AgentLoop:
@@ -137,6 +268,18 @@ class AgentLoop:
         self._mcp_slim_schema = (
             raw_mcp_slim_schema if isinstance(raw_mcp_slim_schema, bool) else True
         )
+        tool_exposure_cfg = getattr(tools_cfg, "tool_exposure", None)
+        raw_mode = str(getattr(tool_exposure_cfg, "mode", "off") or "off").lower()
+        self._tool_exposure_mode = raw_mode if raw_mode in ("off", "auto") else "off"
+        raw_bundles = getattr(tool_exposure_cfg, "bundles", None)
+        bundles = (
+            [str(item).strip().lower() for item in raw_bundles]
+            if isinstance(raw_bundles, list)
+            else []
+        )
+        self._tool_exposure_bundles = {item for item in bundles if item in _TOOL_BUNDLES}
+        if not self._tool_exposure_bundles:
+            self._tool_exposure_bundles = set(_TOOL_BUNDLES)
         self._mcp_stack: AsyncExitStack | None = None
         self._mcp_connected = False
         self._mcp_connect_succeeded = False
@@ -147,12 +290,14 @@ class AgentLoop:
         self._session_generations: dict[str, int] = {}
         self._session_running_task: dict[str, asyncio.Task[None]] = {}
         self._interrupted_tasks: set[asyncio.Task[None]] = set()
+        self._title_generation_inflight: set[str] = set()
         self._last_tool_budget: dict[str, int] = {
             "offloaded_count": 0,
             "offloaded_chars": 0,
             "clipped_count": 0,
             "clipped_chars": 0,
         }
+        self._last_tool_observability: dict[str, Any] = {}
         self._register_default_tools()
 
         self._utility_model: str | None = None
@@ -370,6 +515,58 @@ class AgentLoop:
                 set_ctx(channel, chat_id, session_key=session_key)
 
     @staticmethod
+    def _latest_user_text(messages: list[dict[str, Any]]) -> str:
+        for msg in reversed(messages):
+            if msg.get("role") != "user":
+                continue
+            text = _extract_text(msg.get("content", ""))
+            if text:
+                return text.lower()
+        return ""
+
+    @staticmethod
+    def _bundle_for_tool_name(name: str) -> str | None:
+        if name in _WEB_TOOL_NAMES:
+            return _TOOL_BUNDLE_WEB
+        if name in _DESKTOP_TOOL_NAMES:
+            return _TOOL_BUNDLE_DESKTOP
+        if name in _CODE_TOOL_NAMES:
+            return _TOOL_BUNDLE_CODE
+        if name in _CORE_TOOL_NAMES:
+            return _TOOL_BUNDLE_CORE
+        return None
+
+    def _auto_route_bundles(self, user_text: str) -> set[str]:
+        bundles = {_TOOL_BUNDLE_CORE}
+        if any(token in user_text for token in _WEB_SIGNAL_TOKENS):
+            bundles.add(_TOOL_BUNDLE_WEB)
+        if any(token in user_text for token in _DESKTOP_SIGNAL_TOKENS):
+            bundles.add(_TOOL_BUNDLE_DESKTOP)
+        if any(token in user_text for token in _CODE_SIGNAL_TOKENS):
+            bundles.add(_TOOL_BUNDLE_CODE)
+        return bundles
+
+    def _select_tool_names_for_turn(
+        self, initial_messages: list[dict[str, Any]]
+    ) -> set[str] | None:
+        mode = self._tool_exposure_mode
+        if mode == "off":
+            return None
+        enabled_bundles = self._tool_exposure_bundles
+        user_text = self._latest_user_text(initial_messages)
+        selected_bundles = self._auto_route_bundles(user_text) & enabled_bundles
+        if not selected_bundles:
+            selected_bundles = {_TOOL_BUNDLE_CORE} & enabled_bundles
+        selected_names: set[str] = set()
+        for name in self.tools.tool_names:
+            bundle = self._bundle_for_tool_name(name)
+            if bundle and bundle in selected_bundles:
+                selected_names.add(name)
+            elif bundle is None:
+                selected_names.add(name)
+        return selected_names
+
+    @staticmethod
     def _strip_think(text: str | None) -> str | None:
         if not text:
             return None
@@ -473,6 +670,50 @@ class AgentLoop:
                     pass
             raise
 
+    @staticmethod
+    def _estimate_payload_bytes(payload: Any) -> int:
+        try:
+            return len(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            )
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _estimate_token_count(byte_size: int) -> int:
+        if byte_size <= 0:
+            return 0
+        return (byte_size + 3) // 4
+
+    @staticmethod
+    def _safe_rate(numerator: int, denominator: int) -> float | None:
+        if denominator <= 0:
+            return None
+        return round(numerator / denominator, 4)
+
+    def _persist_tool_observability(
+        self,
+        session: Session,
+        *,
+        channel: str,
+        session_key: str,
+    ) -> None:
+        if not self._last_tool_observability:
+            return
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "channel": channel,
+            "session_key": session_key,
+            **self._last_tool_observability,
+        }
+        session.metadata[_TOOL_OBS_LAST_KEY] = entry
+        raw_recent = session.metadata.get(_TOOL_OBS_RECENT_KEY)
+        recent = raw_recent if isinstance(raw_recent, list) else []
+        recent.append(entry)
+        if len(recent) > _TOOL_OBS_RECENT_LIMIT:
+            del recent[:-_TOOL_OBS_RECENT_LIMIT]
+        session.metadata[_TOOL_OBS_RECENT_KEY] = recent
+
     @overload
     async def _run_agent_loop(
         self,
@@ -551,6 +792,18 @@ class AgentLoop:
             "clipped_count": 0,
             "clipped_chars": 0,
         }
+        schema_samples = 0
+        schema_tool_count_last = 0
+        schema_tool_count_max = 0
+        schema_bytes_last = 0
+        schema_bytes_max = 0
+        schema_bytes_total = 0
+        tool_calls_ok = 0
+        invalid_parameter_errors = 0
+        tool_not_found_errors = 0
+        execution_errors = 0
+        interrupted_tool_calls = 0
+        retry_attempts_proxy = 0
 
         while iteration < self.max_iterations:
             iteration += 1
@@ -622,10 +875,32 @@ class AgentLoop:
 
                 _stream_progress = _interruptable_progress
 
+            selected_tool_names = self._select_tool_names_for_turn(initial_messages)
+            current_tools = (
+                []
+                if force_final_response
+                else self.tools.get_definitions(names=selected_tool_names)
+            )
+            if current_tools and schema_samples == 0:
+                current_schema_bytes = self._estimate_payload_bytes(current_tools)
+                schema_samples += 1
+                schema_tool_count_last = len(current_tools)
+                schema_tool_count_max = max(schema_tool_count_max, schema_tool_count_last)
+                schema_bytes_last = current_schema_bytes
+                schema_bytes_max = max(schema_bytes_max, current_schema_bytes)
+                schema_bytes_total += current_schema_bytes
+                logger.debug(
+                    "Tool schema payload: iteration={}, tools={}, bytes={}, est_tokens={}",
+                    iteration,
+                    schema_tool_count_last,
+                    current_schema_bytes,
+                    self._estimate_token_count(current_schema_bytes),
+                )
+
             try:
                 response = await self.provider.chat(
                     messages=messages,
-                    tools=[] if force_final_response else self.tools.get_definitions(),
+                    tools=current_tools,
                     model=self.model,
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
@@ -686,6 +961,8 @@ class AgentLoop:
                     interrupted = True
                     break
                 for tool_call in response.tool_calls:
+                    if consecutive_errors > 0:
+                        retry_attempts_proxy += 1
                     tools_used.append(tool_call.name)
                     args_preview = shared.summarize_tool_args_for_trace(
                         tool_call.name,
@@ -698,6 +975,14 @@ class AgentLoop:
                     )
                     raw_result = await self._await_tool_with_interrupt(tool_task, current_task_ref)
                     result_text = raw_result if isinstance(raw_result, str) else str(raw_result)
+                    if result_text.startswith("Error: Invalid parameters for tool "):
+                        invalid_parameter_errors += 1
+                    if result_text.startswith("Error: Tool '") and " not found." in result_text:
+                        tool_not_found_errors += 1
+                    if result_text.startswith("Error executing "):
+                        execution_errors += 1
+                    if result_text == self._TOOL_CANCELLED_MSG:
+                        interrupted_tool_calls += 1
                     result, budget_event = apply_tool_output_budget(
                         store=_artifact_store,
                         tool_name=tool_call.name,
@@ -808,6 +1093,7 @@ class AgentLoop:
                         )
                     else:
                         consecutive_errors = 0
+                        tool_calls_ok += 1
 
                     # Interrupt: yield to pending user message at tool boundary
                     if current_task_ref is not None and current_task_ref in self._interrupted_tasks:
@@ -862,6 +1148,36 @@ class AgentLoop:
                 break
 
         self._last_tool_budget = tool_budget
+        total_tool_calls = len(tools_used)
+        tool_calls_error = max(0, total_tool_calls - tool_calls_ok)
+        parameter_fill_success = max(0, total_tool_calls - invalid_parameter_errors)
+        schema_bytes_avg = schema_bytes_total // schema_samples if schema_samples > 0 else 0
+        self._last_tool_observability = {
+            "schema_samples": schema_samples,
+            "schema_tool_count_last": schema_tool_count_last,
+            "schema_tool_count_max": schema_tool_count_max,
+            "schema_bytes_last": schema_bytes_last,
+            "schema_bytes_max": schema_bytes_max,
+            "schema_bytes_avg": schema_bytes_avg,
+            "schema_tokens_est_last": self._estimate_token_count(schema_bytes_last),
+            "tool_calls_total": total_tool_calls,
+            "tool_calls_ok": tool_calls_ok,
+            "tool_calls_error": tool_calls_error,
+            "invalid_parameter_errors": invalid_parameter_errors,
+            "tool_not_found_errors": tool_not_found_errors,
+            "execution_errors": execution_errors,
+            "interrupted_tool_calls": interrupted_tool_calls,
+            "retry_attempts_proxy": retry_attempts_proxy,
+            "post_error_tool_calls_proxy": retry_attempts_proxy,
+            "total_errors": total_errors,
+            "tool_selection_hit_rate": self._safe_rate(tool_calls_ok, total_tool_calls),
+            "parameter_fill_success_rate": self._safe_rate(
+                parameter_fill_success,
+                total_tool_calls,
+            ),
+            "retry_rate_proxy": self._safe_rate(retry_attempts_proxy, total_tool_calls),
+        }
+        logger.debug("Tool observability summary: {}", self._last_tool_observability)
         if return_interrupt:
             return (
                 final_content,
@@ -1121,13 +1437,28 @@ class AgentLoop:
             if session.messages:
                 old_messages = session.messages.copy()
                 old_key = session.key
+                old_metadata = dict(session.metadata)
+                old_last_consolidated = session.last_consolidated
+                old_created_at = session.created_at
+                old_updated_at = session.updated_at
+                archive_sig = _archive_all_signature(old_messages)
+                last_archive_sig = str(session.metadata.get("_last_archive_all_sig", ""))
 
                 async def _consolidate_old():
-                    temp = Session(key=old_key)
-                    temp.messages = old_messages
+                    temp = Session(
+                        key=old_key,
+                        messages=old_messages,
+                        metadata=old_metadata,
+                        last_consolidated=old_last_consolidated,
+                        created_at=old_created_at,
+                        updated_at=old_updated_at,
+                    )
                     await self._consolidate_memory(temp, archive_all=True)
 
-                asyncio.create_task(_consolidate_old())
+                if archive_sig and archive_sig != last_archive_sig:
+                    session.metadata["_last_archive_all_sig"] = archive_sig
+                    self.sessions.save(session)
+                    asyncio.create_task(_consolidate_old())
             idx = len(self.sessions.list_sessions_for(natural_key)) + 1
             name = f"s{idx}"
             while self.sessions.session_exists(f"{natural_key}::{name}"):
@@ -1173,7 +1504,7 @@ class AgentLoop:
             return commands.handle_session_command(msg, natural_key, sessions=self.sessions)
 
         if cmd == "/memory":
-            return self._handle_memory_command(msg, session)
+            return await self._handle_memory_command(msg, session)
 
         pending = session.metadata.pop("_pending_model_select", None)
         pending_session = session.metadata.pop("_pending_session_select", None)
@@ -1202,7 +1533,7 @@ class AgentLoop:
             or session.metadata.get("_pending_memory_delete")
             or session.metadata.get("_pending_memory_edit")
         ):
-            return self._handle_memory_input(msg, session)
+            return await self._handle_memory_input(msg, session)
 
         # ── File-driven onboarding state machine ──
         # Stage detection: no INSTRUCTIONS.md → lang_select
@@ -1432,6 +1763,7 @@ class AgentLoop:
             total_errors=total_errors,
             reasoning_snippets=reasoning_snippets,
         )
+        self._persist_tool_observability(session, channel=msg.channel, session_key=key)
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("💬 回复消息 / out: {}:{}: {}", msg.channel, msg.sender_id, preview)
@@ -1446,8 +1778,21 @@ class AgentLoop:
 
         self.sessions.save(session)
 
-        if len(session.messages) == 2 and not session.metadata.get("title"):
-            asyncio.create_task(self._generate_session_title(session))
+        user_turns = sum(1 for m in session.messages if m["role"] == "user")
+        if (
+            not session.metadata.get("title")
+            and user_turns <= 6
+            and session.key not in self._title_generation_inflight
+        ):
+            self._title_generation_inflight.add(session.key)
+
+            async def _generate_and_clear_title() -> None:
+                try:
+                    await self._generate_session_title(session)
+                finally:
+                    self._title_generation_inflight.discard(session.key)
+
+            asyncio.create_task(_generate_and_clear_title())
 
         if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
             return None
@@ -1456,6 +1801,8 @@ class AgentLoop:
         reply_to = out_meta.get("reply_to") if isinstance(out_meta.get("reply_to"), str) else None
         if any(self._last_tool_budget.values()):
             out_meta["_tool_budget"] = dict(self._last_tool_budget)
+        if self._last_tool_observability:
+            out_meta["_tool_observability"] = dict(self._last_tool_observability)
 
         return OutboundMessage(
             channel=msg.channel,
@@ -1514,6 +1861,11 @@ class AgentLoop:
             total_errors=total_errors,
             reasoning_snippets=reasoning_snippets,
         )
+        self._persist_tool_observability(
+            session,
+            channel=origin_channel,
+            session_key=session_key,
+        )
 
         session.add_message(
             "user", f"[System: {msg.sender_id}] {msg.content}", _source=msg.sender_id
@@ -1533,6 +1885,8 @@ class AgentLoop:
         reply_to = out_meta.get("reply_to") if isinstance(out_meta.get("reply_to"), str) else None
         if any(self._last_tool_budget.values()):
             out_meta["_tool_budget"] = dict(self._last_tool_budget)
+        if self._last_tool_observability:
+            out_meta["_tool_observability"] = dict(self._last_tool_observability)
 
         return OutboundMessage(
             channel=origin_channel,
@@ -1603,8 +1957,10 @@ class AgentLoop:
         self._clear_model_session_state(session)
         return True
 
-    def _handle_memory_command(self, msg: InboundMessage, session: Session) -> OutboundMessage:
-        entries = self.context.memory.list_long_term_entries()
+    async def _handle_memory_command(
+        self, msg: InboundMessage, session: Session
+    ) -> OutboundMessage:
+        entries = await asyncio.to_thread(self.context.memory.list_long_term_entries)
         if not entries:
             self._clear_memory_state(session)
             self.sessions.save(session)
@@ -1636,7 +1992,7 @@ class AgentLoop:
 
         return self._reply(msg, "\n".join(lines))
 
-    def _handle_memory_input(self, msg: InboundMessage, session: Session) -> OutboundMessage:
+    async def _handle_memory_input(self, msg: InboundMessage, session: Session) -> OutboundMessage:
         text = msg.content.strip()
         entries: list[dict[str, str]] = session.metadata.get("_memory_entries", [])
 
@@ -1646,7 +2002,8 @@ class AgentLoop:
                 entry = entries[idx - 1]
                 cat = entry.get("category", "general")
                 key = entry.get("key", "")
-                if not key or not self.context.memory.exists_long_term_key(key):
+                key_exists = await asyncio.to_thread(self.context.memory.exists_long_term_key, key)
+                if not key or not key_exists:
                     self._clear_memory_state(session)
                     self.sessions.save(session)
                     return self._reply(msg, "该记忆已失效，请重新 /memory")
@@ -1654,11 +2011,14 @@ class AgentLoop:
                     self._clear_memory_state(session)
                     self.sessions.save(session)
                     return self._reply(msg, "内容为空，已取消编辑")
-                if not self.context.memory.delete_long_term_by_key(key):
+                deleted_by_key = await asyncio.to_thread(
+                    self.context.memory.delete_long_term_by_key, key
+                )
+                if not deleted_by_key:
                     self._clear_memory_state(session)
                     self.sessions.save(session)
                     return self._reply(msg, "该记忆已失效，请重新 /memory")
-                self.context.memory.write_long_term(text, cat)
+                await asyncio.to_thread(self.context.memory.write_long_term, text, cat)
                 self._clear_memory_state(session)
                 self.sessions.save(session)
                 return self._reply(msg, f"已更新 [{cat}] 记忆 ✅")
@@ -1667,7 +2027,7 @@ class AgentLoop:
             return self._reply(msg, "无效操作，已退出记忆管理")
 
         if session.metadata.get("_pending_memory_delete"):
-            fresh = self.context.memory.list_long_term_entries()
+            fresh = await asyncio.to_thread(self.context.memory.list_long_term_entries)
             fresh_keys = {e.get("key", "") for e in fresh}
             parts = set(text.split())
             deleted = 0
@@ -1681,7 +2041,10 @@ class AgentLoop:
                             skipped += 1
                             continue
                         if key:
-                            if self.context.memory.delete_long_term_by_key(key):
+                            deleted_by_key = await asyncio.to_thread(
+                                self.context.memory.delete_long_term_by_key, key
+                            )
+                            if deleted_by_key:
                                 deleted += 1
                                 fresh_keys.discard(key)
             if deleted:
@@ -1709,13 +2072,15 @@ class AgentLoop:
                 if 0 < idx <= len(entries):
                     key = entries[idx - 1].get("key", "")
                     if key:
-                        fresh = self.context.memory.list_long_term_entries()
+                        fresh = await asyncio.to_thread(self.context.memory.list_long_term_entries)
                         fresh_keys = {e.get("key", "") for e in fresh}
                         if key not in fresh_keys:
                             self._clear_memory_state(session)
                             self.sessions.save(session)
                             return self._reply(msg, "该记忆已失效，无需删除")
-                        deleted = self.context.memory.delete_long_term_by_key(key)
+                        deleted = await asyncio.to_thread(
+                            self.context.memory.delete_long_term_by_key, key
+                        )
                         if deleted:
                             asyncio.create_task(
                                 asyncio.to_thread(self.context.memory.embed_long_term_aggregate)
@@ -1725,7 +2090,7 @@ class AgentLoop:
                 if deleted:
                     return self._reply(msg, "已删除该条记忆 🗑️")
                 return self._reply(msg, "删除失败")
-            return self._handle_memory_command(msg, session)
+            return await self._handle_memory_command(msg, session)
 
         if session.metadata.get("_pending_memory_list"):
             if text == "0":
@@ -1760,6 +2125,7 @@ class AgentLoop:
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> None:
         memory = self.context.memory
+        target_last_consolidated = session.last_consolidated
 
         if archive_all:
             old_messages = session.messages
@@ -1789,9 +2155,12 @@ class AgentLoop:
                 )
                 return
 
-            old_messages = session.messages[session.last_consolidated : -keep_count]
+            snapshot_total = len(session.messages)
+            snapshot_stop = max(session.last_consolidated, snapshot_total - keep_count)
+            old_messages = session.messages[session.last_consolidated : snapshot_stop]
             if not old_messages:
                 return
+            target_last_consolidated = snapshot_stop
             logger.info(
                 "🧠 开始整合 / consolidation start: {} total, {} new to consolidate, {} keep",
                 len(session.messages),
@@ -1855,16 +2224,19 @@ Respond with ONLY valid JSON, no markdown fences."""
         try:
             provider = self._utility_provider or self.provider
             model = self._utility_model or self.model
-            response = await provider.chat(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a memory consolidation agent. Respond only with valid JSON.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                model=model,
-                source="utility",
+            response = await asyncio.wait_for(
+                provider.chat(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are a memory consolidation agent. Respond only with valid JSON.",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    model=model,
+                    source="utility",
+                ),
+                timeout=90,
             )
             text = (response.content or "").strip()
             if not text:
@@ -1883,21 +2255,22 @@ Respond with ONLY valid JSON, no markdown fences."""
             if entry := result.get("history_entry"):
                 if not isinstance(entry, str):
                     entry = json.dumps(entry, ensure_ascii=False)
-                memory.append_history(entry)
+                await asyncio.to_thread(memory.append_history, entry)
             # Handle categorized memory updates (new) or single update (legacy)
             if updates := result.get("memory_updates"):
                 if isinstance(updates, dict):
-                    memory.write_categorized_memory(updates)
+                    await asyncio.to_thread(memory.write_categorized_memory, updates)
             elif update := result.get("memory_update"):
                 if not isinstance(update, str):
                     update = json.dumps(update, ensure_ascii=False)
                 if update != current_memory:
-                    memory.write_long_term(update)
+                    await asyncio.to_thread(memory.write_long_term, update)
 
             if archive_all:
-                session.last_consolidated = 0
+                pass
             else:
-                session.last_consolidated = len(session.messages) - keep_count
+                session.last_consolidated = target_last_consolidated
+                self.sessions.save(session)
             logger.info(
                 "✅ 完成整合 / consolidation done: {} messages, last_consolidated={}",
                 len(session.messages),
@@ -1932,34 +2305,72 @@ Respond with ONLY valid JSON, no markdown fences."""
     async def _generate_session_title(self, session: Session) -> None:
         if session.metadata.get("title"):
             return
-        user_msg = next((m for m in session.messages if m["role"] == "user"), None)
-        assistant_msg = next((m for m in session.messages if m["role"] == "assistant"), None)
-        if not user_msg or not assistant_msg:
+        # Find first non-greeting user message + its paired assistant reply
+        user_msg = None
+        user_idx = -1
+        for i, m in enumerate(session.messages):
+            if m["role"] == "user":
+                text = (
+                    _extract_text(m.get("content", ""))
+                    .strip()
+                    .strip("!\uff01?\uff1f.\u3002~\uff5e")
+                    .lower()
+                )
+                if text and text not in _GREETING_WORDS and len(text) >= 2:
+                    user_msg = m
+                    user_idx = i
+                    break
+        if not user_msg:
+            return
+        # Pick the assistant reply that follows the selected user message
+        assistant_msg = None
+        for m in session.messages[user_idx + 1 :]:
+            if m["role"] == "assistant" and _extract_text(m.get("content", "")):
+                assistant_msg = m
+                break
+        if not assistant_msg:
             return
 
-        user_content = user_msg["content"][:500]
-        assistant_content = assistant_msg["content"][:300]
+        user_content = _extract_text(user_msg["content"])[:500]
+        assistant_content = _extract_text(assistant_msg["content"])[:300]
 
         prompt = (
-            "Based on this conversation, generate a very short title (max 20 characters).\n"
-            "The title should capture the main topic. Use the same language as the user's message.\n\n"
+            "Generate a short conversation title. Rules:\n"
+            "- Chinese: max 12 chars. English: max 6 words\n"
+            "- No quotes, no periods, no prefixes like '\u5173\u4e8e...'\n"
+            "- Match the user's language\n\n"
             f"User: {user_content}\n"
             f"Assistant: {assistant_content}\n\n"
             'Return JSON: {"title": "your title here"}'
         )
 
+        fallback_text = _extract_text(user_msg["content"]).strip()[:20]
         try:
             result = await self._call_utility_llm(
                 "You are a conversation title generator. Respond only with valid JSON.",
                 prompt,
             )
-            if result and (title := result.get("title")):
-                title = str(title).strip()[:30]
-                session.metadata["title"] = title
+            title = (
+                str(result.get("title", ""))
+                .strip()
+                .strip("\"''\u201c\u201d\u2018\u2019\u3002.!\uff01")
+                if result
+                else ""
+            )
+            if title and not session.metadata.get("title"):
+                session.metadata["title"] = title[:30]
                 self.sessions.save(session)
-                logger.debug("Session title generated: {} → {}", session.key, title)
+                logger.debug("Session title generated: {} \u2192 {}", session.key, title[:30])
+                return
         except Exception as e:
             logger.debug("Session title generation failed: {}", e)
+        # Fallback: use first user message text
+        try:
+            if fallback_text and not session.metadata.get("title"):
+                session.metadata["title"] = fallback_text
+                self.sessions.save(session)
+        except Exception:
+            pass
 
     async def _call_experience_llm(self, system: str, prompt: str) -> dict[str, Any] | None:
         return await shared.call_experience_llm(
