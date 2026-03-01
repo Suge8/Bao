@@ -183,20 +183,25 @@ class OpenCodeTool(BaseCodingAgentTool):
         self, cwd: Path, title: str, timeout_seconds: int
     ) -> str | None:
         """Look up session ID by title via `opencode session list`."""
-        cmd = ["opencode", "session", "list", "--format", "json", "-n", "20"]
-        result = await self._run_command(cmd=cmd, cwd=cwd, timeout_seconds=min(timeout_seconds, 30))
-        if result["timed_out"] or result["returncode"] != 0:
-            return None
-        try:
-            sessions = json.loads(result["stdout"])
-        except (json.JSONDecodeError, ValueError):
-            return None
-        if isinstance(sessions, list):
-            for s in sessions:
-                if isinstance(s, dict) and s.get("title") == title:
-                    sid = s.get("id") or s.get("session_id")
-                    if isinstance(sid, str) and sid:
-                        return sid
+        for limit in (20, 100):
+            cmd = ["opencode", "session", "list", "--format", "json", "-n", str(limit)]
+            result = await self._run_command(
+                cmd=cmd,
+                cwd=cwd,
+                timeout_seconds=min(timeout_seconds, 30),
+            )
+            if result["timed_out"] or result["returncode"] != 0:
+                return None
+            try:
+                sessions = json.loads(result["stdout"])
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(sessions, list):
+                for s in sessions:
+                    if isinstance(s, dict) and s.get("title") == title:
+                        sid = s.get("id") or s.get("session_id")
+                        if isinstance(sid, str) and sid:
+                            return sid
         return None
 
     def _error_type_impl(self, stdout_text: str, stderr_text: str) -> str:

@@ -124,6 +124,43 @@ def test_codex_tool_continue_uses_context_session() -> None:
     assert "sess-cx-a" in calls[0]
 
 
+def test_codex_tool_retries_once_when_cached_session_is_stale() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        calls: list[list[str]] = []
+
+        async def _fake_run(cmd: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:
+            del cwd, timeout_seconds
+            calls.append(cmd)
+            if len(calls) == 1:
+                return {
+                    "timed_out": False,
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": "session not found",
+                }
+
+            out_idx = cmd.index("-o") + 1
+            Path(cmd[out_idx]).write_text("ok", encoding="utf-8")
+            stdout = json.dumps({"session_id": "sess-cx-fresh", "message": "ok"})
+            return {"timed_out": False, "returncode": 0, "stdout": stdout, "stderr": ""}
+
+        tool = CodexTool(workspace=Path(d))
+        tool.set_context("telegram", "alice")
+        tool._session_by_context["telegram:alice"] = "sess-cx-stale"
+        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/codex"):
+            with patch.object(CodexTool, "_run_command", staticmethod(_fake_run)):
+                result = _run(tool.execute(prompt="retry stale", response_format="json"))
+
+    payload = json.loads(result)
+    assert payload["status"] == "success"
+    assert payload["session_id"] == "sess-cx-fresh"
+    assert len(calls) == 2
+
+    assert calls[0][0:3] == ["codex", "exec", "resume"]
+    assert "sess-cx-stale" in calls[0]
+    assert calls[1][0:2] == ["codex", "exec"]
+
+
 def test_codex_details_fetches_by_request_id() -> None:
     with tempfile.TemporaryDirectory() as d:
 
