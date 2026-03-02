@@ -2,7 +2,7 @@
 
 基于 PySide6 + QML 的桌面客户端，**`bao` CLI 的纯 UI 壳子**。
 
-所有核心逻辑（AgentLoop、Channels、Cron、Heartbeat、startup greeting、首次落盘）均来自 `bao/` core，Desktop 不重复实现任何业务逻辑。网关需用户手动启动（点击侧边栏 ⏻ 按钮），启动后桌面聊天窗口作为 `desktop` channel 与 Telegram、iMessage 等其他渠道共存运行。
+所有核心逻辑（AgentLoop、Channels、Cron、Heartbeat、startup greeting、首次落盘）均来自 `bao/` core，Desktop 不重复实现任何业务逻辑。启动问候由 core 侧轻量 `provider.chat` 生成（PERSONA.md 置于 system prompt 最前面锚定语气 + CJK 本地化时间 + 原生语言 user trigger，不注入工具/技能上下文）；发送成功会打印 `💬 启动问候 / out` 日志（60 字预览），轻量路径失败时自动回退到 `process_direct(ephemeral=True)` 保底发送。网关需用户手动启动（点击侧边栏 ⏻ 按钮），启动后桌面聊天窗口作为 `desktop` channel 与 Telegram、iMessage 等其他渠道共存运行。
 
 当前窗口外观默认使用系统标题栏；在 Windows 上会尝试调用 DWM 请求原生圆角（Windows 11 效果最佳）。
 
@@ -22,7 +22,7 @@ uv sync --extra desktop
 uv run python app/main.py
 ```
 
-首次运行自动创建 `~/.bao/config.jsonc` 与默认 workspace（`~/.bao/workspace/`），无需手动初始化。若 `agents.defaults.model` 为空或 providers 中未配置 apiKey，App 自动跳转 Settings 页面引导完成配置。
+首次运行自动创建 `~/.bao/config.jsonc`（包含 `config_version`）与默认 workspace（`~/.bao/workspace/`），无需手动初始化。若 `agents.defaults.model` 为空或 providers 中未配置 apiKey，App 自动跳转 Settings 页面引导完成配置（OpenAI 兼容端点无需额外 `apiMode` 设置）。`Save` 成功后会立即恢复有效状态（`isValid=true`）；若 JSONC patch 失败会返回可见错误（`Patch failed`），不会让界面调用崩溃。
 
 ### 3. 使用流程
 
