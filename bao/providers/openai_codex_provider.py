@@ -8,7 +8,6 @@ import json
 from typing import Any, AsyncGenerator, Awaitable, Callable
 
 import httpx
-from loguru import logger
 from oauth_cli_kit import get_token as get_codex_token
 
 from bao.providers.base import LLMProvider, LLMResponse, ToolCallRequest
@@ -42,7 +41,12 @@ class OpenAICodexProvider(LLMProvider):
     ) -> LLMResponse:
         del max_tokens, temperature
         model = model or self.default_model
-        del kwargs
+        reasoning_effort = kwargs.get("reasoning_effort")
+        if not isinstance(reasoning_effort, str):
+            reasoning_effort = None
+        else:
+            effort = reasoning_effort.strip().lower()
+            reasoning_effort = effort if effort in {"low", "medium", "high"} else None
         system_prompt, input_items = _convert_messages(messages)
 
         token = await asyncio.to_thread(get_codex_token)
@@ -64,6 +68,8 @@ class OpenAICodexProvider(LLMProvider):
             "include": ["reasoning.encrypted_content"],
             "prompt_cache_key": _prompt_cache_key(messages),
         }
+        if reasoning_effort:
+            body["reasoning"] = {"effort": reasoning_effort}
 
         if tools:
             body["tools"] = _convert_tools(tools)
@@ -73,19 +79,9 @@ class OpenAICodexProvider(LLMProvider):
         url = DEFAULT_CODEX_URL
 
         try:
-            try:
-                content, tool_calls, finish_reason = await _request_codex(
-                    url, headers, body, verify=True, on_progress=on_progress
-                )
-            except Exception as e:
-                if "CERTIFICATE_VERIFY_FAILED" not in str(e):
-                    raise
-                logger.warning(
-                    "⚠️ Codex 证书校验失败 / TLS verify failed: retrying with verify=False"
-                )
-                content, tool_calls, finish_reason = await _request_codex(
-                    url, headers, body, verify=False, on_progress=on_progress
-                )
+            content, tool_calls, finish_reason = await _request_codex(
+                url, headers, body, verify=True, on_progress=on_progress
+            )
             return LLMResponse(
                 content=content,
                 tool_calls=tool_calls,

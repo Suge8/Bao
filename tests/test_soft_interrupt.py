@@ -37,7 +37,7 @@ async def test_soft_interrupt_presaves_user_message_when_busy():
 
         async def fake_run_agent_loop(initial_messages, **kwargs):
             del initial_messages, kwargs
-            return "ok", [], [], 0, [], False
+            return "ok", [], [], 0, [], False, False, []
 
         setattr(loop, "_run_agent_loop", fake_run_agent_loop)
 
@@ -66,9 +66,19 @@ async def test_soft_interrupt_presaves_user_message_when_busy():
             await asyncio.sleep(0.1)
 
             session = loop.sessions.get_or_create(dispatch_key)
-            assert any(
-                m.get("role") == "user" and m.get("content") == "m2" for m in session.messages
+            presaved = next(
+                (
+                    m
+                    for m in session.messages
+                    if m.get("role") == "user"
+                    and m.get("content") == "m2"
+                    and m.get("_pre_saved") is True
+                ),
+                None,
             )
+            assert presaved is not None
+            token = presaved.get("_pre_saved_token")
+            assert isinstance(token, str) and token
             assert loop._session_generations.get(dispatch_key, 0) >= 1
         finally:
             loop._running = False
@@ -119,7 +129,7 @@ async def test_interrupt_preserves_tool_order_with_presaved_current_message():
 
         async def fake_run_agent_loop(initial_messages, **kwargs):
             del initial_messages, kwargs
-            return None, [], [], 0, [], True, completed_tool_msgs
+            return None, [], [], 0, [], False, True, completed_tool_msgs
 
         setattr(loop, "_run_agent_loop", fake_run_agent_loop)
 
@@ -176,3 +186,303 @@ async def test_interrupt_preserves_tool_order_with_presaved_current_message():
         )
 
         assert idx_current < idx_assistant < idx_tool < idx_newer
+
+
+@pytest.mark.asyncio
+async def test_presaved_fallback_removes_only_presaved_history_item() -> None:
+    loop_bus = MessageBus()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    with tempfile.TemporaryDirectory() as td:
+        from bao.agent.loop import AgentLoop
+
+        ws = pathlib.Path(td)
+        (ws / "PERSONA.md").write_text("# Persona\n", encoding="utf-8")
+        (ws / "INSTRUCTIONS.md").write_text("# Instructions\n", encoding="utf-8")
+
+        loop = AgentLoop(
+            bus=loop_bus,
+            provider=provider,
+            workspace=ws,
+            model="test-model",
+        )
+
+        captured: dict[str, list[dict[str, object]]] = {}
+
+        async def fake_run_agent_loop(initial_messages, **kwargs):
+            del kwargs
+            captured["messages"] = initial_messages
+            return "ok", [], [], 0, [], False, False, []
+
+        setattr(loop, "_run_agent_loop", fake_run_agent_loop)
+
+        def _search_memory(query: str, limit: int = 5) -> list[str]:
+            del query, limit
+            return []
+
+        def _search_experience(query: str, limit: int = 3) -> list[str]:
+            del query, limit
+            return []
+
+        loop.context.memory.search_memory = _search_memory
+        loop.context.memory.search_experience = _search_experience
+
+        dispatch_key = "telegram:1"
+        session = loop.sessions.get_or_create(dispatch_key)
+        session.add_message("user", "m2", _pre_saved=True, _pre_saved_token="tok-old")
+        loop.sessions.save(session)
+
+        msg = InboundMessage(
+            channel="telegram",
+            sender_id="u",
+            chat_id="1",
+            content="m2",
+            metadata={"_pre_saved": True},
+        )
+
+        out = await loop._process_message(msg)
+        assert out is not None
+
+        initial_messages = captured["messages"]
+        user_count = sum(
+            1
+            for item in initial_messages
+            if item.get("role") == "user" and item.get("content") == "m2"
+        )
+        assert user_count == 1
+
+
+@pytest.mark.asyncio
+async def test_interrupt_non_presaved_fallback_skips_newer_presaved_same_content() -> None:
+    loop_bus = MessageBus()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    with tempfile.TemporaryDirectory() as td:
+        from bao.agent.loop import AgentLoop
+
+        ws = pathlib.Path(td)
+        (ws / "PERSONA.md").write_text("# Persona\n", encoding="utf-8")
+        (ws / "INSTRUCTIONS.md").write_text("# Instructions\n", encoding="utf-8")
+
+        loop = AgentLoop(
+            bus=loop_bus,
+            provider=provider,
+            workspace=ws,
+            model="test-model",
+        )
+
+        completed_tool_msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_same_content",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_same_content",
+                "name": "read_file",
+                "content": "ok",
+            },
+        ]
+
+        async def fake_run_agent_loop(initial_messages, **kwargs):
+            del initial_messages, kwargs
+            return None, [], [], 0, [], False, True, completed_tool_msgs
+
+        setattr(loop, "_run_agent_loop", fake_run_agent_loop)
+
+        def _search_memory(query: str, limit: int = 5) -> list[str]:
+            del query, limit
+            return []
+
+        def _search_experience(query: str, limit: int = 3) -> list[str]:
+            del query, limit
+            return []
+
+        loop.context.memory.search_memory = _search_memory
+        loop.context.memory.search_experience = _search_experience
+
+        dispatch_key = "telegram:1"
+        session = loop.sessions.get_or_create(dispatch_key)
+        session.add_message("user", "ok")
+        session.add_message("user", "ok", _pre_saved=True, _pre_saved_token="tok-new")
+        loop.sessions.save(session)
+
+        msg = InboundMessage(
+            channel="telegram",
+            sender_id="u",
+            chat_id="1",
+            content="ok",
+            metadata={"_ephemeral": True},
+        )
+
+        out = await loop._process_message(msg)
+        assert out is None
+
+        updated = loop.sessions.get_or_create(dispatch_key)
+        idx_regular_user = next(
+            i
+            for i, m in enumerate(updated.messages)
+            if m.get("role") == "user" and m.get("content") == "ok" and not m.get("_pre_saved")
+        )
+        idx_presaved_user = next(
+            i
+            for i, m in enumerate(updated.messages)
+            if m.get("role") == "user" and m.get("_pre_saved_token") == "tok-new"
+        )
+        idx_assistant = next(
+            i
+            for i, m in enumerate(updated.messages)
+            if m.get("role") == "assistant" and m.get("tool_calls")
+        )
+        idx_tool = next(
+            i
+            for i, m in enumerate(updated.messages)
+            if m.get("role") == "tool" and m.get("tool_call_id") == "call_same_content"
+        )
+
+        assert idx_regular_user < idx_assistant < idx_tool < idx_presaved_user
+
+
+@pytest.mark.asyncio
+async def test_interrupt_insert_fallback_appends_when_target_user_missing() -> None:
+    loop_bus = MessageBus()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    with tempfile.TemporaryDirectory() as td:
+        from bao.agent.loop import AgentLoop
+
+        ws = pathlib.Path(td)
+        (ws / "PERSONA.md").write_text("# Persona\n", encoding="utf-8")
+        (ws / "INSTRUCTIONS.md").write_text("# Instructions\n", encoding="utf-8")
+
+        loop = AgentLoop(
+            bus=loop_bus,
+            provider=provider,
+            workspace=ws,
+            model="test-model",
+        )
+
+        completed_tool_msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_missing",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_missing",
+                "name": "read_file",
+                "content": "ok",
+            },
+        ]
+
+        async def fake_run_agent_loop(initial_messages, **kwargs):
+            del initial_messages, kwargs
+            return None, [], [], 0, [], False, True, completed_tool_msgs
+
+        setattr(loop, "_run_agent_loop", fake_run_agent_loop)
+
+        def _search_memory(query: str, limit: int = 5) -> list[str]:
+            del query, limit
+            return []
+
+        def _search_experience(query: str, limit: int = 3) -> list[str]:
+            del query, limit
+            return []
+
+        loop.context.memory.search_memory = _search_memory
+        loop.context.memory.search_experience = _search_experience
+
+        dispatch_key = "telegram:1"
+        session = loop.sessions.get_or_create(dispatch_key)
+        session.add_message("user", "existing-user")
+        session.add_message("assistant", "existing-assistant")
+        loop.sessions.save(session)
+
+        msg = InboundMessage(
+            channel="telegram",
+            sender_id="u",
+            chat_id="1",
+            content="missing-user-turn",
+            metadata={"_ephemeral": True},
+        )
+
+        out = await loop._process_message(msg)
+        assert out is None
+
+        updated = loop.sessions.get_or_create(dispatch_key)
+        assert updated.messages[-2].get("role") == "assistant"
+        assert updated.messages[-1].get("role") == "tool"
+        assert updated.messages[-1].get("tool_call_id") == "call_missing"
+
+
+@pytest.mark.asyncio
+async def test_model_error_response_not_persisted_but_still_returned() -> None:
+    loop_bus = MessageBus()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    with tempfile.TemporaryDirectory() as td:
+        from bao.agent.loop import AgentLoop
+
+        ws = pathlib.Path(td)
+        (ws / "PERSONA.md").write_text("# Persona\n", encoding="utf-8")
+        (ws / "INSTRUCTIONS.md").write_text("# Instructions\n", encoding="utf-8")
+
+        loop = AgentLoop(
+            bus=loop_bus,
+            provider=provider,
+            workspace=ws,
+            model="test-model",
+        )
+
+        async def fake_run_agent_loop(initial_messages, **kwargs):
+            del initial_messages, kwargs
+            return "boom", [], [], 0, [], True, False, []
+
+        setattr(loop, "_run_agent_loop", fake_run_agent_loop)
+
+        def _search_memory(query: str, limit: int = 5) -> list[str]:
+            del query, limit
+            return []
+
+        def _search_experience(query: str, limit: int = 3) -> list[str]:
+            del query, limit
+            return []
+
+        loop.context.memory.search_memory = _search_memory
+        loop.context.memory.search_experience = _search_experience
+
+        dispatch_key = "telegram:1"
+        session = loop.sessions.get_or_create(dispatch_key)
+        session.metadata["title"] = "fixed"
+        loop.sessions.save(session)
+
+        out = await loop._process_message(
+            InboundMessage(channel="telegram", sender_id="u", chat_id="1", content="trigger")
+        )
+
+        assert out is not None
+        assert out.content == "boom"
+
+        updated = loop.sessions.get_or_create(dispatch_key)
+        assert any(
+            m.get("role") == "user" and m.get("content") == "trigger" for m in updated.messages
+        )
+        assert not any(m.get("role") == "assistant" for m in updated.messages)

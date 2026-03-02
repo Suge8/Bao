@@ -31,7 +31,7 @@ def _make_bot_class(channel: "QQChannel") -> "type[botpy.Client]":
 
     class _Bot(botpy.Client):
         def __init__(self):
-            super().__init__(intents=intents)
+            super().__init__(intents=intents, ext_handlers=False)
 
         async def on_ready(self):
             logger.info("✅ 已就绪 / bot ready: {}", self.robot.name)
@@ -108,10 +108,12 @@ class QQChannel(BaseChannel):
             logger.warning("⚠️ 未初始化 / client not initialized: QQ")
             return
         try:
+            msg_id = msg.metadata.get("message_id") if isinstance(msg.metadata, dict) else None
             await self._client.api.post_c2c_message(
                 openid=msg.chat_id,
                 msg_type=0,
                 content=msg.content,
+                msg_id=msg_id,
             )
         except Exception as e:
             logger.error("❌ 发送失败 / send failed: {}", e)

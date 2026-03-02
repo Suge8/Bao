@@ -15,7 +15,7 @@ import queue
 import threading
 from typing import Any
 
-from PySide6.QtCore import QObject, QTimer, Signal, Property, Slot
+from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 
 from app.backend.asyncio_runner import AsyncioRunner
 from app.backend.chat import ChatMessageModel
@@ -423,10 +423,12 @@ class ChatService(QObject):
         if self._agent is None:
             raise RuntimeError("Agent not initialized")
 
+        from bao.providers.retry import PROGRESS_RESET
+
         accumulated = [""]
 
         async def _on_progress(delta: str) -> None:
-            if delta == "\x00":
+            if delta == PROGRESS_RESET:
                 self._progressUpdate.emit(-2, "")
                 accumulated[0] = ""
                 return

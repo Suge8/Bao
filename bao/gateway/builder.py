@@ -47,7 +47,9 @@ def build_gateway_stack(config: Any, provider: Any) -> GatewayStack:
         max_tokens=config.agents.defaults.max_tokens,
         max_iterations=config.agents.defaults.max_tool_iterations,
         memory_window=config.agents.defaults.memory_window,
+        reasoning_effort=config.agents.defaults.reasoning_effort,
         search_config=config.tools.web.search,
+        web_proxy=config.tools.web.proxy,
         exec_config=config.tools.exec,
         cron_service=cron,
         embedding_config=config.tools.embedding,
@@ -63,8 +65,13 @@ def build_gateway_stack(config: Any, provider: Any) -> GatewayStack:
         from loguru import logger
 
         try:
+            reminder_note = (
+                "[Scheduled Task] Timer finished.\n\n"
+                f"Task '{job.name}' has been triggered.\n"
+                f"Scheduled instruction: {job.payload.message}"
+            )
             response = await agent.process_direct(
-                job.payload.message,
+                reminder_note,
                 session_key=f"cron:{job.id}",
                 channel=job.payload.channel or "gateway",
                 chat_id=job.payload.to or "direct",

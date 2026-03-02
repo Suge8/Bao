@@ -4,7 +4,7 @@ from typing import Any, cast
 
 from bao.providers.base import LLMResponse
 from bao.providers.openai_provider import OpenAICompatibleProvider
-from bao.providers.retry import compute_retry_delay, should_retry_exception
+from bao.providers.retry import PROGRESS_RESET, compute_retry_delay, should_retry_exception
 
 
 class _ResponseError(Exception):
@@ -97,7 +97,7 @@ def test_openai_completions_retry_emits_reset_before_second_attempt() -> None:
 
     assert result.content == "final"
     assert attempts["count"] == 2
-    assert chunks == ["partial", "\x00", "final"]
+    assert chunks == ["partial", PROGRESS_RESET, "final"]
 
 
 def test_openai_completions_cancelled_error_not_swallowed() -> None:

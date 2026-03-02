@@ -8,12 +8,14 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from loguru import logger
 
 from bao.agent.tools.base import Tool
 from bao.config.schema import WebSearchConfig
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"
 MAX_REDIRECTS = 5
+_CREDENTIALS_IN_URL_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://)([^/@\s]+)@")
 
 
 def _strip_tags(text: str) -> str:
@@ -38,6 +40,26 @@ def _validate_url(url: str) -> tuple[bool, str]:
         return True, ""
     except Exception as e:
         return False, str(e)
+
+
+def _mask_url_credentials(text: str) -> str:
+    return _CREDENTIALS_IN_URL_RE.sub(r"\1***:***@", text)
+
+
+def _safe_error_text(error: Exception) -> str:
+    return _mask_url_credentials(str(error))
+
+
+def _make_async_client(proxy: str | None, **kwargs: Any) -> httpx.AsyncClient:
+    async_client_ctor: Any = httpx.AsyncClient
+    if not proxy:
+        return async_client_ctor(**kwargs)
+    try:
+        return async_client_ctor(proxy=proxy, **kwargs)
+    except TypeError:
+        fallback_kwargs = dict(kwargs)
+        fallback_kwargs["proxies"] = {"http://": proxy, "https://": proxy}
+        return async_client_ctor(**fallback_kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +268,7 @@ class WebSearchTool(Tool):
     def parameters(self) -> dict[str, Any]:
         return self._PARAMETERS
 
-    def __init__(self, search_config: "WebSearchConfig | None" = None):
+    def __init__(self, search_config: "WebSearchConfig | None" = None, proxy: str | None = None):
         self.provider = search_config.provider if search_config else ""
         brave_key = search_config.brave_api_key.get_secret_value() if search_config else None
         self.brave_key = brave_key or os.environ.get("BRAVE_API_KEY", "")
@@ -257,6 +279,7 @@ class WebSearchTool(Tool):
         exa_key = search_config.exa_api_key.get_secret_value() if search_config else None
         self.exa_key = exa_key or os.environ.get("EXA_API_KEY", "")
         self.exa_max_characters = 1000
+        self.proxy = (proxy or "").strip() or None
 
     async def execute(self, **kwargs: Any) -> str:
         unexpected = sorted(set(kwargs) - {"query", "count"})
@@ -293,7 +316,8 @@ class WebSearchTool(Tool):
 
     async def _brave(self, query: str, n: int) -> str:
         try:
-            async with httpx.AsyncClient() as client:
+            logger.debug("WebSearch: {}", "proxy enabled" if self.proxy else "direct connection")
+            async with _make_async_client(self.proxy) as client:
                 r = await client.get(
                     "https://api.search.brave.com/res/v1/web/search",
                     params={"q": query, "count": n},
@@ -301,14 +325,19 @@ class WebSearchTool(Tool):
                     timeout=10.0,
                 )
                 r.raise_for_status()
-            results = r.json().get("web", {}).get("results", [])
+            results = r.json().get("web", {}).get("results", [])[:n]
             return self._format(query, results, n)
+        except httpx.ProxyError as e:
+            safe = _safe_error_text(e)
+            logger.error("WebSearch proxy error: {}", safe)
+            return f"Error: Proxy error: {safe}"
         except Exception as e:
-            return f"Error: {e}"
+            return f"Error: {_safe_error_text(e)}"
 
     async def _tavily(self, query: str, n: int) -> str:
         try:
-            async with httpx.AsyncClient() as client:
+            logger.debug("WebSearch: {}", "proxy enabled" if self.proxy else "direct connection")
+            async with _make_async_client(self.proxy) as client:
                 r = await client.post(
                     "https://api.tavily.com/search",
                     json={
@@ -334,12 +363,17 @@ class WebSearchTool(Tool):
             if answer:
                 out = f"[AI Summary] {answer}\n\n---\n\n{out}"
             return out
+        except httpx.ProxyError as e:
+            safe = _safe_error_text(e)
+            logger.error("WebSearch proxy error: {}", safe)
+            return f"Error: Proxy error: {safe}"
         except Exception as e:
-            return f"Error: {e}"
+            return f"Error: {_safe_error_text(e)}"
 
     async def _exa(self, query: str, n: int) -> str:
         try:
-            async with httpx.AsyncClient() as client:
+            logger.debug("WebSearch: {}", "proxy enabled" if self.proxy else "direct connection")
+            async with _make_async_client(self.proxy) as client:
                 r = await client.post(
                     "https://api.exa.ai/search",
                     json={
@@ -361,8 +395,12 @@ class WebSearchTool(Tool):
                 for x in data.get("results", [])
             ]
             return self._format(query, results, n)
+        except httpx.ProxyError as e:
+            safe = _safe_error_text(e)
+            logger.error("WebSearch proxy error: {}", safe)
+            return f"Error: Proxy error: {safe}"
         except Exception as e:
-            return f"Error: {e}"
+            return f"Error: {_safe_error_text(e)}"
 
     @staticmethod
     def _format(query: str, results: list[dict[str, str]], n: int) -> str:
@@ -422,8 +460,9 @@ class WebFetchTool(Tool):
     def parameters(self) -> dict[str, Any]:
         return self._PARAMETERS
 
-    def __init__(self, max_chars: int = 50000):
+    def __init__(self, max_chars: int = 50000, proxy: str | None = None):
         self.max_chars = max_chars
+        self.proxy = (proxy or "").strip() or None
 
     async def execute(self, **kwargs: Any) -> str:
         from readability import Document
@@ -433,18 +472,19 @@ class WebFetchTool(Tool):
             return json.dumps(
                 {
                     "error": f"Unexpected parameter(s): {', '.join(unexpected)}",
-                    "url": str(kwargs.get("url", "")),
+                    "url": _mask_url_credentials(str(kwargs.get("url", ""))),
                 },
                 ensure_ascii=False,
             )
 
         url_raw = kwargs.get("url", "")
         url = url_raw if isinstance(url_raw, str) else str(url_raw)
+        masked_url = _mask_url_credentials(url)
 
         extract_mode_raw = kwargs.get("extractMode", "markdown")
         if not isinstance(extract_mode_raw, str):
             return json.dumps(
-                {"error": "Invalid parameter 'extractMode': must be string", "url": url},
+                {"error": "Invalid parameter 'extractMode': must be string", "url": masked_url},
                 ensure_ascii=False,
             )
         extract_mode = extract_mode_raw.strip().lower()
@@ -452,7 +492,7 @@ class WebFetchTool(Tool):
             return json.dumps(
                 {
                     "error": "Invalid parameter 'extractMode': must be one of [markdown, text]",
-                    "url": url,
+                    "url": masked_url,
                 },
                 ensure_ascii=False,
             )
@@ -462,12 +502,12 @@ class WebFetchTool(Tool):
             max_chars_raw is not None and not isinstance(max_chars_raw, int)
         ):
             return json.dumps(
-                {"error": "Invalid parameter 'maxChars': must be integer", "url": url},
+                {"error": "Invalid parameter 'maxChars': must be integer", "url": masked_url},
                 ensure_ascii=False,
             )
         if isinstance(max_chars_raw, int) and max_chars_raw < 100:
             return json.dumps(
-                {"error": "Invalid parameter 'maxChars': must be >= 100", "url": url},
+                {"error": "Invalid parameter 'maxChars': must be >= 100", "url": masked_url},
                 ensure_ascii=False,
             )
         max_chars_arg = max_chars_raw if isinstance(max_chars_raw, int) else None
@@ -475,7 +515,7 @@ class WebFetchTool(Tool):
         filter_level_raw = kwargs.get("filterLevel", "none")
         if not isinstance(filter_level_raw, str):
             return json.dumps(
-                {"error": "Invalid parameter 'filterLevel': must be string", "url": url},
+                {"error": "Invalid parameter 'filterLevel': must be string", "url": masked_url},
                 ensure_ascii=False,
             )
         filter_level = filter_level_raw.strip().lower()
@@ -486,7 +526,7 @@ class WebFetchTool(Tool):
                         "Invalid parameter 'filterLevel': "
                         "must be one of [none, standard, aggressive]"
                     ),
-                    "url": url,
+                    "url": masked_url,
                 },
                 ensure_ascii=False,
             )
@@ -496,12 +536,17 @@ class WebFetchTool(Tool):
         is_valid, error_msg = _validate_url(url)
         if not is_valid:
             return json.dumps(
-                {"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False
+                {"error": f"URL validation failed: {error_msg}", "url": masked_url},
+                ensure_ascii=False,
             )
 
         try:
-            async with httpx.AsyncClient(
-                follow_redirects=True, max_redirects=MAX_REDIRECTS, timeout=30.0
+            logger.debug("WebFetch: {}", "proxy enabled" if self.proxy else "direct connection")
+            async with _make_async_client(
+                self.proxy,
+                follow_redirects=True,
+                max_redirects=MAX_REDIRECTS,
+                timeout=30.0,
             ) as client:
                 r = await client.get(url, headers={"User-Agent": USER_AGENT})
                 r.raise_for_status()
@@ -538,7 +583,7 @@ class WebFetchTool(Tool):
 
             return json.dumps(
                 {
-                    "url": url,
+                    "url": masked_url,
                     "finalUrl": str(r.url),
                     "status": r.status_code,
                     "extractor": extractor,
@@ -550,8 +595,14 @@ class WebFetchTool(Tool):
                 },
                 ensure_ascii=False,
             )
+        except httpx.ProxyError as e:
+            safe = _safe_error_text(e)
+            logger.error("WebFetch proxy error for {}: {}", masked_url, safe)
+            return json.dumps(
+                {"error": f"Proxy error: {safe}", "url": masked_url}, ensure_ascii=False
+            )
         except Exception as e:
-            return json.dumps({"error": str(e), "url": url}, ensure_ascii=False)
+            return json.dumps({"error": _safe_error_text(e), "url": masked_url}, ensure_ascii=False)
 
     def _to_markdown(self, html_content: str) -> str:
         """Convert HTML to markdown."""

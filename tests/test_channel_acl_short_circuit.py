@@ -63,3 +63,48 @@ async def test_whatsapp_acl_blocks_media_save_before_write() -> None:
 
     channel._save_media.assert_not_called()
     channel._handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_dedup_skips_duplicate_message_id() -> None:
+    bus = MagicMock()
+    cfg = WhatsAppConfig(enabled=True)
+    channel = WhatsAppChannel(cfg, bus)
+    channel._handle_message = AsyncMock()
+
+    payload = {
+        "type": "message",
+        "id": "dup-1",
+        "pn": "123@s.whatsapp.net",
+        "sender": "123@s.whatsapp.net",
+        "participant": "",
+        "isGroup": False,
+        "content": "hi",
+    }
+
+    await channel._handle_bridge_message(json.dumps(payload))
+    await channel._handle_bridge_message(json.dumps(payload))
+
+    assert channel._handle_message.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_without_message_id_does_not_dedup() -> None:
+    bus = MagicMock()
+    cfg = WhatsAppConfig(enabled=True)
+    channel = WhatsAppChannel(cfg, bus)
+    channel._handle_message = AsyncMock()
+
+    payload = {
+        "type": "message",
+        "pn": "123@s.whatsapp.net",
+        "sender": "123@s.whatsapp.net",
+        "participant": "",
+        "isGroup": False,
+        "content": "hi",
+    }
+
+    await channel._handle_bridge_message(json.dumps(payload))
+    await channel._handle_bridge_message(json.dumps(payload))
+
+    assert channel._handle_message.await_count == 2

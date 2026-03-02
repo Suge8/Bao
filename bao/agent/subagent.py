@@ -64,7 +64,9 @@ class SubagentManager:
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        reasoning_effort: str | None = None,
         search_config: "WebSearchConfig | None" = None,
+        web_proxy: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
         restrict_to_workspace: bool = False,
         max_iterations: int = 20,
@@ -90,7 +92,9 @@ class SubagentManager:
         self.model = model or provider.get_default_model()
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.reasoning_effort = reasoning_effort
         self.search_config = search_config
+        self.web_proxy = web_proxy
         self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
         self.image_generation_config = image_generation_config
@@ -549,13 +553,13 @@ class SubagentManager:
                     tools.register(GetScreenInfoTool())
                 except ImportError:
                     pass
-            search_tool = WebSearchTool(search_config=self.search_config)
+            search_tool = WebSearchTool(search_config=self.search_config, proxy=self.web_proxy)
             has_search = bool(
                 search_tool.brave_key or search_tool.tavily_key or search_tool.exa_key
             )
             if has_search:
                 tools.register(search_tool)
-            tools.register(WebFetchTool())
+            tools.register(WebFetchTool(proxy=self.web_proxy))
 
             related_memory, related_experience = await self._get_related_memory(task)
 
@@ -678,6 +682,7 @@ class SubagentManager:
                         model=self.model,
                         temperature=self.temperature,
                         max_tokens=self.max_tokens,
+                        reasoning_effort=self.reasoning_effort,
                     )
                 finally:
                     for _m in messages:
@@ -703,6 +708,8 @@ class SubagentManager:
                             "role": "assistant",
                             "content": clean or "",
                             "tool_calls": tool_call_dicts,
+                            "reasoning_content": response.reasoning_content,
+                            "thinking_blocks": response.thinking_blocks,
                         }
                     )
 

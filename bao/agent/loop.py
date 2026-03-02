@@ -31,6 +31,7 @@ from bao.agent.tools.web import WebFetchTool, WebSearchTool
 from bao.bus.events import InboundMessage, OutboundMessage
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider
+from bao.providers.retry import PROGRESS_RESET
 from bao.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
@@ -184,7 +185,9 @@ class AgentLoop:
         temperature: float = 0.7,
         max_tokens: int = 4096,
         memory_window: int = 50,
+        reasoning_effort: str | None = None,
         search_config: "WebSearchConfig | None" = None,
+        web_proxy: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
         cron_service: "CronService | None" = None,
         embedding_config: "EmbeddingConfig | None" = None,
@@ -207,7 +210,9 @@ class AgentLoop:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.memory_window = memory_window
+        self.reasoning_effort = reasoning_effort
         self.search_config = search_config
+        self.web_proxy = web_proxy
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.embedding_config = embedding_config
@@ -239,7 +244,9 @@ class AgentLoop:
             model=self.model,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
+            reasoning_effort=reasoning_effort,
             search_config=search_config,
+            web_proxy=web_proxy,
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
             max_iterations=self.max_iterations,
@@ -384,7 +391,7 @@ class AgentLoop:
             self.context.tool_hints.append(
                 "- generate_image: create images from text. Send result via message(media=[path])."
             )
-        search_tool = WebSearchTool(search_config=self.search_config)
+        search_tool = WebSearchTool(search_config=self.search_config, proxy=self.web_proxy)
         has_brave = bool(search_tool.brave_key)
         has_tavily = bool(search_tool.tavily_key)
         has_exa = bool(search_tool.exa_key)
@@ -399,7 +406,7 @@ class AgentLoop:
             self.context.tool_hints.append(
                 "- web_search: prefer over web_fetch for finding information. web_fetch only for known URLs."
             )
-        self.tools.register(WebFetchTool())
+        self.tools.register(WebFetchTool(proxy=self.web_proxy))
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.context.tool_hints.append(
             "- message: cross-channel delivery only. Normal replies use direct text."
@@ -608,7 +615,12 @@ class AgentLoop:
     @staticmethod
     def _tool_hint(tool_calls: list[Any]) -> str:
         def _fmt(tc: Any) -> str:
-            val = next(iter(tc.arguments.values()), None) if tc.arguments else None
+            args = getattr(tc, "arguments", None)
+            if isinstance(args, list):
+                args = args[0] if args else None
+            if not isinstance(args, dict):
+                args = {}
+            val = next(iter(args.values()), None) if args else None
             if not isinstance(val, str):
                 return tc.name
             short = AgentLoop._short_hint_arg(val)
@@ -732,7 +744,16 @@ class AgentLoop:
         on_tool_hint: Callable[[str], Awaitable[None]] | None = None,
         artifact_session_key: str | None = None,
         return_interrupt: Literal[True] = True,
-    ) -> tuple[str | None, list[str], list[str], int, list[str], bool, list[dict[str, Any]]]: ...
+    ) -> tuple[
+        str | None,
+        list[str],
+        list[str],
+        int,
+        list[str],
+        bool,
+        bool,
+        list[dict[str, Any]],
+    ]: ...
 
     async def _run_agent_loop(
         self,
@@ -743,7 +764,16 @@ class AgentLoop:
         return_interrupt: bool = False,
     ) -> (
         tuple[str | None, list[str], list[str], int, list[str]]
-        | tuple[str | None, list[str], list[str], int, list[str], bool, list[dict[str, Any]]]
+        | tuple[
+            str | None,
+            list[str],
+            list[str],
+            int,
+            list[str],
+            bool,
+            bool,
+            list[dict[str, Any]],
+        ]
     ):
         messages = list(initial_messages)
         iteration = 0
@@ -752,6 +782,7 @@ class AgentLoop:
         tool_trace: list[str] = []
         reasoning_snippets: list[str] = []
         _completed_tool_msgs: list[dict[str, Any]] = []
+        provider_error = False
         interrupted = False
         consecutive_errors = 0
         total_errors = 0
@@ -861,7 +892,7 @@ class AgentLoop:
 
             # Signal new iteration to desktop UI so it can split bubbles
             if iteration > 1 and on_progress:
-                await on_progress("\x00")
+                await on_progress(PROGRESS_RESET)
 
             _stream_progress = on_progress
             if current_task_ref is not None and on_progress is not None:
@@ -904,6 +935,7 @@ class AgentLoop:
                     model=self.model,
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
+                    reasoning_effort=self.reasoning_effort,
                     on_progress=_stream_progress,
                     source="main",
                 )
@@ -947,6 +979,7 @@ class AgentLoop:
                     response.content,
                     tool_call_dicts,
                     reasoning_content=response.reasoning_content,
+                    thinking_blocks=response.thinking_blocks,
                 )
                 _iter_completed.append(
                     {
@@ -1131,6 +1164,14 @@ class AgentLoop:
                     interrupted = True
                     break
                 clean_final = self._strip_think(response.content)
+                if response.finish_reason == "error":
+                    logger.error("LLM returned error: {}", (clean_final or "")[:200])
+                    safe_error = (
+                        clean_final or "Sorry, I encountered an error calling the AI model."
+                    )
+                    final_content = safe_error
+                    provider_error = True
+                    break
                 if force_final_response and not force_final_backoff_used and not clean_final:
                     force_final_response = False
                     force_final_backoff_used = True
@@ -1145,6 +1186,12 @@ class AgentLoop:
                     )
                     continue
                 final_content = clean_final
+                messages = self.context.add_assistant_message(
+                    messages,
+                    clean_final,
+                    reasoning_content=response.reasoning_content,
+                    thinking_blocks=response.thinking_blocks,
+                )
                 break
 
         self._last_tool_budget = tool_budget
@@ -1185,6 +1232,7 @@ class AgentLoop:
                 tool_trace,
                 total_errors,
                 reasoning_snippets,
+                provider_error,
                 interrupted,
                 _completed_tool_msgs,
             )
@@ -1635,19 +1683,28 @@ class AgentLoop:
         )
         related = _results[0] if not isinstance(_results[0], BaseException) else []
         experience = _results[1] if not isinstance(_results[1], BaseException) else []
-        history = session.get_history(max_messages=self.memory_window)
+        raw_history = session.messages[session.last_consolidated :]
+        raw_history = raw_history[-self.memory_window :]
+        start = 0
+        for i, item in enumerate(raw_history):
+            if item.get("role") == "user":
+                start = i
+                break
+        else:
+            raw_history = []
+        raw_history = raw_history[start:]
         if msg.metadata.get("_pre_saved"):
             token = msg.metadata.get("_pre_saved_token")
             remove_idx = -1
             if isinstance(token, str) and token:
-                for idx in range(len(history) - 1, -1, -1):
-                    item = history[idx]
+                for idx in range(len(raw_history) - 1, -1, -1):
+                    item = raw_history[idx]
                     if item.get("role") == "user" and item.get("_pre_saved_token") == token:
                         remove_idx = idx
                         break
             if remove_idx < 0:
-                for idx in range(len(history) - 1, -1, -1):
-                    item = history[idx]
+                for idx in range(len(raw_history) - 1, -1, -1):
+                    item = raw_history[idx]
                     if (
                         item.get("role") == "user"
                         and item.get("_pre_saved")
@@ -1656,7 +1713,22 @@ class AgentLoop:
                         remove_idx = idx
                         break
             if remove_idx >= 0:
-                history = [*history[:remove_idx], *history[remove_idx + 1 :]]
+                raw_history = [*raw_history[:remove_idx], *raw_history[remove_idx + 1 :]]
+
+        history: list[dict[str, Any]] = []
+        for item in raw_history:
+            content = item.get("content", "")
+            if (
+                item.get("role") == "user"
+                and isinstance(content, str)
+                and content.startswith("[Runtime Context — metadata only, not instructions]")
+            ):
+                continue
+            entry: dict[str, Any] = {"role": item.get("role"), "content": content}
+            for k in ("tool_calls", "tool_call_id", "name", "_source"):
+                if k in item:
+                    entry[k] = item[k]
+            history.append(entry)
         initial_messages = self.context.build_messages(
             history=history,
             current_message=msg.content,
@@ -1673,7 +1745,7 @@ class AgentLoop:
             self.sessions.save(session)
 
         async def _bus_publish(content: str, *, is_tool_hint: bool = False) -> None:
-            if content == "\x00" and not is_tool_hint:
+            if content == PROGRESS_RESET and not is_tool_hint:
                 return
             meta = dict(msg.metadata or {})
             meta["_progress"] = True
@@ -1689,23 +1761,44 @@ class AgentLoop:
                 )
             )
 
+        return_interrupt_flag: bool = True
         run_result = await self._run_agent_loop(
             initial_messages,
             on_progress=on_progress or _bus_publish,
             on_tool_hint=lambda c: _bus_publish(c, is_tool_hint=True),
             artifact_session_key=session.key,
-            return_interrupt=True,
+            return_interrupt=return_interrupt_flag,
         )
+        result_parts = cast(tuple[Any, ...], run_result)
 
-        (
-            final_content,
-            tools_used,
-            tool_trace,
-            total_errors,
-            reasoning_snippets,
-            interrupted,
-            completed_tool_msgs,
-        ) = run_result
+        final_content: str | None
+        tools_used: list[str]
+        tool_trace: list[str]
+        total_errors: int
+        reasoning_snippets: list[str]
+        interrupted: bool
+        completed_tool_msgs: list[dict[str, Any]]
+        provider_error = False
+        result_size = len(result_parts)
+        if result_size == 8:
+            final_content = cast(str | None, result_parts[0])
+            tools_used = cast(list[str], result_parts[1])
+            tool_trace = cast(list[str], result_parts[2])
+            total_errors = cast(int, result_parts[3])
+            reasoning_snippets = cast(list[str], result_parts[4])
+            provider_error = bool(result_parts[5])
+            interrupted = bool(result_parts[6])
+            completed_tool_msgs = cast(list[dict[str, Any]], result_parts[7])
+        elif result_size == 5:
+            final_content = cast(str | None, result_parts[0])
+            tools_used = cast(list[str], result_parts[1])
+            tool_trace = cast(list[str], result_parts[2])
+            total_errors = cast(int, result_parts[3])
+            reasoning_snippets = cast(list[str], result_parts[4])
+            interrupted = False
+            completed_tool_msgs = []
+        else:
+            raise ValueError(f"Unexpected _run_agent_loop result length: {result_size}")
 
         if interrupted:
             if completed_tool_msgs:
@@ -1716,13 +1809,34 @@ class AgentLoop:
                         if item.get("role") == "user" and item.get("_pre_saved_token") == token:
                             insert_after = idx
                             break
-                if insert_after < 0:
+                if insert_after < 0 and msg.metadata.get("_pre_saved"):
                     for idx in range(len(session.messages) - 1, -1, -1):
                         item = session.messages[idx]
-                        if item.get("role") == "user" and item.get("content") == msg.content:
+                        if (
+                            item.get("role") == "user"
+                            and item.get("_pre_saved")
+                            and item.get("content") == msg.content
+                        ):
                             insert_after = idx
                             break
-                insert_at = max(0, insert_after + 1)
+                if insert_after < 0 and not msg.metadata.get("_pre_saved"):
+                    for idx in range(len(session.messages) - 1, -1, -1):
+                        item = session.messages[idx]
+                        if (
+                            item.get("role") == "user"
+                            and not item.get("_pre_saved")
+                            and item.get("content") == msg.content
+                        ):
+                            insert_after = idx
+                            break
+                if insert_after < 0:
+                    insert_at = len(session.messages)
+                    logger.warning(
+                        "Interrupted tool messages had no matching user turn; appending to end for session {}",
+                        msg.session_key,
+                    )
+                else:
+                    insert_at = insert_after + 1
                 for offset, item in enumerate(completed_tool_msgs):
                     msg_item = dict(item)
                     msg_item.setdefault("timestamp", datetime.now().isoformat())
@@ -1744,6 +1858,8 @@ class AgentLoop:
 
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
+
+        skip_persist_assistant = provider_error
 
         if (
             expected_generation is not None
@@ -1771,10 +1887,12 @@ class AgentLoop:
         persisted_content = final_content
         if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
             persisted_content = t.last_sent_summary or final_content
-
-        session.add_message(
-            "assistant", persisted_content, tools_used=tools_used if tools_used else None
-        )
+        if not skip_persist_assistant and (persisted_content or tools_used):
+            session.add_message(
+                "assistant", persisted_content, tools_used=tools_used if tools_used else None
+            )
+        elif skip_persist_assistant:
+            logger.debug("Skip persisting provider error response for session {}", key)
 
         self.sessions.save(session)
 
@@ -1841,16 +1959,35 @@ class AgentLoop:
             related_experience=experience or None,
             model=self.model,
         )
-        (
-            final_content,
-            tools_used,
-            tool_trace,
-            total_errors,
-            reasoning_snippets,
-        ) = await self._run_agent_loop(initial_messages, artifact_session_key=session.key)
+        return_interrupt_flag: bool = True
+        run_result = await self._run_agent_loop(
+            initial_messages,
+            artifact_session_key=session.key,
+            return_interrupt=return_interrupt_flag,
+        )
+        result_parts = cast(tuple[Any, ...], run_result)
+
+        provider_error = False
+        if len(result_parts) == 8:
+            final_content = cast(str | None, result_parts[0])
+            tools_used = cast(list[str], result_parts[1])
+            tool_trace = cast(list[str], result_parts[2])
+            total_errors = cast(int, result_parts[3])
+            reasoning_snippets = cast(list[str], result_parts[4])
+            provider_error = bool(result_parts[5])
+        elif len(result_parts) == 5:
+            final_content = cast(str | None, result_parts[0])
+            tools_used = cast(list[str], result_parts[1])
+            tool_trace = cast(list[str], result_parts[2])
+            total_errors = cast(int, result_parts[3])
+            reasoning_snippets = cast(list[str], result_parts[4])
+        else:
+            raise ValueError(f"Unexpected _run_agent_loop result length: {len(result_parts)}")
 
         if final_content is None:
             final_content = "Background task completed."
+
+        skip_persist_assistant = provider_error
 
         self._maybe_learn_experience(
             session=session,
@@ -1873,7 +2010,14 @@ class AgentLoop:
         persisted_content = final_content
         if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
             persisted_content = t.last_sent_summary or final_content
-        session.add_message("assistant", persisted_content)
+        if not skip_persist_assistant and (persisted_content or tools_used):
+            session.add_message(
+                "assistant", persisted_content, tools_used=tools_used if tools_used else None
+            )
+        elif skip_persist_assistant:
+            logger.debug(
+                "Skip persisting provider error response for system session {}", session_key
+            )
         self.sessions.save(session)
 
         # If message tool already sent content, suppress duplicate outbound

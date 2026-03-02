@@ -50,6 +50,13 @@ class GeminiProvider(LLMProvider):
             return model.split("/", 1)[1]
         return model
 
+    @staticmethod
+    def _thinking_budget_from_effort(reasoning_effort: str | None) -> int | None:
+        if not reasoning_effort:
+            return None
+        effort = reasoning_effort.strip().lower()
+        return {"low": 1024, "medium": 2048, "high": 4096}.get(effort)
+
     def _convert_messages(self, messages: list[dict[str, Any]]) -> list[types.Content]:
         """Convert OpenAI-style messages to Gemini format (Content objects)."""
         import base64 as _b64mod
@@ -261,11 +268,14 @@ class GeminiProvider(LLMProvider):
 
         # Handle thinking (Gemini 2.5 thinking mode)
         thinking = kwargs.get("thinking", False)
+        effort_budget = self._thinking_budget_from_effort(kwargs.get("reasoning_effort"))
+        if effort_budget is not None and not thinking:
+            thinking = True
         if thinking:
             # Gemini uses thinking config
             config.thinking_config = types.ThinkingConfig(
                 include_thoughts=True,
-                thinking_budget=kwargs.get("thinking_budget", 2048),
+                thinking_budget=kwargs.get("thinking_budget", effort_budget or 2048),
             )
 
         content = ""

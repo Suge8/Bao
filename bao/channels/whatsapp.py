@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import mimetypes
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ class WhatsAppChannel(BaseChannel):
         self.config: WhatsAppConfig = config
         self._ws = None
         self._connected = False
+        self._processed_message_ids: OrderedDict[str, None] = OrderedDict()
         self._progress = ProgressBuffer(self._send_text)
 
     async def start(self) -> None:
@@ -139,6 +141,15 @@ class WhatsAppChannel(BaseChannel):
         msg_type = data.get("type")
 
         if msg_type == "message":
+            message_id = str(data.get("id") or "").strip()
+            if message_id:
+                if message_id in self._processed_message_ids:
+                    logger.debug("Duplicate WhatsApp message skipped: {}", message_id)
+                    return
+                self._processed_message_ids[message_id] = None
+                while len(self._processed_message_ids) > 1000:
+                    self._processed_message_ids.popitem(last=False)
+
             pn = data.get("pn", "")
             sender = data.get("sender", "")
             participant = data.get("participant", "")
@@ -175,7 +186,7 @@ class WhatsAppChannel(BaseChannel):
                 content=content,
                 media=media_paths,
                 metadata={
-                    "message_id": data.get("id"),
+                    "message_id": message_id or data.get("id"),
                     "timestamp": data.get("timestamp"),
                     "is_group": is_group,
                     "participant": participant,

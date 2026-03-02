@@ -19,6 +19,14 @@ class ExecTool(Tool):
         r"^\s*(cat|ls|find|grep|head|tail|wc|file|stat|echo|pwd|which|env|printenv|less|more|tree|du|diff|basename|dirname|realpath)\b",
     ]
 
+    _READ_ONLY_BLOCK_PATTERNS: list[str] = [
+        r"(?:^|[^\\])(>>?|1>|2>|&>)",
+        r"\|\s*tee\b",
+        r"\b(touch|mkdir|cp|mv|install|ln|truncate)\b",
+        r"\b(python|python3|node|ruby|perl|php|lua)\b",
+        r"\b(vi|vim|nano|emacs)\b",
+    ]
+
     _DEFAULT_DENY_PATTERNS: list[str] = [
         r"\brm\s+-[rf]{1,2}\b",  # rm -r, rm -rf, rm -fr
         r"\bdel\s+/[fq]\b",  # del /f, del /q
@@ -44,6 +52,7 @@ class ExecTool(Tool):
         self.timeout = timeout
         self.working_dir = working_dir
         self.path_append = path_append
+        self.sandbox_mode = sandbox_mode
 
         if sandbox_mode == "full-auto":
             self.deny_patterns: list[str] = []
@@ -115,8 +124,6 @@ class ExecTool(Tool):
                 stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=self.timeout)
             except asyncio.TimeoutError:
                 process.kill()
-                # Wait for the process to fully terminate so pipes are
-                # drained and file descriptors are released.
                 try:
                     await asyncio.wait_for(process.wait(), timeout=5.0)
                 except asyncio.TimeoutError:
@@ -137,8 +144,6 @@ class ExecTool(Tool):
                 output_parts.append(f"\nExit code: {process.returncode}")
 
             result = "\n".join(output_parts) if output_parts else "(no output)"
-
-            # Truncate very long output
             max_len = 10000
             if len(result) > max_len:
                 result = result[:max_len] + f"\n... (truncated, {len(result) - max_len} more chars)"
@@ -169,19 +174,18 @@ class ExecTool(Tool):
             if not any(re.search(p, lower) for p in self.allow_patterns):
                 return "Error: Command blocked by safety guard (not in allowlist)"
 
+        if self.sandbox_mode == "read-only":
+            for pattern in self._READ_ONLY_BLOCK_PATTERNS:
+                if re.search(pattern, lower):
+                    return "Error: Command blocked by read-only sandbox"
+
         if self.restrict_to_workspace:
             if "..\\" in cmd or "../" in cmd:
                 return "Error: Command blocked by safety guard (path traversal detected)"
 
             cwd_path = Path(cwd).resolve()
 
-            win_paths = re.findall(r"[A-Za-z]:\\[^\\\"']+", cmd)
-            # Only match absolute paths — avoid false positives on relative
-            # paths like ".venv/bin/python" where "/bin/python" would be
-            # incorrectly extracted by the old pattern.
-            posix_paths = re.findall(r"(?:^|[\s|>])(/[^\s\"'>]+)", cmd)
-
-            for raw in win_paths + posix_paths:
+            for raw in self._extract_absolute_paths(cmd):
                 try:
                     p = Path(raw.strip()).resolve()
                 except Exception:
@@ -190,3 +194,30 @@ class ExecTool(Tool):
                     return "Error: Command blocked by safety guard (path outside working dir)"
 
         return None
+
+    @staticmethod
+    def _extract_absolute_paths(command: str) -> list[str]:
+        win_quoted_double = re.findall(r'"([A-Za-z]:\\[^"]+)"', command)
+        win_quoted_single = re.findall(r"'([A-Za-z]:\\[^']+)'", command)
+        win_unquoted = re.findall(r"[A-Za-z]:\\[^\s\"'|><;]+", command)
+
+        posix_quoted_double = re.findall(r'"(/[^\"]+)"', command)
+        posix_quoted_single = re.findall(r"'(/[^']+)'", command)
+        posix_unquoted = re.findall(r"(?:^|[\s|>])(/[^\s\"'>]+)", command)
+
+        ordered = (
+            win_quoted_double
+            + win_quoted_single
+            + win_unquoted
+            + posix_quoted_double
+            + posix_quoted_single
+            + posix_unquoted
+        )
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for path in ordered:
+            if path in seen:
+                continue
+            seen.add(path)
+            deduped.append(path)
+        return deduped

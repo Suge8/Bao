@@ -1,16 +1,10 @@
 import asyncio
-import sys
-from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
+from bao.agent.loop import AgentLoop
 from bao.bus.events import OutboundMessage
 from bao.bus.queue import MessageBus
 from bao.channels.imessage import IMessageChannel
 from bao.config.schema import IMessageConfig
-from bao.agent.loop import AgentLoop
 from bao.providers.base import ToolCallRequest
 
 
@@ -112,6 +106,15 @@ def test_tool_hint_url_keeps_readable_path() -> None:
     )
 
     assert 'web_fetch("https://www.theverge.com/ai-artificial-intelligence/.../demo")' == hint
+
+
+def test_tool_hint_handles_list_type_arguments() -> None:
+    class _ListArgsToolCall:
+        name = "web_search"
+        arguments = [{"query": "latest ai news"}]
+
+    hint = AgentLoop._tool_hint([_ListArgsToolCall()])
+    assert hint == 'web_search("latest ai news")'
 
 
 def test_imessage_progress_trims_initial_newlines(monkeypatch) -> None:

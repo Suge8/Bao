@@ -16,8 +16,8 @@ def _install_web_tool_stub(monkeypatch: Any) -> None:
     module = types.ModuleType("bao.agent.tools.web")
 
     class WebSearchTool:
-        def __init__(self, search_config: Any | None = None):
-            del search_config
+        def __init__(self, search_config: Any | None = None, proxy: str | None = None):
+            del search_config, proxy
             self.brave_key = None
             self.tavily_key = None
             self.exa_key = None
@@ -53,6 +53,9 @@ def _install_web_tool_stub(monkeypatch: Any) -> None:
             }
 
     class WebFetchTool:
+        def __init__(self, proxy: str | None = None):
+            del proxy
+
         @property
         def name(self) -> str:
             return "web_fetch"

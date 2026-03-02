@@ -48,6 +48,9 @@ _JSONC_TEMPLATE = """\
       "temperature": 0.1,
       "maxToolIterations": 50,
       "memoryWindow": 100,
+      // 推理强度（可选）| Reasoning effort (optional)
+      //   "low" | "medium" | "high"
+      "reasoningEffort": null,
       // 上下文管理策略 | Context management strategy
       //   "off"        — 关闭，不做任何自动处理 | Disabled, no automatic handling
       //   "auto"       — 自动管理：大输出外置+上下文压实(推荐) | Auto: offload large outputs + compact context (recommended)

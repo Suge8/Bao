@@ -23,10 +23,10 @@ try:
         CreateFileRequestBody,
         CreateImageRequest,
         CreateImageRequestBody,
-        CreateMessageRequest,
-        CreateMessageRequestBody,
         CreateMessageReactionRequest,
         CreateMessageReactionRequestBody,
+        CreateMessageRequest,
+        CreateMessageRequestBody,
         Emoji,
         GetFileRequest,
         GetMessageResourceRequest,
@@ -90,8 +90,14 @@ def _extract_interactive_content(content: dict) -> list[str]:
         elif isinstance(title, str):
             parts.append(f"title: {title}")
 
-    for element in content.get("elements", []) if isinstance(content.get("elements"), list) else []:
-        parts.extend(_extract_element_content(element))
+    elements = content.get("elements")
+    if isinstance(elements, list):
+        for group in elements:
+            if isinstance(group, dict):
+                parts.extend(_extract_element_content(group))
+            elif isinstance(group, list):
+                for element in group:
+                    parts.extend(_extract_element_content(element))
 
     card = content.get("card", {})
     if card:
@@ -189,7 +195,7 @@ def _extract_post_text(content_json: dict) -> str:
     2. Localized format: {"zh_cn": {"title": "...", "content": [...]}}
     """
 
-    def extract_from_lang(lang_content: dict) -> str | None:
+    def extract_from_lang(lang_content: Any) -> str | None:
         if not isinstance(lang_content, dict):
             return None
         title = lang_content.get("title", "")
@@ -213,18 +219,28 @@ def _extract_post_text(content_json: dict) -> str:
                         text_parts.append(f"@{element.get('user_name', 'user')}")
         return " ".join(text_parts).strip() if text_parts else None
 
+    post_root = content_json.get("post") if isinstance(content_json, dict) else None
+    if not isinstance(post_root, dict):
+        post_root = content_json if isinstance(content_json, dict) else {}
+
     # Try direct format first
-    if "content" in content_json:
-        result = extract_from_lang(content_json)
+    if "content" in post_root:
+        result = extract_from_lang(post_root)
         if result:
             return result
 
     # Try localized format
     for lang_key in ("zh_cn", "en_us", "ja_jp"):
-        lang_content = content_json.get(lang_key)
+        lang_content = post_root.get(lang_key)
         result = extract_from_lang(lang_content)
         if result:
             return result
+
+    for value in post_root.values():
+        if isinstance(value, dict):
+            result = extract_from_lang(value)
+            if result:
+                return result
 
     return ""
 
@@ -321,14 +337,18 @@ class FeishuChannel(BaseChannel):
     async def stop(self) -> None:
         """Stop the Feishu bot."""
         self._running = False
-        if self._ws_client:
+        ws_client = self._ws_client
+        if ws_client and hasattr(ws_client, "stop"):
             try:
-                self._ws_client.stop()
+                await asyncio.to_thread(ws_client.stop)
             except Exception as e:
-                logger.warning("⚠️ 飞书停止异常 / ws stop failed: {}", e)
-        if self._ws_thread and self._ws_thread.is_alive():
-            self._ws_thread.join(timeout=3)
+                logger.debug("Feishu ws stop failed: {}", e)
+        ws_thread = self._ws_thread
+        if ws_thread and ws_thread.is_alive():
+            await asyncio.to_thread(ws_thread.join, timeout=3)
         self._ws_thread = None
+        self._loop = None
+        self._ws_client = None
         logger.info("ℹ️ 飞书已停止 / channel stopped: shutdown complete")
 
     def _add_reaction_sync(self, message_id: str, emoji_type: str) -> None:
@@ -715,7 +735,7 @@ class FeishuChannel(BaseChannel):
         Sync handler for incoming messages (called from WebSocket thread).
         Schedules async handling in the main event loop.
         """
-        if self._loop and self._loop.is_running():
+        if self._running and self._loop and self._loop.is_running():
             try:
                 asyncio.run_coroutine_threadsafe(self._on_message(data), self._loop)
             except RuntimeError:
@@ -724,12 +744,17 @@ class FeishuChannel(BaseChannel):
     async def _on_message(self, data: "P2ImMessageReceiveV1") -> None:
         """Handle incoming message from Feishu."""
         try:
+            if not self._running:
+                return
+
             event = data.event
             message = event.message
             sender = event.sender
 
             # Deduplication check
-            message_id = message.message_id
+            message_id = str(message.message_id or "")
+            if not message_id:
+                return
             if message_id in self._processed_message_ids:
                 return
             self._processed_message_ids[message_id] = None
@@ -795,6 +820,9 @@ class FeishuChannel(BaseChannel):
             content = "\n".join(content_parts) if content_parts else ""
 
             if not content and not media_paths:
+                return
+
+            if not self._running:
                 return
 
             # Forward to message bus

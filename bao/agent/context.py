@@ -291,6 +291,7 @@ Your workspace is at: {workspace_path}{tool_section}"""
 
         try:
             from pillow_heif import register_heif_opener
+
             register_heif_opener()
         except ImportError:
             pass
@@ -376,6 +377,7 @@ Your workspace is at: {workspace_path}{tool_section}"""
         content: str | None,
         tool_calls: list[dict[str, Any]] | None = None,
         reasoning_content: str | None = None,
+        thinking_blocks: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         msg: dict[str, Any] = {"role": "assistant"}
 
@@ -387,5 +389,7 @@ Your workspace is at: {workspace_path}{tool_section}"""
             msg["tool_calls"] = tool_calls
         if reasoning_content is not None:
             msg["reasoning_content"] = reasoning_content
+        if thinking_blocks:
+            msg["thinking_blocks"] = thinking_blocks
         messages.append(msg)
         return messages

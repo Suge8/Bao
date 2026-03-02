@@ -105,7 +105,7 @@ async def test_process_message_deduplicates_title_generation_while_inflight(
 
     async def _fake_run_agent_loop(initial_messages: list[dict[str, Any]], **kwargs: Any):
         del initial_messages, kwargs
-        return "ok", [], [], 0, [], False, []
+        return "ok", [], [], 0, [], False, False, []
 
     loop._run_agent_loop = _fake_run_agent_loop
     loop._maybe_learn_experience = lambda **kwargs: None
@@ -149,7 +149,7 @@ async def test_process_message_triggers_title_generation_beyond_second_turn(
 
     async def _fake_run_agent_loop(initial_messages: list[dict[str, Any]], **kwargs: Any):
         del initial_messages, kwargs
-        return "ok", [], [], 0, [], False, []
+        return "ok", [], [], 0, [], False, False, []
 
     loop._run_agent_loop = _fake_run_agent_loop
     loop._maybe_learn_experience = lambda **kwargs: None

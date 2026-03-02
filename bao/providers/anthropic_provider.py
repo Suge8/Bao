@@ -82,6 +82,13 @@ class AnthropicProvider(LLMProvider):
         model_lower = model.lower()
         return any(think_model in model_lower for think_model in self.EXTENDED_THINKING_MODELS)
 
+    @staticmethod
+    def _budget_from_reasoning_effort(reasoning_effort: str | None) -> int | None:
+        if not reasoning_effort:
+            return None
+        effort = reasoning_effort.strip().lower()
+        return {"low": 512, "medium": 1024, "high": 2048}.get(effort)
+
     def _convert_messages(
         self,
         messages: list[dict[str, Any]],
@@ -345,6 +352,10 @@ class AnthropicProvider(LLMProvider):
 
         # Handle thinking (extended thinking for Claude 3.7)
         thinking = kwargs.get("thinking")
+        if thinking is None:
+            effort_budget = self._budget_from_reasoning_effort(kwargs.get("reasoning_effort"))
+            if effort_budget:
+                thinking = {"type": "enabled", "budget_tokens": effort_budget}
         if thinking is None and self._supports_extended_thinking(resolved_model):
             # Default to enabling thinking for supported models
             thinking = {"type": "enabled", "budget_tokens": 1024}
@@ -359,6 +370,7 @@ class AnthropicProvider(LLMProvider):
                 content = ""
                 tool_calls: list[ToolCallRequest] = []
                 reasoning_content: str | None = None
+                thinking_blocks: list[dict[str, Any]] = []
                 current_tool_id: str | None = None
                 current_tool_name: str | None = None
                 partial_json = ""
@@ -400,6 +412,14 @@ class AnthropicProvider(LLMProvider):
                                 partial_json = ""
 
                     final_msg = await stream.get_final_message()
+                    for block in getattr(final_msg, "content", []) or []:
+                        if getattr(block, "type", None) == "thinking":
+                            thinking_blocks.append(
+                                {
+                                    "type": "thinking",
+                                    "thinking": str(getattr(block, "thinking", "") or ""),
+                                }
+                            )
 
                 # Usage from final message
                 usage = {
@@ -425,6 +445,7 @@ class AnthropicProvider(LLMProvider):
                     finish_reason=finish_reason,
                     usage=usage,
                     reasoning_content=reasoning_content,
+                    thinking_blocks=thinking_blocks or None,
                 )
             except asyncio.CancelledError:
                 raise
@@ -489,6 +510,7 @@ class AnthropicProvider(LLMProvider):
         content = ""
         tool_calls: list[ToolCallRequest] = []
         reasoning_content: str | None = None
+        thinking_blocks: list[dict[str, Any]] = []
         finish_reason = "stop"
 
         for block in response.content:
@@ -504,6 +526,7 @@ class AnthropicProvider(LLMProvider):
                 )
             elif block.type == "thinking":
                 reasoning_content = block.thinking
+                thinking_blocks.append({"type": "thinking", "thinking": block.thinking})
 
         # Map finish reason
         if response.stop_reason == "end_turn":
@@ -528,6 +551,7 @@ class AnthropicProvider(LLMProvider):
             finish_reason=finish_reason,
             usage=usage,
             reasoning_content=reasoning_content,
+            thinking_blocks=thinking_blocks or None,
         )
 
     def get_default_model(self) -> str:

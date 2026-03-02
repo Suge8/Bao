@@ -42,6 +42,7 @@ RETRYABLE_STATUS_CODES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 MAX_RETRY_AFTER_SECONDS = 60.0
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_BASE_DELAY = 1.0
+PROGRESS_RESET = "\x00"
 
 
 class ProgressCallbackError(RuntimeError):
@@ -50,6 +51,7 @@ class ProgressCallbackError(RuntimeError):
 
 class StreamInterruptedError(ProgressCallbackError):
     """Raised when soft interrupt is detected during LLM streaming."""
+
     pass
 
 
@@ -213,4 +215,4 @@ async def emit_progress(
 
 
 async def emit_progress_reset(on_progress: Callable[[str], Awaitable[None]] | None) -> None:
-    await emit_progress(on_progress, "\x00")
+    await emit_progress(on_progress, PROGRESS_RESET)

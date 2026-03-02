@@ -107,6 +107,12 @@ class OpenAICompatibleProvider(LLMProvider):
                 return model[len(prefix) :]
         return model
 
+    @staticmethod
+    def _supports_reasoning_effort(model: str) -> bool:
+        m = model.lower()
+        prefixes = ("gpt-5", "o1", "o3", "o4")
+        return m.startswith(prefixes)
+
     def _supports_prompt_caching(self) -> bool:
         return self.provider_name.lower() in self.PROMPT_CACHING_PROVIDERS
 
@@ -274,19 +280,48 @@ class OpenAICompatibleProvider(LLMProvider):
 
         max_tokens = max(1, max_tokens)
         source = str(extra.get("source", "main"))
+        reasoning_effort = extra.get("reasoning_effort")
+        if not isinstance(reasoning_effort, str):
+            reasoning_effort = None
+        if reasoning_effort is not None:
+            effort = reasoning_effort.strip().lower()
+            reasoning_effort = effort if effort in {"low", "medium", "high"} else None
+        if reasoning_effort is not None and not self._supports_reasoning_effort(resolved_model):
+            reasoning_effort = None
         mode = self._resolve_effective_mode()
 
         if mode == "responses":
             return await self._chat_responses(
-                resolved_model, messages, tools, max_tokens, temperature, on_progress, source
+                resolved_model,
+                messages,
+                tools,
+                max_tokens,
+                temperature,
+                on_progress,
+                source,
+                reasoning_effort,
             )
         if mode == "completions":
             return await self._chat_completions(
-                resolved_model, messages, tools, max_tokens, temperature, on_progress, source
+                resolved_model,
+                messages,
+                tools,
+                max_tokens,
+                temperature,
+                on_progress,
+                source,
+                reasoning_effort,
             )
 
         return await self._chat_with_probe(
-            resolved_model, messages, tools, max_tokens, temperature, on_progress, source
+            resolved_model,
+            messages,
+            tools,
+            max_tokens,
+            temperature,
+            on_progress,
+            source,
+            reasoning_effort,
         )
 
     async def _chat_completions(
@@ -298,6 +333,7 @@ class OpenAICompatibleProvider(LLMProvider):
         temperature: float,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         source: str = "main",
+        reasoning_effort: str | None = None,
     ) -> LLMResponse:
         del source
         params: dict[str, Any] = {
@@ -310,6 +346,8 @@ class OpenAICompatibleProvider(LLMProvider):
         if tools:
             params["tools"] = tools
             params["tool_choice"] = "auto"
+        if reasoning_effort:
+            params["reasoning_effort"] = reasoning_effort
 
         last_err: Exception | None = None
         content = ""
@@ -439,6 +477,7 @@ class OpenAICompatibleProvider(LLMProvider):
         tools: list[dict[str, Any]] | None,
         max_tokens: int,
         temperature: float,
+        reasoning_effort: str | None,
     ) -> dict[str, Any]:
         system_prompt, input_items = convert_messages_to_responses(messages)
         body: dict[str, Any] = {
@@ -453,6 +492,8 @@ class OpenAICompatibleProvider(LLMProvider):
         if tools:
             body["tools"] = convert_tools_to_responses(tools)
             body["tool_choice"] = "auto"
+        if reasoning_effort:
+            body["reasoning"] = {"effort": reasoning_effort}
         return body
 
     def _build_responses_headers(self) -> dict[str, str]:
@@ -471,9 +512,17 @@ class OpenAICompatibleProvider(LLMProvider):
         temperature: float,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         source: str = "main",
+        reasoning_effort: str | None = None,
     ) -> LLMResponse:
         allow_fallback = self._api_mode == "auto"
-        body = self._build_responses_body(model, messages, tools, max_tokens, temperature)
+        body = self._build_responses_body(
+            model,
+            messages,
+            tools,
+            max_tokens,
+            temperature,
+            reasoning_effort,
+        )
         url = f"{self._effective_base.rstrip('/')}/responses"
         headers = self._build_responses_headers()
 
@@ -525,6 +574,7 @@ class OpenAICompatibleProvider(LLMProvider):
                         temperature,
                         on_progress,
                         source,
+                        reasoning_effort,
                     )
 
                 return LLMResponse(
@@ -568,6 +618,7 @@ class OpenAICompatibleProvider(LLMProvider):
                             temperature,
                             on_progress,
                             source,
+                            reasoning_effort,
                         )
 
                     return LLMResponse(
@@ -592,6 +643,7 @@ class OpenAICompatibleProvider(LLMProvider):
                     temperature,
                     on_progress,
                     source,
+                    reasoning_effort,
                 )
 
             if should_retry_exception(status_err) and attempt < _MAX_RETRIES:
@@ -623,6 +675,7 @@ class OpenAICompatibleProvider(LLMProvider):
                     temperature,
                     on_progress,
                     source,
+                    reasoning_effort,
                 )
 
             return LLMResponse(
@@ -647,8 +700,16 @@ class OpenAICompatibleProvider(LLMProvider):
         temperature: float,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         source: str = "main",
+        reasoning_effort: str | None = None,
     ) -> LLMResponse:
-        body = self._build_responses_body(model, messages, tools, max_tokens, temperature)
+        body = self._build_responses_body(
+            model,
+            messages,
+            tools,
+            max_tokens,
+            temperature,
+            reasoning_effort,
+        )
         url = f"{self._effective_base.rstrip('/')}/responses"
         headers = self._build_responses_headers()
 
@@ -664,7 +725,14 @@ class OpenAICompatibleProvider(LLMProvider):
                 )
                 set_cached_mode(self._effective_base, "completions")
                 return await self._chat_completions(
-                    model, messages, tools, max_tokens, temperature, on_progress, source
+                    model,
+                    messages,
+                    tools,
+                    max_tokens,
+                    temperature,
+                    on_progress,
+                    source,
+                    reasoning_effort,
                 )
 
             if resp.status_code == 200:
@@ -680,7 +748,14 @@ class OpenAICompatibleProvider(LLMProvider):
                 self._effective_base,
             )
             return await self._chat_completions(
-                model, messages, tools, max_tokens, temperature, on_progress, source
+                model,
+                messages,
+                tools,
+                max_tokens,
+                temperature,
+                on_progress,
+                source,
+                reasoning_effort,
             )
 
         except asyncio.CancelledError:
@@ -694,7 +769,14 @@ class OpenAICompatibleProvider(LLMProvider):
                 e,
             )
             return await self._chat_completions(
-                model, messages, tools, max_tokens, temperature, on_progress, source
+                model,
+                messages,
+                tools,
+                max_tokens,
+                temperature,
+                on_progress,
+                source,
+                reasoning_effort,
             )
 
     def _parse_completions_response(self, response: Any) -> LLMResponse:
