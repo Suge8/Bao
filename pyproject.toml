@@ -104,9 +104,14 @@ target-version = "py311"
 select = ["E", "F", "I", "N", "W"]
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+"app/main.py" = ["N802", "N815"]
+"app/backend/*.py" = ["N802", "N815"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["."]
 
 [dependency-groups]
 dev = [

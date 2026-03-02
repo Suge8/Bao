@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import cast
 
 # Sentinel value for key deletion
 _DELETE_SENTINEL = object()
@@ -98,15 +98,17 @@ class _ObjNode:
 
     children: dict[str, "_ObjNode | _Span"] = field(default_factory=dict)
     close_brace: int = -1  # offset of '}'
-    open_brace: int = -1   # offset of '{'
+    open_brace: int = -1  # offset of '{'
     # offset just before '}' where we can insert new keys
     insert_before: int = -1
 
 
 class _Parser:
     def __init__(self, tokens: list[Token]) -> None:
-        self._tokens = [t for t in tokens if t.kind not in ("WS", "COMMENT_LINE", "COMMENT_BLOCK")]
-        self._pos = 0
+        self._tokens: list[Token] = [
+            token for token in tokens if token.kind not in ("WS", "COMMENT_LINE", "COMMENT_BLOCK")
+        ]
+        self._pos: int = 0
 
     def _peek(self) -> Token | None:
         if self._pos < len(self._tokens):
@@ -136,31 +138,25 @@ class _Parser:
         open_tok = self._consume("LBRACE")
         node = _ObjNode()
         node.open_brace = open_tok.start
-        last_value_end = open_tok.end
 
         while True:
             t = self._peek()
             if t is None:
                 raise ValueError("Unterminated object")
             if t.kind == "RBRACE":
-                node.insert_before = last_value_end
+                node.insert_before = t.start
                 node.close_brace = t.start
-                self._consume("RBRACE")
+                _ = self._consume("RBRACE")
                 return node
             if t.kind == "COMMA":
-                self._consume("COMMA")
+                _ = self._consume("COMMA")
                 continue
             # key
             key_tok = self._consume("STRING")
-            key = json.loads(key_tok.value)
-            self._consume("COLON")
+            key = cast(str, json.loads(key_tok.value))
+            _ = self._consume("COLON")
             child = self.parse_value()
             node.children[key] = child
-            if isinstance(child, _Span):
-                last_value_end = child.end
-            elif isinstance(child, _ObjNode):
-                # close_brace is the offset of '}', so end = close_brace + 1
-                last_value_end = child.close_brace + 1
 
     def _parse_array(self) -> _Span:
         start = self._peek()
@@ -198,7 +194,7 @@ class PatchError:
 
 def patch_jsonc(
     text: str,
-    changes: dict[str, Any],
+    changes: dict[str, object],
 ) -> tuple[str, list[PatchError]]:
     """Apply *changes* to *text* (JSONC), returning (patched_text, errors).
 
@@ -249,7 +245,7 @@ def patch_jsonc(
 def _collect_patch(
     node: "_ObjNode | _Span",
     path: list[str],
-    value: Any,
+    value: object,
     text: str,
     patches: list[tuple[int, int, str]],
 ) -> str | None:
@@ -272,7 +268,7 @@ def _collect_patch(
             replacement = json.dumps(value, ensure_ascii=False)
             patches.append((child.start, child.end, replacement))
             return None
-        elif isinstance(child, _ObjNode):
+        else:
             # Replace entire object value
             close = child.close_brace + 1
             open_pos = child.open_brace
@@ -316,13 +312,11 @@ def _collect_patch(
         patches.append((insert_pos, insert_pos, new_entry))
         return None
 
-    return f"Key {key!r} not found"
-
 
 def _strip_comments(text: str) -> str:
     """Remove // and /* */ comments, preserving string contents."""
     tokens = _tokenize(text)
-    parts = []
+    parts: list[str] = []
     for t in tokens:
         if t.kind in ("COMMENT_LINE", "COMMENT_BLOCK"):
             # Replace with whitespace to preserve offsets for error messages
@@ -330,3 +324,7 @@ def _strip_comments(text: str) -> str:
         else:
             parts.append(t.value)
     return "".join(parts)
+
+
+def strip_comments(text: str) -> str:
+    return _strip_comments(text)

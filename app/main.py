@@ -6,8 +6,9 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable, ClassVar, TypeVar, cast
 
-from PySide6.QtCore import QLocale, QObject, Property, QRectF, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import Property, QLocale, QObject, QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (
     QColor,
     QGuiApplication,
@@ -24,9 +25,27 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtQuickControls2 import QQuickStyle
 
+_F = TypeVar("_F", bound=Callable[..., object])
+
+
+def _typed_slot(
+    *types: type[object] | str,
+    name: str | None = None,
+    result: type[object] | str | None = None,
+) -> Callable[[_F], _F]:
+    if name is None and result is None:
+        slot_decorator = Slot(*types)
+    elif result is None:
+        slot_decorator = Slot(*types, name=name)
+    elif name is None:
+        slot_decorator = Slot(*types, result=result)
+    else:
+        slot_decorator = Slot(*types, name=name, result=result)
+    return cast(Callable[[_F], _F], slot_decorator)
+
 
 class ThemeManager(QObject):
-    isDarkChanged = Signal()
+    isDarkChanged: ClassVar[Signal] = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -36,36 +55,41 @@ class ThemeManager(QObject):
     def isDark(self) -> bool:
         return self._is_dark
 
-    @Slot()
+    @_typed_slot()
     def toggle_theme(self) -> None:
         self._is_dark = not self._is_dark
         self.isDarkChanged.emit()
 
 
 class ClipboardService(QObject):
-    @Slot(str, name="copyText")
+    @_typed_slot(str, name="copyText")
     def copy_text(self, text: str) -> None:
         clipboard = QGuiApplication.clipboard()
-        if clipboard is not None:
-            clipboard.setText(text or "")
+        clipboard.setText(text or "")
 
 
 def parse_args() -> tuple[bool, str | None, bool, str, bool, str | None]:
     p = argparse.ArgumentParser()
-    p.add_argument("--smoke", action="store_true")
-    p.add_argument("--qml", default=None)
-    p.add_argument("--smoke-theme-toggle", action="store_true")
-    p.add_argument("--start-view", choices=("chat", "settings"), default="chat")
-    p.add_argument("--seed-messages", action="store_true")
-    p.add_argument("--smoke-screenshot", default=None)
+    _ = p.add_argument("--smoke", action="store_true")
+    _ = p.add_argument("--qml", default=None)
+    _ = p.add_argument("--smoke-theme-toggle", action="store_true")
+    _ = p.add_argument("--start-view", choices=("chat", "settings"), default="chat")
+    _ = p.add_argument("--seed-messages", action="store_true")
+    _ = p.add_argument("--smoke-screenshot", default=None)
     a = p.parse_args()
+    smoke = bool(cast(object, a.smoke))
+    qml = cast(str | None, a.qml)
+    smoke_theme_toggle = bool(cast(object, a.smoke_theme_toggle))
+    start_view = cast(str, a.start_view)
+    seed_messages = bool(cast(object, a.seed_messages))
+    smoke_screenshot = cast(str | None, a.smoke_screenshot)
     return (
-        a.smoke,
-        a.qml,
-        a.smoke_theme_toggle,
-        a.start_view,
-        a.seed_messages,
-        a.smoke_screenshot,
+        smoke,
+        qml,
+        smoke_theme_toggle,
+        start_view,
+        seed_messages,
+        smoke_screenshot,
     )
 
 
@@ -201,7 +225,7 @@ def build_rounded_icon(image_path: Path) -> QIcon | None:
             inner_rect, max(1.0, radius - stroke_width), max(1.0, radius - stroke_width)
         )
 
-        painter.end()
+        _ = painter.end()
 
         icon.addPixmap(canvas)
 
@@ -253,11 +277,14 @@ def _apply_windows_rounded_corners(window: QQuickWindow) -> bool:
         if hwnd == 0:
             return False
         pref = ctypes.c_int(dwmwcp_round)
-        result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
-            ctypes.c_void_p(hwnd),
-            ctypes.c_uint(dwmwa_window_corner_preference),
-            ctypes.byref(pref),
-            ctypes.sizeof(pref),
+        result = cast(
+            int,
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                ctypes.c_void_p(hwnd),
+                ctypes.c_uint(dwmwa_window_corner_preference),
+                ctypes.byref(pref),
+                ctypes.sizeof(pref),
+            ),
         )
         return result == 0
     except Exception:
@@ -301,11 +328,14 @@ def _apply_windows_titlebar_colors(
         ok = False
         for attr, raw in values:
             val = ctypes.c_uint(raw)
-            result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                ctypes.c_void_p(hwnd),
-                ctypes.c_uint(attr),
-                ctypes.byref(val),
-                ctypes.sizeof(val),
+            result = cast(
+                int,
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    ctypes.c_void_p(hwnd),
+                    ctypes.c_uint(attr),
+                    ctypes.byref(val),
+                    ctypes.sizeof(val),
+                ),
             )
             ok = ok or (result == 0)
         return ok
@@ -322,13 +352,14 @@ def main() -> int:
 
     # --- loguru setup (mirrors CLI _setup_logging) ---
     import logging
+
     from loguru import logger
 
     logger.remove()
     logging.basicConfig(level=logging.WARNING)
     for name in ("httpcore", "httpx", "openai"):
         logging.getLogger(name).setLevel(logging.WARNING)
-    logger.add(sys.stderr, level="INFO", format="{time:HH:mm:ss} | {message}")
+    _ = logger.add(sys.stderr, level="INFO", format="{time:HH:mm:ss} | {message}")
 
     os.environ["QT_QUICK_CONTROLS_STYLE"] = "Basic"
     os.environ["QML_DISABLE_DISK_CACHE"] = "1"
@@ -348,11 +379,11 @@ def main() -> int:
         app.setWindowIcon(logo_icon)
     engine = QQmlApplicationEngine()
 
+    from app.backend.asyncio_runner import AsyncioRunner
     from app.backend.chat import ChatMessageModel
+    from app.backend.config import ConfigService
     from app.backend.gateway import ChatService
     from app.backend.session import SessionService
-    from app.backend.config import ConfigService
-    from app.backend.asyncio_runner import AsyncioRunner
 
     runner = AsyncioRunner()
     runner.start()
@@ -365,31 +396,38 @@ def main() -> int:
 
     from bao.config.loader import ensure_first_run
 
-    ensure_first_run()
+    _ = ensure_first_run()
 
     config_service.load()
 
     # Set UI language on ChatService for localized system messages
     _cfg_lang = config_service.get("ui.language", "auto")
     _ui_lang = _cfg_lang if _cfg_lang in ("zh", "en") else detect_system_ui_language()
-    chat_service.setLanguage(_ui_lang)
+    set_language = cast(Callable[[str], None], chat_service.setLanguage)
+    set_language(_ui_lang)
 
     # Early SessionManager for browsing history without gateway
     from bao.session.manager import SessionManager
 
-    _ws = Path(config_service.get("agents.defaults.workspace", "~/.bao/workspace")).expanduser()
+    workspace_value = config_service.get("agents.defaults.workspace", "~/.bao/workspace")
+    workspace_str = workspace_value if isinstance(workspace_value, str) else "~/.bao/workspace"
+    _ws = Path(workspace_str).expanduser()
     _ws.mkdir(parents=True, exist_ok=True)
     _early_sm = SessionManager(_ws)
     session_service.initialize(_early_sm)
-    chat_service.setSessionManager(_early_sm)
+    set_session_manager = cast(Callable[[object], None], chat_service.setSessionManager)
+    set_session_manager(_early_sm)
 
-    def _on_gateway_ready(sm, _ch):
-        session_service.setGatewayReady()
+    set_gateway_ready = cast(Callable[[], None], session_service.setGatewayReady)
+
+    def _on_gateway_ready(sm: object, _ch: object) -> None:
+        set_gateway_ready()
         session_service.initialize(sm)
 
-    chat_service.gatewayReady.connect(_on_gateway_ready)
+    _ = chat_service.gatewayReady.connect(_on_gateway_ready)
     # Wire session → gateway: when active session changes, update gateway session key
-    session_service.activeKeyChanged.connect(chat_service.setSessionKey)
+    set_session_key = cast(Callable[[str], None], chat_service.setSessionKey)
+    _ = session_service.activeKeyChanged.connect(set_session_key)
 
     context = engine.rootContext()
     context.setContextProperty("chatService", chat_service)
@@ -414,21 +452,23 @@ def main() -> int:
         if not use_native_title_bar:
             root.setColor(QColor(0, 0, 0, 0))
         elif sys.platform == "win32":
-            caption_color = _to_qcolor(root.property("bgBase"), QColor("#0C0C14"))
-            text_color = _to_qcolor(root.property("textPrimary"), QColor("#E8E8F0"))
-            border_color = _to_qcolor(root.property("borderSubtle"), caption_color)
+            caption_color = _to_qcolor(cast(object, root.property("bgBase")), QColor("#0C0C14"))
+            text_color = _to_qcolor(cast(object, root.property("textPrimary")), QColor("#E8E8F0"))
+            border_color = _to_qcolor(cast(object, root.property("borderSubtle")), caption_color)
+
+            def _apply_windows_chrome() -> None:
+                _ = _apply_windows_rounded_corners(root)
+                _ = _apply_windows_titlebar_colors(root, caption_color, text_color, border_color)
+
             QTimer.singleShot(
                 0,
-                lambda: (
-                    _apply_windows_rounded_corners(root),
-                    _apply_windows_titlebar_colors(root, caption_color, text_color, border_color),
-                ),
+                _apply_windows_chrome,
             )
     _ = root.setProperty("startView", start_view)
 
     if seed_messages:
-        messages_model.append_user("Hello, what can you do?")
-        messages_model.append_assistant(
+        _ = messages_model.append_user("Hello, what can you do?")
+        _ = messages_model.append_assistant(
             "I can help with code, writing, analysis, and more!", status="done"
         )
 
@@ -451,7 +491,8 @@ def main() -> int:
         QTimer.singleShot(500, app.quit)
 
     ret = app.exec()
-    chat_service.stop()
+    stop_chat = cast(Callable[[], None], chat_service.stop)
+    stop_chat()
     runner.shutdown(grace_s=2.0)
     return ret
 

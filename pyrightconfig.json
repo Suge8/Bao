@@ -1,0 +1,14 @@
+{
+  "stubPath": "typings",
+  "include": [
+    "bao",
+    "app",
+    "tests"
+  ],
+  "executionEnvironments": [
+    {
+      "root": "tests",
+      "reportMissingImports": "none"
+    }
+  ]
+}

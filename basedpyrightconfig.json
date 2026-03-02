@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/DetachHead/basedpyright/main/packages/basedpyright/schema.json",
+  "include": [
+    "bao",
+    "app",
+    "tests"
+  ],
+  "executionEnvironments": [
+    {
+      "root": "tests",
+      "reportMissingImports": "none"
+    }
+  ]
+}

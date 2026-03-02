@@ -1,0 +1,9 @@
+from typing import Any
+
+class _Mark:
+    def __getattr__(self, name: str) -> Any: ...
+
+mark: _Mark
+
+def fixture(*args: Any, **kwargs: Any) -> Any: ...
+def raises(*args: Any, **kwargs: Any) -> Any: ...

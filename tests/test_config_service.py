@@ -99,6 +99,37 @@ def test_save_patches_value(tmp_path):
     assert data["agents"]["defaults"]["model"] == "anthropic/claude-3-5-sonnet"
 
 
+def test_save_after_missing_load_marks_valid(tmp_path):
+    from app.backend.config import ConfigService
+
+    cfg = tmp_path / "config.jsonc"
+    svc = ConfigService()
+    with patch("bao.config.loader.get_config_path", return_value=cfg):
+        svc.load()
+    assert svc.isValid is False
+
+    ok = svc.save({"ui": {"language": "zh"}})
+    assert ok is True
+    assert svc.isValid is True
+
+
+def test_save_reports_patch_exception(tmp_path):
+    from app.backend.config import ConfigService
+
+    cfg = tmp_path / "config.jsonc"
+    svc = ConfigService()
+    with patch("bao.config.loader.get_config_path", return_value=cfg):
+        svc.load()
+
+    errors = []
+    svc.saveError.connect(errors.append)
+    with patch("app.backend.config.patch_jsonc", side_effect=ValueError("boom")):
+        ok = svc.save({"ui": {"language": "zh"}})
+
+    assert ok is False
+    assert any("Patch failed" in e for e in errors)
+
+
 def test_save_before_load_fails():
     from app.backend.config import ConfigService
 

@@ -1,10 +1,11 @@
 """Tests for JSONC patch writer."""
+
 from __future__ import annotations
 
 import json
+from typing import Any
 
-from app.backend.jsonc_patch import patch_jsonc, _strip_comments
-
+from app.backend.jsonc_patch import _strip_comments, patch_jsonc
 
 SAMPLE_JSONC = """{
   // Provider config
@@ -24,7 +25,7 @@ SAMPLE_JSONC = """{
 }"""
 
 
-def _parse(text: str) -> dict:
+def _parse(text: str) -> dict[str, Any]:
     return json.loads(_strip_comments(text))
 
 
@@ -43,7 +44,9 @@ def test_update_existing_number():
 
 
 def test_update_null_to_string():
-    result, errors = patch_jsonc(SAMPLE_JSONC, {"providers.openai.apiBase": "https://api.example.com"})
+    result, errors = patch_jsonc(
+        SAMPLE_JSONC, {"providers.openai.apiBase": "https://api.example.com"}
+    )
     assert not errors
     data = _parse(result)
     assert data["providers"]["openai"]["apiBase"] == "https://api.example.com"
@@ -57,10 +60,10 @@ def test_keep_comments():
 
 
 def test_insert_new_key():
-    result, errors = patch_jsonc(SAMPLE_JSONC, {"providers.openai.apiMode": "chat"})
+    result, errors = patch_jsonc(SAMPLE_JSONC, {"providers.openai.timeoutMs": 30000})
     assert not errors
     data = _parse(result)
-    assert data["providers"]["openai"]["apiMode"] == "chat"
+    assert data["providers"]["openai"]["timeoutMs"] == 30000
 
 
 def test_insert_channel_config():
@@ -69,6 +72,16 @@ def test_insert_channel_config():
     assert not errors
     data = _parse(result)
     assert data["channels"]["telegram"]["token"] == "abc"
+
+
+def test_insert_keeps_trailing_comment_with_existing_key():
+    base = '{\n  "obj": {\n    "a": 1 // keep\n  }\n}'
+    result, errors = patch_jsonc(base, {"obj.b": 2})
+    assert not errors
+    data = _parse(result)
+    assert data["obj"]["a"] == 1
+    assert data["obj"]["b"] == 2
+    assert result.index("// keep") < result.index('"b"')
 
 
 def test_multiple_patches():
