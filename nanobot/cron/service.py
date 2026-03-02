@@ -226,7 +226,6 @@ class CronService:
 
     async def _on_timer(self) -> None:
         """Handle timer tick - run due jobs."""
-        # Pick up external CLI/file changes before deciding due jobs.
         self._load_store()
         if not self._store:
             return
