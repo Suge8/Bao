@@ -1,17 +1,8 @@
 """Tests for BM25 fallback search in MemoryStore."""
 
-import sys
-from pathlib import Path
 from typing import Any
 
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 from bao.agent.memory import MemoryStore
-
 
 # ---------------------------------------------------------------------------
 # _tokenize
@@ -50,7 +41,6 @@ class TestTokenize:
         assert "[task]" not in tokens
 
 
-
 # ---------------------------------------------------------------------------
 # _bm25_rank
 # ---------------------------------------------------------------------------
@@ -58,7 +48,6 @@ class TestTokenize:
 
 def _make_doc(content: str) -> dict[str, Any]:
     return {"content": content, "type": "experience", "key": "k", "updated_at": ""}
-
 
 
 class TestBm25Rank:

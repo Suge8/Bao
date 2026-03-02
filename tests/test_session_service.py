@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib
 import sys
 from typing import Any
-
 from unittest.mock import MagicMock
 
 from app.backend.asyncio_runner import AsyncioRunner

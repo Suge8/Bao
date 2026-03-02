@@ -1,5 +1,5 @@
 """Session management module."""
 
-from bao.session.manager import SessionManager, Session
+from bao.session.manager import Session, SessionManager
 
 __all__ = ["SessionManager", "Session"]
