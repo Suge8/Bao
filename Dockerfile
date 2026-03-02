@@ -1,5 +1,8 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
+ARG BAO_UID=10001
+ARG BAO_GID=10001
+
 # Install Node.js 20 for the WhatsApp bridge
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates gnupg git && \
@@ -12,15 +15,18 @@ RUN apt-get update && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
 
+RUN groupadd --gid "${BAO_GID}" bao && \
+    useradd --uid "${BAO_UID}" --gid "${BAO_GID}" --create-home --shell /bin/bash bao
+
 WORKDIR /app
 
-# Install Python dependencies first (cached layer)
+# Install Python dependencies first (cacheable layer)
 COPY pyproject.toml README.md LICENSE ./
 RUN mkdir -p bao bridge && touch bao/__init__.py && \
     uv pip install --system --no-cache . && \
     rm -rf bao bridge
 
-# Copy the full source and install
+# Copy full source and install
 COPY bao/ bao/
 COPY bridge/ bridge/
 RUN uv pip install --system --no-cache .
@@ -30,11 +36,11 @@ WORKDIR /app/bridge
 RUN npm install && npm run build
 WORKDIR /app
 
-# Create config directory
-RUN mkdir -p /root/.bao
+# Create runtime directories
+RUN mkdir -p /home/bao/.bao /tmp && \
+    chown -R bao:bao /home/bao /app
 
-# Gateway default port
-EXPOSE 18790
+USER bao
+ENV HOME=/home/bao
 
 ENTRYPOINT ["bao"]
-

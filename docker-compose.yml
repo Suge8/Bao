@@ -3,24 +3,48 @@ x-common-config: &common-config
     context: .
     dockerfile: Dockerfile
   volumes:
-    - ~/.bao:/root/.bao
+    - ~/.bao:/home/bao/.bao
 
 services:
   bao-gateway:
     container_name: bao-gateway
     <<: *common-config
     command: []
+    init: true
     restart: unless-stopped
-    ports:
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      BAO_CHANNELS__WHATSAPP__BRIDGE_URL: ${BAO_CHANNELS__WHATSAPP__BRIDGE_URL:-ws://bao-whatsapp-bridge:3001}
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import pathlib,sys; c=pathlib.Path('/proc/1/cmdline').read_text(errors='ignore'); sys.exit(0 if 'bao' in c else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
     # 环境变量覆盖配置文件 | Env vars override config file
     # 命名规则 Naming: BAO_{SECTION}__{FIELD} (snake_case, 双下划线分隔层级)
     # 示例 Examples:
     #   BAO_AGENTS__DEFAULTS__MODEL=anthropic/claude-sonnet-4-20250514
     #   BAO_PROVIDERS__MYKEY__API_KEY=sk-xxx
     #   BAO_PROVIDERS__MYKEY__TYPE=openai
-    # env_file:
-    #   - .env  # 取消注释以从 .env 文件加载 | Uncomment to load from .env
-      - 18790:18790
+
     deploy:
       resources:
         limits:
@@ -29,3 +53,33 @@ services:
         reservations:
           cpus: '0.25'
           memory: 256M
+
+  bao-whatsapp-bridge:
+    container_name: bao-whatsapp-bridge
+    <<: *common-config
+    profiles: ["whatsapp"]
+    command: ["node", "/app/bridge/dist/index.js"]
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      AUTH_DIR: /home/bao/.bao/whatsapp-auth
+      BRIDGE_PORT: "3001"
+      BRIDGE_TOKEN: ${BRIDGE_TOKEN:-}
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "const net=require('node:net');const s=net.connect(3001,'127.0.0.1');s.on('connect',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),3000);"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
