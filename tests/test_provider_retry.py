@@ -131,7 +131,7 @@ def test_openai_completions_cancelled_error_not_swallowed() -> None:
 
 
 def test_responses_mode_auto_falls_back_to_completions(monkeypatch) -> None:
-    provider = OpenAICompatibleProvider(api_key="k", api_base="https://x.com/v1", api_mode="auto")
+    provider = OpenAICompatibleProvider(api_key="k", api_base="https://x.com/v1")
 
     class _Resp:
         status_code = 503
@@ -170,12 +170,8 @@ def test_responses_mode_auto_falls_back_to_completions(monkeypatch) -> None:
     assert result.content == "fallback-ok"
 
 
-def test_responses_mode_explicit_does_not_fallback(monkeypatch) -> None:
-    provider = OpenAICompatibleProvider(
-        api_key="k",
-        api_base="https://x.com/v1",
-        api_mode="responses",
-    )
+def test_responses_mode_fallback_on_http_error(monkeypatch) -> None:
+    provider = OpenAICompatibleProvider(api_key="k", api_base="https://x.com/v1")
 
     class _Resp:
         status_code = 503
@@ -193,14 +189,14 @@ def test_responses_mode_explicit_does_not_fallback(monkeypatch) -> None:
             del args, kwargs
             return _Resp()
 
-    async def _should_not_call(*args, **kwargs):
+    async def _fake_chat(*args, **kwargs):
         del args, kwargs
-        raise AssertionError("_chat_completions should not be called in explicit responses mode")
+        return LLMResponse(content="fallback-503", finish_reason="stop")
 
     monkeypatch.setattr(
         "bao.providers.openai_provider.httpx.AsyncClient", lambda timeout: _Client()
     )
-    monkeypatch.setattr(provider, "_chat_completions", _should_not_call)
+    monkeypatch.setattr(provider, "_chat_completions", _fake_chat)
 
     result = asyncio.run(
         provider._chat_responses(
@@ -212,5 +208,4 @@ def test_responses_mode_explicit_does_not_fallback(monkeypatch) -> None:
         )
     )
 
-    assert result.finish_reason == "error"
-    assert "Responses API HTTP 503" in (result.content or "")
+    assert result.content == "fallback-503"

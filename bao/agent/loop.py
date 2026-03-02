@@ -1308,7 +1308,10 @@ class AgentLoop:
                         self.sessions.save(session)
                         msg.metadata["_pre_saved"] = True
 
-                    if getattr(self.provider, "_api_mode", None) == "responses":
+                    if (
+                        hasattr(self.provider, "_resolve_effective_mode")
+                        and self.provider._resolve_effective_mode() == "responses"
+                    ):
                         for t in busy_tasks:
                             if not t.done():
                                 t.cancel()
@@ -1458,8 +1461,9 @@ class AgentLoop:
         if msg.channel == "system":
             return await self._process_system_message(msg)
 
-        preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
-        logger.info("📨 收到消息 / in: {}:{}: {}", msg.channel, msg.sender_id, preview)
+        if not msg.metadata.get("_ephemeral"):
+            preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
+            logger.info("📨 收到消息 / in: {}:{}: {}", msg.channel, msg.sender_id, preview)
 
         # Layer 1/2: one-time stale artifact cleanup per process lifetime
         if not self._artifact_cleanup_done:

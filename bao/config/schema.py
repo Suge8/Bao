@@ -16,7 +16,6 @@ SlackDmPolicyLiteral = Literal["open", "allowlist"]
 SlackModeLiteral = Literal["socket"]
 MochatReplyDelayModeLiteral = Literal["off", "non-mention"]
 ProviderTypeLiteral = Literal["openai", "anthropic", "gemini", "openai_codex"]
-ProviderApiModeLiteral = Literal["auto", "responses", "completions"]
 ToolExposureModeLiteral = Literal["off", "auto"]
 
 
@@ -315,7 +314,6 @@ class ProviderConfig(Base):
     api_key: SecretStr = SecretStr("")
     api_base: str | None = None
     extra_headers: dict[str, str] | None = None
-    api_mode: str = "auto"  # auto | responses | completions (openai_compatible only)
 
     @model_validator(mode="after")
     def _warn_policies(self) -> "ProviderConfig":
@@ -324,12 +322,6 @@ class ProviderConfig(Base):
             field_name="type",
             value=self.type,
             allowed_values=get_args(ProviderTypeLiteral),
-        )
-        _warn_unknown_policy(
-            model_name="ProviderConfig",
-            field_name="api_mode",
-            value=self.api_mode,
-            allowed_values=get_args(ProviderApiModeLiteral),
         )
         return self
 

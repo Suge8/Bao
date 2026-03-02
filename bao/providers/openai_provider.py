@@ -1,4 +1,4 @@
-"""OpenAI-Compatible Provider — supports Chat Completions and Responses API with auto-detection."""
+"""OpenAI-Compatible Provider — supports Responses with automatic fallback."""
 
 from __future__ import annotations
 
@@ -44,12 +44,7 @@ class _ResponsesHTTPStatusError(RuntimeError):
 
 
 class OpenAICompatibleProvider(LLMProvider):
-    """Universal OpenAI-compatible provider with Responses API auto-detection.
-
-    When api_mode is "auto" (default), the first request probes the Responses API.
-    If supported, all subsequent requests use it; otherwise falls back to Chat Completions.
-    The detection result is cached per endpoint to disk with a 7-day TTL.
-    """
+    """Universal OpenAI-compatible provider with automatic mode detection."""
 
     PROMPT_CACHING_PROVIDERS = frozenset({"openrouter", "openai"})
 
@@ -60,14 +55,12 @@ class OpenAICompatibleProvider(LLMProvider):
         default_model: str = "gpt-4o",
         extra_headers: dict[str, str] | None = None,
         provider_name: str | None = None,
-        api_mode: str = "auto",
         model_prefix: str | None = None,
     ):
         super().__init__(api_key, api_base)
         self.default_model = default_model
         self.extra_headers = extra_headers or {}
         self.provider_name = provider_name or "openai"
-        self._api_mode = api_mode
         self._model_prefix = (model_prefix or "").strip().lower()
         self._effective_base = api_base or "https://api.openai.com/v1"
 
@@ -214,8 +207,6 @@ class OpenAICompatibleProvider(LLMProvider):
         return sanitized
 
     def _resolve_effective_mode(self) -> str:
-        if self._api_mode in {"responses", "completions"}:
-            return self._api_mode
         return get_cached_mode(self._effective_base) or "auto"
 
     @staticmethod
@@ -514,7 +505,7 @@ class OpenAICompatibleProvider(LLMProvider):
         source: str = "main",
         reasoning_effort: str | None = None,
     ) -> LLMResponse:
-        allow_fallback = self._api_mode == "auto"
+        allow_fallback = True
         body = self._build_responses_body(
             model,
             messages,
@@ -736,9 +727,10 @@ class OpenAICompatibleProvider(LLMProvider):
                 )
 
             if resp.status_code == 200:
+                result = self._build_responses_result(self._decode_responses_payload(resp))
                 set_cached_mode(self._effective_base, "responses")
                 logger.info("🤖 响应已启用 / detected: [{}] Responses API cached", source)
-                return self._build_responses_result(self._decode_responses_payload(resp))
+                return result
 
             logger.debug(
                 "🤖 探测回退 / probe fallback: [{}] Responses returned {} model={} base={}, trying Chat Completions",

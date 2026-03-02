@@ -5,17 +5,18 @@ import json
 import sys
 from pathlib import Path
 
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from pydantic import SecretStr
+
 from bao.providers.api_mode_cache import get_cached_mode, set_cached_mode
+from bao.providers.base import LLMResponse
+from bao.providers.openai_provider import OpenAICompatibleProvider
 from bao.providers.responses_compat import (
     convert_messages_to_responses,
     convert_tools_to_responses,
     parse_responses_json,
 )
-from bao.providers.openai_provider import OpenAICompatibleProvider
-from bao.providers.base import LLMResponse
 
 
 def test_convert_messages_to_responses():
@@ -90,13 +91,13 @@ def test_parse_responses_json():
     print("✓ parse_responses_json")
 
 
-def test_api_mode_cache():
+def test_api_mode_cache(tmp_path):
     import bao.providers.api_mode_cache as cache_mod
 
     old_cache = cache_mod._cache
     old_file = cache_mod._CACHE_FILE
     cache_mod._cache = None
-    cache_mod._CACHE_FILE = Path("/tmp/_bao_test_api_mode_cache.json")
+    cache_mod._CACHE_FILE = tmp_path / "api_mode_cache.json"
     try:
         if cache_mod._CACHE_FILE.exists():
             cache_mod._CACHE_FILE.unlink()
@@ -115,66 +116,78 @@ def test_api_mode_cache():
     finally:
         cache_mod._cache = old_cache
         cache_mod._CACHE_FILE = old_file
-        Path("/tmp/_bao_test_api_mode_cache.json").unlink(missing_ok=True)
+        cache_mod._CACHE_FILE.unlink(missing_ok=True)
 
 
-def test_provider_resolve_effective_mode():
-    p = OpenAICompatibleProvider(api_key="k", api_base="https://test.com/v1", api_mode="responses")
-    assert p._resolve_effective_mode() == "responses"
+def test_provider_resolve_effective_mode(tmp_path):
+    import bao.providers.api_mode_cache as cache_mod
 
-    p2 = OpenAICompatibleProvider(
-        api_key="k", api_base="https://test.com/v1", api_mode="completions"
-    )
-    assert p2._resolve_effective_mode() == "completions"
-
-    p3 = OpenAICompatibleProvider(
-        api_key="k", api_base="https://nocache.example.com/v1", api_mode="auto"
-    )
-    assert p3._resolve_effective_mode() == "auto"
+    old_cache = cache_mod._cache
+    old_file = cache_mod._CACHE_FILE
+    cache_mod._cache = None
+    cache_mod._CACHE_FILE = tmp_path / "api_mode_resolve.json"
+    try:
+        cache_mod._CACHE_FILE.unlink(missing_ok=True)
+        p = OpenAICompatibleProvider(api_key="k", api_base="https://test.com/v1")
+        assert p._resolve_effective_mode() == "auto"
+        set_cached_mode("https://test.com/v1", "responses")
+        assert p._resolve_effective_mode() == "responses"
+        set_cached_mode("https://test.com/v1", "completions")
+        assert p._resolve_effective_mode() == "completions"
+    finally:
+        cache_mod._cache = old_cache
+        cache_mod._CACHE_FILE = old_file
+        cache_mod._CACHE_FILE.unlink(missing_ok=True)
     print("✓ provider _resolve_effective_mode")
 
 
-def test_provider_init_with_api_mode():
-    p = OpenAICompatibleProvider(api_key="k", api_base="https://x.com/v1", api_mode="responses")
-    assert p._api_mode == "responses"
-    p2 = OpenAICompatibleProvider(api_key="k", api_base="https://x.com/v1")
-    assert p2._api_mode == "auto"
-    print("✓ provider init api_mode")
-
-
-def test_make_provider_passes_api_mode():
+def test_make_provider_uses_auto_mode_detection():
     from bao.config.schema import Config, ProviderConfig
 
     cfg = Config()
-    cfg.providers["openai"] = ProviderConfig(
-        type="openai", api_key="test-key", api_mode="responses"
-    )
+    cfg.providers["openai"] = ProviderConfig(type="openai", api_key=SecretStr("test-key"))
     from bao.providers import make_provider
 
     provider = make_provider(cfg, "openai/gpt-4o")
     assert isinstance(provider, OpenAICompatibleProvider)
-    assert provider._api_mode == "responses"
-    print("\u2713 make_provider passes api_mode")
+    assert provider._resolve_effective_mode() == "auto"
+    assert not hasattr(provider, "_api_mode")
+    print("\u2713 make_provider uses auto mode detection")
 
 
-def test_utility_model_uses_same_provider_path():
+def test_utility_model_uses_same_provider_path(tmp_path):
+    import bao.providers.api_mode_cache as cache_mod
     from bao.config.schema import Config, ProviderConfig
     from bao.providers import make_provider
 
-    cfg = Config()
-    cfg.providers["openai"] = ProviderConfig(
-        type="openai", api_key="test-key", api_base="https://www.right.codes/codex", api_mode="auto"
-    )
-    cfg.agents.defaults.model = "openai/gpt-4o"
-    cfg.agents.defaults.utility_model = "openai/gpt-4o-mini"
-    utility_provider = make_provider(cfg, cfg.agents.defaults.utility_model)
-    assert isinstance(utility_provider, OpenAICompatibleProvider)
-    assert utility_provider._api_mode == "auto"
-    assert utility_provider._effective_base == "https://www.right.codes/codex/v1"
+    old_cache = cache_mod._cache
+    old_file = cache_mod._CACHE_FILE
+    cache_mod._cache = None
+    cache_mod._CACHE_FILE = tmp_path / "api_mode_utility.json"
+
+    try:
+        cache_mod._CACHE_FILE.unlink(missing_ok=True)
+        cfg = Config()
+        cfg.providers["openai"] = ProviderConfig(
+            type="openai",
+            api_key=SecretStr("test-key"),
+            api_base="https://www.right.codes/codex",
+        )
+        cfg.agents.defaults.model = "openai/gpt-4o"
+        cfg.agents.defaults.utility_model = "openai/gpt-4o-mini"
+        utility_provider = make_provider(cfg, cfg.agents.defaults.utility_model)
+        assert isinstance(utility_provider, OpenAICompatibleProvider)
+        assert utility_provider._resolve_effective_mode() == "auto"
+        assert not hasattr(utility_provider, "_api_mode")
+        assert utility_provider._effective_base == "https://www.right.codes/codex/v1"
+    finally:
+        cache_mod._cache = old_cache
+        cache_mod._CACHE_FILE = old_file
+        cache_mod._CACHE_FILE.unlink(missing_ok=True)
     print("\u2713 utility model uses same provider path")
 
 
-def test_responses_parse_error_falls_back_and_demotes_cache(monkeypatch, tmp_path):
+def test_responses_parse_error_falls_back_without_caching_responses(monkeypatch, tmp_path):
     import bao.providers.api_mode_cache as cache_mod
 
     old_cache = cache_mod._cache
@@ -182,7 +195,7 @@ def test_responses_parse_error_falls_back_and_demotes_cache(monkeypatch, tmp_pat
     cache_mod._cache = None
     cache_mod._CACHE_FILE = tmp_path / "api_mode_cache.json"
 
-    p = OpenAICompatibleProvider(api_key="k", api_base="https://x.com/v1", api_mode="auto")
+    p = OpenAICompatibleProvider(api_key="k", api_base="https://x.com/v1")
 
     class _Resp:
         status_code = 200
@@ -215,13 +228,13 @@ def test_responses_parse_error_falls_back_and_demotes_cache(monkeypatch, tmp_pat
         )
 
         assert result.content == "fallback-ok"
-        assert get_cached_mode("https://x.com/v1") == "responses"
+        assert get_cached_mode("https://x.com/v1") is None
     finally:
         cache_mod._cache = old_cache
         cache_mod._CACHE_FILE = old_file
 
 
-def test_responses_non_200_falls_back_and_demotes_cache(monkeypatch, tmp_path):
+def test_responses_non_200_falls_back_without_caching_responses(monkeypatch, tmp_path):
     import bao.providers.api_mode_cache as cache_mod
 
     old_cache = cache_mod._cache
@@ -229,7 +242,7 @@ def test_responses_non_200_falls_back_and_demotes_cache(monkeypatch, tmp_path):
     cache_mod._cache = None
     cache_mod._CACHE_FILE = tmp_path / "api_mode_cache.json"
 
-    p = OpenAICompatibleProvider(api_key="k", api_base="https://y.com/v1", api_mode="auto")
+    p = OpenAICompatibleProvider(api_key="k", api_base="https://y.com/v1")
 
     class _Resp:
         status_code = 500
@@ -272,9 +285,5 @@ if __name__ == "__main__":
     test_convert_messages_to_responses()
     test_convert_tools_to_responses()
     test_parse_responses_json()
-    test_api_mode_cache()
-    test_provider_resolve_effective_mode()
-    test_provider_init_with_api_mode()
-    test_make_provider_passes_api_mode()
-    test_utility_model_uses_same_provider_path()
+    test_make_provider_uses_auto_mode_detection()
     print("\n🎉 All tests passed!")

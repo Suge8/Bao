@@ -120,6 +120,5 @@ def make_provider(config: "Config", model: str | None = None) -> LLMProvider:
         default_model=model,
         extra_headers=provider_config.extra_headers,
         provider_name=spec.name if spec else "openai",
-        api_mode=provider_config.api_mode,
         model_prefix=model.split("/", 1)[0] if "/" in model else None,
     )

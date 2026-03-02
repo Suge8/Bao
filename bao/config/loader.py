@@ -16,6 +16,7 @@ class ConfigLoadError(Exception):
 
 _JSONC_TEMPLATE = """\
 {
+  "config_version": 3,
   // 💡 环境变量可覆盖此文件中的任何配置 | Env vars override any config below
   //    命名 Naming: BAO_{SECTION}__{FIELD}  (snake_case, 双下划线分隔层级)
   //    示例 Examples: BAO_AGENTS__DEFAULTS__MODEL=xxx  BAO_PROVIDERS__NAME__API_KEY=sk-xxx
@@ -78,7 +79,6 @@ _JSONC_TEMPLATE = """\
     //   "type": "openai",
     //   "apiKey": "sk-xxx",
     //   "apiBase": "https://api.openai.com/v1",  // 留空用官方，填代理地址自动兼容 | Empty for official, proxy auto-compatible
-    //   "apiMode": "auto"              // "auto" | "responses" | "completions"
     // },
     // ── Anthropic ───────────────────────────────────────────────
     // "provider-name": {
