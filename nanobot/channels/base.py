@@ -70,9 +70,16 @@ class BaseChannel(ABC):
         """
         allow_list = getattr(self.config, "allow_from", [])
 
-        # If no allow list, allow everyone
+        # Security fix: If no allow list, deny everyone by default
+        # This prevents unauthorized access when allow_from is not configured
         if not allow_list:
-            return True
+            logger.warning(
+                "Channel {} has no allow_from configured - "
+                "blocking all access by default for security. "
+                "Add allowed senders to config to enable access.",
+                self.name,
+            )
+            return False
 
         sender_str = str(sender_id)
         if sender_str in allow_list:
