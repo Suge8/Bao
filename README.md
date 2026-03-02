@@ -158,7 +158,6 @@ Bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 | 记忆       | 仅会话内    | **LanceDB（向量 + 关键词）**         |
 | 经验学习   | —           | **ExperienceLoop**                   |
 | 自我反思   | —           | **Retry with Reflection**            |
-| 开放问题   | 8,400+      | **稳定且专注**                       |
 | 后台任务   | —           | **子代理 + 进度追踪 + 里程碑推送**   |
 | 长任务引擎 | —           | **轨迹压缩 + 自我纠错 + 充分性检查** |
 | 图像生成   | —           | **Gemini API 文生图 + 多平台发送**   |
@@ -587,7 +586,6 @@ You'll never have to ask "where were you again?" **It already knows.**
 | Memory              | Session-only   | **LanceDB (vector + keyword)**                                   |
 | Experience learning | —              | **ExperienceLoop**                                               |
 | Self-reflection     | —              | **Retry with Reflection**                                        |
-| Open issues         | 8,400+         | **Stable & focused**                                             |
 | Background tasks    | —              | **Subagent + progress tracking + milestone push**                |
 | Long-task engine    | —              | **Trajectory compression + self-correction + sufficiency check** |
 | Image generation    | —              | **Gemini API text-to-image + multi-platform delivery**           |
