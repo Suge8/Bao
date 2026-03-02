@@ -59,36 +59,17 @@ class BaseChannel(ABC):
         pass
 
     def is_allowed(self, sender_id: str) -> bool:
-        """
-        Check if a sender is allowed to use this bot.
-
-        Args:
-            sender_id: The sender's identifier.
-
-        Returns:
-            True if allowed, False otherwise.
-        """
+        """Check if *sender_id* is permitted.  Empty list → deny all; ``"*"`` → allow all."""
         allow_list = getattr(self.config, "allow_from", [])
-
-        # Security fix: If no allow list, deny everyone by default
-        # This prevents unauthorized access when allow_from is not configured
         if not allow_list:
-            logger.warning(
-                "Channel {} has no allow_from configured - "
-                "blocking all access by default for security. "
-                "Add allowed senders to config to enable access.",
-                self.name,
-            )
+            logger.warning("{}: allow_from is empty — all access denied", self.name)
             return False
-
-        sender_str = str(sender_id)
-        if sender_str in allow_list:
+        if "*" in allow_list:
             return True
-        if "|" in sender_str:
-            for part in sender_str.split("|"):
-                if part and part in allow_list:
-                    return True
-        return False
+        sender_str = str(sender_id)
+        return sender_str in allow_list or any(
+            p in allow_list for p in sender_str.split("|") if p
+        )
 
     async def _handle_message(
         self,
