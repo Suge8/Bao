@@ -1,6 +1,6 @@
 # ──────────────────────────────────────────────────────────────
 # Bao Desktop — Cross-platform Release Build
-# Triggers on version tags: v0.1.4, v1.0.0, etc.
+# Triggers on version tags: v0.1.0, v1.0.0, etc.
 # Produces: macOS arm64/x64 .dmg + Windows x64 .exe installer
 # ──────────────────────────────────────────────────────────────
 name: Desktop Release
