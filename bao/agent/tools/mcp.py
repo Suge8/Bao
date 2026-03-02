@@ -78,6 +78,154 @@ def _normalize_name_fragment(value: str, fallback: str) -> str:
     return compact[:32]
 
 
+def _resolve_tool_timeout_seconds(server_cfg: Any) -> int:
+    raw_timeout = getattr(server_cfg, "tool_timeout_seconds", None)
+    if isinstance(raw_timeout, int) and raw_timeout > 0:
+        return raw_timeout
+    return 30
+
+
+def _reserve_wrapper_name(
+    *,
+    server_name: str,
+    tool_name: str,
+    pending_names: set[str],
+    registry: ToolRegistry,
+) -> str:
+    server_part = _normalize_name_fragment(server_name, "server")
+    tool_part = _normalize_name_fragment(tool_name, "tool")
+    base_name = f"mcp_{server_part}_{tool_part}"[:64]
+    wrapper_name = base_name
+    collision_index = 1
+    while wrapper_name in pending_names or registry.has(wrapper_name):
+        suffix = f"_{collision_index}"
+        wrapper_name = f"{base_name[: max(1, 64 - len(suffix))]}{suffix}"
+        collision_index += 1
+    pending_names.add(wrapper_name)
+    return wrapper_name
+
+
+async def _close_stack_quietly(stack: AsyncExitStack) -> None:
+    try:
+        await stack.aclose()
+    except Exception:
+        pass
+
+
+async def _open_server_streams(cfg: Any, server_stack: AsyncExitStack, connect_timeout: int):
+    if cfg.command:
+        from mcp import StdioServerParameters
+        from mcp.client.stdio import stdio_client
+
+        params = StdioServerParameters(command=cfg.command, args=cfg.args, env=cfg.env or None)
+        read, write = await asyncio.wait_for(
+            server_stack.enter_async_context(stdio_client(params)),
+            timeout=connect_timeout,
+        )
+        return read, write
+
+    if cfg.url:
+        from mcp.client.streamable_http import streamable_http_client
+
+        http_client = await server_stack.enter_async_context(
+            httpx.AsyncClient(
+                headers=cfg.headers or None,
+                follow_redirects=True,
+                timeout=None,
+            )
+        )
+        read, write, _ = await asyncio.wait_for(
+            server_stack.enter_async_context(
+                streamable_http_client(cfg.url, http_client=http_client)
+            ),
+            timeout=connect_timeout,
+        )
+        return read, write
+
+    return None
+
+
+def _build_pending_wrappers(
+    *,
+    session: Any,
+    server_name: str,
+    tool_defs: list[Any],
+    registry: ToolRegistry,
+    total_registered: int,
+    max_tools: int,
+    server_max_tools: int | None,
+    tool_timeout: int,
+    server_slim_schema: bool,
+) -> list["MCPToolWrapper"]:
+    server_count = 0
+    pending_names: set[str] = set()
+    pending_wrappers: list[MCPToolWrapper] = []
+
+    for tool_def in tool_defs:
+        if _reached_global_cap(total_registered, len(pending_wrappers), max_tools):
+            logger.debug(
+                "🔌 MCP 达到上限 / limit reached: ({}) while registering {}",
+                max_tools,
+                server_name,
+            )
+            break
+        if _reached_server_cap(server_count, len(pending_wrappers), server_max_tools):
+            logger.debug(
+                "🔌 MCP 服务器达到上限 / server limit reached: {} ({} tools)",
+                server_name,
+                server_max_tools,
+            )
+            break
+
+        wrapper_name = _reserve_wrapper_name(
+            server_name=server_name,
+            tool_name=str(tool_def.name),
+            pending_names=pending_names,
+            registry=registry,
+        )
+        pending_wrappers.append(
+            MCPToolWrapper(
+                session=session,
+                server_name=server_name,
+                tool_def=tool_def,
+                timeout=tool_timeout,
+                slim_schema=server_slim_schema,
+                name_override=wrapper_name,
+            )
+        )
+
+    return pending_wrappers
+
+
+def _register_pending_wrappers(
+    *,
+    pending_wrappers: list["MCPToolWrapper"],
+    registry: ToolRegistry,
+    total_registered: int,
+    max_tools: int,
+    server_max_tools: int | None,
+    server_name: str,
+) -> tuple[int, int]:
+    server_count = 0
+    registered_names: list[str] = []
+    try:
+        for wrapper in pending_wrappers:
+            if _reached_global_cap(total_registered, 0, max_tools):
+                break
+            if _reached_server_cap(server_count, 0, server_max_tools):
+                break
+            registry.register(wrapper)
+            registered_names.append(wrapper.name)
+            total_registered += 1
+            server_count += 1
+            logger.debug("MCP: registered tool '{}' from server '{}'", wrapper.name, server_name)
+    except Exception:
+        for tool_name in registered_names:
+            registry.unregister(tool_name)
+        raise
+    return server_count, total_registered
+
+
 class MCPToolWrapper(Tool):
     """Wraps a single MCP server tool as a Bao Tool."""
 
@@ -146,9 +294,7 @@ async def connect_mcp_servers(
     max_tools: int = 50,
     slim_schema: bool = True,
 ) -> tuple[int, int]:
-    """Connect to configured MCP servers and register their tools."""
-    from mcp import ClientSession, StdioServerParameters
-    from mcp.client.stdio import stdio_client
+    from mcp import ClientSession
 
     total_registered = 0
     connected_servers = 0
@@ -165,133 +311,56 @@ async def connect_mcp_servers(
         server_stack = AsyncExitStack()
         await server_stack.__aenter__()
         try:
-            connect_timeout = (
-                cfg.tool_timeout_seconds
-                if isinstance(cfg.tool_timeout_seconds, int) and cfg.tool_timeout_seconds > 0
-                else 30
-            )
-            tool_timeout = (
-                cfg.tool_timeout_seconds
-                if isinstance(cfg.tool_timeout_seconds, int) and cfg.tool_timeout_seconds > 0
-                else 30
-            )
-            if cfg.command:
-                params = StdioServerParameters(
-                    command=cfg.command, args=cfg.args, env=cfg.env or None
-                )
-                read, write = await asyncio.wait_for(
-                    server_stack.enter_async_context(stdio_client(params)),
-                    timeout=connect_timeout,
-                )
-            elif cfg.url:
-                from mcp.client.streamable_http import streamable_http_client
-
-                http_client = await server_stack.enter_async_context(
-                    httpx.AsyncClient(
-                        headers=cfg.headers or None,
-                        follow_redirects=True,
-                        timeout=None,
-                    )
-                )
-                read, write, _ = await asyncio.wait_for(
-                    server_stack.enter_async_context(
-                        streamable_http_client(cfg.url, http_client=http_client)
-                    ),
-                    timeout=connect_timeout,
-                )
-            else:
+            connect_timeout = _resolve_tool_timeout_seconds(cfg)
+            tool_timeout = _resolve_tool_timeout_seconds(cfg)
+            streams = await _open_server_streams(cfg, server_stack, connect_timeout)
+            if streams is None:
                 logger.warning(
                     "⚠️ MCP 配置缺失 / config missing: {} has no command/url, skipping",
                     name,
                 )
-                await server_stack.aclose()
+                await _close_stack_quietly(server_stack)
                 continue
+            read, write = streams
 
             session = await server_stack.enter_async_context(ClientSession(read, write))
             await asyncio.wait_for(session.initialize(), timeout=connect_timeout)
 
             tools = await asyncio.wait_for(session.list_tools(), timeout=connect_timeout)
             connected_servers += 1
-            server_count = 0
-            pending_names: set[str] = set()
-            pending_wrappers: list[MCPToolWrapper] = []
-            for tool_def in tools.tools:
-                if _reached_global_cap(total_registered, len(pending_wrappers), max_tools):
-                    logger.debug(
-                        "🔌 MCP 达到上限 / limit reached: ({}) while registering {}",
-                        max_tools,
-                        name,
-                    )
-                    break
-                if _reached_server_cap(
-                    server_count,
-                    len(pending_wrappers),
-                    server_max_tools,
-                ):
-                    logger.debug(
-                        "🔌 MCP 服务器达到上限 / server limit reached: {} ({} tools)",
-                        name,
-                        server_max_tools,
-                    )
-                    break
-
-                server_part = _normalize_name_fragment(name, "server")
-                tool_part = _normalize_name_fragment(str(tool_def.name), "tool")
-                base_name = f"mcp_{server_part}_{tool_part}"[:64]
-                wrapper_name = base_name
-                collision_index = 1
-                while wrapper_name in pending_names or registry.has(wrapper_name):
-                    suffix = f"_{collision_index}"
-                    wrapper_name = f"{base_name[: max(1, 64 - len(suffix))]}{suffix}"
-                    collision_index += 1
-                pending_names.add(wrapper_name)
-
-                wrapper = MCPToolWrapper(
-                    session,
-                    name,
-                    tool_def,
-                    timeout=tool_timeout,
-                    slim_schema=server_slim_schema,
-                    name_override=wrapper_name,
-                )
-                pending_wrappers.append(wrapper)
-
-            registered_names: list[str] = []
-            try:
-                for wrapper in pending_wrappers:
-                    if _reached_global_cap(total_registered, 0, max_tools):
-                        break
-                    if _reached_server_cap(server_count, 0, server_max_tools):
-                        break
-                    registry.register(wrapper)
-                    registered_names.append(wrapper.name)
-                    total_registered += 1
-                    server_count += 1
-                    logger.debug("MCP: registered tool '{}' from server '{}'", wrapper.name, name)
-            except Exception:
-                for tool_name in registered_names:
-                    registry.unregister(tool_name)
-                raise
+            pending_wrappers = _build_pending_wrappers(
+                session=session,
+                server_name=name,
+                tool_defs=tools.tools,
+                registry=registry,
+                total_registered=total_registered,
+                max_tools=max_tools,
+                server_max_tools=server_max_tools,
+                tool_timeout=tool_timeout,
+                server_slim_schema=server_slim_schema,
+            )
+            server_count, total_registered = _register_pending_wrappers(
+                pending_wrappers=pending_wrappers,
+                registry=registry,
+                total_registered=total_registered,
+                max_tools=max_tools,
+                server_max_tools=server_max_tools,
+                server_name=name,
+            )
 
             if server_count > 0:
                 await stack.enter_async_context(server_stack)
                 logger.info("🔌 MCP 已连接 / connected: {} ({} tools)", name, server_count)
             else:
-                await server_stack.aclose()
+                await _close_stack_quietly(server_stack)
                 logger.debug(
                     "MCP connected but no tools registered for server '{}': cap or empty list", name
                 )
         except asyncio.CancelledError:
-            try:
-                await server_stack.aclose()
-            except Exception:
-                pass
+            await _close_stack_quietly(server_stack)
             raise
         except Exception as e:
             logger.error("❌ MCP 连接失败 / connect failed: {} — {}", name, e)
-            try:
-                await server_stack.aclose()
-            except Exception:
-                pass
+            await _close_stack_quietly(server_stack)
 
     return total_registered, connected_servers
