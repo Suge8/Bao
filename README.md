@@ -113,7 +113,7 @@ Bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 
 ### 精悍轻量
 
-**~12,000 行核心代码。** 运行 `bash scripts/core_agent_lines.sh` 自行验证。
+**~14,000 行核心代码。** 运行 `bash scripts/core_agent_lines.sh` 自行验证。
 
 启动快、占资源少、源码可读。一个完整的 AI 助手框架，体积只有同类项目的 1%。
 
@@ -151,20 +151,21 @@ Bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 
 ## 横向对比
 
-|            | OpenClaw    | **Bao**                              |
-| ---------- | ----------- | ------------------------------------ |
-| 语言       | TypeScript  | **Python**                           |
-| 核心代码   | 430,000+ 行 | **~12,000 行**                       |
-| 记忆       | 仅会话内    | **LanceDB（向量 + 关键词）**         |
-| 经验学习   | —           | **ExperienceLoop**                   |
-| 自我反思   | —           | **Retry with Reflection**            |
-| 后台任务   | —           | **子代理 + 进度追踪 + 里程碑推送**   |
-| 长任务引擎 | —           | **轨迹压缩 + 自我纠错 + 充分性检查** |
-| 图像生成   | —           | **Gemini API 文生图 + 多平台发送**   |
-| 桌面自动化 | —           | **7 工具 · 模型无关 · HiDPI 自适应** |
-| 技能系统   | —           | **17 内置 + 用户自定义 · 动态加载**  |
-| Token 压缩 | —           | **MVD 精简 + Schema 瘦身 + 工具合并**|
-| 上手时间   | 复杂引导    | **2 分钟**                           |
+| 维度 | OpenClaw | Bao | Bao 优势 |
+|:---|:---|:---|:---|
+| 语言 | TypeScript | **Python 3.11+** | Python 生态成熟，AI/自动化集成更直接 |
+| 核心代码量 | 430,000+ 行 | **~14,000 行核心代码** | 更轻量，维护和迭代成本更低 |
+| 记忆系统 | Markdown 文件记忆（手动维护） | **LanceDB 向量检索 + BM25 降级，四分类长期记忆，自动整合去重** | 从手工记录升级为可检索、可治理的长期记忆系统 |
+| 经验学习 | 无闭环经验引擎 | **闭环经验引擎（Laplace 平滑、冲突检测、负面学习、主动遗忘）** | 具备可持续自我优化能力 |
+| 自我反思 | 无内置反思重试 | **Retry with Reflection（失败后反思并重试）** | 失败可恢复，任务完成率更稳 |
+| 后台任务 | 单线程阻塞式 | **子代理独立运行 + 进度追踪 + 里程碑推送 + 可取消** | 前台不被长任务阻塞，协作与可观测性更好 |
+| 长任务引擎 | 主要依赖 compaction | **轨迹压缩 + 充分性检查 + 自我纠错** | 长链路任务更可控，降低中途漂移风险 |
+| 图像生成 | 无内置 | **Gemini API 文生图 + 多平台发送** | 原生支持图像生成与分发闭环 |
+| 桌面自动化 | 无内置 | **7 个桌面自动化工具，模型无关，HiDPI 自适应** | 可直接操作桌面环境，自动化覆盖面更广 |
+| 技能系统 | ClawHub 技能生态 | **17 内置 + 用户自定义技能，动态加载** | 开箱即用且可扩展，定制路径更短 |
+| Token 压缩 | 无系统性压缩机制 | **MVD 精简 + Schema 瘦身 + 工具合并** | 在能力不减前提下降低上下文开销 |
+| 自动规划 | 无内置自动规划 | **3 原子规划工具（create/update/clear），AI 自驱执行** | 从"被动调用"升级为"可执行计划流" |
+| 上手时间 | 配置流程相对较重 | **2 分钟一键安装** | 部署门槛更低，试用到落地更快 |
 
 <p align="center"><img src="assets/architecture.svg" width="800" alt="架构"></p>
 
@@ -378,19 +379,6 @@ docker compose logs -f --tail=100 bao-gateway
 uv run pytest tests/ -v
 ```
 
-```bash
-uv run pytest tests/test_office_validators_wrappers.py -v
-```
-
-用于验证 Office validators 薄适配层与共享实现（`_office_shared`）的导入契约、`schemas_dir` 绑定、同进程多 skill 连续导入不串线。
-
-```bash
-uv run python tests/measure_prompt_size.py
-```
-
-用于诊断提示词与工具 schema 的体积分布（skills summary、active skills、bootstrap、runtime tools、MCP 配置状态）。
-
-未安装 PySide6 时，桌面相关测试会自动 skip，不影响 core 测试通过。
 
 ## 🖥️ Desktop App (实验性)
 
@@ -539,7 +527,7 @@ Same capabilities, fewer tokens. Bao applies systematic compression at the promp
 
 #### Lean & Compact
 
-**~12,000 lines of core code.** Run `bash scripts/core_agent_lines.sh` to verify.
+**~14,000 lines of core code.** Run `bash scripts/core_agent_lines.sh` to verify.
 
 Fast startup. Low resource use. Readable source. A complete AI assistant framework at 1% the size of comparable projects.
 
@@ -579,20 +567,21 @@ You'll never have to ask "where were you again?" **It already knows.**
 
 ### How It Compares
 
-|                     | OpenClaw       | **Bao**                                                          |
-| ------------------- | -------------- | ---------------------------------------------------------------- |
-| Language            | TypeScript     | **Python**                                                       |
-| Core code           | 430,000+ lines | **~12,000 lines**                                                |
-| Memory              | Session-only   | **LanceDB (vector + keyword)**                                   |
-| Experience learning | —              | **ExperienceLoop**                                               |
-| Self-reflection     | —              | **Retry with Reflection**                                        |
-| Background tasks    | —              | **Subagent + progress tracking + milestone push**                |
-| Long-task engine    | —              | **Trajectory compression + self-correction + sufficiency check** |
-| Image generation    | —              | **Gemini API text-to-image + multi-platform delivery**           |
-| Desktop automation  | —              | **7 tools · model-agnostic · HiDPI-aware**                       |
-| Setup time          | Complex wizard | **2 minutes**                                                    |
-| Skill system        | —              | **17 built-in + user-defined · dynamic loading**                 |
-| Token compression   | —              | **MVD + schema slimming + tool consolidation**                   |
+| Dimension | OpenClaw | Bao | Edge |
+|:---|:---|:---|:---|
+| Language | TypeScript | **Python 3.11+** | Strong Python AI ecosystem makes automation integrations faster |
+| Core code size | 430,000+ LOC | **~14,000 LOC (core)** | Leaner codebase is easier to maintain and evolve |
+| Memory system | Markdown file memory (manual upkeep) | **LanceDB vector retrieval + BM25 fallback, 4-category long-term memory, auto merge/dedup** | Upgrades memory from manual notes to searchable managed knowledge |
+| Experience learning | No closed-loop experience engine | **Closed-loop engine (Laplace smoothing, conflict checks, negative learning, active forgetting)** | Delivers continuous self-improvement over time |
+| Self-reflection | No built-in reflection retry | **Retry with Reflection after failures** | Better recovery path and more stable completion rate |
+| Background tasks | Single-thread blocking flow | **Independent subagents + progress tracking + milestones + cancellation** | Long tasks no longer block foreground interactions |
+| Long-task engine | Mostly compaction-based | **Trajectory compression + sufficiency checks + self-correction** | More controlled execution on long, multi-step workflows |
+| Image generation | No built-in | **Gemini text-to-image + cross-platform delivery** | Native generation-to-delivery pipeline |
+| Desktop automation | No built-in | **7 desktop automation tools, model-agnostic, HiDPI-aware** | Broader automation reach into real desktop operations |
+| Skill system | ClawHub skill ecosystem | **17 built-in + user-defined skills, dynamically loaded** | Faster out-of-box value with flexible extension path |
+| Token compression | No systematic compression stack | **MVD slimming + schema reduction + tool consolidation** | Reduces context overhead while preserving capability |
+| Auto planning | No built-in auto-planning | **3 atomic planning tools (create/update/clear), AI-driven flow** | Enables executable planning instead of ad-hoc sequencing |
+| Time to start | Setup and onboarding are comparatively heavier | **2-minute one-click install** | Lower activation friction from trial to production |
 
 <p align="center"><img src="assets/architecture-en.svg" width="800" alt="Architecture"></p>
 
@@ -806,20 +795,6 @@ New messages in the same session use cooperative soft interruption by default (s
 uv run pytest tests/ -v
 ```
 
-```bash
-uv run pytest tests/test_office_validators_wrappers.py -v
-```
-
-Use this to verify Office validators wrapper/import contracts after shared implementation changes (`_office_shared`): import routing, per-skill `schemas_dir` binding, and no cross-skill pollution in single-process sequential imports.
-
-```bash
-uv run python tests/measure_prompt_size.py
-```
-
-Use this to inspect prompt/schema size distribution (skills summary, active skills, bootstrap,
-runtime tools, and MCP config state).
-
-If PySide6 is not installed, desktop-related tests are auto-skipped and won't block core test runs.
 
 ### 🖥️ Desktop App (experimental)
 
