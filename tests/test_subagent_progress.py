@@ -10,8 +10,10 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from bao.agent.subagent import SubagentManager, TaskStatus
+from bao.agent.tools.registry import ToolRegistry
 from bao.agent.tools.task_status import (
     CancelTaskTool,
+    CheckTasksJsonTool,
     CheckTasksTool,
     _format_brief,
     _format_detailed,
@@ -140,6 +142,97 @@ def test_subagent_error_detection_coding_agent_json_status():
 def test_subagent_error_detection_coding_agent_prefixed_json():
     payload = 'summary: {"status":"error","exitCode":1}'
     assert SubagentManager._has_tool_error("coding_agent", payload)
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_tool_error_sets_last_error_and_does_not_crash(bus, tmp_path):
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    call_count = 0
+
+    async def fake_chat(*, messages, **kwargs):
+        del messages, kwargs
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="tc_1",
+                        name="exec",
+                        arguments={"command": 'python -c "import sys; sys.exit(1)"'},
+                    )
+                ],
+            )
+        return LLMResponse(content="done")
+
+    provider.chat = fake_chat
+    manager = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=bus,
+        model="test-model",
+    )
+    manager._task_statuses["t1"] = TaskStatus(
+        task_id="t1",
+        label="error-path",
+        task_description="run failing tool once",
+        origin={"channel": "tg", "chat_id": "1"},
+    )
+
+    await manager._run_subagent(
+        "t1", "run failing tool once", "error-path", {"channel": "tg", "chat_id": "1"}
+    )
+
+    st = manager.get_task_status("t1")
+    assert st is not None
+    assert st.status == "completed"
+    assert st.last_error_category == "execution_error"
+    assert st.last_error_code == "exec_exit_code"
+    assert isinstance(st.last_error_message, str)
+    assert st.last_error_message
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_call_block_interrupted_resets_consecutive_errors(manager):
+    manager._task_statuses["t1"] = TaskStatus(
+        task_id="t1",
+        label="interrupt",
+        task_description="interrupt edge",
+        origin={"channel": "tg", "chat_id": "1"},
+    )
+
+    tools = ToolRegistry()
+
+    async def _fake_execute(name, params):
+        del name, params
+        return "Cancelled by soft interrupt."
+
+    tools.execute = _fake_execute
+
+    tool_step, consecutive_errors = await manager._execute_tool_call_block(
+        task_id="t1",
+        tool_call=ToolCallRequest(id="tc_interrupt", name="exec", arguments={"command": "echo 1"}),
+        tools=tools,
+        coding_tool=None,
+        artifact_store=None,
+        messages=[],
+        tool_trace=[],
+        sufficiency_trace=[],
+        failed_directions=[],
+        tool_step=0,
+        consecutive_errors=2,
+    )
+
+    assert tool_step == 1
+    assert consecutive_errors == 0
+    st = manager.get_task_status("t1")
+    assert st is not None
+    assert st.last_error_category is None
+    assert st.last_error_code is None
+    assert st.last_error_message is None
 
 
 def test_subagent_strip_think_matches_main_behavior():
@@ -859,6 +952,55 @@ async def test_check_tasks_lists_running_and_finished(manager):
     assert "finished" in result.lower()
 
 
+@pytest.mark.asyncio
+async def test_check_tasks_json_accepts_string_schema_version(manager):
+    manager._task_statuses["t1"] = TaskStatus(
+        task_id="t1",
+        label="research\n|task",
+        task_description="d",
+        origin={"channel": "tg", "chat_id": "1", "session_key": "secret"},
+        resume_context="sensitive context",
+    )
+    manager._task_statuses["t1"].recent_actions = ["a|b", "c\nd"]
+
+    tool = CheckTasksJsonTool(manager)
+    payload = json.loads(await tool.execute(schema_version="1"))
+
+    assert payload["schema_version"] == 1
+    assert len(payload["tasks"]) == 1
+    snap = payload["tasks"][0]
+    assert snap["task_id"] == "t1"
+    assert snap["label"] == "research /task"
+    assert snap["recent_actions"] == ["a/b", "c d"]
+    assert snap["origin"] == {"channel": "tg", "chat_id": "1"}
+    assert "resume_context" not in snap
+    assert "task_description" not in snap
+
+
+@pytest.mark.asyncio
+async def test_check_tasks_json_rejects_blank_task_id(manager):
+    tool = CheckTasksJsonTool(manager)
+    payload = json.loads(await tool.execute(task_id="   "))
+    assert payload["schema_version"] == 1
+    assert payload["error"]["code"] == "invalid_task_id"
+
+
+@pytest.mark.asyncio
+async def test_check_tasks_json_rejects_non_integer_schema_version(manager):
+    tool = CheckTasksJsonTool(manager)
+    payload = json.loads(await tool.execute(schema_version="not-a-number"))
+    assert payload["schema_version"] == 1
+    assert payload["error"]["code"] == "invalid_schema_version"
+
+
+@pytest.mark.asyncio
+async def test_check_tasks_json_unsupported_schema_version(manager):
+    tool = CheckTasksJsonTool(manager)
+    payload = json.loads(await tool.execute(schema_version=2))
+    assert payload["schema_version"] == 1
+    assert payload["error"]["code"] == "unsupported_schema_version"
+
+
 # ---------------------------------------------------------------------------
 # CancelTaskTool
 # ---------------------------------------------------------------------------
@@ -1202,9 +1344,18 @@ async def test_on_system_response_fires_for_system_messages():
             msg,
             session_key=None,
             on_progress=None,
+            on_event=None,
             expected_generation=None,
             expected_generation_key=None,
         ):
+            del (
+                msg,
+                session_key,
+                on_progress,
+                on_event,
+                expected_generation,
+                expected_generation_key,
+            )
             return fake_response
 
         loop._process_message = fake_process

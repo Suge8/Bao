@@ -20,6 +20,7 @@ from bao.agent import commands, experience, shared
 from bao.agent import plan as plan_state
 from bao.agent.context import ContextBuilder
 from bao.agent.memory import MEMORY_CATEGORIES, MEMORY_CATEGORY_CAPS
+from bao.agent.protocol import StreamEvent, StreamEventType
 from bao.agent.subagent import SubagentManager
 from bao.agent.tools.cron import CronTool
 from bao.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
@@ -29,7 +30,7 @@ from bao.agent.tools.plan import ClearPlanTool, CreatePlanTool, UpdatePlanStepTo
 from bao.agent.tools.registry import ToolRegistry
 from bao.agent.tools.shell import ExecTool
 from bao.agent.tools.spawn import SpawnTool
-from bao.agent.tools.task_status import CancelTaskTool, CheckTasksTool
+from bao.agent.tools.task_status import CancelTaskTool, CheckTasksJsonTool, CheckTasksTool
 from bao.agent.tools.web import WebFetchTool, WebSearchTool
 from bao.bus.events import InboundMessage, OutboundMessage
 from bao.bus.queue import MessageBus
@@ -106,6 +107,7 @@ _CORE_TOOL_NAMES = frozenset(
         "clear_plan",
         "spawn",
         "check_tasks",
+        "check_tasks_json",
         "cancel_task",
         "remember",
         "forget",
@@ -137,6 +139,9 @@ _CODE_TOOL_NAMES = frozenset(
         "coding_agent_details",
     }
 )
+_SESSION_LANG_KEY = "_session_lang"
+_CJK_CHAR_RE = re.compile(r"[\u3400-\u9FFF]")
+_LATIN_CHAR_RE = re.compile(r"[A-Za-z]")
 
 _GREETING_WORDS = frozenset(
     {
@@ -461,9 +466,15 @@ class AgentLoop:
         self.context.tool_hints.append(
             "- message: cross-channel delivery only. Normal replies use direct text."
         )
-        self.tools.register(CreatePlanTool(sessions=self.sessions))
-        self.tools.register(UpdatePlanStepTool(sessions=self.sessions))
-        self.tools.register(ClearPlanTool(sessions=self.sessions))
+        self.tools.register(
+            CreatePlanTool(sessions=self.sessions, publish_outbound=self.bus.publish_outbound)
+        )
+        self.tools.register(
+            UpdatePlanStepTool(sessions=self.sessions, publish_outbound=self.bus.publish_outbound)
+        )
+        self.tools.register(
+            ClearPlanTool(sessions=self.sessions, publish_outbound=self.bus.publish_outbound)
+        )
         self.context.tool_hints.append(
             "- planning tools:\n"
             "  WHEN: task has 2+ steps, affects multiple files/components, or user asks for a plan.\n"
@@ -474,6 +485,7 @@ class AgentLoop:
         self.tools.register(SpawnTool(manager=self.subagents))
         self.tools.register(CheckTasksTool(manager=self.subagents))
         self.tools.register(CancelTaskTool(manager=self.subagents))
+        self.tools.register(CheckTasksJsonTool(manager=self.subagents))
         self.context.tool_hints.append(
             "- spawn: delegate multi-step or time-consuming work. Returns task_id for "
             "check_tasks/cancel_task. Pass context_from=<task_id> to give the subagent context "
@@ -560,6 +572,8 @@ class AgentLoop:
         chat_id: str,
         message_id: str | int | None = None,
         session_key: str | None = None,
+        lang: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         if isinstance(message_id, bool) or message_id is None:
             normalized_message_id = None
@@ -573,19 +587,101 @@ class AgentLoop:
             t.set_context(channel, chat_id, session_key=session_key)
         if (t := self.tools.get("cron")) and isinstance(t, CronTool):
             t.set_context(channel, chat_id)
-        for name in (
-            "create_plan",
-            "update_plan_step",
-            "clear_plan",
-            "coding_agent",
-            "coding_agent_details",
-        ):
+
+        preferred_lang = (
+            plan_state.normalize_language(lang)
+            if isinstance(lang, str)
+            else self._resolve_user_language()
+        )
+
+        for name in ("create_plan", "update_plan_step", "clear_plan"):
+            t = self.tools.get(name)
+            if not t:
+                continue
+            set_ctx = getattr(t, "set_context", None)
+            if callable(set_ctx):
+                set_ctx(
+                    channel,
+                    chat_id,
+                    session_key=session_key,
+                    lang=preferred_lang,
+                    reply_metadata=self._plan_reply_metadata(metadata),
+                )
+
+        for name in ("coding_agent", "coding_agent_details"):
             t = self.tools.get(name)
             if not t:
                 continue
             set_ctx = getattr(t, "set_context", None)
             if callable(set_ctx):
                 set_ctx(channel, chat_id, session_key=session_key)
+
+    def _resolve_user_language(self) -> str:
+        cfg_lang = getattr(getattr(self._config, "ui", None), "language", None)
+        if isinstance(cfg_lang, str):
+            normalized_cfg_lang = cfg_lang.strip().lower()
+            if normalized_cfg_lang and normalized_cfg_lang != "auto":
+                return plan_state.normalize_language(normalized_cfg_lang)
+        try:
+            from bao.config.onboarding import infer_language
+
+            return plan_state.normalize_language(infer_language(self.workspace))
+        except Exception:
+            return "en"
+
+    @staticmethod
+    def _plan_reply_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(metadata, dict):
+            return {}
+        slack_meta = metadata.get("slack")
+        if not isinstance(slack_meta, dict):
+            return {}
+        thread_ts = slack_meta.get("thread_ts")
+        if not isinstance(thread_ts, str) or not thread_ts.strip():
+            return {}
+        slim_slack: dict[str, Any] = {"thread_ts": thread_ts}
+        channel_type = slack_meta.get("channel_type")
+        if isinstance(channel_type, str) and channel_type.strip():
+            slim_slack["channel_type"] = channel_type
+        return {"slack": slim_slack}
+
+    @staticmethod
+    def _detect_message_language(text: str | None) -> str | None:
+        if not isinstance(text, str):
+            return None
+        value = text.strip()
+        if not value:
+            return None
+        cjk_count = len(_CJK_CHAR_RE.findall(value))
+        latin_count = len(_LATIN_CHAR_RE.findall(value))
+        if cjk_count > 0 and cjk_count >= latin_count:
+            return "zh"
+        if latin_count >= 3 and cjk_count == 0:
+            return "en"
+        return None
+
+    def _resolve_session_language(
+        self, session: Session, text: str | None = None
+    ) -> tuple[str, bool]:
+        stored_raw = session.metadata.get(_SESSION_LANG_KEY)
+        stored_lang = (
+            plan_state.normalize_language(stored_raw)
+            if isinstance(stored_raw, str) and stored_raw.strip()
+            else ""
+        )
+
+        detected_lang = self._detect_message_language(text)
+        if detected_lang:
+            changed = stored_lang != detected_lang
+            if changed:
+                session.metadata[_SESSION_LANG_KEY] = detected_lang
+            return detected_lang, changed
+
+        if stored_lang:
+            return stored_lang, False
+
+        fallback_lang = self._resolve_user_language()
+        return fallback_lang, False
 
     @staticmethod
     def _latest_user_text(messages: list[dict[str, Any]]) -> str:
@@ -912,14 +1008,28 @@ class AgentLoop:
         tool_signal_text: str | None,
         force_final_response: bool,
         counters: _ToolObservabilityCounters,
+        on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
     ) -> Any:
-        if iteration > 1 and on_progress:
-            await on_progress(PROGRESS_RESET)
+        if iteration > 1:
+            if on_progress:
+                await on_progress(PROGRESS_RESET)
+            if on_event:
+                await on_event(StreamEvent(type=StreamEventType.RESET))
 
-        stream_progress = on_progress
-        if current_task_ref is not None and on_progress is not None:
+        stream_progress: Callable[[str], Awaitable[None]] | None = None
+        if on_progress is not None or on_event is not None:
 
-            async def _interruptable_progress(chunk: str, _orig=on_progress) -> None:
+            async def _emit_progress(chunk: str) -> None:
+                if on_progress:
+                    await on_progress(chunk)
+                if on_event:
+                    await on_event(StreamEvent(type=StreamEventType.DELTA, text=chunk))
+
+            stream_progress = _emit_progress
+
+        if current_task_ref is not None and stream_progress is not None:
+
+            async def _interruptable_progress(chunk: str, _orig=stream_progress) -> None:
                 if current_task_ref in self._interrupted_tasks:
                     from bao.providers.retry import StreamInterruptedError
 
@@ -1024,13 +1134,23 @@ class AgentLoop:
         sufficiency_trace: list[str],
         completed_tool_msgs: list[dict[str, Any]],
         tool_budget: dict[str, int],
+        on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
     ) -> list[dict[str, Any]]:
         iter_completed: list[dict[str, Any]] = []
         clean = self._strip_think(response.content)
         if clean:
             reasoning_snippets.append(clean[:200])
         if on_tool_hint:
-            await on_tool_hint(self._tool_hint(response.tool_calls))
+            hint_text = self._tool_hint(response.tool_calls)
+            await on_tool_hint(hint_text)
+            if on_event:
+                await on_event(
+                    StreamEvent(
+                        type=StreamEventType.TOOL_HINT,
+                        text=hint_text,
+                        meta={"tool_names": [tc.name for tc in response.tool_calls]},
+                    )
+                )
 
         tool_call_dicts = [
             {
@@ -1073,17 +1193,23 @@ class AgentLoop:
                 max_len=200,
             )
             logger.info("🔧 工具调用 / tool: {}({})", tool_call.name, args_preview)
+            if on_event:
+                await on_event(
+                    StreamEvent(type=StreamEventType.TOOL_START, meta={"tool_name": tool_call.name})
+                )
             tool_task = asyncio.create_task(self.tools.execute(tool_call.name, tool_call.arguments))
             raw_result = await self._await_tool_with_interrupt(tool_task, current_task_ref)
             result_text = raw_result if isinstance(raw_result, str) else str(raw_result)
-            if result_text.startswith("Error: Invalid parameters for tool "):
-                counters.invalid_parameter_errors += 1
-            if result_text.startswith("Error: Tool '") and " not found." in result_text:
-                counters.tool_not_found_errors += 1
-            if result_text.startswith("Error executing "):
-                counters.execution_errors += 1
-            if result_text == self._TOOL_CANCELLED_MSG:
-                counters.interrupted_tool_calls += 1
+            _tool_err = shared.parse_tool_error(tool_call.name, result_text, _ERROR_KEYWORDS)
+            if _tool_err:
+                if _tool_err.category == "invalid_params":
+                    counters.invalid_parameter_errors += 1
+                elif _tool_err.category == "tool_not_found":
+                    counters.tool_not_found_errors += 1
+                elif _tool_err.category == "execution_error":
+                    counters.execution_errors += 1
+                elif _tool_err.category == "interrupted":
+                    counters.interrupted_tool_calls += 1
             result, budget_event = apply_tool_output_budget(
                 store=artifact_store,
                 tool_name=tool_call.name,
@@ -1118,7 +1244,15 @@ class AgentLoop:
                 }
             )
 
-            has_error = shared.has_tool_error(tool_call.name, result_text, _ERROR_KEYWORDS)
+            has_error = bool(_tool_err and _tool_err.is_error)
+            is_interrupted = bool(_tool_err and _tool_err.category == "interrupted")
+            if on_event:
+                await on_event(
+                    StreamEvent(
+                        type=StreamEventType.TOOL_END,
+                        meta={"tool_name": tool_call.name, "has_error": has_error},
+                    )
+                )
 
             trace_idx = len(tool_trace) + 1
             trace_entry = shared.build_tool_trace_entry(
@@ -1146,6 +1280,8 @@ class AgentLoop:
                     failed_directions,
                     f"{tool_call.name}({failed_preview})",
                 )
+            elif is_interrupted:
+                state.consecutive_errors = 0
             else:
                 state.consecutive_errors = 0
                 counters.tool_calls_ok += 1
@@ -1240,7 +1376,10 @@ class AgentLoop:
     ) -> None:
         self._last_tool_budget = tool_budget
         total_tool_calls = len(tools_used)
-        tool_calls_error = max(0, total_tool_calls - counters.tool_calls_ok)
+        tool_calls_error = max(
+            0,
+            total_tool_calls - counters.tool_calls_ok - counters.interrupted_tool_calls,
+        )
         parameter_fill_success = max(0, total_tool_calls - counters.invalid_parameter_errors)
         schema_bytes_avg = (
             counters.schema_bytes_total // counters.schema_samples
@@ -1283,6 +1422,7 @@ class AgentLoop:
         artifact_session_key: str | None = None,
         return_interrupt: Literal[False] = False,
         tool_signal_text: str | None = None,
+        on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
     ) -> tuple[str | None, list[str], list[str], int, list[str]]: ...
 
     @overload
@@ -1294,6 +1434,7 @@ class AgentLoop:
         artifact_session_key: str | None = None,
         return_interrupt: Literal[True] = True,
         tool_signal_text: str | None = None,
+        on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
     ) -> tuple[
         str | None,
         list[str],
@@ -1313,6 +1454,7 @@ class AgentLoop:
         artifact_session_key: str | None = None,
         return_interrupt: bool = False,
         tool_signal_text: str | None = None,
+        on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
     ) -> (
         tuple[str | None, list[str], list[str], int, list[str]]
         | tuple[
@@ -1391,6 +1533,7 @@ class AgentLoop:
                 tool_signal_text=tool_signal_text,
                 force_final_response=state.force_final_response,
                 counters=counters,
+                on_event=on_event,
             )
             logger.debug(
                 "LLM response: model={}, has_tool_calls={}, tool_count={}, finish_reason={}",
@@ -1421,6 +1564,7 @@ class AgentLoop:
                     sufficiency_trace=sufficiency_trace,
                     completed_tool_msgs=_completed_tool_msgs,
                     tool_budget=tool_budget,
+                    on_event=on_event,
                 )
                 if state.interrupted:
                     break
@@ -1796,7 +1940,13 @@ class AgentLoop:
 
         session.metadata[plan_state.PLAN_STATE_KEY] = updated
         if plan_state.is_plan_done(updated):
-            archived = plan_state.archive_plan(updated)
+            session_lang = session.metadata.get(_SESSION_LANG_KEY)
+            resolved_lang = (
+                plan_state.normalize_language(session_lang)
+                if isinstance(session_lang, str) and session_lang.strip()
+                else self._resolve_user_language()
+            )
+            archived = plan_state.archive_plan(updated, lang=resolved_lang)
             if archived:
                 session.metadata[plan_state.PLAN_ARCHIVED_KEY] = archived
         return True
@@ -1933,6 +2083,7 @@ class AgentLoop:
         msg: InboundMessage,
         session_key: str | None = None,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
         expected_generation: int | None = None,
         expected_generation_key: str | None = None,
     ) -> OutboundMessage | None:
@@ -2150,11 +2301,19 @@ class AgentLoop:
 
             asyncio.create_task(_consolidate_and_unlock())
 
+        session_lang, lang_changed = self._resolve_session_language(
+            session, _extract_text(msg.content)
+        )
+        if lang_changed and not msg.metadata.get("_ephemeral"):
+            self.sessions.save(session)
+
         self._set_tool_context(
             msg.channel,
             msg.chat_id,
             msg.metadata.get("message_id"),
             session_key=key,
+            lang=session_lang,
+            metadata=msg.metadata,
         )
         if (t := self.tools.get("message")) and isinstance(t, MessageTool):
             t.start_turn()
@@ -2204,6 +2363,7 @@ class AgentLoop:
             artifact_session_key=session.key,
             return_interrupt=return_interrupt_flag,
             tool_signal_text=tool_signal_text,
+            on_event=on_event,
         )
         parsed_result = self._unpack_process_message_run_result(cast(tuple[Any, ...], run_result))
 
@@ -2272,7 +2432,16 @@ class AgentLoop:
 
         session_key = self._dispatch_session_key(msg)
         session = self.sessions.get_or_create(session_key)
-        self._set_tool_context(origin_channel, origin_chat_id, session_key=session_key)
+        session_lang, lang_changed = self._resolve_session_language(session)
+        if lang_changed:
+            self.sessions.save(session)
+        self._set_tool_context(
+            origin_channel,
+            origin_chat_id,
+            session_key=session_key,
+            lang=session_lang,
+            metadata=msg.metadata,
+        )
         if (t := self.tools.get("message")) and isinstance(t, MessageTool):
             t.start_turn()
         _results = await asyncio.gather(
@@ -2950,6 +3119,7 @@ Respond with ONLY valid JSON, no markdown fences."""
         channel: str = "gateway",
         chat_id: str = "direct",
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
         ephemeral: bool = False,
     ) -> str:
         await self._connect_mcp()
@@ -2958,6 +3128,6 @@ Respond with ONLY valid JSON, no markdown fences."""
             msg.metadata["_ephemeral"] = True
 
         response = await self._process_message(
-            msg, session_key=session_key, on_progress=on_progress
+            msg, session_key=session_key, on_progress=on_progress, on_event=on_event
         )
         return response.content if response else ""

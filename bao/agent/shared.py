@@ -16,6 +16,7 @@ from loguru import logger
 if TYPE_CHECKING:
     from bao.agent.artifacts import ArtifactStore
 
+from bao.agent.protocol import ToolErrorCategory, ToolErrorInfo
 
 # ---------------------------------------------------------------------------
 # 1. parse_llm_json — pure function, no deps
@@ -33,44 +34,145 @@ def parse_llm_json(content: str | None) -> dict[str, Any] | None:
     return result if isinstance(result, dict) else None
 
 
-def has_tool_error(tool_name: str, result: str, error_keywords: tuple[str, ...]) -> bool:
-    result_lower = (result or "").lower().strip()
-    if not result_lower:
-        return False
+# Mirrors loop.py:_TOOL_CANCELLED_MSG — kept in sync manually.
+_TOOL_CANCELLED_MSG = "Cancelled by soft interrupt."
 
+
+def parse_tool_error(
+    tool_name: str,
+    result: str,
+    error_keywords: tuple[str, ...],
+) -> ToolErrorInfo | None:
+    """Classify a tool result into a structured :class:`ToolErrorInfo`.
+
+    Returns ``None`` when the result does not look like an error at all.
+    Returns ``ToolErrorInfo(is_error=False, ...)`` for non-error special
+    cases such as soft-interrupt cancellation.
+    """
+    result_text = (result or "").strip()
+    if not result_text:
+        return None
+
+    result_lower = result_text.lower()
     result_normalized = result_lower.lstrip()
+    excerpt = sanitize_trace_text(result_text, 200)
 
-    if tool_name == "web_search":
-        return result_normalized.startswith("error:") or result_normalized.startswith(
-            "error executing"
+    def _info(
+        *,
+        is_error: bool = True,
+        category: str,
+        code: str | None = None,
+        retryable: bool = True,
+        message: str = "",
+        details: dict[str, Any] | None = None,
+    ) -> ToolErrorInfo:
+        return ToolErrorInfo(
+            is_error=is_error,
+            tool_name=tool_name,
+            category=category,
+            code=code,
+            retryable=retryable,
+            message=message or category,
+            raw_excerpt=excerpt,
+            details=details or {},
         )
 
+    # ── 1. interrupted (soft-interrupt cancellation) ──────────────────
+    if result_text == _TOOL_CANCELLED_MSG:
+        return _info(
+            is_error=False,
+            category=ToolErrorCategory.INTERRUPTED,
+            code="soft_interrupt",
+            retryable=False,
+            message="Cancelled by soft interrupt",
+        )
+
+    # ── 2. invalid_params ───────────────────────────────────────────
+    if result_normalized.startswith("error: invalid parameters for tool"):
+        return _info(
+            category=ToolErrorCategory.INVALID_PARAMS,
+            code="invalid_params",
+            message="Invalid tool parameters",
+        )
+
+    # ── 3. tool_not_found ──────────────────────────────────────────
+    if result_normalized.startswith("error: tool '") and "not found" in result_normalized:
+        return _info(
+            category=ToolErrorCategory.TOOL_NOT_FOUND,
+            code="tool_not_found",
+            retryable=False,
+            message="Tool not found",
+        )
+
+    # ── 4. execution_error prefix ──────────────────────────────────
+    if result_normalized.startswith("error executing"):
+        return _info(
+            category=ToolErrorCategory.EXECUTION_ERROR,
+            code="execution_error",
+            message="Error executing tool",
+        )
+
+    # ── 5. web_search special ──────────────────────────────────────
+    if tool_name == "web_search":
+        if result_normalized.startswith("error:"):
+            return _info(
+                category=ToolErrorCategory.EXECUTION_ERROR,
+                code="web_search_error",
+                message="Web search error",
+            )
+        return None
+
+    # ── 6. web_fetch special ───────────────────────────────────────
     if tool_name == "web_fetch":
-        if result_normalized.startswith("error:") or result_normalized.startswith(
-            "error executing"
-        ):
-            return True
+        if result_normalized.startswith("error:"):
+            return _info(
+                category=ToolErrorCategory.EXECUTION_ERROR,
+                code="web_fetch_error",
+                message="Web fetch error",
+            )
         if result_normalized.startswith("{"):
             try:
                 payload = json.loads(result_normalized)
             except json.JSONDecodeError:
                 payload = None
                 if re.match(r'^\{\s*"error"\s*:', result_normalized):
-                    return True
+                    return _info(
+                        category=ToolErrorCategory.EXECUTION_ERROR,
+                        code="web_fetch_error",
+                        message="Web fetch JSON error (malformed)",
+                    )
             if isinstance(payload, dict) and payload.get("error"):
-                return True
-        return False
+                return _info(
+                    category=ToolErrorCategory.EXECUTION_ERROR,
+                    code="web_fetch_error",
+                    message="Web fetch JSON error",
+                )
+        return None
 
+    # ── 7. exec special ────────────────────────────────────────────
     if tool_name == "exec":
         exit_match = re.search(r"exit\s*code\s*:\s*(-?\d+)", result_normalized)
         if exit_match:
             try:
-                if int(exit_match.group(1)) != 0:
-                    return True
+                exit_code = int(exit_match.group(1))
+                if exit_code != 0:
+                    return _info(
+                        category=ToolErrorCategory.EXECUTION_ERROR,
+                        code="exec_exit_code",
+                        message=f"Exit code {exit_code}",
+                        details={"exit_code": exit_code},
+                    )
             except ValueError:
                 pass
-        return any(kw in result_lower for kw in error_keywords)
+        if any(kw in result_lower for kw in error_keywords):
+            return _info(
+                category=ToolErrorCategory.UNKNOWN,
+                code="keyword_match",
+                message="Error keyword detected",
+            )
+        return None
 
+    # ── 8. coding_agent / coding_agent_details ──────────────────────
     if tool_name in {"coding_agent", "coding_agent_details"}:
         payload = None
         if result_normalized.startswith("{"):
@@ -89,21 +191,57 @@ def has_tool_error(tool_name: str, result: str, error_keywords: tuple[str, ...])
         if isinstance(payload, dict):
             status = payload.get("status")
             if isinstance(status, str) and status.lower() in {"error", "failed"}:
-                return True
+                return _info(
+                    category=ToolErrorCategory.EXECUTION_ERROR,
+                    code="coding_agent_status",
+                    message=f"Coding agent status: {status}",
+                )
             if payload.get("error"):
-                return True
-            for key in ("exit_code", "exitcode", "returncode", "return_code"):
-                code = payload.get(key)
-                if isinstance(code, int) and code != 0:
-                    return True
-            for key in ("timed_out", "timedout"):
-                timed_out = payload.get(key)
-                if isinstance(timed_out, bool) and timed_out:
-                    return True
-        return any(kw in result_lower for kw in error_keywords)
+                return _info(
+                    category=ToolErrorCategory.EXECUTION_ERROR,
+                    code="coding_agent_error",
+                    message="Coding agent error field set",
+                )
+            for key in ("exit_code", "exitcode", "exitCode", "returncode", "return_code"):
+                code_val = payload.get(key)
+                if isinstance(code_val, int) and code_val != 0:
+                    return _info(
+                        category=ToolErrorCategory.EXECUTION_ERROR,
+                        code="coding_agent_exit_code",
+                        message=f"Coding agent exit code {code_val}",
+                        details={"exit_code": code_val},
+                    )
+            for key in ("timed_out", "timedout", "timedOut"):
+                tv = payload.get(key)
+                if isinstance(tv, bool) and tv:
+                    return _info(
+                        category=ToolErrorCategory.TIMEOUT,
+                        code="coding_agent_timeout",
+                        retryable=True,
+                        message="Coding agent timed out",
+                    )
+        if any(kw in result_lower for kw in error_keywords):
+            return _info(
+                category=ToolErrorCategory.UNKNOWN,
+                code="keyword_match",
+                message="Error keyword detected",
+            )
+        return None
 
-    return any(kw in result_lower for kw in error_keywords)
+    # ── 9. fallback: keyword-only ───────────────────────────────────
+    if any(kw in result_lower for kw in error_keywords):
+        return _info(
+            category=ToolErrorCategory.UNKNOWN,
+            code="keyword_match",
+            message="Error keyword detected",
+        )
+    return None
 
+
+def has_tool_error(tool_name: str, result: str, error_keywords: tuple[str, ...]) -> bool:
+    """Return True if *result* indicates a tool failure."""
+    info = parse_tool_error(tool_name, result, error_keywords)
+    return bool(info and info.is_error)
 
 def sanitize_trace_text(text: Any, max_len: int) -> str:
     normalized = str(text or "").replace("\r", " ").replace("\n", " ").strip()

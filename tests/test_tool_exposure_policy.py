@@ -83,6 +83,28 @@ def test_tool_exposure_auto_routes_web_and_code(tmp_path: Path) -> None:
     assert "web_fetch" not in code_selected
 
 
+def test_check_tasks_json_respects_core_bundle(tmp_path: Path) -> None:
+    loop_core = _make_loop(tmp_path, mode="auto", bundles=["core"])
+    selected_core = loop_core._select_tool_names_for_turn(
+        [
+            {"role": "system", "content": "test"},
+            {"role": "user", "content": "hello"},
+        ]
+    )
+    assert selected_core is not None
+    assert "check_tasks_json" in selected_core
+
+    loop_no_core = _make_loop(tmp_path, mode="auto", bundles=["code"])
+    selected_no_core = loop_no_core._select_tool_names_for_turn(
+        [
+            {"role": "system", "content": "test"},
+            {"role": "user", "content": "hello"},
+        ]
+    )
+    assert selected_no_core is not None
+    assert "check_tasks_json" not in selected_no_core
+
+
 def test_registry_empty_allowlist_returns_no_tools(tmp_path: Path) -> None:
     loop = _make_loop(tmp_path, mode="off", bundles=["core", "web", "desktop", "code"])
     definitions = loop.tools.get_definitions(names=set())

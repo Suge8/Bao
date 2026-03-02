@@ -88,3 +88,57 @@ def test_coding_agent_detects_prefixed_json_error_payload() -> None:
 def test_coding_agent_detects_camel_case_exit_code() -> None:
     payload = '{"status":"ok","exitCode":1}'
     assert shared.has_tool_error("coding_agent", payload, _ERROR_KEYWORDS)
+
+
+def test_coding_agent_details_same_as_coding_agent() -> None:
+    """coding_agent_details uses the same detection logic as coding_agent."""
+    payload = '{"status":"error","summary":"failed to run"}'
+    assert shared.has_tool_error("coding_agent_details", payload, _ERROR_KEYWORDS)
+    payload_ok = '{"status":"ok","exit_code":0}'
+    assert not shared.has_tool_error("coding_agent_details", payload_ok, _ERROR_KEYWORDS)
+
+
+def test_coding_agent_detects_timed_out_true() -> None:
+    payload = '{"status":"ok","timed_out":true}'
+    assert shared.has_tool_error("coding_agent", payload, _ERROR_KEYWORDS)
+
+
+def test_coding_agent_detects_timedout_camel() -> None:
+    payload = '{"timedOut":true}'
+    assert shared.has_tool_error("coding_agent", payload, _ERROR_KEYWORDS)
+
+
+def test_coding_agent_detects_returncode_nonzero() -> None:
+    payload = '{"returncode":1}'
+    assert shared.has_tool_error("coding_agent", payload, _ERROR_KEYWORDS)
+
+
+def test_tool_trace_contains_ok_and_error_substrings() -> None:
+    ok_entry = shared.build_tool_trace_entry(1, "exec", "cmd", False, "ok result")
+    assert "\u2192 ok" in ok_entry
+    err_entry = shared.build_tool_trace_entry(2, "exec", "cmd", True, "err")
+    assert "\u2192 ERROR" in err_entry
+
+
+def test_interrupted_not_error() -> None:
+    from bao.agent.shared import parse_tool_error
+
+    info = parse_tool_error("exec", "Cancelled by soft interrupt.", _ERROR_KEYWORDS)
+    assert info is not None
+    assert info.is_error is False
+    assert info.category == "interrupted"
+    # has_tool_error must return False for interrupted
+    assert not shared.has_tool_error("exec", "Cancelled by soft interrupt.", _ERROR_KEYWORDS)
+
+
+def test_parse_tool_error_invalid_params() -> None:
+    from bao.agent.shared import parse_tool_error
+
+    info = parse_tool_error(
+        "my_tool",
+        "Error: Invalid parameters for tool 'my_tool': missing x",
+        _ERROR_KEYWORDS,
+    )
+    assert info is not None
+    assert info.is_error is True
+    assert info.category == "invalid_params"

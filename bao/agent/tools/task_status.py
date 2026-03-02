@@ -1,5 +1,6 @@
 """Tools for checking and cancelling background subagent tasks."""
 
+import json
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -160,3 +161,144 @@ def _format_detailed(st: "TaskStatus") -> str:
             for a in recent_actions[-3:]
         )
     return line
+
+
+def _task_to_snapshot(st: "TaskStatus") -> dict[str, Any]:
+    """Convert a TaskStatus to a stable JSON-serialisable dict (schema_version=1).
+
+    Fields are whitelisted — internal fields like resume_context are excluded.
+    """
+
+    # Sanitise visible strings the same way text outputs do.
+    def _clean(s: str | None) -> str | None:
+        if s is None:
+            return None
+        return s.replace("\n", " ").replace("\r", "").replace("|", "/")
+
+    recent = [_clean(str(a)) or "" for a in (getattr(st, "recent_actions", []) or [])[-3:]]
+    last_error: dict[str, Any] = {
+        "category": getattr(st, "last_error_category", None),
+        "code": getattr(st, "last_error_code", None),
+        "message": getattr(st, "last_error_message", None),
+    }
+    return {
+        "task_id": st.task_id,
+        "label": _clean(st.label),
+        "status": st.status,
+        "iteration": st.iteration,
+        "max_iterations": st.max_iterations,
+        "tool_steps": st.tool_steps,
+        "phase": st.phase,
+        "started_at": st.started_at,
+        "updated_at": st.updated_at,
+        "result_summary": _clean(st.result_summary),
+        "recent_actions": recent,
+        "last_error": last_error,
+        "origin": {
+            "channel": st.origin.get("channel", ""),
+            "chat_id": st.origin.get("chat_id", ""),
+        },
+    }
+
+
+class CheckTasksJsonTool(Tool):
+    """Return machine-readable task snapshot(s) as JSON (schema_version=1)."""
+
+    def __init__(self, manager: "SubagentManager"):
+        self._manager = manager
+
+    @property
+    def name(self) -> str:
+        return "check_tasks_json"
+
+    @property
+    def description(self) -> str:
+        return "Return structured JSON snapshot of background tasks (schema_version=1)."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "schema_version": {
+                    "type": "integer",
+                    "description": "Schema version to use (default: 1).",
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Optional: return snapshot for a single task.",
+                },
+            },
+            "required": [],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        raw_schema_version = kwargs.get("schema_version", 1)
+        try:
+            schema_version = int(raw_schema_version)
+        except (TypeError, ValueError):
+            return json.dumps(
+                {
+                    "schema_version": 1,
+                    "error": {
+                        "code": "invalid_schema_version",
+                        "message": (
+                            "schema_version must be an integer-compatible value "
+                            f"(got {raw_schema_version!r})."
+                        ),
+                    },
+                }
+            )
+        if schema_version != 1:
+            return json.dumps(
+                {
+                    "schema_version": 1,
+                    "error": {
+                        "code": "unsupported_schema_version",
+                        "message": f"Unsupported schema_version: {schema_version}. Only 1 is supported.",
+                    },
+                }
+            )
+
+        task_id = kwargs.get("task_id")
+        if task_id is not None:
+            task_id = str(task_id).strip()
+            if not task_id:
+                return json.dumps(
+                    {
+                        "schema_version": 1,
+                        "error": {
+                            "code": "invalid_task_id",
+                            "message": "task_id must be a non-empty string.",
+                        },
+                    }
+                )
+
+        if task_id:
+            st = self._manager.get_task_status(task_id)
+            if not st:
+                return json.dumps(
+                    {
+                        "schema_version": 1,
+                        "error": {
+                            "code": "task_not_found",
+                            "message": f"No task found with id '{task_id}'.",
+                        },
+                    }
+                )
+            return json.dumps(
+                {
+                    "schema_version": 1,
+                    "generated_at": time.time(),
+                    "tasks": [_task_to_snapshot(st)],
+                }
+            )
+
+        all_statuses = self._manager.get_all_statuses()
+        return json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": time.time(),
+                "tasks": [_task_to_snapshot(s) for s in all_statuses],
+            }
+        )

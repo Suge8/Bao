@@ -14,6 +14,7 @@ from loguru import logger
 
 from bao.agent import shared
 from bao.agent.artifacts import ArtifactStore, apply_tool_output_budget
+from bao.agent.protocol import ToolErrorCategory
 from bao.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from bao.agent.tools.registry import ToolRegistry
 from bao.agent.tools.shell import ExecTool
@@ -50,6 +51,9 @@ class TaskStatus:
     clipped_count: int = 0
     clipped_chars: int = 0
     recent_actions: list[str] = field(default_factory=list)  # last N tool call summaries
+    last_error_category: str | None = None
+    last_error_code: str | None = None
+    last_error_message: str | None = None
 
 
 class SubagentManager:
@@ -353,7 +357,19 @@ class SubagentManager:
                     channel=origin["channel"],
                     chat_id=origin["chat_id"],
                     content=content,
-                    metadata={"_progress": True, "_subagent_progress": True, "task_id": task_id},
+                    metadata={
+                        "_progress": True,
+                        "_subagent_progress": True,
+                        "task_id": task_id,
+                        "_stream_event_schema": 1,
+                        "_stream_event_type": "task_status",
+                        "_stream_event_payload": {
+                            "iteration": iteration,
+                            "tool_steps": st.tool_steps if st else 0,
+                            "status": st.status if st else "running",
+                            "phase": st.phase if st else "starting",
+                        },
+                    },
                 )
             )
         except Exception:
@@ -391,6 +407,10 @@ class SubagentManager:
     @staticmethod
     def _has_tool_error(tool_name: str, result: str) -> bool:
         return shared.has_tool_error(tool_name, result, _SUBAGENT_ERROR_KEYWORDS)
+
+    @staticmethod
+    def _parse_tool_error(tool_name: str, result: str):
+        return shared.parse_tool_error(tool_name, result, _SUBAGENT_ERROR_KEYWORDS)
 
     async def _compress_state(
         self,
@@ -859,10 +879,8 @@ class SubagentManager:
         messages.append(tool_msg)
 
         tool_step += 1
-        has_error = self._has_tool_error(
-            tool_call.name,
-            result_text,
-        )
+        _tool_err_info = self._parse_tool_error(tool_call.name, result_text)
+        has_error = bool(_tool_err_info and _tool_err_info.is_error)
         trace_idx = len(tool_trace) + 1
         trace_entry = shared.build_tool_trace_entry(
             trace_idx,
@@ -887,6 +905,16 @@ class SubagentManager:
                 failed_directions,
                 f"{tool_call.name}({failed_preview})",
             )
+            if _tool_err_info:
+                ts = self._task_statuses.get(task_id)
+                if ts:
+                    ts.last_error_category = _tool_err_info.category
+                    ts.last_error_code = _tool_err_info.code
+                    # sanitize message through existing clean helper
+                    raw_msg = _tool_err_info.message or _tool_err_info.category
+                    ts.last_error_message = self._sanitize_visible(raw_msg)
+        elif _tool_err_info and _tool_err_info.category == ToolErrorCategory.INTERRUPTED:
+            consecutive_errors = 0
         else:
             consecutive_errors = 0
 
