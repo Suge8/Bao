@@ -305,56 +305,241 @@ class BaseCodingAgentTool(Tool, ABC):
         lowered = f"{stdout_text}\n{stderr_text}".lower()
         return any(m in lowered for m in self._STALE_SESSION_MARKERS)
 
+    def _parse_execute_options(
+        self, kwargs: dict[str, Any]
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        prompt = kwargs.get("prompt")
+        if not isinstance(prompt, str):
+            return None, "Error: prompt must be a string"
+        prompt_text = prompt.strip()
+        if not prompt_text:
+            return None, "Error: prompt cannot be empty"
+
+        project_path = kwargs.get("project_path")
+        if project_path is not None and not isinstance(project_path, str):
+            return None, "Error: project_path must be a string"
+
+        session_id = kwargs.get("session_id")
+        if session_id is not None and not isinstance(session_id, str):
+            return None, "Error: session_id must be a string"
+
+        continue_session = kwargs.get("continue_session", True)
+        if not isinstance(continue_session, bool):
+            return None, "Error: continue_session must be a boolean"
+
+        model = kwargs.get("model")
+        if model is not None and not isinstance(model, str):
+            return None, "Error: model must be a string"
+
+        timeout_raw = kwargs.get("timeout_seconds")
+        if timeout_raw is not None and not isinstance(timeout_raw, int):
+            return None, "Error: timeout_seconds must be an integer"
+
+        response_format = kwargs.get("response_format", "hybrid")
+        if response_format not in ("hybrid", "json", "text"):
+            return None, "Error: response_format must be one of: hybrid, json, text"
+
+        max_retries = kwargs.get("max_retries", 1)
+        if not isinstance(max_retries, int):
+            return None, "Error: max_retries must be an integer"
+        max_retries = max(0, min(max_retries, 2))
+
+        max_output_raw = kwargs.get("max_output_chars", 4000)
+        if not isinstance(max_output_raw, int):
+            return None, "Error: max_output_chars must be an integer"
+        max_output_chars = max(200, min(max_output_raw, 50000))
+
+        include_details = kwargs.get("include_details", False)
+        if not isinstance(include_details, bool):
+            return None, "Error: include_details must be a boolean"
+
+        return {
+            "prompt_text": prompt_text,
+            "project_path": project_path,
+            "session_id": session_id,
+            "continue_session": continue_session,
+            "model": model,
+            "timeout_raw": timeout_raw,
+            "response_format": response_format,
+            "max_retries": max_retries,
+            "max_output_chars": max_output_chars,
+            "include_details": include_details,
+            "extra_params": kwargs,
+        }, None
+
+    async def _resolve_session_for_execute(
+        self,
+        *,
+        explicit_session_id: str | None,
+        continue_session: bool,
+        context_key: str,
+    ) -> tuple[str | None, bool]:
+        resolved_session = explicit_session_id
+        if not resolved_session and continue_session:
+            async with self._lock:
+                resolved_session = self._session_by_context.get(context_key)
+                if resolved_session:
+                    self._session_by_context.pop(context_key, None)
+                    self._session_by_context[context_key] = resolved_session
+        session_from_cache = bool(resolved_session and not explicit_session_id)
+        return resolved_session, session_from_cache
+
+    async def _run_with_retry(
+        self,
+        *,
+        cmd: list[str],
+        cwd: Path,
+        timeout: int,
+        max_retries: int,
+    ) -> tuple[_RunResult, int, int]:
+        attempts = 0
+        start = time.monotonic()
+        result: _RunResult | None = None
+        while attempts <= max_retries:
+            attempts += 1
+            try:
+                result = await self._run_command(
+                    cmd=cmd,
+                    cwd=cwd,
+                    timeout_seconds=timeout,
+                    on_stdout_line=self._progress_callback,
+                )
+            except TypeError as exc:
+                if "on_stdout_line" not in str(exc):
+                    raise
+                result = await self._run_command(
+                    cmd=cmd,
+                    cwd=cwd,
+                    timeout_seconds=timeout,
+                )
+            if result["timed_out"]:
+                break
+            if result["returncode"] == 0:
+                break
+            if attempts > max_retries:
+                break
+            if not self._is_transient_failure(result["stdout"], result["stderr"]):
+                break
+
+        if result is None:
+            result = {"timed_out": True, "returncode": None, "stdout": "", "stderr": ""}
+
+        duration_ms = int((time.monotonic() - start) * 1000)
+        return result, attempts, duration_ms
+
+    async def _cache_active_session(self, *, context_key: str, active_session: str | None) -> None:
+        if not active_session:
+            return
+        async with self._lock:
+            if context_key in self._session_by_context:
+                self._session_by_context.pop(context_key, None)
+            elif len(self._session_by_context) >= _SESSION_CACHE_LIMIT:
+                lru_victim_context = next(iter(self._session_by_context))
+                self._session_by_context.pop(lru_victim_context, None)
+            self._session_by_context[context_key] = active_session
+
+    def _success_response(
+        self,
+        *,
+        final_output: str,
+        stderr_text: str,
+        max_output_chars: int,
+        include_details: bool,
+        request_id: str,
+        context_key: str,
+        active_session: str | None,
+        resolved_session: str | None,
+        model: str | None,
+        timeout: int,
+        cwd: Path,
+        attempts: int,
+        duration_ms: int,
+        command_preview: str,
+        detail_stdout: str,
+        response_format: str,
+        extra_params: dict[str, Any],
+    ) -> str:
+        body = final_output.strip() or "(no output)"
+        if len(body) > max_output_chars:
+            body = body[:max_output_chars] + (
+                f"\n... (truncated, {len(body) - max_output_chars} more chars)"
+            )
+        stderr_clean = stderr_text.strip()
+        summary = self._summarize_output(body, stderr_clean)
+        details_available = bool(body or stderr_clean)
+        details_hint = self._build_details_hint(
+            request_id=request_id,
+            session_id=active_session,
+            include_details=include_details,
+            details_available=details_available,
+        )
+
+        header = f"{self._tool_label} completed successfully."
+        if active_session:
+            header += f"\nSession: {active_session}"
+
+        extras = self._extra_payload_fields(extra_params)
+        payload: dict[str, Any] = {
+            "schema_version": 1,
+            "request_id": request_id,
+            "status": "success",
+            "message": header,
+            "project_path": str(cwd),
+            "timeout_seconds": timeout,
+            "session_id": active_session,
+            "continued": bool(resolved_session),
+            "model": model,
+            **extras,
+            "attempts": attempts,
+            "duration_ms": duration_ms,
+            "exit_code": 0,
+            "stdout": body if include_details else "",
+            "stderr": stderr_clean if include_details else "",
+            "summary": summary,
+            "details_available": details_available,
+            "details_hint": details_hint,
+            "hints": [],
+            "error_type": None,
+            "command_preview": command_preview,
+        }
+        self.detail_cache.build_detail_record(
+            request_id=request_id,
+            context_key=context_key,
+            session_id=active_session,
+            project_path=str(cwd),
+            status="success",
+            command_preview=command_preview,
+            stdout=detail_stdout,
+            stderr=stderr_text,
+            summary=summary,
+            attempts=attempts,
+            duration_ms=duration_ms,
+            exit_code=0,
+        )
+        return self._render_payload(payload, response_format=response_format)
+
     # -- main execute (template method) --
 
     async def execute(self, **kwargs: Any) -> str:
         _session_retry = kwargs.pop("__session_retry", False)
         _original_kwargs = dict(kwargs)
-        # 1. Common param validation
-        prompt = kwargs.get("prompt")
-        if not isinstance(prompt, str):
-            return "Error: prompt must be a string"
-        prompt_text = prompt.strip()
-        if not prompt_text:
-            return "Error: prompt cannot be empty"
+        options, option_error = self._parse_execute_options(kwargs)
+        if option_error:
+            return option_error
+        if options is None:
+            return "Error: invalid options"
 
-        project_path = kwargs.get("project_path")
-        if project_path is not None and not isinstance(project_path, str):
-            return "Error: project_path must be a string"
-
-        session_id = kwargs.get("session_id")
-        if session_id is not None and not isinstance(session_id, str):
-            return "Error: session_id must be a string"
-
-        continue_session = kwargs.get("continue_session", True)
-        if not isinstance(continue_session, bool):
-            return "Error: continue_session must be a boolean"
-
-        model = kwargs.get("model")
-        if model is not None and not isinstance(model, str):
-            return "Error: model must be a string"
-
-        timeout_raw = kwargs.get("timeout_seconds")
-        if timeout_raw is not None and not isinstance(timeout_raw, int):
-            return "Error: timeout_seconds must be an integer"
-
-        response_format = kwargs.get("response_format", "hybrid")
-        if response_format not in ("hybrid", "json", "text"):
-            return "Error: response_format must be one of: hybrid, json, text"
-
-        max_retries = kwargs.get("max_retries", 1)
-        if not isinstance(max_retries, int):
-            return "Error: max_retries must be an integer"
-        max_retries = max(0, min(max_retries, 2))
-
-        max_output_raw = kwargs.get("max_output_chars", 4000)
-        if not isinstance(max_output_raw, int):
-            return "Error: max_output_chars must be an integer"
-        max_output_chars = max(200, min(max_output_raw, 50000))
-
-        include_details = kwargs.get("include_details", False)
-        if not isinstance(include_details, bool):
-            return "Error: include_details must be a boolean"
+        prompt_text = options["prompt_text"]
+        project_path = options["project_path"]
+        session_id = options["session_id"]
+        continue_session = options["continue_session"]
+        model = options["model"]
+        timeout_raw = options["timeout_raw"]
+        response_format = options["response_format"]
+        max_retries = options["max_retries"]
+        max_output_chars = options["max_output_chars"]
+        include_details = options["include_details"]
+        extra_params = options["extra_params"]
 
         # 2. Subclass-specific param validation
         extra_err = self._validate_extra_params(kwargs)
@@ -367,7 +552,6 @@ class BaseCodingAgentTool(Tool, ABC):
             _MIN_TOOL_TIMEOUT_SECONDS,
             min(int(timeout_raw or self.default_timeout_seconds), _MAX_TOOL_TIMEOUT_SECONDS),
         )
-        extra_params = kwargs  # subclass reads its own extras from here
 
         # 3. Binary check
         if not shutil.which(self.cli_binary):
@@ -418,16 +602,11 @@ class BaseCodingAgentTool(Tool, ABC):
                 extra_params=extra_params,
             )
 
-        # 5. Resolve session
-        resolved_session = session_id
-        if not resolved_session and continue_session:
-            async with self._lock:
-                resolved_session = self._session_by_context.get(context_key)
-                if resolved_session:
-                    self._session_by_context.pop(context_key, None)
-                    self._session_by_context[context_key] = resolved_session
-
-        session_from_cache = bool(resolved_session and not session_id)
+        resolved_session, session_from_cache = await self._resolve_session_for_execute(
+            explicit_session_id=session_id,
+            continue_session=continue_session,
+            context_key=context_key,
+        )
 
         # 6. Build command (subclass hook) — inside try/finally so _cleanup
         #    runs even if _build_command_preview raises after _build_command
@@ -443,40 +622,12 @@ class BaseCodingAgentTool(Tool, ABC):
             )
             command_preview = self._build_command_preview(cmd, prompt_text)
 
-            # 7. Retry loop
-            attempts = 0
-            start = time.monotonic()
-            result: _RunResult | None = None
-            while attempts <= max_retries:
-                attempts += 1
-                try:
-                    result = await self._run_command(
-                        cmd=cmd,
-                        cwd=cwd,
-                        timeout_seconds=timeout,
-                        on_stdout_line=self._progress_callback,
-                    )
-                except TypeError as exc:
-                    if "on_stdout_line" not in str(exc):
-                        raise
-                    result = await self._run_command(
-                        cmd=cmd,
-                        cwd=cwd,
-                        timeout_seconds=timeout,
-                    )
-                if result["timed_out"]:
-                    break
-                if result["returncode"] == 0:
-                    break
-                if attempts > max_retries:
-                    break
-                if not self._is_transient_failure(result["stdout"], result["stderr"]):
-                    break
-
-            if result is None:
-                result = {"timed_out": True, "returncode": None, "stdout": "", "stderr": ""}
-
-            duration_ms = int((time.monotonic() - start) * 1000)
+            result, attempts, duration_ms = await self._run_with_retry(
+                cmd=cmd,
+                cwd=cwd,
+                timeout=timeout,
+                max_retries=max_retries,
+            )
 
             # 8. Timeout
             if result["timed_out"]:
@@ -564,74 +715,26 @@ class BaseCodingAgentTool(Tool, ABC):
                 exec_state=exec_state,
                 timeout=timeout,
             )
-
-            if active_session:
-                async with self._lock:
-                    if context_key in self._session_by_context:
-                        self._session_by_context.pop(context_key, None)
-                    elif len(self._session_by_context) >= _SESSION_CACHE_LIMIT:
-                        lru_victim_context = next(iter(self._session_by_context))
-                        self._session_by_context.pop(lru_victim_context, None)
-                    self._session_by_context[context_key] = active_session
-
-            body = final_output.strip() or "(no output)"
-            if len(body) > max_output_chars:
-                body = body[:max_output_chars] + (
-                    f"\n... (truncated, {len(body) - max_output_chars} more chars)"
-                )
-            stderr_clean = stderr_text.strip()
-            summary = self._summarize_output(body, stderr_clean)
-            details_available = bool(body or stderr_clean)
-            details_hint = self._build_details_hint(
-                request_id=request_id,
-                session_id=active_session,
+            await self._cache_active_session(context_key=context_key, active_session=active_session)
+            return self._success_response(
+                final_output=final_output,
+                stderr_text=stderr_text,
+                max_output_chars=max_output_chars,
                 include_details=include_details,
-                details_available=details_available,
-            )
-
-            header = f"{self._tool_label} completed successfully."
-            if active_session:
-                header += f"\nSession: {active_session}"
-
-            extras = self._extra_payload_fields(extra_params)
-            payload: dict[str, Any] = {
-                "schema_version": 1,
-                "request_id": request_id,
-                "status": "success",
-                "message": header,
-                "project_path": str(cwd),
-                "timeout_seconds": timeout,
-                "session_id": active_session,
-                "continued": bool(resolved_session),
-                "model": model,
-                **extras,
-                "attempts": attempts,
-                "duration_ms": duration_ms,
-                "exit_code": 0,
-                "stdout": body if include_details else "",
-                "stderr": stderr_clean if include_details else "",
-                "summary": summary,
-                "details_available": details_available,
-                "details_hint": details_hint,
-                "hints": [],
-                "error_type": None,
-                "command_preview": command_preview,
-            }
-            self.detail_cache.build_detail_record(
                 request_id=request_id,
                 context_key=context_key,
-                session_id=active_session,
-                project_path=str(cwd),
-                status="success",
-                command_preview=command_preview,
-                stdout=detail_stdout,
-                stderr=stderr_text,
-                summary=summary,
+                active_session=active_session,
+                resolved_session=resolved_session,
+                model=model,
+                timeout=timeout,
+                cwd=cwd,
                 attempts=attempts,
                 duration_ms=duration_ms,
-                exit_code=0,
+                command_preview=command_preview,
+                detail_stdout=detail_stdout,
+                response_format=response_format,
+                extra_params=extra_params,
             )
-            return self._render_payload(payload, response_format=response_format)
         finally:
             self._cleanup(exec_state)
 
