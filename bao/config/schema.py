@@ -414,9 +414,9 @@ class ImageGenerationConfig(Base):
 
 
 class DesktopConfig(Base):
-    """Desktop automation tools config. Set enabled=true to activate."""
+    """Desktop automation tools config. Enabled by default."""
 
-    enabled: bool = False  # Disabled by default for safety
+    enabled: bool = True
 
 
 class ToolExposureConfig(Base):

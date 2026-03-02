@@ -1,6 +1,6 @@
 [project]
 name = "bao-ai"
-version = "0.3.0"
+version = "0.3.1"
 description = "A personal AI assistant that remembers, learns from experience, and never makes the same mistake twice."
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -46,16 +46,14 @@ dependencies = [
     "json-repair>=0.57.0,<1.0.0",
     "lancedb>=0.20.0",
     "pillow>=10.0.0",
+    "mss>=9.0.0",
+    "pyautogui>=0.9.54",
+    "pillow-heif>=0.18.0",
 ]
 
 [project.optional-dependencies]
 desktop = [
     "PySide6-Essentials>=6.7.0,<7.0.0",
-]
-desktop-automation = [
-    "mss>=9.0.0",
-    "pyautogui>=0.9.54",
-    "pillow-heif>=0.18.0",
 ]
 dev = [
     "pytest>=9.0.0,<10.0.0",

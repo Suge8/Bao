@@ -1,7 +1,6 @@
 """Desktop automation tools — screenshot, click, type, scroll, drag, key press, screen info.
 
-Requires optional dependencies: mss, pyautogui, pillow.
-Install via: uv sync --extra desktop-automation
+Dependencies (mss, pyautogui, pillow) are included in the default install.
 
 Coordinate convention
 ---------------------

@@ -4,6 +4,13 @@ All notable changes to Bao are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/), and this project uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-03-03
+
+### Changed
+
+- **桌面自动化默认启用** — `mss`/`pyautogui`/`pillow-heif` 从可选依赖移入主依赖，`desktop.enabled` 默认 `true`；新用户安装即可用，无需额外步骤
+- **配置模板精简** — `toolExposure` 移除 `bundles` 字段（代码默认兜底，不暴露给用户）；桌面自动化注释去掉过时的安装提示
+
 ## [0.3.0] - 2026-03-03
 
 ### Added

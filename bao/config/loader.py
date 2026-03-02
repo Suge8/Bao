@@ -248,16 +248,14 @@ _JSONC_TEMPLATE = """\
       "model": "",
       "baseUrl": ""
     },
-    // 桌面自动化：截屏/点击/输入等（需安装 desktop-automation 依赖）| Desktop automation (requires desktop-automation deps)
+    // 桌面自动化：截屏/点击/输入等 | Desktop automation: screenshot/click/type etc.
     "desktop": {
-      "enabled": false
+      "enabled": true
     },
     // 工具暴露策略 | Tool exposure policy
-    //   mode: off | auto
-    //   bundles: core | web | desktop | code
+    //   mode: off(全量暴露) | auto(按关键词动态暴露)
     "toolExposure": {
-      "mode": "off",
-      "bundles": ["core", "web", "desktop", "code"]
+      "mode": "off"
     },
     // MCP tool 注册总上限（0 表示不限）| Global cap for registered MCP tools (0 = unlimited)
     "mcpMaxTools": 50,

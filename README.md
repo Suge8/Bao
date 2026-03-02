@@ -91,8 +91,8 @@ Bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 - **7 个原子工具** — 截屏、点击、输入文字、按键、滚动、拖拽、获取屏幕信息，覆盖日常桌面操作
 - **模型无关** — 不绑定任何特定 Provider，OpenAI、Gemini、Anthropic、DeepSeek 等任何支持视觉的模型都能驱动
 - **Retina/HiDPI 自适应** — 截图空间与操作空间自动坐标映射，高分屏点哪到哪
-- **轻量依赖** — 仅需 `mss` + `pyautogui` + `Pillow`，通过 `uv sync --extra desktop-automation` 安装
-- **安全默认关闭** — `config.tools.desktop.enabled: false`，显式开启才注册工具
+- **依赖已内置** — `mss` + `pyautogui` + `Pillow` 随 Bao 默认安装，无需额外操作
+- **默认开启** — `config.tools.desktop.enabled: true`，安装即可用；如需关闭可手动设为 `false`
 
 ### 🧩 可扩展技能系统
 
@@ -506,8 +506,8 @@ Let AI see your screen and operate your computer. No Anthropic Computer Use requ
 - **7 atomic tools** — screenshot, click, type text, key press, scroll, drag, get screen info. Covers everyday desktop operations
 - **Model-agnostic** — not locked to any provider. OpenAI, Gemini, Anthropic, DeepSeek — any model with vision can drive it
 - **Retina/HiDPI aware** — automatic coordinate mapping between screenshot space and input space. Pixel-perfect on high-DPI displays
-- **Lightweight deps** — just `mss` + `pyautogui` + `Pillow`, installed via `uv sync --extra desktop-automation`
-- **Off by default** — `config.tools.desktop.enabled: false`. Explicit opt-in only
+- **Deps included** — `mss` + `pyautogui` + `Pillow` ship with the default Bao install, no extra steps needed
+- **On by default** — `config.tools.desktop.enabled: true`; set to `false` to disable
 #### 🧩 Extensible Skill System
 
 17 built-in skills (coding agents, image generation, PDF, browser automation, weather, cron, and more) ready out of the box. Want your own? Drop it into `~/.bao/workspace/skills/` — Bao picks it up at runtime.

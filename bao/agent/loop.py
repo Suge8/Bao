@@ -529,7 +529,7 @@ class AgentLoop:
             except ImportError:
                 logger.warning(
                     "⚠️ 桌面依赖缺失 / desktop deps missing: "
-                    "Install: uv sync --extra desktop-automation"
+                    "mss, pyautogui, pillow are required"
                 )
 
     async def _connect_mcp(self) -> None:
