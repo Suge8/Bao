@@ -4,6 +4,7 @@ import pathlib
 import tempfile
 from unittest.mock import MagicMock
 
+from bao.agent import plan
 from bao.bus.events import InboundMessage
 from bao.bus.queue import MessageBus
 
@@ -486,3 +487,163 @@ async def test_model_error_response_not_persisted_but_still_returned() -> None:
             m.get("role") == "user" and m.get("content") == "trigger" for m in updated.messages
         )
         assert not any(m.get("role") == "assistant" for m in updated.messages)
+
+
+@pytest.mark.asyncio
+async def test_interrupt_marks_plan_step_interrupted() -> None:
+    loop_bus = MessageBus()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    with tempfile.TemporaryDirectory() as td:
+        from bao.agent.loop import AgentLoop
+
+        ws = pathlib.Path(td)
+        (ws / "PERSONA.md").write_text("# Persona\n", encoding="utf-8")
+        (ws / "INSTRUCTIONS.md").write_text("# Instructions\n", encoding="utf-8")
+
+        loop = AgentLoop(
+            bus=loop_bus,
+            provider=provider,
+            workspace=ws,
+            model="test-model",
+        )
+
+        async def fake_run_agent_loop(initial_messages, **kwargs):
+            del initial_messages, kwargs
+            return None, [], [], 0, [], False, True, []
+
+        setattr(loop, "_run_agent_loop", fake_run_agent_loop)
+
+        def _search_memory(query: str, limit: int = 5) -> list[str]:
+            del query, limit
+            return []
+
+        def _search_experience(query: str, limit: int = 3) -> list[str]:
+            del query, limit
+            return []
+
+        loop.context.memory.search_memory = _search_memory
+        loop.context.memory.search_experience = _search_experience
+
+        dispatch_key = "telegram:1"
+        session = loop.sessions.get_or_create(dispatch_key)
+        session.metadata[plan.PLAN_STATE_KEY] = plan.new_plan("goal", ["step1", "step2"])
+        loop.sessions.save(session)
+
+        msg = InboundMessage(channel="telegram", sender_id="u", chat_id="1", content="run")
+        out = await loop._process_message(msg)
+        assert out is None
+
+        updated = loop.sessions.get_or_create(dispatch_key)
+        state = updated.metadata.get(plan.PLAN_STATE_KEY)
+        assert isinstance(state, dict)
+        assert "[interrupted]" in state["steps"][0]
+        assert state["current_step"] == 2
+
+        loop.sessions.invalidate(dispatch_key)
+        reloaded = loop.sessions.get_or_create(dispatch_key)
+        reloaded_state = reloaded.metadata.get(plan.PLAN_STATE_KEY)
+        assert isinstance(reloaded_state, dict)
+        assert "[interrupted]" in reloaded_state["steps"][0]
+
+
+@pytest.mark.asyncio
+async def test_interrupt_uses_parsed_pending_step_not_string_contains() -> None:
+    loop_bus = MessageBus()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    with tempfile.TemporaryDirectory() as td:
+        from bao.agent.loop import AgentLoop
+
+        ws = pathlib.Path(td)
+        (ws / "PERSONA.md").write_text("# Persona\n", encoding="utf-8")
+        (ws / "INSTRUCTIONS.md").write_text("# Instructions\n", encoding="utf-8")
+
+        loop = AgentLoop(
+            bus=loop_bus,
+            provider=provider,
+            workspace=ws,
+            model="test-model",
+        )
+
+        async def fake_run_agent_loop(initial_messages, **kwargs):
+            del initial_messages, kwargs
+            return None, [], [], 0, [], False, True, []
+
+        setattr(loop, "_run_agent_loop", fake_run_agent_loop)
+
+        def _search_memory(query: str, limit: int = 5) -> list[str]:
+            del query, limit
+            return []
+
+        def _search_experience(query: str, limit: int = 3) -> list[str]:
+            del query, limit
+            return []
+
+        loop.context.memory.search_memory = _search_memory
+        loop.context.memory.search_experience = _search_experience
+
+        dispatch_key = "telegram:1"
+        session = loop.sessions.get_or_create(dispatch_key)
+        state = plan.new_plan("goal", ["[done] has [pending] literal", "real pending step"])
+        state["current_step"] = 1
+        session.metadata[plan.PLAN_STATE_KEY] = state
+        loop.sessions.save(session)
+
+        msg = InboundMessage(channel="telegram", sender_id="u", chat_id="1", content="run")
+        out = await loop._process_message(msg)
+        assert out is None
+
+        updated = loop.sessions.get_or_create(dispatch_key)
+        new_state = updated.metadata.get(plan.PLAN_STATE_KEY)
+        assert isinstance(new_state, dict)
+        assert "[done]" in new_state["steps"][0]
+        assert "[interrupted]" in new_state["steps"][1]
+
+
+@pytest.mark.asyncio
+async def test_interrupt_with_string_current_step_still_marks_pending() -> None:
+    loop_bus = MessageBus()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    with tempfile.TemporaryDirectory() as td:
+        from bao.agent.loop import AgentLoop
+
+        ws = pathlib.Path(td)
+        (ws / "PERSONA.md").write_text("# Persona\n", encoding="utf-8")
+        (ws / "INSTRUCTIONS.md").write_text("# Instructions\n", encoding="utf-8")
+
+        loop = AgentLoop(
+            bus=loop_bus,
+            provider=provider,
+            workspace=ws,
+            model="test-model",
+        )
+
+        async def fake_run_agent_loop(initial_messages, **kwargs):
+            del initial_messages, kwargs
+            return None, [], [], 0, [], False, True, []
+
+        setattr(loop, "_run_agent_loop", fake_run_agent_loop)
+
+        loop.context.memory.search_memory = lambda query, limit=5: []
+        loop.context.memory.search_experience = lambda query, limit=3: []
+
+        dispatch_key = "telegram:1"
+        session = loop.sessions.get_or_create(dispatch_key)
+        state = plan.new_plan("goal", ["pending one", "pending two"])
+        state["current_step"] = "1"
+        session.metadata[plan.PLAN_STATE_KEY] = state
+        loop.sessions.save(session)
+
+        msg = InboundMessage(channel="telegram", sender_id="u", chat_id="1", content="run")
+        out = await loop._process_message(msg)
+        assert out is None
+
+        updated = loop.sessions.get_or_create(dispatch_key)
+        new_state = updated.metadata.get(plan.PLAN_STATE_KEY)
+        assert isinstance(new_state, dict)
+        assert "[interrupted]" in new_state["steps"][0]
