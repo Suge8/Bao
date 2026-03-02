@@ -463,6 +463,480 @@ class SubagentManager:
         exp = related_exp if isinstance(related_exp, list) else []
         return mem, exp
 
+    def _setup_subagent_tools(
+        self, origin: dict[str, str]
+    ) -> tuple[ToolRegistry, Any, list[str], bool]:
+        tools = ToolRegistry()
+        allowed_dir = self.workspace if self.restrict_to_workspace else None
+        tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
+        tools.register(WriteFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
+        tools.register(EditFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
+        tools.register(ListDirTool(workspace=self.workspace, allowed_dir=allowed_dir))
+        tools.register(
+            ExecTool(
+                working_dir=str(self.workspace),
+                timeout=self.exec_config.timeout,
+                restrict_to_workspace=self.restrict_to_workspace,
+                path_append=self.exec_config.path_append,
+                sandbox_mode=self.exec_config.sandbox_mode,
+            )
+        )
+
+        channel = origin.get("channel", "gateway")
+        chat_id = origin.get("chat_id", "direct")
+        coding_tools: list[str] = []
+        from bao.agent.tools.coding_agent import CodingAgentDetailsTool, CodingAgentTool
+
+        coding_tool = CodingAgentTool(workspace=self.workspace, allowed_dir=allowed_dir)
+        if coding_tool.available_backends:
+            coding_details = CodingAgentDetailsTool(parent=coding_tool)
+            coding_tool.set_context(
+                channel,
+                chat_id,
+                session_key=origin.get("session_key"),
+            )
+            coding_details.set_context(
+                channel,
+                chat_id,
+                session_key=origin.get("session_key"),
+            )
+            tools.register(coding_tool)
+            tools.register(coding_details)
+            coding_tools.extend(coding_tool.available_backends)
+
+        image_api_key = (
+            self.image_generation_config.api_key.get_secret_value()
+            if self.image_generation_config
+            else ""
+        )
+        if self.image_generation_config and image_api_key:
+            from bao.agent.tools.image_gen import ImageGenTool
+
+            tools.register(
+                ImageGenTool(
+                    api_key=image_api_key,
+                    model=self.image_generation_config.model,
+                    base_url=self.image_generation_config.base_url,
+                )
+            )
+
+        if self.desktop_config and self.desktop_config.enabled:
+            try:
+                from bao.agent.tools.desktop import (
+                    ClickTool,
+                    DragTool,
+                    GetScreenInfoTool,
+                    KeyPressTool,
+                    ScreenshotTool,
+                    ScrollTool,
+                    TypeTextTool,
+                )
+
+                tools.register(ScreenshotTool())
+                tools.register(ClickTool())
+                tools.register(TypeTextTool())
+                tools.register(KeyPressTool())
+                tools.register(ScrollTool())
+                tools.register(DragTool())
+                tools.register(GetScreenInfoTool())
+            except ImportError:
+                pass
+
+        search_tool = WebSearchTool(search_config=self.search_config, proxy=self.web_proxy)
+        has_search = bool(search_tool.brave_key or search_tool.tavily_key or search_tool.exa_key)
+        if has_search:
+            tools.register(search_tool)
+        tools.register(WebFetchTool(proxy=self.web_proxy))
+
+        return tools, coding_tool, coding_tools, has_search
+
+    def _maybe_cleanup_stale_artifacts(self) -> None:
+        if not self._artifact_cleanup_done and self._ctx_mgmt in ("auto", "aggressive"):
+            self._artifact_cleanup_done = True
+            try:
+                ArtifactStore(
+                    self.workspace, "_stale_", self._artifact_retention_days
+                ).cleanup_stale()
+            except Exception as exc:
+                logger.debug("subagent ctx stale cleanup failed: {}", exc)
+
+    def _prepare_subagent_messages(
+        self,
+        task_id: str,
+        task: str,
+        *,
+        channel: str | None,
+        has_search: bool,
+        coding_tools: list[str],
+        related_memory: list[str],
+        related_experience: list[str],
+        context_from: str | None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        system_prompt = self._build_subagent_prompt(
+            task,
+            channel=channel,
+            has_search=has_search,
+            coding_tools=coding_tools,
+            related_memory=related_memory,
+            related_experience=related_experience,
+        )
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": task},
+        ]
+
+        current = self.get_task_status(task_id)
+        resume_ctx = current.resume_context if current else None
+        if not resume_ctx and context_from:
+            prev = self.get_task_status(context_from)
+            if prev and prev.status in ("completed", "failed"):
+                resume_ctx = self._build_resume_context(context_from, prev)
+            else:
+                logger.debug("context_from={} not found or not finished, ignoring", context_from)
+        if resume_ctx:
+            messages.insert(1, {"role": "user", "content": resume_ctx})
+
+        return messages, list(messages)
+
+    def _create_subagent_artifact_store(self, task_id: str) -> ArtifactStore | None:
+        if self._ctx_mgmt not in ("auto", "aggressive"):
+            return None
+        return ArtifactStore(self.workspace, f"subagent_{task_id}", self._artifact_retention_days)
+
+    async def _run_iteration_prechecks(
+        self,
+        *,
+        task: str,
+        messages: list[dict[str, Any]],
+        initial_messages: list[dict[str, Any]],
+        artifact_store: ArtifactStore | None,
+        tool_trace: list[str],
+        sufficiency_trace: list[str],
+        reasoning_snippets: list[str],
+        failed_directions: list[str],
+        last_state_attempt_at: int,
+        last_state_text: str | None,
+        consecutive_errors: int,
+        tool_step: int,
+        next_sufficiency_at: int,
+        force_final_response: bool,
+    ) -> tuple[list[dict[str, Any]], int, str | None, int, int, bool]:
+        steps_since_attempt = len(tool_trace) - last_state_attempt_at
+        if steps_since_attempt >= 5 and len(tool_trace) >= 5:
+            state = await self._compress_state(
+                tool_trace, reasoning_snippets, failed_directions, last_state_text
+            )
+            last_state_attempt_at = len(tool_trace)
+            if state:
+                steps_before_reset = len(tool_trace)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"[State after {steps_before_reset} steps]\n{state}\n\n"
+                            "Use this state freely — adopt useful parts, ignore irrelevant ones, and "
+                            "prioritize unexplored branches."
+                        ),
+                    }
+                )
+                last_state_text = state
+                tool_trace.clear()
+                reasoning_snippets.clear()
+                failed_directions.clear()
+                consecutive_errors = 0
+                last_state_attempt_at = 0
+
+        if tool_step >= next_sufficiency_at:
+            if await self._check_sufficiency(task, sufficiency_trace, last_state_text):
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "You now have sufficient information. Provide your final answer.",
+                    }
+                )
+                force_final_response = True
+            while next_sufficiency_at <= tool_step:
+                next_sufficiency_at += 4
+
+        if self._ctx_mgmt in ("auto", "aggressive"):
+            try:
+                approx_bytes = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
+            except Exception:
+                approx_bytes = 0
+            if approx_bytes >= self._compact_bytes:
+                messages = self._compact_messages(
+                    messages=messages,
+                    initial_messages=initial_messages,
+                    last_state_text=last_state_text,
+                    artifact_store=artifact_store,
+                )
+
+        return (
+            messages,
+            last_state_attempt_at,
+            last_state_text,
+            consecutive_errors,
+            next_sufficiency_at,
+            force_final_response,
+        )
+
+    async def _chat_subagent(
+        self,
+        messages: list[dict[str, Any]],
+        tools: ToolRegistry,
+        *,
+        force_final_response: bool,
+    ) -> Any:
+        try:
+            return await self.provider.chat(
+                messages=messages,
+                tools=[] if force_final_response else tools.get_definitions(),
+                model=self.model,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                reasoning_effort=self.reasoning_effort,
+            )
+        finally:
+            for _m in messages:
+                _m.pop("_image", None)
+
+    def _setup_coding_progress_callback(
+        self,
+        task_id: str,
+        tool_call: Any,
+        coding_tool: Any,
+        *,
+        tool_step: int,
+    ) -> Any | None:
+        progress_backend = None
+        if tool_call.name == "coding_agent":
+            backend_name = tool_call.arguments.get("agent")
+            if isinstance(backend_name, str):
+                backend = coding_tool._backends.get(backend_name)
+                if backend and hasattr(backend, "set_progress_callback"):
+                    step_index = tool_step + 1
+
+                    async def _on_coding_progress(line: str) -> None:
+                        progress = self._normalize_progress_line(line)
+                        if not progress:
+                            return
+                        self._update_status(
+                            task_id,
+                            phase="tool:coding_agent",
+                            tool_steps=step_index,
+                            action=f"{backend_name}: {progress}",
+                        )
+
+                    backend.set_progress_callback(_on_coding_progress)
+                    progress_backend = backend
+        return progress_backend
+
+    def _handle_screenshot_marker(self, tool_name: str, result: str) -> tuple[str, str | None]:
+        screenshot_image_b64: str | None = None
+        if (
+            tool_name != "screenshot"
+            or not isinstance(result, str)
+            or not result.startswith("__SCREENSHOT__:")
+        ):
+            return result, screenshot_image_b64
+
+        marker = result
+        result = "[screenshot unavailable]"
+        ss_path = marker[len("__SCREENSHOT__:") :].strip()
+        ss_file = Path(ss_path).expanduser()
+        tmp_dir = Path(tempfile.gettempdir()).resolve()
+        try:
+            resolved_parent = ss_file.resolve(strict=False).parent
+        except Exception:
+            resolved_parent = None
+
+        safe_marker = ss_file.name.startswith("bao_screenshot_") and resolved_parent == tmp_dir
+        if safe_marker:
+            try:
+                import base64 as b64mod
+
+                with ss_file.open("rb") as sf:
+                    screenshot_image_b64 = b64mod.b64encode(sf.read()).decode()
+                result = "[screenshot captured]"
+            except Exception as ss_err:
+                logger.warning(
+                    "⚠️ 子代截图失败 / screenshot read failed: {}: {}",
+                    ss_file,
+                    ss_err,
+                )
+            finally:
+                try:
+                    if ss_file.exists():
+                        ss_file.unlink()
+                except Exception:
+                    pass
+        else:
+            logger.warning(
+                "⚠️ 子代忽略非安全截图路径 / ignored unsafe screenshot path: {}",
+                ss_file,
+            )
+
+        return result, screenshot_image_b64
+
+    async def _execute_tool_call_block(
+        self,
+        *,
+        task_id: str,
+        tool_call: Any,
+        tools: ToolRegistry,
+        coding_tool: Any,
+        artifact_store: ArtifactStore | None,
+        messages: list[dict[str, Any]],
+        tool_trace: list[str],
+        sufficiency_trace: list[str],
+        failed_directions: list[str],
+        tool_step: int,
+        consecutive_errors: int,
+    ) -> tuple[int, int]:
+        action_preview = shared.summarize_tool_args_for_trace(
+            tool_call.name,
+            tool_call.arguments,
+            max_len=50,
+        )
+        action_summary = f"{tool_call.name}({action_preview})"
+        self._update_status(
+            task_id,
+            phase=f"tool:{tool_call.name}",
+            tool_steps=tool_step + 1,
+            action=action_summary,
+        )
+
+        args_str = self._redact_tool_args_for_log(tool_call.name, tool_call.arguments)
+        trace_args_preview = shared.summarize_tool_args_for_trace(
+            tool_call.name,
+            tool_call.arguments,
+        )
+        logger.debug(
+            "Subagent [{}] executing: {} with arguments: {}",
+            task_id,
+            tool_call.name,
+            args_str,
+        )
+
+        progress_backend = self._setup_coding_progress_callback(
+            task_id,
+            tool_call,
+            coding_tool,
+            tool_step=tool_step,
+        )
+        try:
+            raw_result = await tools.execute(tool_call.name, tool_call.arguments)
+        finally:
+            if progress_backend and hasattr(progress_backend, "set_progress_callback"):
+                progress_backend.set_progress_callback(None)
+
+        result_text = raw_result if isinstance(raw_result, str) else str(raw_result)
+        result, budget_event = apply_tool_output_budget(
+            store=artifact_store,
+            tool_name=tool_call.name,
+            tool_call_id=tool_call.id,
+            result=result_text,
+            offload_chars=self._tool_offload_chars,
+            preview_chars=self._tool_preview_chars,
+            hard_chars=self._tool_hard_chars,
+            ctx_mgmt=self._ctx_mgmt,
+        )
+        self._accumulate_budget(
+            task_id,
+            offloaded_chars=budget_event.offloaded_chars,
+            clipped_chars=budget_event.hard_clipped_chars,
+        )
+
+        result, screenshot_image_b64 = self._handle_screenshot_marker(tool_call.name, result)
+        tool_msg: dict[str, Any] = {
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "name": tool_call.name,
+            "content": result,
+        }
+        if screenshot_image_b64:
+            tool_msg["_image"] = screenshot_image_b64
+        messages.append(tool_msg)
+
+        tool_step += 1
+        has_error = self._has_tool_error(
+            tool_call.name,
+            result_text,
+        )
+        trace_idx = len(tool_trace) + 1
+        trace_entry = shared.build_tool_trace_entry(
+            trace_idx,
+            tool_call.name,
+            trace_args_preview,
+            has_error,
+            result,
+        )
+        tool_trace.append(trace_entry)
+        sufficiency_trace.append(trace_entry)
+        if len(sufficiency_trace) > 32:
+            del sufficiency_trace[:-32]
+
+        if has_error:
+            consecutive_errors += 1
+            failed_preview = shared.summarize_tool_args_for_trace(
+                tool_call.name,
+                tool_call.arguments,
+                max_len=60,
+            )
+            shared.push_failed_direction(
+                failed_directions,
+                f"{tool_call.name}({failed_preview})",
+            )
+        else:
+            consecutive_errors = 0
+
+        return tool_step, consecutive_errors
+
+    async def _finalize_subagent_success(
+        self,
+        *,
+        task_id: str,
+        label: str,
+        task: str,
+        final_result: str | None,
+        origin: dict[str, str],
+        iteration: int,
+        tool_step: int,
+    ) -> None:
+        if final_result is None:
+            final_result = "Task completed but no final response was generated."
+
+        self._update_status(
+            task_id,
+            phase="completed",
+            status="completed",
+            iteration=iteration,
+            tool_steps=tool_step,
+            result_summary=final_result[:500] if final_result else None,
+        )
+
+        logger.info("✅ 子代完成 / subagent done: [{}]", task_id)
+        await self._announce_result_non_fatal(task_id, label, task, final_result, origin, "ok")
+
+    async def _finalize_subagent_failure(
+        self,
+        *,
+        task_id: str,
+        label: str,
+        task: str,
+        origin: dict[str, str],
+        error: Exception,
+    ) -> None:
+        error_msg = f"Error: {str(error)}"
+        self._update_status(
+            task_id,
+            status="failed",
+            phase="failed",
+            result_summary=error_msg[:500],
+        )
+        logger.error("❌ 子代失败 / subagent failed: [{}]: {}", task_id, error)
+        await self._announce_result_non_fatal(task_id, label, task, error_msg, origin, "error")
+
     # ------------------------------------------------------------------
     # Internal: subagent execution
     # ------------------------------------------------------------------
@@ -476,134 +950,22 @@ class SubagentManager:
         context_from: str | None = None,
     ) -> None:
         logger.info("🚀 子代启动 / subagent start: [{}]: {}", task_id, label)
-        artifact_store: ArtifactStore | None = None
-
         try:
-            tools = ToolRegistry()
-            allowed_dir = self.workspace if self.restrict_to_workspace else None
-            tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            tools.register(WriteFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            tools.register(EditFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            tools.register(ListDirTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            tools.register(
-                ExecTool(
-                    working_dir=str(self.workspace),
-                    timeout=self.exec_config.timeout,
-                    restrict_to_workspace=self.restrict_to_workspace,
-                    path_append=self.exec_config.path_append,
-                    sandbox_mode=self.exec_config.sandbox_mode,
-                )
-            )
-            channel = origin.get("channel", "gateway")
-            chat_id = origin.get("chat_id", "direct")
-            coding_tools: list[str] = []
-            from bao.agent.tools.coding_agent import CodingAgentDetailsTool, CodingAgentTool
-
-            coding_tool = CodingAgentTool(workspace=self.workspace, allowed_dir=allowed_dir)
-            if coding_tool.available_backends:
-                coding_details = CodingAgentDetailsTool(parent=coding_tool)
-                coding_tool.set_context(
-                    channel,
-                    chat_id,
-                    session_key=origin.get("session_key"),
-                )
-                coding_details.set_context(
-                    channel,
-                    chat_id,
-                    session_key=origin.get("session_key"),
-                )
-                tools.register(coding_tool)
-                tools.register(coding_details)
-                coding_tools.extend(coding_tool.available_backends)
-            # Image generation (conditional)
-            image_api_key = (
-                self.image_generation_config.api_key.get_secret_value()
-                if self.image_generation_config
-                else ""
-            )
-            if self.image_generation_config and image_api_key:
-                from bao.agent.tools.image_gen import ImageGenTool
-
-                tools.register(
-                    ImageGenTool(
-                        api_key=image_api_key,
-                        model=self.image_generation_config.model,
-                        base_url=self.image_generation_config.base_url,
-                    )
-                )
-            # Desktop automation (conditional: enabled in config + deps available)
-            if self.desktop_config and self.desktop_config.enabled:
-                try:
-                    from bao.agent.tools.desktop import (
-                        ClickTool,
-                        DragTool,
-                        GetScreenInfoTool,
-                        KeyPressTool,
-                        ScreenshotTool,
-                        ScrollTool,
-                        TypeTextTool,
-                    )
-
-                    tools.register(ScreenshotTool())
-                    tools.register(ClickTool())
-                    tools.register(TypeTextTool())
-                    tools.register(KeyPressTool())
-                    tools.register(ScrollTool())
-                    tools.register(DragTool())
-                    tools.register(GetScreenInfoTool())
-                except ImportError:
-                    pass
-            search_tool = WebSearchTool(search_config=self.search_config, proxy=self.web_proxy)
-            has_search = bool(
-                search_tool.brave_key or search_tool.tavily_key or search_tool.exa_key
-            )
-            if has_search:
-                tools.register(search_tool)
-            tools.register(WebFetchTool(proxy=self.web_proxy))
-
+            tools, coding_tool, coding_tools, has_search = self._setup_subagent_tools(origin)
             related_memory, related_experience = await self._get_related_memory(task)
+            self._maybe_cleanup_stale_artifacts()
 
-            if not self._artifact_cleanup_done and self._ctx_mgmt in ("auto", "aggressive"):
-                self._artifact_cleanup_done = True
-                try:
-                    ArtifactStore(
-                        self.workspace, "_stale_", self._artifact_retention_days
-                    ).cleanup_stale()
-                except Exception as exc:
-                    logger.debug("subagent ctx stale cleanup failed: {}", exc)
-
-            # Build messages with subagent-specific prompt
-            system_prompt = self._build_subagent_prompt(
+            messages, initial_messages = self._prepare_subagent_messages(
+                task_id,
                 task,
                 channel=origin.get("channel"),
                 has_search=has_search,
                 coding_tools=coding_tools,
                 related_memory=related_memory,
                 related_experience=related_experience,
+                context_from=context_from,
             )
-            messages: list[dict[str, Any]] = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": task},
-            ]
-            current = self.get_task_status(task_id)
-            resume_ctx = current.resume_context if current else None
-            if not resume_ctx and context_from:
-                prev = self.get_task_status(context_from)
-                if prev and prev.status in ("completed", "failed"):
-                    resume_ctx = self._build_resume_context(context_from, prev)
-                else:
-                    logger.debug(
-                        "context_from={} not found or not finished, ignoring", context_from
-                    )
-            if resume_ctx:
-                messages.insert(1, {"role": "user", "content": resume_ctx})
-            initial_messages = list(messages)
-
-            artifact_store = (
-                ArtifactStore(self.workspace, f"subagent_{task_id}", self._artifact_retention_days)
-                if self._ctx_mgmt in ("auto", "aggressive")
-                else None
-            )
+            artifact_store = self._create_subagent_artifact_store(task_id)
 
             max_iterations = self.max_iterations
             iteration = 0
@@ -622,76 +984,42 @@ class SubagentManager:
 
             while iteration < max_iterations:
                 iteration += 1
-
-                steps_since_attempt = len(tool_trace) - last_state_attempt_at
-                if steps_since_attempt >= 5 and len(tool_trace) >= 5:
-                    state = await self._compress_state(
-                        tool_trace, reasoning_snippets, failed_directions, last_state_text
-                    )
-                    last_state_attempt_at = len(tool_trace)
-                    if state:
-                        steps_before_reset = len(tool_trace)
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    f"[State after {steps_before_reset} steps]\n{state}\n\n"
-                                    "Use this state freely — adopt useful parts, ignore irrelevant ones, and prioritize unexplored branches."
-                                ),
-                            }
-                        )
-                        last_state_text = state
-                        # RE-TRAC reset: state becomes the new starting point
-                        tool_trace.clear()
-                        reasoning_snippets.clear()
-                        failed_directions.clear()
-                        consecutive_errors = 0
-                        last_state_attempt_at = 0
-
-                if tool_step >= next_sufficiency_at:
-                    if await self._check_sufficiency(task, sufficiency_trace, last_state_text):
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": "You now have sufficient information. Provide your final answer.",
-                            }
-                        )
-                        force_final_response = True
-                    while next_sufficiency_at <= tool_step:
-                        next_sufficiency_at += 4
-
-                if self._ctx_mgmt in ("auto", "aggressive"):
-                    try:
-                        approx_bytes = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
-                    except Exception:
-                        approx_bytes = 0
-                    if approx_bytes >= self._compact_bytes:
-                        messages = self._compact_messages(
-                            messages=messages,
-                            initial_messages=initial_messages,
-                            last_state_text=last_state_text,
-                            artifact_store=artifact_store,
-                        )
+                (
+                    messages,
+                    last_state_attempt_at,
+                    last_state_text,
+                    consecutive_errors,
+                    next_sufficiency_at,
+                    force_final_response,
+                ) = await self._run_iteration_prechecks(
+                    task=task,
+                    messages=messages,
+                    initial_messages=initial_messages,
+                    artifact_store=artifact_store,
+                    tool_trace=tool_trace,
+                    sufficiency_trace=sufficiency_trace,
+                    reasoning_snippets=reasoning_snippets,
+                    failed_directions=failed_directions,
+                    last_state_attempt_at=last_state_attempt_at,
+                    last_state_text=last_state_text,
+                    consecutive_errors=consecutive_errors,
+                    tool_step=tool_step,
+                    next_sufficiency_at=next_sufficiency_at,
+                    force_final_response=force_final_response,
+                )
 
                 self._update_status(task_id, iteration=iteration, phase="thinking")
-
-                try:
-                    response = await self.provider.chat(
-                        messages=messages,
-                        tools=[] if force_final_response else tools.get_definitions(),
-                        model=self.model,
-                        temperature=self.temperature,
-                        max_tokens=self.max_tokens,
-                        reasoning_effort=self.reasoning_effort,
-                    )
-                finally:
-                    for _m in messages:
-                        _m.pop("_image", None)
+                response = await self._chat_subagent(
+                    messages,
+                    tools,
+                    force_final_response=force_final_response,
+                )
 
                 if response.has_tool_calls:
                     clean = self._strip_think(response.content)
                     if clean:
                         reasoning_snippets.append(clean[:200])
+
                     tool_call_dicts = [
                         {
                             "id": tc.id,
@@ -714,161 +1042,19 @@ class SubagentManager:
                     )
 
                     for tool_call in response.tool_calls:
-                        action_preview = shared.summarize_tool_args_for_trace(
-                            tool_call.name,
-                            tool_call.arguments,
-                            max_len=50,
+                        tool_step, consecutive_errors = await self._execute_tool_call_block(
+                            task_id=task_id,
+                            tool_call=tool_call,
+                            tools=tools,
+                            coding_tool=coding_tool,
+                            artifact_store=artifact_store,
+                            messages=messages,
+                            tool_trace=tool_trace,
+                            sufficiency_trace=sufficiency_trace,
+                            failed_directions=failed_directions,
+                            tool_step=tool_step,
+                            consecutive_errors=consecutive_errors,
                         )
-                        action_summary = f"{tool_call.name}({action_preview})"
-                        self._update_status(
-                            task_id,
-                            phase=f"tool:{tool_call.name}",
-                            tool_steps=tool_step + 1,
-                            action=action_summary,
-                        )
-
-                        args_str = self._redact_tool_args_for_log(
-                            tool_call.name, tool_call.arguments
-                        )
-                        trace_args_preview = shared.summarize_tool_args_for_trace(
-                            tool_call.name,
-                            tool_call.arguments,
-                        )
-                        logger.debug(
-                            "Subagent [{}] executing: {} with arguments: {}",
-                            task_id,
-                            tool_call.name,
-                            args_str,
-                        )
-                        progress_backend = None
-                        if tool_call.name == "coding_agent":
-                            backend_name = tool_call.arguments.get("agent")
-                            if isinstance(backend_name, str):
-                                backend = coding_tool._backends.get(backend_name)
-                                if backend and hasattr(backend, "set_progress_callback"):
-                                    step_index = tool_step + 1
-
-                                    async def _on_coding_progress(line: str) -> None:
-                                        progress = self._normalize_progress_line(line)
-                                        if not progress:
-                                            return
-                                        self._update_status(
-                                            task_id,
-                                            phase="tool:coding_agent",
-                                            tool_steps=step_index,
-                                            action=f"{backend_name}: {progress}",
-                                        )
-
-                                    backend.set_progress_callback(_on_coding_progress)
-                                    progress_backend = backend
-                        try:
-                            raw_result = await tools.execute(tool_call.name, tool_call.arguments)
-                        finally:
-                            if progress_backend and hasattr(
-                                progress_backend, "set_progress_callback"
-                            ):
-                                progress_backend.set_progress_callback(None)
-                        result_text = raw_result if isinstance(raw_result, str) else str(raw_result)
-                        result, budget_event = apply_tool_output_budget(
-                            store=artifact_store,
-                            tool_name=tool_call.name,
-                            tool_call_id=tool_call.id,
-                            result=result_text,
-                            offload_chars=self._tool_offload_chars,
-                            preview_chars=self._tool_preview_chars,
-                            hard_chars=self._tool_hard_chars,
-                            ctx_mgmt=self._ctx_mgmt,
-                        )
-                        self._accumulate_budget(
-                            task_id,
-                            offloaded_chars=budget_event.offloaded_chars,
-                            clipped_chars=budget_event.hard_clipped_chars,
-                        )
-                        # Detect screenshot image marker → inject as multimodal
-                        _screenshot_image_b64: str | None = None
-                        if (
-                            tool_call.name == "screenshot"
-                            and isinstance(result, str)
-                            and result.startswith("__SCREENSHOT__:")
-                        ):
-                            marker = result
-                            result = "[screenshot unavailable]"
-                            _ss_path = marker[len("__SCREENSHOT__:") :].strip()
-                            _ss_file = Path(_ss_path).expanduser()
-                            _tmp_dir = Path(tempfile.gettempdir()).resolve()
-                            try:
-                                _resolved_parent = _ss_file.resolve(strict=False).parent
-                            except Exception:
-                                _resolved_parent = None
-                            _safe_marker = (
-                                _ss_file.name.startswith("bao_screenshot_")
-                                and _resolved_parent == _tmp_dir
-                            )
-                            if _safe_marker:
-                                try:
-                                    import base64 as _b64mod
-
-                                    with _ss_file.open("rb") as _sf:
-                                        _screenshot_image_b64 = _b64mod.b64encode(
-                                            _sf.read()
-                                        ).decode()
-                                    result = "[screenshot captured]"
-                                except Exception as _ss_err:
-                                    logger.warning(
-                                        "⚠️ 子代截图失败 / screenshot read failed: {}: {}",
-                                        _ss_file,
-                                        _ss_err,
-                                    )
-                                finally:
-                                    try:
-                                        if _ss_file.exists():
-                                            _ss_file.unlink()
-                                    except Exception:
-                                        pass
-                            else:
-                                logger.warning(
-                                    "⚠️ 子代忽略非安全截图路径 / ignored unsafe screenshot path: {}",
-                                    _ss_file,
-                                )
-                        tool_msg: dict[str, Any] = {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": tool_call.name,
-                            "content": result,
-                        }
-                        if _screenshot_image_b64:
-                            tool_msg["_image"] = _screenshot_image_b64
-                        messages.append(tool_msg)
-                        tool_step += 1
-                        has_error = self._has_tool_error(
-                            tool_call.name,
-                            result_text,
-                        )
-                        trace_idx = len(tool_trace) + 1
-                        trace_entry = shared.build_tool_trace_entry(
-                            trace_idx,
-                            tool_call.name,
-                            trace_args_preview,
-                            has_error,
-                            result,
-                        )
-                        tool_trace.append(trace_entry)
-                        sufficiency_trace.append(trace_entry)
-                        if len(sufficiency_trace) > 32:
-                            del sufficiency_trace[:-32]
-                        if has_error:
-                            consecutive_errors += 1
-                            failed_preview = shared.summarize_tool_args_for_trace(
-                                tool_call.name,
-                                tool_call.arguments,
-                                max_len=60,
-                            )
-                            shared.push_failed_direction(
-                                failed_directions,
-                                f"{tool_call.name}({failed_preview})",
-                            )
-                        else:
-                            consecutive_errors = 0
 
                     if consecutive_errors >= 3:
                         messages.append(
@@ -893,55 +1079,54 @@ class SubagentManager:
 
                     if iteration % self._PROGRESS_INTERVAL == 0:
                         await self._push_milestone(
-                            task_id, label, iteration, max_iterations, origin
+                            task_id,
+                            label,
+                            iteration,
+                            max_iterations,
+                            origin,
                         )
-                else:
-                    clean_final = self._strip_think(response.content)
-                    if force_final_response and not force_final_backoff_used and not clean_final:
-                        force_final_response = False
-                        force_final_backoff_used = True
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    "Your previous final response was empty. "
-                                    "If more evidence is needed, use tools briefly and then provide a complete final answer."
-                                ),
-                            }
-                        )
-                        continue
-                    final_result = clean_final
-                    break
+                    continue
 
-            if final_result is None:
-                final_result = "Task completed but no final response was generated."
+                clean_final = self._strip_think(response.content)
+                if force_final_response and not force_final_backoff_used and not clean_final:
+                    force_final_response = False
+                    force_final_backoff_used = True
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your previous final response was empty. "
+                                "If more evidence is needed, use tools briefly and then provide a "
+                                "complete final answer."
+                            ),
+                        }
+                    )
+                    continue
+                final_result = clean_final
+                break
 
-            self._update_status(
-                task_id,
-                phase="completed",
-                status="completed",
+            await self._finalize_subagent_success(
+                task_id=task_id,
+                label=label,
+                task=task,
+                final_result=final_result,
+                origin=origin,
                 iteration=iteration,
-                tool_steps=tool_step,
-                result_summary=final_result[:500] if final_result else None,
+                tool_step=tool_step,
             )
-
-            logger.info("✅ 子代完成 / subagent done: [{}]", task_id)
-            await self._announce_result_non_fatal(task_id, label, task, final_result, origin, "ok")
 
         except asyncio.CancelledError:
             self._update_status(task_id, status="cancelled", phase="cancelled")
             logger.info("👋 子代终止 / subagent stopped: [{}]", task_id)
 
         except Exception as e:
-            error_msg = f"Error: {str(e)}"
-            self._update_status(
-                task_id,
-                status="failed",
-                phase="failed",
-                result_summary=error_msg[:500],
+            await self._finalize_subagent_failure(
+                task_id=task_id,
+                label=label,
+                task=task,
+                origin=origin,
+                error=e,
             )
-            logger.error("❌ 子代失败 / subagent failed: [{}]: {}", task_id, e)
-            await self._announce_result_non_fatal(task_id, label, task, error_msg, origin, "error")
 
     async def _announce_result_non_fatal(
         self,
