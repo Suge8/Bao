@@ -163,7 +163,7 @@ pip install bao-ai
 bao
 ```
 
-首次运行自动生成配置文件。在 `~/.bao/config.jsonc` 中设置你的 API Key：
+首次运行自动生成配置文件（含 `config_version`，后续迁移可稳定收敛）。在 `~/.bao/config.jsonc` 中设置你的 API Key：
 
 ```json
 {
@@ -225,7 +225,7 @@ bao
 | **Gemini**      | Gemini 全系列                                                                                                    | `gemini/gemini-2.0-flash-exp`             |
 | **Codex OAuth** | 通过 ChatGPT 订阅 OAuth 认证，无需 API Key                                                                      | `openai-codex/gpt-5.1-codex`             |
 
-Provider 名称可自定义（如 `my-proxy/claude-sonnet-4-6`），前缀自动剥离。所有 Provider 类型均支持第三方代理，SDK 兼容性自动处理。OpenAI 兼容端点额外支持 API 模式自动探测（Responses / Chat Completions）。
+Provider 名称可自定义（如 `my-proxy/claude-sonnet-4-6`），前缀自动剥离。所有 Provider 类型均支持第三方代理，SDK 兼容性自动处理。OpenAI 兼容端点默认自动探测并切换 Responses / Chat Completions（无需配置 `apiMode`）。
 
 ## 🔌 MCP 支持
 
@@ -292,7 +292,7 @@ docker compose up -d bao-gateway
 ## ✅ 测试
 
 ```bash
-PYTHONPATH=. uv run pytest tests/ -v
+uv run pytest tests/ -v
 ```
 
 ```bash
@@ -500,7 +500,7 @@ pip install bao-ai
 bao
 ```
 
-First run auto-generates a config file. Set your API key in `~/.bao/config.jsonc`:
+First run auto-generates a config file (with `config_version` for stable migration behavior). Set your API key in `~/.bao/config.jsonc`:
 
 ```json
 {
@@ -562,7 +562,7 @@ Covers 99% of what's out there, plus an OAuth option.
 | **Gemini**            | Full Gemini lineup                                                                                                         | `gemini/gemini-2.0-flash-exp`             |
 | **Codex OAuth**       | Auth via ChatGPT subscription, no API Key needed                                                                           | `openai-codex/gpt-5.1-codex`             |
 
-Provider names are customizable — model prefixes are auto-stripped. All provider types support third-party proxies with automatic SDK compatibility. OpenAI-compatible endpoints also support API mode auto-detection (Responses / Chat Completions).
+Provider names are customizable — model prefixes are auto-stripped. All provider types support third-party proxies with automatic SDK compatibility. OpenAI-compatible endpoints automatically detect and switch between Responses and Chat Completions (no `apiMode` config needed).
 
 ### 🔌 MCP Support
 
@@ -629,7 +629,7 @@ New messages in the same session use cooperative soft interruption by default (s
 ### ✅ Tests
 
 ```bash
-PYTHONPATH=. uv run pytest tests/ -v
+uv run pytest tests/ -v
 ```
 
 ```bash
