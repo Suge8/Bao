@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import re
 import asyncio
+import re
 from typing import Awaitable, Callable
 
 
