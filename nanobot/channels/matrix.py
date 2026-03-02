@@ -362,7 +362,11 @@ class MatrixChannel(BaseChannel):
                 limit_bytes = await self._effective_media_limit_bytes()
                 for path in candidates:
                     if fail := await self._upload_and_send_attachment(
-                        msg.chat_id, path, limit_bytes, relates_to):
+                        room_id=msg.chat_id,
+                        path=path,
+                        limit_bytes=limit_bytes,
+                        relates_to=relates_to,
+                    ):
                         failures.append(fail)
             if failures:
                 text = f"{text.rstrip()}\n{chr(10).join(failures)}" if text.strip() else "\n".join(failures)
@@ -676,11 +680,13 @@ class MatrixChannel(BaseChannel):
         parts: list[str] = []
         if isinstance(body := getattr(event, "body", None), str) and body.strip():
             parts.append(body.strip())
-        parts.append(marker)
+        if marker:
+            parts.append(marker)
 
         await self._start_typing_keepalive(room.room_id)
         try:
             meta = self._base_metadata(room, event)
+            meta["attachments"] = []
             if attachment:
                 meta["attachments"] = [attachment]
             await self._handle_message(
