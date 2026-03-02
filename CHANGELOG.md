@@ -8,5 +8,5 @@ The format follows Keep a Changelog, and this project uses Semantic Versioning.
 
 ### Added
 
-- Established Bao as the project name and versioning baseline.
-- Added unified release baseline across package/runtime/build metadata.
+- Initial public release of Bao.
+- Established `v0.1.0` as the first official release baseline across package/runtime/build metadata.
