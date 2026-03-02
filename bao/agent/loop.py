@@ -16,6 +16,7 @@ import json_repair
 from loguru import logger
 
 from bao.agent import commands, experience, shared
+from bao.agent import plan as plan_state
 from bao.agent.context import ContextBuilder
 from bao.agent.memory import MEMORY_CATEGORIES, MEMORY_CATEGORY_CAPS
 from bao.agent.subagent import SubagentManager
@@ -23,6 +24,7 @@ from bao.agent.tools.cron import CronTool
 from bao.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from bao.agent.tools.memory import ForgetTool, RememberTool, UpdateMemoryTool
 from bao.agent.tools.message import MessageTool
+from bao.agent.tools.plan import ClearPlanTool, CreatePlanTool, UpdatePlanStepTool
 from bao.agent.tools.registry import ToolRegistry
 from bao.agent.tools.shell import ExecTool
 from bao.agent.tools.spawn import SpawnTool
@@ -98,6 +100,9 @@ _CODE_SIGNAL_TOKENS = (
 _CORE_TOOL_NAMES = frozenset(
     {
         "message",
+        "create_plan",
+        "update_plan_step",
+        "clear_plan",
         "spawn",
         "check_tasks",
         "cancel_task",
@@ -411,6 +416,16 @@ class AgentLoop:
         self.context.tool_hints.append(
             "- message: cross-channel delivery only. Normal replies use direct text."
         )
+        self.tools.register(CreatePlanTool(sessions=self.sessions))
+        self.tools.register(UpdatePlanStepTool(sessions=self.sessions))
+        self.tools.register(ClearPlanTool(sessions=self.sessions))
+        self.context.tool_hints.append(
+            "- planning tools:\n"
+            "  WHEN: task has 2+ steps, affects multiple files/components, or user asks for a plan.\n"
+            "  HOW: create_plan first → update_plan_step after each step → clear_plan when done/abandoned.\n"
+            "  SKIP: single-step simple requests — just execute directly.\n"
+            "  Keep steps short and tool-agnostic. If you started without a plan but realize the task is complex, pause and create_plan immediately."
+        )
         self.tools.register(SpawnTool(manager=self.subagents))
         self.tools.register(CheckTasksTool(manager=self.subagents))
         self.tools.register(CancelTaskTool(manager=self.subagents))
@@ -513,7 +528,13 @@ class AgentLoop:
             t.set_context(channel, chat_id, session_key=session_key)
         if (t := self.tools.get("cron")) and isinstance(t, CronTool):
             t.set_context(channel, chat_id)
-        for name in ("coding_agent", "coding_agent_details"):
+        for name in (
+            "create_plan",
+            "update_plan_step",
+            "clear_plan",
+            "coding_agent",
+            "coding_agent_details",
+        ):
             t = self.tools.get(name)
             if not t:
                 continue
@@ -554,13 +575,17 @@ class AgentLoop:
         return bundles
 
     def _select_tool_names_for_turn(
-        self, initial_messages: list[dict[str, Any]]
+        self,
+        initial_messages: list[dict[str, Any]],
+        extra_signal_text: str | None = None,
     ) -> set[str] | None:
         mode = self._tool_exposure_mode
         if mode == "off":
             return None
         enabled_bundles = self._tool_exposure_bundles
         user_text = self._latest_user_text(initial_messages)
+        if isinstance(extra_signal_text, str) and extra_signal_text.strip():
+            user_text = f"{user_text} {extra_signal_text.strip().lower()}".strip()
         selected_bundles = self._auto_route_bundles(user_text) & enabled_bundles
         if not selected_bundles:
             selected_bundles = {_TOOL_BUNDLE_CORE} & enabled_bundles
@@ -734,6 +759,7 @@ class AgentLoop:
         on_tool_hint: Callable[[str], Awaitable[None]] | None = None,
         artifact_session_key: str | None = None,
         return_interrupt: Literal[False] = False,
+        tool_signal_text: str | None = None,
     ) -> tuple[str | None, list[str], list[str], int, list[str]]: ...
 
     @overload
@@ -744,6 +770,7 @@ class AgentLoop:
         on_tool_hint: Callable[[str], Awaitable[None]] | None = None,
         artifact_session_key: str | None = None,
         return_interrupt: Literal[True] = True,
+        tool_signal_text: str | None = None,
     ) -> tuple[
         str | None,
         list[str],
@@ -762,6 +789,7 @@ class AgentLoop:
         on_tool_hint: Callable[[str], Awaitable[None]] | None = None,
         artifact_session_key: str | None = None,
         return_interrupt: bool = False,
+        tool_signal_text: str | None = None,
     ) -> (
         tuple[str | None, list[str], list[str], int, list[str]]
         | tuple[
@@ -906,7 +934,10 @@ class AgentLoop:
 
                 _stream_progress = _interruptable_progress
 
-            selected_tool_names = self._select_tool_names_for_turn(initial_messages)
+            selected_tool_names = self._select_tool_names_for_turn(
+                initial_messages,
+                extra_signal_text=tool_signal_text,
+            )
             current_tools = (
                 []
                 if force_final_response
@@ -1308,10 +1339,10 @@ class AgentLoop:
                         self.sessions.save(session)
                         msg.metadata["_pre_saved"] = True
 
-                    if (
-                        hasattr(self.provider, "_resolve_effective_mode")
-                        and self.provider._resolve_effective_mode() == "responses"
-                    ):
+                    resolve_mode = getattr(
+                        cast(Any, self.provider), "_resolve_effective_mode", None
+                    )
+                    if callable(resolve_mode) and resolve_mode() == "responses":
                         for t in busy_tasks:
                             if not t.done():
                                 t.cancel()
@@ -1742,6 +1773,7 @@ class AgentLoop:
             related_memory=related or None,
             related_experience=experience or None,
             model=self.model,
+            plan_state=session.metadata.get(plan_state.PLAN_STATE_KEY),
         )
 
         if not msg.metadata.get("_pre_saved") and not msg.metadata.get("_ephemeral"):
@@ -1766,12 +1798,16 @@ class AgentLoop:
             )
 
         return_interrupt_flag: bool = True
+        tool_signal_text = plan_state.plan_signal_text(
+            session.metadata.get(plan_state.PLAN_STATE_KEY)
+        )
         run_result = await self._run_agent_loop(
             initial_messages,
             on_progress=on_progress or _bus_publish,
             on_tool_hint=lambda c: _bus_publish(c, is_tool_hint=True),
             artifact_session_key=session.key,
             return_interrupt=return_interrupt_flag,
+            tool_signal_text=tool_signal_text,
         )
         result_parts = cast(tuple[Any, ...], run_result)
 
@@ -1805,6 +1841,36 @@ class AgentLoop:
             raise ValueError(f"Unexpected _run_agent_loop result length: {result_size}")
 
         if interrupted:
+            state = session.metadata.get(plan_state.PLAN_STATE_KEY)
+            plan_state_changed = False
+            if isinstance(state, dict) and not plan_state.is_plan_done(state):
+                current_step = plan_state.get_current_pending_step(state)
+                step_is_pending = (
+                    isinstance(current_step, int)
+                    and current_step >= 1
+                    and plan_state.get_step_status(state, current_step) == plan_state.STATUS_PENDING
+                )
+                if step_is_pending and isinstance(current_step, int):
+                    try:
+                        updated = plan_state.set_step_status(
+                            state,
+                            step_index=current_step,
+                            status=plan_state.STATUS_INTERRUPTED,
+                        )
+                    except ValueError:
+                        updated = None
+                else:
+                    updated = None
+                if isinstance(updated, dict):
+                    session.metadata[plan_state.PLAN_STATE_KEY] = updated
+                    plan_state_changed = True
+                    if plan_state.is_plan_done(updated):
+                        archived = plan_state.archive_plan(updated)
+                        if archived:
+                            session.metadata[plan_state.PLAN_ARCHIVED_KEY] = archived
+            if plan_state_changed:
+                session.updated_at = datetime.now()
+                self.sessions.save(session)
             if completed_tool_msgs:
                 token = msg.metadata.get("_pre_saved_token")
                 insert_after = -1
@@ -1962,12 +2028,17 @@ class AgentLoop:
             related_memory=related or None,
             related_experience=experience or None,
             model=self.model,
+            plan_state=session.metadata.get(plan_state.PLAN_STATE_KEY),
         )
         return_interrupt_flag: bool = True
+        tool_signal_text = plan_state.plan_signal_text(
+            session.metadata.get(plan_state.PLAN_STATE_KEY)
+        )
         run_result = await self._run_agent_loop(
             initial_messages,
             artifact_session_key=session.key,
             return_interrupt=return_interrupt_flag,
+            tool_signal_text=tool_signal_text,
         )
         result_parts = cast(tuple[Any, ...], run_result)
 

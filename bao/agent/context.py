@@ -1,6 +1,7 @@
 """Context builder for assembling agent prompts."""
 
 import base64
+import importlib
 import logging
 import mimetypes
 import platform
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from bao.agent.memory import MemoryStore
+from bao.agent.plan import format_plan_for_prompt, is_plan_done
 from bao.agent.skills import SkillsLoader
 
 # ---------------------------------------------------------------------------
@@ -215,6 +217,7 @@ Your workspace is at: {workspace_path}{tool_section}"""
         chat_id: str | None = None,
         related_memory: list[str] | None = None,
         related_experience: list[str] | None = None,
+        plan_state: dict[str, Any] | None = None,
         *,
         model: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -222,6 +225,11 @@ Your workspace is at: {workspace_path}{tool_section}"""
         system_prompt = self.build_system_prompt(
             skill_names, model=model, channel=channel, chat_id=chat_id
         )
+
+        if isinstance(plan_state, dict) and not is_plan_done(plan_state):
+            plan_block = format_plan_for_prompt(plan_state)
+            if plan_block:
+                system_prompt += f"\n\n{plan_block}"
 
         # --- Query-aware long-term memory injection ---
         ltm = self.memory.get_relevant_memory_context(
@@ -290,10 +298,11 @@ Your workspace is at: {workspace_path}{tool_section}"""
         from PIL import Image, ImageOps
 
         try:
-            from pillow_heif import register_heif_opener
-
-            register_heif_opener()
-        except ImportError:
+            pillow_heif = importlib.import_module("pillow_heif")
+            register_heif_opener = getattr(pillow_heif, "register_heif_opener", None)
+            if callable(register_heif_opener):
+                register_heif_opener()
+        except Exception:
             pass
 
         with Image.open(p) as img:
@@ -302,7 +311,7 @@ Your workspace is at: {workspace_path}{tool_section}"""
             # Downscale if either dimension exceeds limit
             max_edge = ContextBuilder._MAX_IMAGE_LONG_EDGE
             if max(img.size) > max_edge:
-                img.thumbnail((max_edge, max_edge), Image.LANCZOS)
+                img.thumbnail((max_edge, max_edge))
             # Composite transparent images onto white background
             if img.mode in ("RGBA", "LA", "PA"):
                 background = Image.new("RGB", img.size, (255, 255, 255))
