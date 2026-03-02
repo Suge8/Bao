@@ -28,7 +28,7 @@ jobs:
         include:
           - runner: macos-14
             arch: arm64
-          - runner: macos-13
+          - runner: macos-15-intel
             arch: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
@@ -48,7 +48,7 @@ jobs:
 
       - name: Patch Nuitka 4.0.1 bugs
         run: |
-          NUITKA_DIR=$(python -c "import nuitka, os; print(os.path.dirname(nuitka.__file__))")
+          NUITKA_DIR=$(uv run python -c "import nuitka, os; print(os.path.dirname(nuitka.__file__))")
           # Bug A: Distributions.py — getDistributionName() returns None in multiple places
           sed -i.bak 's/key=lambda d: getDistributionName(d))/key=lambda d: getDistributionName(d) or "")/' "$NUITKA_DIR/utils/Distributions.py"
           sed -i.bak 's/return len(getDistributionName(dist))/return len(getDistributionName(dist) or "")/' "$NUITKA_DIR/utils/Distributions.py"
@@ -91,7 +91,7 @@ jobs:
       - name: Patch Nuitka 4.0.1 bugs
         shell: pwsh
         run: |
-          $nuitkaDir = python -c "import nuitka, os; print(os.path.dirname(nuitka.__file__))"
+          $nuitkaDir = uv run python -c "import nuitka, os; print(os.path.dirname(nuitka.__file__))"
           $distFile = Join-Path $nuitkaDir 'utils/Distributions.py'
           # Bug A: Distributions.py — getDistributionName() returns None in multiple places
           (Get-Content $distFile) -replace 'key=lambda d: getDistributionName\(d\)\)', 'key=lambda d: getDistributionName(d) or "")' | Set-Content $distFile
