@@ -1,25 +1,47 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from typing import Any
 
+from loguru import logger
+
 from bao.agent import plan
 from bao.agent.tools.base import Tool
+from bao.bus.events import OutboundMessage
 from bao.session.manager import SessionManager
 
 
 class _PlanToolBase:
-    def __init__(self, sessions: SessionManager):
+    def __init__(
+        self,
+        sessions: SessionManager,
+        publish_outbound: Callable[[OutboundMessage], Awaitable[None]] | None = None,
+    ):
         self._sessions = sessions
+        self._publish_outbound = publish_outbound
         self._origin_channel: ContextVar[str] = ContextVar("plan_origin_channel", default="gateway")
         self._origin_chat_id: ContextVar[str] = ContextVar("plan_origin_chat_id", default="direct")
+        self._lang: ContextVar[str] = ContextVar("plan_lang", default="en")
+        self._reply_metadata: ContextVar[dict[str, Any]] = ContextVar(
+            "plan_reply_metadata", default={}
+        )
         self._session_key: ContextVar[str] = ContextVar(
             "plan_session_key", default="gateway:direct"
         )
 
-    def set_context(self, channel: str, chat_id: str, session_key: str | None = None) -> None:
+    def set_context(
+        self,
+        channel: str,
+        chat_id: str,
+        session_key: str | None = None,
+        lang: str | None = None,
+        reply_metadata: dict[str, Any] | None = None,
+    ) -> None:
         _ = self._origin_channel.set(channel)
         _ = self._origin_chat_id.set(chat_id)
+        _ = self._lang.set(plan.normalize_language(lang))
+        _ = self._reply_metadata.set(self._normalize_reply_metadata(reply_metadata))
         _ = self._session_key.set(session_key or f"{channel}:{chat_id}")
 
     def _get_session_key(self) -> str:
@@ -27,6 +49,56 @@ class _PlanToolBase:
         if key:
             return key
         return f"{self._origin_channel.get()}:{self._origin_chat_id.get()}"
+
+    def _get_language(self) -> str:
+        return plan.normalize_language(self._lang.get())
+
+    @staticmethod
+    def _normalize_reply_metadata(reply_metadata: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(reply_metadata, dict):
+            return {}
+        slack_meta = reply_metadata.get("slack")
+        if not isinstance(slack_meta, dict):
+            return {}
+        thread_ts = slack_meta.get("thread_ts")
+        if not isinstance(thread_ts, str) or not thread_ts.strip():
+            return {}
+        normalized_slack: dict[str, Any] = {"thread_ts": thread_ts}
+        channel_type = slack_meta.get("channel_type")
+        if isinstance(channel_type, str) and channel_type.strip():
+            normalized_slack["channel_type"] = channel_type
+        return {"slack": normalized_slack}
+
+    async def _notify_user(self, content: str, *, action: str) -> None:
+        if not self._publish_outbound or not content.strip():
+            return
+        try:
+            payload = dict(self._reply_metadata.get() or {})
+            payload.update(
+                {
+                    "_plan": True,
+                    "plan_action": action,
+                    "session_key": self._get_session_key(),
+                }
+            )
+            await self._publish_outbound(
+                OutboundMessage(
+                    channel=self._origin_channel.get(),
+                    chat_id=self._origin_chat_id.get(),
+                    content=content,
+                    metadata=payload,
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "⚠️ 计划通知发送失败 / plan notify failed: action={} channel={} chat_id={} session={} err={}",
+                action,
+                self._origin_channel.get(),
+                self._origin_chat_id.get(),
+                self._get_session_key(),
+                exc,
+            )
+            return
 
 
 class CreatePlanTool(_PlanToolBase, Tool):
@@ -71,6 +143,15 @@ class CreatePlanTool(_PlanToolBase, Tool):
         session.metadata[plan.PLAN_STATE_KEY] = state
         session.metadata.pop(plan.PLAN_ARCHIVED_KEY, None)
         self._sessions.save(session)
+        notify_text = plan.format_plan_for_channel(
+            state,
+            lang=self._get_language(),
+            channel=self._origin_channel.get(),
+        )
+        await self._notify_user(
+            notify_text,
+            action="create",
+        )
 
         total = len(state["steps"])
         return f"Plan created: 0/{total} done; current_step={state['current_step']}"
@@ -127,6 +208,10 @@ class UpdatePlanStepTool(_PlanToolBase, Tool):
         if not isinstance(state, dict):
             return "Error: no active plan"
 
+        current_status = plan.get_step_status(state, step_index)
+        if current_status == status:
+            return f"Plan unchanged: step {step_index} already {status}"
+
         try:
             new_state = plan.set_step_status(state, step_index=step_index, status=status)
         except ValueError as exc:
@@ -134,11 +219,26 @@ class UpdatePlanStepTool(_PlanToolBase, Tool):
 
         session.metadata[plan.PLAN_STATE_KEY] = new_state
         archived = ""
+        archived_for_notify = ""
         if plan.is_plan_done(new_state):
-            archived = plan.archive_plan(new_state)
+            archived = plan.archive_plan(new_state, lang=self._get_language())
+            archived_for_notify = plan.archive_plan_for_channel(
+                new_state,
+                lang=self._get_language(),
+                channel=self._origin_channel.get(),
+            )
             if archived:
                 session.metadata[plan.PLAN_ARCHIVED_KEY] = archived
         self._sessions.save(session)
+
+        notify_text = plan.format_plan_for_channel(
+            new_state,
+            lang=self._get_language(),
+            channel=self._origin_channel.get(),
+        )
+        if archived_for_notify:
+            notify_text = f"{notify_text}\n{archived_for_notify}"
+        await self._notify_user(notify_text, action="update")
 
         done_count = plan.count_status(new_state, plan.STATUS_DONE)
         total = len(new_state["steps"])
@@ -171,7 +271,13 @@ class ClearPlanTool(_PlanToolBase, Tool):
         archived = session.metadata.get(plan.PLAN_ARCHIVED_KEY)
         self._sessions.save(session)
         if not had_plan:
-            return "No active plan to clear."
-        if isinstance(archived, str) and archived:
-            return f"Plan cleared. Archived: {archived}"
-        return "Plan cleared."
+            return plan.no_plan_to_clear_text(self._get_language())
+        archived_text = archived if isinstance(archived, str) else ""
+        clear_text = plan.plan_cleared_text(archived_text, lang=self._get_language())
+        notify_text = plan.plan_cleared_text_for_channel(
+            archived_text,
+            lang=self._get_language(),
+            channel=self._origin_channel.get(),
+        )
+        await self._notify_user(notify_text, action="clear")
+        return clear_text

@@ -33,6 +33,7 @@ uv run python app/main.py
 3. Gateway 启动后，桌面聊天 + 所有已启用 Channels 同时运行
 4. 可在标题栏右侧查看网关状态、停止或重启网关
 5. 修改配置后点击 Save → 在标题栏点击重启即可应用
+6. 左侧 Sidebar 的 Plan 面板会实时展示当前会话计划（目标、进度、步骤状态）；计划清空后自动收起并显示最近完成摘要
 
 ## 命令行参数
 
@@ -65,7 +66,7 @@ iscc app\scripts\bao_installer.iss
 
 推送 `v*` tag 自动触发 GitHub Actions 构建双平台安装包。
 
-`v0.1.0` 为首个正式发布版本，详见 [`../CHANGELOG.md`](../CHANGELOG.md)。
+`v0.3.0` 为当前发布版本，详见 [`../CHANGELOG.md`](../CHANGELOG.md)。
 
 完整打包指南见 [`docs/desktop-packaging.md`](../docs/desktop-packaging.md)。
 

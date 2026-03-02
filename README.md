@@ -57,7 +57,7 @@ Bao 不一样。它**记得住**、**学得会**、**能进化**。
 把耗时任务交给子代理：你继续聊，它在后台把活做完。需要时问一次进度，它就能讲清楚。
 
 - **后台执行** — 子代理独立运行，主代理随时响应你的新消息
-- **进度可查** — 主代理调用 `check_tasks` 即可查看子代理当前阶段、已用工具数、迭代轮次
+- **进度可查** — 主代理调用 `check_tasks` 即可查看子代理当前阶段、已用工具数、迭代轮次；调用 `check_tasks_json` 可获取 schema_version=1 的结构化 JSON（含 `last_error` 错误摘要），适合 UI/自动化消费
 - **里程碑推送** — 子代理每 5 轮自动汇报一次进展，不刷屏，关键节点不遗漏
 - **续接上次结果** — 可在前序任务结论基础上继续推进，不用从头讲背景
 - **长任务引擎** — 轨迹压缩 + 充分性检查 + 上下文压实，复杂任务更稳、更专注
@@ -139,7 +139,11 @@ Bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 复杂任务不靠蛮力。Bao 会自己拆解步骤、跟踪进度、逐步推进 — 你什么都不用说。
 
 - **AI 自驱** — 遇到多步骤任务，自动创建计划并逐步更新，无需用户指令
-- **始终可见** — 活跃计划实时注入上下文，AI 每一步都知道自己在哪、下一步做什么
+- **始终可见** — 每次 `create_plan` / `update_plan_step` / `clear_plan` 都会向当前会话主动推送计划状态
+- **渠道自适应** — 支持 Markdown 的渠道发送 Markdown 模板，不支持的渠道自动回退纯文本
+- **渲染安全** — Markdown 渠道自动转义特殊符号，避免路径/命令/变量名触发错乱渲染
+- **语言自适应** — 计划通知按会话语言偏好（中/英）输出，不同会话可独立
+- **线程对齐** — Slack thread 会话会保留 thread 上下文，计划通知持续回到原线程
 - **用完即走** — 计划完成后自动归档，不再占用 prompt 预算，干净利落
 - **工具可控** — 内置 `create_plan` / `update_plan_step` / `clear_plan` 三个原子工具，计划状态持久化在 session metadata，并以 `## Current Plan` 注入上下文
 
@@ -236,7 +240,7 @@ bao
 
 ## 📝 Changelog
 
-`v0.1.0` 为首个正式发布版本，详见 [`CHANGELOG.md`](CHANGELOG.md)。
+`v0.3.0` 为当前发布版本，详见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 💬 9 大聊天平台
 
@@ -297,7 +301,7 @@ Model Context Protocol — 接入任何工具生态。配置兼容 **Claude Desk
 `toolExposure.mode` 支持 `off`（全量工具）和 `auto`（按关键词启用 bundle）；`toolExposure.bundles` 支持 `core/web/desktop/code` 开关。
 `mcpMaxTools` 用于限制 MCP 工具总注册数（`0` 表示不限制）；`mcpSlimSchema` 用于精简 MCP schema 的冗余元数据，减少 token 占用。`mcpServers.<name>.slimSchema/maxTools` 可按 server 覆盖全局策略。
 
-默认会记录每轮 tools schema 的体积与质量代理指标到 debug 日志和 session metadata（含 post-error 调用代理，不注入 LLM 上下文，不额外消耗 prompt token）。
+默认会记录每轮 tools schema 的体积与质量代理指标到 debug 日志和 session metadata（含 post-error 调用代理，不注入 LLM 上下文，不额外消耗 prompt token）；软中断工具调用会单独计入 `interrupted_tool_calls`，并从 `tool_calls_ok` / `tool_calls_error` 中排除，避免质量指标失真。
 
 ## 🐳 Docker
 
@@ -463,7 +467,7 @@ Other agents repeat mistakes. **Bao learns from them.**
 Hand off time-consuming work to a subagent: keep chatting while it works in the background. Ask once, get a clear status update.
 
 - **Background execution** — subagents run independently while the main agent stays responsive to you
-- **Progress on demand** — the main agent calls `check_tasks` to see current phase, tool count, and iteration progress
+- **Progress on demand** — the main agent calls `check_tasks` to see current phase, tool count, and iteration progress; `check_tasks_json` returns a stable schema_version=1 JSON snapshot (including `last_error` summary) for UI or automation consumers
 - **Milestone updates** — subagents auto-report every 5 iterations. No spam, no missed beats
 - **Resume from prior results** — continue from a previous task without re-explaining context
 - **Long-task engine parity** — trajectory compression + sufficiency checks + context compaction for steadier, more focused long runs
@@ -545,7 +549,11 @@ In short: **less drift, fewer wasted calls, stronger final answers.**
 Complex tasks shouldn't require hand-holding. Bao breaks down the work, tracks each step, and drives to completion — without being told to.
 
 - **Self-directed** — Detects multi-step tasks, creates a plan, and updates progress automatically. No user commands needed
-- **Always aware** — The active plan is injected into context in real time. Every step, Bao knows where it is and what's next
+- **Always visible** — Every `create_plan` / `update_plan_step` / `clear_plan` change is proactively pushed to the current chat
+- **Channel-adaptive** — Markdown-capable channels receive Markdown templates, while plain-text channels auto-fallback to text
+- **Render-safe** — Markdown channels escape special symbols to prevent accidental formatting breaks in paths/commands/variables
+- **Language-aware** — Plan notifications follow per-session language preference (zh/en), so sessions can differ independently
+- **Thread-consistent** — Slack thread sessions preserve thread context, so plan updates stay in the same thread
 - **Clean exit** — Finished plans archive themselves and stop consuming prompt budget. No stale context, no wasted tokens
 - **Tool-level control** — Built-in atomic tools `create_plan` / `update_plan_step` / `clear_plan` persist plan state in session metadata and inject `## Current Plan` into context
 
@@ -642,7 +650,7 @@ Optional: configure a **Utility Model** for background tasks (experience extract
 
 ### 📝 Changelog
 
-`v0.1.0` is the first official release; see [`CHANGELOG.md`](CHANGELOG.md).
+`v0.3.0` is the current release; see [`CHANGELOG.md`](CHANGELOG.md).
 
 ### 💬 9 Chat Platforms
 
@@ -703,7 +711,7 @@ Model Context Protocol — plug into any tool ecosystem. Config format is **comp
 `toolExposure.mode` supports `off` (all tools) and `auto` (keyword-based bundle activation). `toolExposure.bundles` supports `core/web/desktop/code` switches.
 `mcpMaxTools` caps the total number of MCP tools registered (`0` = unlimited). `mcpSlimSchema` strips redundant schema metadata to reduce token usage. `mcpServers.<name>.slimSchema/maxTools` can override global behavior per server.
 
-By default, per-turn tool schema size and quality proxy metrics are recorded in debug logs and session metadata (including a post-error-call proxy; not injected into LLM context, so no prompt token overhead).
+By default, per-turn tool schema size and quality proxy metrics are recorded in debug logs and session metadata (including a post-error-call proxy; not injected into LLM context, so no prompt token overhead). Soft-interrupted tool calls are tracked in `interrupted_tool_calls` and excluded from both `tool_calls_ok` and `tool_calls_error` so quality metrics are not skewed.
 
 ### 🐳 Docker
 
