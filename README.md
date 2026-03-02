@@ -134,7 +134,15 @@ Bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 - **错了就改** — 连续失败时自动注入审计纠偏，失败路径去重，减少重复试错
 - **预算可控** — 上下文分层压实与状态刷新协同工作，长任务更省 token
 
-一句话：**长任务不漂移、不中断、不空转。**
+### 自动规划
+
+复杂任务不靠蛮力。Bao 会自己拆解步骤、跟踪进度、逐步推进 — 你什么都不用说。
+
+- **AI 自驱** — 遇到多步骤任务，自动创建计划并逐步更新，无需用户指令
+- **始终可见** — 活跃计划实时注入上下文，AI 每一步都知道自己在哪、下一步做什么
+- **用完即走** — 计划完成后自动归档，不再占用 prompt 预算，干净利落
+
+不用提醒它"你到哪一步了"。**它比你更清楚。**
 
 ## 横向对比
 
@@ -264,9 +272,28 @@ Model Context Protocol — 接入任何工具生态。配置兼容 **Claude Desk
 ## 🐳 Docker
 
 ```bash
+# 1) 先准备配置（必需）
 vim ~/.bao/config.jsonc
-docker compose up -d bao-gateway
+
+# 2) 复制 Docker 专用环境变量模板（仅用于 docker compose）
+cp .env.docker.example .env.docker
+
+# 3) 启动网关（默认最小面，非 root 运行）
+docker compose --env-file .env.docker up -d bao-gateway
+
+# 4) 若启用 WhatsApp，再启动 bridge profile
+docker compose --env-file .env.docker --profile whatsapp up -d bao-whatsapp-bridge
+
+# 5) 查看健康状态与日志
+docker compose ps
+docker compose logs -f --tail=100 bao-gateway
 ```
+
+说明：
+- `.env.docker` / `.env.docker.example` 仅用于 Docker Compose，不用于本地非 Docker 运行。
+- 默认不对外暴露 HTTP 端口；如你有自定义监听场景，可自行在 `docker-compose.yml` 添加 `ports`。
+- `deploy.resources` 主要在 Docker Swarm 生效；普通 `docker compose` 可能忽略该段。
+- 若启用 WhatsApp，建议配置：`BAO_CHANNELS__WHATSAPP__BRIDGE_URL=ws://bao-whatsapp-bridge:3001`。
 
 ## 💬 聊天命令
 
@@ -477,6 +504,16 @@ For complex runs, Bao doesn't rely on luck. It uses a compact, production-ready 
 
 In short: **less drift, fewer wasted calls, stronger final answers.**
 
+### Auto Planning
+
+Complex tasks shouldn't require hand-holding. Bao breaks down the work, tracks each step, and drives to completion — without being told to.
+
+- **Self-directed** — Detects multi-step tasks, creates a plan, and updates progress automatically. No user commands needed
+- **Always aware** — The active plan is injected into context in real time. Every step, Bao knows where it is and what's next
+- **Clean exit** — Finished plans archive themselves and stop consuming prompt budget. No stale context, no wasted tokens
+
+You'll never have to ask "where were you again?" **It already knows.**
+
 ### How It Compares
 
 |                     | OpenClaw       | **Bao**                                                          |
@@ -605,9 +642,28 @@ By default, per-turn tool schema size and quality proxy metrics are recorded in 
 ### 🐳 Docker
 
 ```bash
+# 1) Prepare config first (required)
 vim ~/.bao/config.jsonc
-docker compose up -d bao-gateway
+
+# 2) Copy Docker-only env template (for docker compose only)
+cp .env.docker.example .env.docker
+
+# 3) Start gateway (least-privilege runtime)
+docker compose --env-file .env.docker up -d bao-gateway
+
+# 4) If WhatsApp is enabled, start bridge profile
+docker compose --env-file .env.docker --profile whatsapp up -d bao-whatsapp-bridge
+
+# 5) Check health/status and logs
+docker compose ps
+docker compose logs -f --tail=100 bao-gateway
 ```
+
+Notes:
+- `.env.docker` / `.env.docker.example` are for Docker Compose only, not for non-Docker local runtime.
+- No HTTP ingress port is exposed by default. Add `ports` in `docker-compose.yml` only if you have a custom listener scenario.
+- `deploy.resources` is primarily effective in Docker Swarm; regular `docker compose` may ignore it.
+- For WhatsApp profile, recommended override: `BAO_CHANNELS__WHATSAPP__BRIDGE_URL=ws://bao-whatsapp-bridge:3001`.
 
 ### 💬 Chat Commands
 

@@ -194,6 +194,9 @@ chmod 700 ~/.bao/whatsapp-auth
 - [ ] API 提供商已设置用量上限
 - [ ] 生产环境启用 `restrictToWorkspace`
 - [ ] 已审查自定义技能/工具的安全性
+- [ ] `docker compose ps` 健康状态正常（healthy/running）
+- [ ] 若启用 WhatsApp Bridge：已设置 `BRIDGE_TOKEN`，并使用内网地址 `ws://bao-whatsapp-bridge:3001`
+- [ ] Docker 环境变量使用 `.env.docker`（由 `.env.docker.example` 复制），且仅用于 Docker Compose
 
 ## 事件响应
 
