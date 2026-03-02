@@ -1,6 +1,7 @@
 # Environment & secrets
 .env
 .env.*
+!.env.docker.example
 
 # Python
 *.pyc
