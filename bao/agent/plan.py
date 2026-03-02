@@ -33,6 +33,99 @@ _STEP_RE = re.compile(
 )
 _LEADING_INDEX_RE = re.compile(r"^\s*\d+\.\s*")
 
+_MARKDOWN_CHANNELS = frozenset(
+    {
+        "telegram",
+        "discord",
+        "slack",
+        "feishu",
+        "dingtalk",
+        "whatsapp",
+    }
+)
+_LITE_MARKDOWN_CHANNELS = frozenset({"whatsapp"})
+
+
+def _channel_format_mode(channel: str | None) -> str:
+    normalized = str(channel or "").strip().lower()
+    if normalized in _LITE_MARKDOWN_CHANNELS:
+        return "md-lite"
+    if normalized in _MARKDOWN_CHANNELS:
+        return "md"
+    return "plain"
+
+
+def _emphasis(text: str, mode: str) -> str:
+    if mode == "md":
+        return f"**{text}**"
+    if mode == "md-lite":
+        return f"*{text}*"
+    return text
+
+
+def _escape_for_channel(text: str, mode: str) -> str:
+    if mode == "plain":
+        return text
+    escaped = text.replace("\\", "\\\\")
+    for token in ("*", "_", "~", "`", "[", "]", "(", ")"):
+        escaped = escaped.replace(token, f"\\{token}")
+    return escaped
+
+
+def normalize_language(lang: str | None) -> str:
+    if not isinstance(lang, str):
+        return "en"
+    normalized = lang.strip().lower()
+    if normalized.startswith("zh"):
+        return "zh"
+    if normalized.startswith("en"):
+        return "en"
+    return "en"
+
+
+def _status_label(status: str, lang: str) -> str:
+    if lang == "zh":
+        labels = {
+            STATUS_PENDING: "待办",
+            STATUS_DONE: "完成",
+            STATUS_SKIPPED: "跳过",
+            STATUS_FAILED: "失败",
+            STATUS_INTERRUPTED: "中断",
+        }
+        return labels.get(status, "待办")
+    labels = {
+        STATUS_PENDING: "Pending",
+        STATUS_DONE: "Done",
+        STATUS_SKIPPED: "Skipped",
+        STATUS_FAILED: "Failed",
+        STATUS_INTERRUPTED: "Interrupted",
+    }
+    return labels.get(status, "Pending")
+
+
+def no_active_plan_text(lang: str | None = None) -> str:
+    if normalize_language(lang) == "zh":
+        return "当前没有进行中的计划。"
+    return "No active plan."
+
+
+def no_plan_to_clear_text(lang: str | None = None) -> str:
+    if normalize_language(lang) == "zh":
+        return "当前没有可清空的计划。"
+    return "No active plan to clear."
+
+
+def plan_cleared_text(archived: str | None = None, *, lang: str | None = None) -> str:
+    language = normalize_language(lang)
+    archived_text = archived if isinstance(archived, str) else ""
+    if language == "zh":
+        if archived_text:
+            return f"计划已清空。\n{archived_text}"
+        return "计划已清空。"
+    if archived_text:
+        return f"Plan cleared.\n{archived_text}"
+    return "Plan cleared."
+
 
 def _clip(text: str, max_chars: int) -> str:
     text = " ".join(str(text).strip().split())
@@ -163,22 +256,78 @@ def format_plan_for_prompt(plan_state: dict[str, Any] | None) -> str:
     return _clip(text, PLAN_MAX_PROMPT_CHARS)
 
 
-def format_plan_for_user(plan_state: dict[str, Any] | None) -> str:
+def format_plan_for_user(plan_state: dict[str, Any] | None, lang: str | None = None) -> str:
+    language = normalize_language(lang)
     if not isinstance(plan_state, dict):
-        return "No active plan."
+        return no_active_plan_text(language)
     parsed = _extract_steps(plan_state)
     if not parsed:
-        return "No active plan."
+        return no_active_plan_text(language)
 
     goal = _clip(str(plan_state.get("goal", "")), PLAN_MAX_GOAL_CHARS)
     done_count = sum(1 for status, _body in parsed if status == STATUS_DONE)
     total = len(parsed)
     current = _next_pending_index(parsed)
-    step_lines = [f"{idx}. [{status}] {body}" for idx, (status, body) in enumerate(parsed, start=1)]
-    header = [
-        "Current plan:",
-        f"Goal: {goal}" if goal else "Goal: (unspecified)",
-        f"Progress: {done_count}/{total} done | current_step={current}",
+    step_lines = [
+        f"{idx}. {_status_label(status, language)} - {body}"
+        for idx, (status, body) in enumerate(parsed, start=1)
+    ]
+    if language == "zh":
+        header = [
+            "当前计划",
+            f"目标：{goal}" if goal else "目标：（未填写）",
+            f"进度：{done_count}/{total}，当前步骤：{current}",
+        ]
+    else:
+        header = [
+            "Current plan",
+            f"Goal: {goal}" if goal else "Goal: (unspecified)",
+            f"Progress: {done_count}/{total}, current step: {current}",
+        ]
+    return "\n".join([*header, *step_lines])
+
+
+def format_plan_for_channel(
+    plan_state: dict[str, Any] | None,
+    *,
+    lang: str | None = None,
+    channel: str | None = None,
+) -> str:
+    mode = _channel_format_mode(channel)
+    if mode == "plain":
+        return format_plan_for_user(plan_state, lang=lang)
+
+    language = normalize_language(lang)
+    if not isinstance(plan_state, dict):
+        return no_active_plan_text(language)
+
+    parsed = _extract_steps(plan_state)
+    if not parsed:
+        return no_active_plan_text(language)
+
+    goal = _escape_for_channel(
+        _clip(str(plan_state.get("goal", "")), PLAN_MAX_GOAL_CHARS),
+        mode,
+    )
+    done_count = sum(1 for status, _body in parsed if status == STATUS_DONE)
+    total = len(parsed)
+    current = _next_pending_index(parsed)
+    if language == "zh":
+        header = [
+            _emphasis("当前计划", mode),
+            f"目标：{goal}" if goal else "目标：（未填写）",
+            f"进度：{done_count}/{total}，当前步骤：{current}",
+        ]
+    else:
+        header = [
+            _emphasis("Current plan", mode),
+            f"Goal: {goal}" if goal else "Goal: (unspecified)",
+            f"Progress: {done_count}/{total}, current step: {current}",
+        ]
+
+    step_lines = [
+        f"{idx}. {_emphasis(_status_label(status, language), mode)} - {_escape_for_channel(body, mode)}"
+        for idx, (status, body) in enumerate(parsed, start=1)
     ]
     return "\n".join([*header, *step_lines])
 
@@ -194,7 +343,8 @@ def plan_signal_text(plan_state: dict[str, Any] | None) -> str:
     return " ".join(part for part in (goal, step_text) if part).strip().lower()
 
 
-def archive_plan(plan_state: dict[str, Any] | None) -> str:
+def archive_plan(plan_state: dict[str, Any] | None, lang: str | None = None) -> str:
+    language = normalize_language(lang)
     if not isinstance(plan_state, dict):
         return ""
     parsed = _extract_steps(plan_state, limit=PLAN_MAX_STEPS)
@@ -203,9 +353,67 @@ def archive_plan(plan_state: dict[str, Any] | None) -> str:
     goal = _clip(str(plan_state.get("goal", "")), PLAN_MAX_GOAL_CHARS)
     done_count = sum(1 for status, _body in parsed if status == STATUS_DONE)
     total = len(parsed)
+    if language == "zh":
+        if goal:
+            return f"已完成：{goal}；共 {total} 步，完成 {done_count} 步。"
+        return f"计划已完成；共 {total} 步，完成 {done_count} 步。"
     if goal:
         return f"Completed: {goal}; {done_count}/{total} steps done."
     return f"Completed plan; {done_count}/{total} steps done."
+
+
+def archive_plan_for_channel(
+    plan_state: dict[str, Any] | None,
+    *,
+    lang: str | None = None,
+    channel: str | None = None,
+) -> str:
+    mode = _channel_format_mode(channel)
+    if mode == "plain":
+        return archive_plan(plan_state, lang=lang)
+
+    language = normalize_language(lang)
+    if not isinstance(plan_state, dict):
+        return ""
+
+    parsed = _extract_steps(plan_state, limit=PLAN_MAX_STEPS)
+    if not parsed:
+        return ""
+
+    goal = _escape_for_channel(
+        _clip(str(plan_state.get("goal", "")), PLAN_MAX_GOAL_CHARS),
+        mode,
+    )
+    done_count = sum(1 for status, _body in parsed if status == STATUS_DONE)
+    total = len(parsed)
+    if language == "zh":
+        if goal:
+            return f"{_emphasis('已完成', mode)}：{goal}；共 {total} 步，完成 {done_count} 步。"
+        return f"{_emphasis('计划已完成', mode)}；共 {total} 步，完成 {done_count} 步。"
+    if goal:
+        return f"{_emphasis('Completed', mode)}: {goal}; {done_count}/{total} steps done."
+    return f"{_emphasis('Completed', mode)}: plan; {done_count}/{total} steps done."
+
+
+def plan_cleared_text_for_channel(
+    archived: str | None = None,
+    *,
+    lang: str | None = None,
+    channel: str | None = None,
+) -> str:
+    mode = _channel_format_mode(channel)
+    if mode == "plain":
+        return plan_cleared_text(archived, lang=lang)
+
+    language = normalize_language(lang)
+    archived_text = archived if isinstance(archived, str) else ""
+    if language == "zh":
+        head = f"{_emphasis('计划已清空', mode)}。"
+    else:
+        head = f"{_emphasis('Plan cleared', mode)}."
+    if not archived_text:
+        return head
+    return f"{head}\n{_escape_for_channel(archived_text, mode)}"
 
 
 def get_current_pending_step(plan_state: dict[str, Any] | None) -> int | None:
