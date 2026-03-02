@@ -125,7 +125,7 @@ class EmailChannel(BaseChannel):
             logger.info("ℹ️ 自动回复已跳过 / reply skipped: {} auto_reply_enabled is false", to_addr)
             return
 
-        base_subject = self._last_subject_by_chat.get(to_addr, "bao reply")
+        base_subject = self._last_subject_by_chat.get(to_addr, "Bao reply")
         subject = self._reply_subject(base_subject)
         if msg.metadata and isinstance(msg.metadata.get("subject"), str):
             override = msg.metadata["subject"].strip()
@@ -411,7 +411,7 @@ class EmailChannel(BaseChannel):
         return html.unescape(text)
 
     def _reply_subject(self, base_subject: str) -> str:
-        subject = (base_subject or "").strip() or "bao reply"
+        subject = (base_subject or "").strip() or "Bao reply"
         prefix = self.config.subject_prefix or "Re: "
         if subject.lower().startswith("re:"):
             return subject

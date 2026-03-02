@@ -19,7 +19,7 @@ from bao.providers.retry import (
 )
 
 DEFAULT_CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
-DEFAULT_ORIGINATOR = "bao"
+DEFAULT_ORIGINATOR = "Bao"
 
 
 class OpenAICodexProvider(LLMProvider):
@@ -119,7 +119,7 @@ def _build_headers(account_id: str, token: str) -> dict[str, str]:
         "chatgpt-account-id": account_id,
         "OpenAI-Beta": "responses=experimental",
         "originator": DEFAULT_ORIGINATOR,
-        "User-Agent": "bao (python)",
+        "User-Agent": "Bao (python)",
         "accept": "text/event-stream",
         "content-type": "application/json",
     }

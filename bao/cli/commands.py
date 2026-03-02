@@ -13,7 +13,7 @@ from bao import __logo__, __version__
 if TYPE_CHECKING:
     from bao.config.schema import Config
 
-app = typer.Typer(name="bao", help=f"{__logo__} bao - Gateway", invoke_without_command=True)
+app = typer.Typer(name="bao", help=f"{__logo__} Bao - Gateway", invoke_without_command=True)
 console = Console()
 
 _BREAD = [
@@ -43,9 +43,10 @@ def _print_banner(port: int) -> None:
     console.print(f"  [dim]port {port}[/dim]")
     console.print()
 
+
 def version_callback(value: bool) -> None:
     if value:
-        console.print(f"{__logo__} bao v{__version__}")
+        console.print(f"{__logo__} Bao v{__version__}")
         raise typer.Exit()
 
 

@@ -5,7 +5,7 @@ description = "A personal AI assistant that remembers, learns from experience, a
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
-    {name = "bao contributors"}
+    {name = "Bao contributors"}
 ]
 keywords = ["ai", "agent", "chatbot"]
 classifiers = [

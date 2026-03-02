@@ -76,7 +76,7 @@ def test_write_text_writes_file_with_expected_content(tmp_path: Path) -> None:
 
 def test_archive_json_writes_parseable_json_file(tmp_path: Path) -> None:
     store = _make_store(tmp_path, "session:json")
-    payload = {"name": "bao", "count": 2, "items": ["a", "b"]}
+    payload = {"name": "Bao", "count": 2, "items": ["a", "b"]}
 
     ref = store.archive_json("trajectory", "snapshot", payload)
 

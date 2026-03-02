@@ -198,7 +198,7 @@ class SkillsLoader:
         return content
 
     def _parse_bao_metadata(self, raw: str) -> dict[str, object]:
-        """Parse skill metadata JSON from frontmatter (supports bao and openclaw keys)."""
+        """Parse skill metadata JSON from frontmatter (supports `bao` and openclaw keys)."""
         try:
             data = json.loads(raw)
             return data.get("bao", data.get("openclaw", {})) if isinstance(data, dict) else {}
@@ -232,7 +232,7 @@ class SkillsLoader:
         return True
 
     def _get_skill_meta(self, name: str) -> dict[str, object]:
-        """Get bao metadata for a skill (cached in frontmatter)."""
+        """Get `bao` metadata for a skill (cached in frontmatter)."""
         meta = self.get_skill_metadata(name) or {}
         return self._parse_bao_metadata(meta.get("metadata", ""))
 

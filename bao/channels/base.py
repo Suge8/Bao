@@ -14,7 +14,7 @@ class BaseChannel(ABC):
     Abstract base class for chat channel implementations.
 
     Each channel (Telegram, Discord, etc.) should implement this interface
-    to integrate with the bao message bus.
+    to integrate with the Bao message bus.
     """
 
     name: str = "base"

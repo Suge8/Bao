@@ -1532,7 +1532,7 @@ class AgentLoop:
         if cmd == "/help":
             return self._reply(
                 msg,
-                "🐈 bao commands:\n"
+                "🐈 Bao commands:\n"
                 "/new — Start a new conversation\n"
                 "/stop — Stop the current task\n"
                 "/session — Switch between conversations\n"

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Setup opencode.json for non-interactive use with bao.
+# Setup opencode.json for non-interactive use with Bao.
 # Usage: setup-project.sh <project-dir> [--model provider/model]
 set -euo pipefail
 
 usage() {
   echo "Usage: $(basename "$0") <project-dir> [--model provider/model]"
   echo ""
-  echo "Creates opencode.json with auto-approve permissions for bao integration."
+  echo "Creates opencode.json with auto-approve permissions for Bao integration."
   echo ""
   echo "Options:"
   echo "  --model    Set default model (e.g. anthropic/claude-sonnet-4-20250514)"

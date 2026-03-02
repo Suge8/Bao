@@ -63,7 +63,7 @@ export class WhatsAppClient {
       version,
       logger,
       printQRInTerminal: false,
-      browser: ["bao", "cli", VERSION],
+      browser: ["Bao", "cli", VERSION],
       syncFullHistory: false,
       markOnlineOnConnect: false,
     });

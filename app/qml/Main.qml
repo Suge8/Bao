@@ -49,7 +49,7 @@ ApplicationWindow {
         "button_start_gateway": "启动网关",
         "button_restart": "重启",
         "button_stop_gateway": "停止",
-        "chat_placeholder": "给 bao 发消息…",
+        "chat_placeholder": "给 Bao 发消息…",
         "section_app": "应用",
         "section_agent_defaults": "代理默认设置",
         "section_provider": "LLM 提供商",
@@ -65,7 +65,7 @@ ApplicationWindow {
         "settings_save": "保存",
         "settings_saved_hint": "已保存 — 重启网关以应用",
         "settings_save_failed": "保存失败",
-        "empty_setup_title": "欢迎使用 bao",
+        "empty_setup_title": "欢迎使用 Bao",
         "empty_setup_hint": "请先在设置中配置 Provider 和模型",
         "empty_setup_btn": "打开设置",
         "empty_starting_hint": "正在连接…",
@@ -115,7 +115,7 @@ ApplicationWindow {
         "button_start_gateway": "Start Gateway",
         "button_restart": "Restart",
         "button_stop_gateway": "Stop",
-        "chat_placeholder": "Message bao\u2026",
+        "chat_placeholder": "Message Bao\u2026",
         "section_app": "App",
         "section_agent_defaults": "Agent Defaults",
         "section_provider": "LLM Provider",
@@ -131,7 +131,7 @@ ApplicationWindow {
         "settings_save": "Save",
         "settings_saved_hint": "Saved \u2014 restart gateway to apply",
         "settings_save_failed": "Save failed",
-        "empty_setup_title": "Welcome to bao",
+        "empty_setup_title": "Welcome to Bao",
         "empty_setup_hint": "Configure a Provider and Model in Settings first",
         "empty_setup_btn": "Open Settings",
         "empty_starting_hint": "Connecting\u2026",
@@ -346,7 +346,7 @@ ApplicationWindow {
                 Item { Layout.fillWidth: true }
 
                 Text {
-                    text: "bao"
+                    text: "Bao"
                     color: root.textPrimary
                     font.pixelSize: 14
                     font.weight: Font.DemiBold

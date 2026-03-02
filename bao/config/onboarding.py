@@ -15,7 +15,7 @@ def _read_workspace_template(filename: str, lang: str = "zh") -> str:
 LANG_PICKER = "嗨 👋 请选择语言 / Pick your language:\n\n1. 中文\n2. English"
 PERSONA_GREETING: dict[str, str] = {
     "zh": (
-        "嘿 👋 我是运行在 bao 框架里的 AI 搭子，还没名字呢～\n\n"
+        "嘿 👋 我是运行在 Bao 框架里的 AI 搭子，还没名字呢～\n\n"
         "正式开工之前，先对个暗号：\n\n"
         "1. 给我起个名字呗？\n"
         "2. 你叫啥？怎么称呼你舒服怎么来～\n"
@@ -23,7 +23,7 @@ PERSONA_GREETING: dict[str, str] = {
         "4. 一般喜欢做啥？想我以后帮你什么？\n\n"
     ),
     "en": (
-        "Hey 👋 I'm ur AI buddy running on the bao framework — still unnamed tho~\n\n"
+        "Hey 👋 I'm ur AI buddy running on the Bao framework — still unnamed tho~\n\n"
         "Before we get rolling, quick intro:\n\n"
         "1. Wanna give me a name?\n"
         "2. What do I call you? Whatever feels right~\n"
@@ -102,12 +102,12 @@ def write_persona_profile(workspace: Path, lang: str, profile: dict[str, str]) -
     if bot_name:
         if lang == "zh":
             content = content.replace(
-                "我是运行在 bao 框架里的一个轻量级全能 AGENT。",
-                f"我是{bot_name}，运行在 bao 框架里的一个轻量级全能 AGENT。",
+                "我是运行在 Bao 框架里的一个轻量级全能 AGENT。",
+                f"我是{bot_name}，运行在 Bao 框架里的一个轻量级全能 AGENT。",
             )
         else:
             content = content.replace(
-                "I am bao, a lightweight AI assistant.",
+                "I am Bao, a lightweight AI assistant.",
                 f"I am {bot_name}, a lightweight AI assistant.",
             )
     if nickname and nickname != user_name:

@@ -1,10 +1,10 @@
-"""ChatService — embedded bao gateway lifecycle + serial message queue.
+"""ChatService — embedded Bao gateway lifecycle + serial message queue.
 
 State machine: idle -> starting -> running -> stopped / error
 
 Full gateway: AgentLoop + ChannelManager + CronService + HeartbeatService,
 functionally equivalent to the CLI ``bao`` command.
-All bao core calls happen on the asyncio thread via AsyncioRunner.
+All Bao core calls happen on the asyncio thread via AsyncioRunner.
 Internal signals marshal results back to the Qt main thread.
 """
 

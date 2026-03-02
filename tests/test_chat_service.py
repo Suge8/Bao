@@ -69,7 +69,7 @@ def test_state_transitions_to_starting_on_start():
     states = []
     svc.stateChanged.connect(states.append)
 
-    # Patch _init_gateway to avoid real bao init
+    # Patch _init_gateway to avoid real Bao init
     async def fake_init():
         pass
 

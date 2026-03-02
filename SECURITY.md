@@ -70,7 +70,7 @@ chmod 600 ~/.bao/config.jsonc
 
 - ✅ 审查 Agent 日志中的所有工具调用
 - ✅ 使用专用系统用户运行，限制权限
-- ✅ 永远不要以 root 运行 bao
+- ✅ 永远不要以 root 运行 Bao
 - ❌ 不要禁用安全检查
 - ❌ 不要在含敏感数据的系统上未经审查运行
 
@@ -182,7 +182,7 @@ chmod 700 ~/.bao/whatsapp-auth
 
 ## 部署检查清单
 
-部署 bao 前请确认：
+部署 Bao 前请确认：
 
 - [ ] API Key 安全存储（未写入代码）
 - [ ] 配置文件权限设为 `0600`（`~/.bao/config.jsonc`）

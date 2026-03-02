@@ -5,24 +5,24 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/hero.svg" />
   <source media="(prefers-color-scheme: light)" srcset="assets/hero.svg" />
-  <img alt="bao" src="assets/hero.svg" width="800" />
+  <img alt="Bao" src="assets/hero.svg" width="800" />
 </picture>
 
 <br>
 
 **记得住 · 学得会 · 能进化** · 持久记忆 · 经验引擎 · 子代理并行 · 长任务不漂移 · 9 大平台 · MCP 生态
 
-[🇨🇳 中文](#为什么选-bao) · [🇺🇸 English](#-english)
+[🇨🇳 中文](#为什么选-Bao) · [🇺🇸 English](#-english)
 
 </div>
 
 <br>
 
-## 为什么选 bao？
+## 为什么选 Bao？
 
 大多数 AI 助手都有失忆症。每次对话从零开始，反复犯同样的错，记不住你的偏好，永远学不会。
 
-bao 不一样。它**记得住**、**学得会**、**能进化**。
+Bao 不一样。它**记得住**、**学得会**、**能进化**。
 
 <p align="center"><img src="assets/features.svg" width="800" alt="核心特性"></p>
 
@@ -32,7 +32,7 @@ bao 不一样。它**记得住**、**学得会**、**能进化**。
 
 向量表与主记忆表按 `key` 强一致同步，启动时自动校验维度并在不匹配时重建回填；Embedding 调用内置轻量超时与重试，长期运行更稳。
 
-你的偏好、你的项目、你的习惯，bao 全部记住。旧上下文自动整合，重要信息跨会话、跨重启永久留存，过时内容主动清理。
+你的偏好、你的项目、你的习惯，Bao 全部记住。旧上下文自动整合，重要信息跨会话、跨重启永久留存，过时内容主动清理。
 
 ### 经验持续积累
 
@@ -45,7 +45,7 @@ bao 不一样。它**记得住**、**学得会**、**能进化**。
 - **负面学习** — 过去的失败变成未来的警告
 - **主动遗忘** — 按质量分级衰减（高质量保留更久），高价值经验免疫清理
 
-别的 Agent 重复犯错。**bao 从错误中进化。**
+别的 Agent 重复犯错。**Bao 从错误中进化。**
 
 ### 出错能改，工具不乱
 
@@ -68,7 +68,7 @@ bao 不一样。它**记得住**、**学得会**、**能进化**。
 
 ### ⌨️ 原生编程代理集成
 
-bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），**有什么用什么，没装不注入**。主代理和子代理同步生效。
+Bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），**有什么用什么，没装不注入**。主代理和子代理同步生效。
 
 - **一句话委托** — 把编程任务交给专业代理，支持会话续接、重试与超时保护（默认 30 分钟，按需覆盖）
 - **结果分级** — 默认返回精简摘要省 token；需要排错时按 ID 拉取完整输出
@@ -77,7 +77,7 @@ bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 
 ### 🎨 AI 图像生成
 
-一句话描述，bao 帮你画出来。基于 Gemini 图像生成 API，文字变图片，生成后直接发送到聊天。
+一句话描述，Bao 帮你画出来。基于 Gemini 图像生成 API，文字变图片，生成后直接发送到聊天。
 
 - **文字即画笔** — `generate_image(prompt="...")` 一个工具搞定，支持自定义宽高比
 - **即生即发** — 生成的图片自动保存为本地文件，通过 `message(media=[path])` 直接发送到任意聊天平台
@@ -98,13 +98,13 @@ bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 
 17 个内置技能（编程代理、图像生成、PDF、浏览器自动化、天气、定时任务等），开箱即用。想加自己的？放到 `~/.bao/workspace/skills/` 即可，运行时自动加载。
 
-- **零配置** — 内置技能随 bao 安装自动可用，无需额外设置
+- **零配置** — 内置技能随 Bao 安装自动可用，无需额外设置
 - **用户技能** — 在 workspace 中添加自定义技能，格式与内置技能一致
 - **动态注入** — 技能描述自动压缩为单行摘要注入 system prompt，不浪费 token
 
 ### 🗜️ Token 极致压缩
 
-同样的能力，更少的 token 开销。bao 在提示词层面做了系统性压缩：
+同样的能力，更少的 token 开销。Bao 在提示词层面做了系统性压缩：
 
 - **工具描述精简（MVD）** — 每个内置工具的 description 压缩为 1 句话，详细用法放 system prompt 的 tool_hints 区域
 - **编程代理合并** — 6 个编程工具合并为 2 个（`coding_agent` + `coding_agent_details`），减少工具列表膨胀
@@ -127,7 +127,7 @@ bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 
 ### 长任务引擎
 
-把复杂任务交给 bao，不靠“多跑几步”碰运气，而是靠稳定的长程执行能力：
+把复杂任务交给 Bao，不靠“多跑几步”碰运气，而是靠稳定的长程执行能力：
 
 - **越跑越稳** — 每 5 步自动压缩轨迹，保留结论、证据和未探索分支，方向不丢
 - **够了就收** — 充分性检查命中后优先收口，避免无效工具调用；若最终回答为空，会自动回退一次补齐结果
@@ -138,7 +138,7 @@ bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 
 ## 横向对比
 
-|            | OpenClaw    | **bao**                              |
+|            | OpenClaw    | **Bao**                              |
 | ---------- | ----------- | ------------------------------------ |
 | 语言       | TypeScript  | **Python**                           |
 | 核心代码   | 430,000+ 行 | **~12,000 行**                       |
@@ -212,7 +212,7 @@ bao
 | **钉钉**     | App Key + App Secret               |
 | **iMessage** | 仅 macOS，零配置                   |
 
-每个平台渲染能力不同，bao 心里有数。Telegram 和 Discord 收到格式丰富的 Markdown；Slack 和飞书走各自的标记子集；iMessage、QQ、Email 则是干净的纯文本 — 没有满屏的 `**` 和 `###`。**同一个 AI，9 种最佳阅读体验。**
+每个平台渲染能力不同，Bao 心里有数。Telegram 和 Discord 收到格式丰富的 Markdown；Slack 和飞书走各自的标记子集；iMessage、QQ、Email 则是干净的纯文本 — 没有满屏的 `**` 和 `###`。**同一个 AI，9 种最佳阅读体验。**
 
 ## 🤖 LLM Provider
 
@@ -305,7 +305,7 @@ uv run python tests/measure_prompt_size.py
 
 ## 🖥️ Desktop App (实验性)
 
-基于 PySide6 + QML 的桌面客户端，`bao` CLI 的纯 UI 壳子。核心逻辑（AgentLoop、Channels、Cron、Heartbeat）全部复用 `bao/` core，不重复实现。
+基于 PySide6 + QML 的桌面客户端，Bao 的 `bao` CLI 纯 UI 壳子。核心逻辑（AgentLoop、Channels、Cron、Heartbeat）全部复用 `bao/` core，不重复实现。
 
 ```bash
 uv sync --extra desktop
@@ -316,7 +316,7 @@ uv run python app/main.py
 
 ## 🔒 安全
 
-bao 内置工作区沙箱、渠道白名单、危险命令拦截、SecretStr 凭据保护等多层安全机制。
+Bao 内置工作区沙箱、渠道白名单、危险命令拦截、SecretStr 凭据保护等多层安全机制。
 
 完整安全配置与部署检查清单见 [`SECURITY.md`](SECURITY.md)。
 ## 📁 项目结构
@@ -348,7 +348,7 @@ bao/
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/hero-en.svg" />
   <source media="(prefers-color-scheme: light)" srcset="assets/hero-en.svg" />
-  <img alt="bao" src="assets/hero-en.svg" width="800" />
+  <img alt="Bao" src="assets/hero-en.svg" width="800" />
 </picture>
 
 <br>
@@ -359,11 +359,11 @@ bao/
 
 <br>
 
-### Why bao?
+### Why Bao?
 
 Most AI assistants have amnesia. Every conversation starts from zero. They repeat the same mistakes, forget your preferences, and never improve.
 
-bao is different. It **remembers**, **reflects**, and **evolves**.
+Bao is different. It **remembers**, **reflects**, and **evolves**.
 
 <p align="center"><img src="assets/features-en.svg" width="800" alt="Core Features"></p>
 
@@ -371,11 +371,11 @@ bao is different. It **remembers**, **reflects**, and **evolves**.
 
 Persistent memory powered by **LanceDB** — vector search with keyword fallback. Dual retrieval that works with or without an embedding model.
 
-Your preferences, your projects, your patterns — bao remembers all of it. Old context consolidates automatically. Important details survive across sessions, across restarts, indefinitely. Stale content is actively cleaned up.
+Your preferences, your projects, your patterns — Bao remembers all of it. Old context consolidates automatically. Important details survive across sessions, across restarts, indefinitely. Stale content is actively cleaned up.
 
 #### Experience That Compounds
 
-bao ships with a **closed-loop experience engine**:
+Bao ships with a **closed-loop experience engine**:
 
 - After every task → auto-extracts lessons, strategies, and failure patterns
 - Before similar tasks → retrieves relevant experience and injects it into the prompt
@@ -384,7 +384,7 @@ bao ships with a **closed-loop experience engine**:
 - **Negative learning** — past failures become warnings
 - **Active forgetting** — quality-based retention decay (high-quality lasts longer), high-value experiences immune from cleanup
 
-Other agents repeat mistakes. **bao learns from them.**
+Other agents repeat mistakes. **Bao learns from them.**
 
 #### Self-Correcting, Never Hallucinating
 
@@ -406,7 +406,7 @@ Hand off time-consuming work to a subagent: keep chatting while it works in the 
 
 #### ⌨️ Built-in Coding Agent Integration
 
-bao auto-detects installed coding CLIs (OpenCode, Codex, Claude Code) — **use what's there, skip what's not**. Works for both the main agent and subagents.
+Bao auto-detects installed coding CLIs (OpenCode, Codex, Claude Code) — **use what's there, skip what's not**. Works for both the main agent and subagents.
 
 - **One-line delegation** — hand off coding tasks to specialized agents with session continuity, retries, and timeout safety (30-minute default timeout, override only when needed)
 - **Tiered output** — compact summaries by default to save tokens; pull full stdout/stderr by ID when debugging
@@ -415,7 +415,7 @@ bao auto-detects installed coding CLIs (OpenCode, Codex, Claude Code) — **use 
 
 #### 🎨 AI Image Generation
 
-Describe it, bao draws it. Powered by Gemini's image generation API — text in, image out, delivered straight to your chat.
+Describe it, Bao draws it. Powered by Gemini's image generation API — text in, image out, delivered straight to your chat.
 
 - **Text-to-image** — `generate_image(prompt="...")` with optional aspect ratio control
 - **Generate and send** — images save locally, then ship to any chat platform via `message(media=[path])`
@@ -433,15 +433,15 @@ Let AI see your screen and operate your computer. No Anthropic Computer Use requ
 - **Off by default** — `config.tools.desktop.enabled: false`. Explicit opt-in only
 #### 🧩 Extensible Skill System
 
-17 built-in skills (coding agents, image generation, PDF, browser automation, weather, cron, and more) ready out of the box. Want your own? Drop it into `~/.bao/workspace/skills/` — bao picks it up at runtime.
+17 built-in skills (coding agents, image generation, PDF, browser automation, weather, cron, and more) ready out of the box. Want your own? Drop it into `~/.bao/workspace/skills/` — Bao picks it up at runtime.
 
-- **Zero config** — built-in skills are available the moment bao is installed
+- **Zero config** — built-in skills are available the moment Bao is installed
 - **User skills** — add custom skills to your workspace in the same format as built-ins
 - **Dynamic injection** — skill descriptions are auto-compressed into one-line summaries for the system prompt, saving tokens
 
 #### 🗜️ Aggressive Token Compression
 
-Same capabilities, fewer tokens. bao applies systematic compression at the prompt level:
+Same capabilities, fewer tokens. Bao applies systematic compression at the prompt level:
 
 - **Minimum Viable Descriptions (MVD)** — every built-in tool description is compressed to a single sentence; detailed usage goes into system prompt tool_hints
 - **Coding agent consolidation** — 6 coding tools merged into 2 (`coding_agent` + `coding_agent_details`), cutting tool-list bloat
@@ -464,10 +464,10 @@ Built-in layered context management keeps long tasks from exhausting the context
 
 ### Long-Task Engine
 
-For complex runs, bao doesn't rely on luck. It uses a compact, production-ready long-task engine:
+For complex runs, Bao doesn't rely on luck. It uses a compact, production-ready long-task engine:
 
 - **Stays on track** — Every 5 steps, trajectory state is compressed into conclusions, evidence, and unexplored branches
-- **Stops when enough** — Sufficiency checks prioritize early finish; if a forced final comes back empty, bao automatically allows one recovery pass
+- **Stops when enough** — Sufficiency checks prioritize early finish; if a forced final comes back empty, Bao automatically allows one recovery pass
 - **Self-corrects quickly** — Consecutive failures trigger audit-style correction, with deduplicated failed paths to avoid repeated dead ends
 - **Token-aware by default** — Layered compaction and refreshed state notes keep long runs focused and cost-efficient
 
@@ -475,7 +475,7 @@ In short: **less drift, fewer wasted calls, stronger final answers.**
 
 ### How It Compares
 
-|                     | OpenClaw       | **bao**                                                          |
+|                     | OpenClaw       | **Bao**                                                          |
 | ------------------- | -------------- | ---------------------------------------------------------------- |
 | Language            | TypeScript     | **Python**                                                       |
 | Core code           | 430,000+ lines | **~12,000 lines**                                                |
@@ -549,7 +549,7 @@ One config, one command: `bao`
 | **DingTalk** | App Key + App Secret               |
 | **iMessage** | macOS only, zero config            |
 
-Every platform renders differently — bao knows that. Telegram and Discord get rich Markdown. Slack and Feishu get their native markup. iMessage, QQ, and Email get clean plain text — no raw `**` or `###` cluttering the screen. **One AI, nine tailored reading experiences.**
+Every platform renders differently — Bao knows that. Telegram and Discord get rich Markdown. Slack and Feishu get their native markup. iMessage, QQ, and Email get clean plain text — no raw `**` or `###` cluttering the screen. **One AI, nine tailored reading experiences.**
 
 ### 🤖 Easy LLM Providers config
 
@@ -643,7 +643,7 @@ If PySide6 is not installed, desktop-related tests are auto-skipped and won't bl
 
 ### 🖥️ Desktop App (experimental)
 
-PySide6 + QML desktop client — a pure UI shell for `bao`. All core logic (AgentLoop, Channels, Cron, Heartbeat) reuses `bao/` core, no duplication.
+PySide6 + QML desktop client — a pure UI shell for Bao's `bao` CLI. All core logic (AgentLoop, Channels, Cron, Heartbeat) reuses `bao/` core, no duplication.
 
 ```bash
 uv sync --extra desktop
@@ -653,7 +653,7 @@ uv run python app/main.py
 First launch auto-creates `~/.bao/config.jsonc` and workspace; redirects to Settings if Provider/Model is not configured. See [`app/README.md`](app/README.md). Packaging guide: [`docs/desktop-packaging.md`](docs/desktop-packaging.md).
 
 ### 🔒 Security
-bao includes workspace sandboxing, channel allowlists, dangerous command interception, SecretStr credential protection, and more.
+Bao includes workspace sandboxing, channel allowlists, dangerous command interception, SecretStr credential protection, and more.
 Full security configuration and deployment checklist: [`SECURITY.md`](SECURITY.md).
 ### 📁 Project Structure
 
@@ -680,6 +680,6 @@ bao/
 
 <div align="center">
 
-<sub>bao — 记得住的 AI 助手。</sub>
+<sub>Bao — 记得住的 AI 助手。</sub>
 
 </div>

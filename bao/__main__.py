@@ -1,5 +1,5 @@
 """
-Entry point for running bao as a module: python -m bao
+Entry point for running Bao as a module: python -m bao
 """
 
 from bao.cli.commands import app

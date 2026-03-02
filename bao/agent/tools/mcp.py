@@ -1,4 +1,4 @@
-"""MCP client: connects to MCP servers and wraps their tools as native bao tools."""
+"""MCP client: connects to MCP servers and wraps their tools as native Bao tools."""
 
 import asyncio
 from contextlib import AsyncExitStack
@@ -79,7 +79,7 @@ def _normalize_name_fragment(value: str, fallback: str) -> str:
 
 
 class MCPToolWrapper(Tool):
-    """Wraps a single MCP server tool as a bao Tool."""
+    """Wraps a single MCP server tool as a Bao Tool."""
 
     def __init__(
         self,

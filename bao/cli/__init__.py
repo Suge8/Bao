@@ -1,1 +1,1 @@
-"""CLI module for bao."""
+"""CLI module for Bao."""

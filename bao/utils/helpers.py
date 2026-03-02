@@ -1,4 +1,4 @@
-"""Utility functions for bao."""
+"""Utility functions for Bao."""
 
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +11,7 @@ def ensure_dir(path: Path) -> Path:
 
 
 def get_data_path() -> Path:
-    """Get the bao data directory (~/.bao)."""
+    """Get the Bao data directory (~/.bao)."""
     return ensure_dir(Path.home() / ".bao")
 
 

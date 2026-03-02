@@ -97,7 +97,7 @@ def _save_icns(base, output: Path) -> None:
     if not iconutil:
         raise RuntimeError("iconutil not found; generate .icns on macOS only")
 
-    with tempfile.TemporaryDirectory(prefix="bao-iconset-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="Bao-iconset-") as tmp:
         iconset = Path(tmp) / "logo.iconset"
         iconset.mkdir(parents=True, exist_ok=True)
 

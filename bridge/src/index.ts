@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * bao WhatsApp Bridge
+ * Bao WhatsApp Bridge
  * 
- * This bridge connects WhatsApp Web to bao's Python backend
+ * This bridge connects WhatsApp Web to Bao's Python backend
  * via WebSocket. It handles authentication, message forwarding,
  * and reconnection logic.
  * 
@@ -27,7 +27,7 @@ const PORT = parseInt(process.env.BRIDGE_PORT || '3001', 10);
 const AUTH_DIR = process.env.AUTH_DIR || join(homedir(), '.bao', 'whatsapp-auth');
 const TOKEN = process.env.BRIDGE_TOKEN || undefined;
 
-console.log('🐈 bao WhatsApp Bridge');
+console.log('🐈 Bao WhatsApp Bridge');
 console.log('========================\n');
 
 const server = new BridgeServer(PORT, AUTH_DIR, TOKEN);

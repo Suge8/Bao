@@ -1,4 +1,4 @@
-"""Configuration module for bao."""
+"""Configuration module for Bao."""
 
 from bao.config.loader import ConfigLoadError, get_config_path, load_config
 from bao.config.onboarding import (

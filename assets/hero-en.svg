@@ -79,7 +79,7 @@
 
   <!-- Content -->
   <g transform="translate(400, 180)" text-anchor="middle">
-    <text y="0" class="title glow">bao</text>
+    <text y="0" class="title glow">Bao</text>
     <text y="50" class="subtitle">Your AI that remembers, learns, and evolves</text>
   </g>
 

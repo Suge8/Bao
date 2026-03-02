@@ -152,7 +152,7 @@ class OpenCodeTool(BaseCodingAgentTool):
                 cmd.append("--fork")
             title = ""
         else:
-            title = f"bao:{context_key}:{uuid.uuid4().hex[:8]}"
+            title = f"Bao:{context_key}:{uuid.uuid4().hex[:8]}"
             cmd.extend(["--title", title])
 
         if model:

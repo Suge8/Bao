@@ -1,7 +1,7 @@
 {
   "name": "bao-whatsapp-bridge",
   "version": "0.1.0",
-  "description": "WhatsApp bridge for bao using Baileys",
+  "description": "WhatsApp bridge for Bao using Baileys",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

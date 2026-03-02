@@ -92,8 +92,8 @@ class _GeminiEmbedding:
 
 
 class MemoryStore:
-    _EMBED_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="bao-embed")
-    _MEMORY_BG_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="bao-memory-bg")
+    _EMBED_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="Bao-embed")
+    _MEMORY_BG_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="Bao-memory-bg")
 
     def __init__(self, workspace: Path, embedding_config: Any | None = None):
         self._store_lock = threading.RLock()

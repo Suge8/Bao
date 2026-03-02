@@ -454,7 +454,7 @@ class UIConfig(Base):
 
 
 class Config(BaseSettings):
-    """Root configuration for bao."""
+    """Root configuration for Bao."""
 
     config_version: int = Field(default=3, alias="config_version")
     agents: AgentsConfig = Field(default_factory=AgentsConfig)

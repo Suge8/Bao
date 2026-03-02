@@ -219,9 +219,9 @@ class DiscordChannel(BaseChannel):
                 "token": self.config.token.get_secret_value(),
                 "intents": self.config.intents,
                 "properties": {
-                    "os": "bao",
-                    "browser": "bao",
-                    "device": "bao",
+                    "os": "Bao",
+                    "browser": "Bao",
+                    "device": "Bao",
                 },
             },
         }

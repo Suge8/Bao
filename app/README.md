@@ -1,6 +1,6 @@
-# bao Desktop App (实验性)
+# Bao Desktop App (实验性)
 
-基于 PySide6 + QML 的桌面客户端，**`bao` CLI 的纯 UI 壳子**。
+基于 PySide6 + QML 的桌面客户端，**Bao 的 `bao` CLI 纯 UI 壳子**。
 
 所有核心逻辑（AgentLoop、Channels、Cron、Heartbeat、startup greeting、首次落盘）均来自 `bao/` core，Desktop 不重复实现任何业务逻辑。启动问候由 core 侧轻量 `provider.chat` 生成（PERSONA.md 置于 system prompt 最前面锚定语气 + CJK 本地化时间 + 原生语言 user trigger，不注入工具/技能上下文）；发送成功会打印 `💬 启动问候 / out` 日志（60 字预览），轻量路径失败时自动回退到 `process_direct(ephemeral=True)` 保底发送。网关需用户手动启动（点击侧边栏 ⏻ 按钮），启动后桌面聊天窗口作为 `desktop` channel 与 Telegram、iMessage 等其他渠道共存运行。
 

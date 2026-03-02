@@ -83,7 +83,7 @@
   <circle cx="550" cy="170" r="1" fill="#6366f1" opacity="0.25"/>
 
   <!-- Title -->
-  <text class="title" x="400" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="56" font-weight="700" fill="url(#glow)" letter-spacing="8">bao</text>
+  <text class="title" x="400" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="56" font-weight="700" fill="url(#glow)" letter-spacing="8">Bao</text>
 
   <!-- Subtitle -->
   <text class="subtitle" x="400" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="16" fill="#9ca3af" letter-spacing="3" font-weight="300">手机发消息，AI 帮你干活</text>

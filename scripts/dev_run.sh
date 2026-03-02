@@ -1,9 +1,9 @@
 #!/bin/bash
 # scripts/dev_run.sh — 开发用自动重启包装器
 #
-# 用法: bash scripts/dev_run.sh [bao 参数...]
+# 用法: bash scripts/dev_run.sh [Bao 参数...]
 #
-# AI agent 改完代码后 kill 掉 bao 进程即可触发重启。
+# AI agent 改完代码后 kill 掉 Bao 进程即可触发重启。
 # exit 0 = 正常退出不重启，其他退出码 = 自动重启。
 # Ctrl+C = 停止整个包装器。
 # 连续快速崩溃 5 次自动停止，防止死循环。
@@ -47,7 +47,7 @@ while true; do
     fi
 
     last_start=$now
-    echo "[dev] 启动 bao... ($(date '+%Y-%m-%d %H:%M:%S'))"
+    echo "[dev] 启动 Bao... ($(date '+%Y-%m-%d %H:%M:%S'))"
 
     uv run bao "$@" &
     BAO_PID=$!
@@ -56,10 +56,10 @@ while true; do
     BAO_PID=""
 
     if [ $CODE -eq 0 ]; then
-        echo "[dev] bao 正常退出，停止。"
+        echo "[dev] Bao 正常退出，停止。"
         break
     fi
 
-    echo "[dev] bao 退出 (code=$CODE)，${DELAY}s 后重启..."
+    echo "[dev] Bao 退出 (code=$CODE)，${DELAY}s 后重启..."
     sleep $DELAY
 done

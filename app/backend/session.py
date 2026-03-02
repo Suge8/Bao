@@ -1,4 +1,4 @@
-"""SessionService — wraps bao SessionManager for the desktop channel.
+"""SessionService — wraps Bao SessionManager for the desktop channel.
 
 All SessionManager calls are dispatched to the asyncio thread via AsyncioRunner.
 Internal signals marshal results back to the Qt main thread.
@@ -128,7 +128,7 @@ class SessionService(QObject):
         return self._active_key
 
     def initialize(self, session_manager: Any) -> None:
-        """Called after ChatService has initialized the bao SessionManager."""
+        """Called after ChatService has initialized the Bao SessionManager."""
         self._session_manager = session_manager
         self.refresh()
         self._unread_timer.start()

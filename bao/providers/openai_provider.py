@@ -64,7 +64,7 @@ class OpenAICompatibleProvider(LLMProvider):
         self._model_prefix = (model_prefix or "").strip().lower()
         self._effective_base = api_base or "https://api.openai.com/v1"
 
-        headers = {"User-Agent": "bao/1.0"}
+        headers = {"User-Agent": "Bao/1.0"}
         if self.extra_headers:
             headers.update(self.extra_headers)
         self._default_headers = headers

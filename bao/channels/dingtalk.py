@@ -40,7 +40,7 @@ except ImportError:
 class baoDingTalkHandler(CallbackHandler):  # noqa: N801
     """
     Standard DingTalk Stream SDK Callback Handler.
-    Parses incoming messages and forwards them to the bao channel.
+    Parses incoming messages and forwards them to the Bao channel.
     """
 
     def __init__(self, channel: "DingTalkChannel"):
@@ -72,7 +72,7 @@ class baoDingTalkHandler(CallbackHandler):  # noqa: N801
 
             logger.debug("ℹ️ 钉钉入站消息 / inbound: {} ({}) {}", sender_name, sender_id, content)
 
-            # Forward to bao via _on_message (non-blocking).
+            # Forward to Bao via _on_message (non-blocking).
             # Store reference to prevent GC before task completes.
             task = asyncio.create_task(self.channel._on_message(content, sender_id, sender_name))
             self.channel._background_tasks.add(task)
@@ -386,7 +386,7 @@ class DingTalkChannel(BaseChannel):
             token,
             chat_id,
             "sampleMarkdown",
-            {"text": content, "title": "bao Reply"},
+            {"text": content, "title": "Bao Reply"},
         )
 
     async def _send_media_ref(self, token: str, chat_id: str, media_ref: str) -> bool:

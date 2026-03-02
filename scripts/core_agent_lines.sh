@@ -2,7 +2,7 @@
 # scripts/core_agent_lines.sh — Count core agent lines (excluding channels/, cli/, providers/, skills/, and external coding tools)
 cd "$(dirname "$0")/.." || exit 1
 
-echo "bao core agent line count"
+echo "Bao core agent line count"
 echo "================================"
 echo ""
 
