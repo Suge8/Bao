@@ -185,6 +185,20 @@ curl -fsSL https://raw.githubusercontent.com/Suge8/Bao/main/install/install.sh |
 powershell -ExecutionPolicy Bypass -NoProfile -Command "irm https://raw.githubusercontent.com/Suge8/Bao/main/install/install.ps1 | iex"
 ```
 
+#### 安装后管理（更新 / 卸载 / 安装位置）
+
+安装完成后，记住这三件事就够了：**在哪、怎么更新、怎么卸载**。
+
+- 📍 Bao 安装在哪里？
+  - 可执行命令：`~/.local/bin/bao`（Windows: `%USERPROFILE%\.local\bin\bao.exe`）
+  - 工具环境目录：`uv tool dir`
+- ⬆️ 想要最新功能？30 秒更新
+  - `uv tool upgrade bao-ai`
+  - 更新后可用 `bao --version` 快速确认
+- 🧹 暂时不用了？一条命令干净卸载
+  - `uv tool uninstall bao-ai`
+  - 如需连 `uv` 一起移除（可选）：`uv self uninstall`
+
 ### 方式 2：已有前置依赖，直接 PyPI 安装
 
 如果你已经有 Python 3.11+，这一条命令就够了。
@@ -204,6 +218,11 @@ cd Bao
 uv sync
 uv run bao
 ```
+
+#### 源码模式维护（更新 / 移除）
+
+- ⬆️ 保持项目最新：`git pull && uv sync`
+- 🧹 不再使用时：删除本地仓库目录即可
 
 首次运行自动生成配置文件（含 `config_version`，后续迁移可稳定收敛）。在 `~/.bao/config.jsonc` 中设置你的 API Key：
 
@@ -595,6 +614,20 @@ curl -fsSL https://raw.githubusercontent.com/Suge8/Bao/main/install/install.sh |
 powershell -ExecutionPolicy Bypass -NoProfile -Command "irm https://raw.githubusercontent.com/Suge8/Bao/main/install/install.ps1 | iex"
 ```
 
+#### Post-install Management (Update / Uninstall / Location)
+
+After install, remember just three things: **where it lives, how to update, and how to remove it**.
+
+- 📍 Where is Bao installed?
+  - Executable: `~/.local/bin/bao` (Windows: `%USERPROFILE%\.local\bin\bao.exe`)
+  - Tool environment directory: `uv tool dir`
+- ⬆️ Want the latest features? Update in ~30 seconds
+  - `uv tool upgrade bao-ai`
+  - Verify after update with `bao --version`
+- 🧹 Need to remove it? One clean uninstall command
+  - `uv tool uninstall bao-ai`
+  - Remove `uv` itself too (optional): `uv self uninstall`
+
 #### Method 2: PyPI install (if prerequisites are ready)
 
 If Python 3.11+ is already installed, this is the fastest route.
@@ -614,6 +647,11 @@ cd Bao
 uv sync
 uv run bao
 ```
+
+#### Source-mode Maintenance (Update / Remove)
+
+- ⬆️ Stay current: `git pull && uv sync`
+- 🧹 Done with it: remove the local repository directory
 
 First run auto-generates a config file (with `config_version` for stable migration behavior). Set your API key in `~/.bao/config.jsonc`:
 

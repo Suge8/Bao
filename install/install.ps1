@@ -27,22 +27,22 @@ function Has-Command {
 
 function Ensure-Windows {
     if (-not $env:OS -or $env:OS -ne "Windows_NT") {
-        Fail "This script is for Windows only. / This script supports Windows only."
+        Fail "🖥️ 仅支持 Windows / Windows only"
     }
 }
 
 function Ensure-Uv {
     if (Has-Command "uv") {
-        Write-Ok "uv is already installed. / uv already available."
+        Write-Ok "✅ uv 已就绪 / uv is ready"
         return
     }
 
-    Write-Info "Installing uv... / Installing uv..."
+    Write-Info "📦 正在安装 uv / Installing uv"
     try {
         irm $UvInstallUrl | iex
     }
     catch {
-        Fail "Failed to install uv. / uv installation failed."
+        Fail "❌ uv 安装失败 / Failed to install uv"
     }
 
     $LocalBin = Join-Path $HOME ".local\bin"
@@ -51,52 +51,53 @@ function Ensure-Uv {
     }
 
     if (-not (Has-Command "uv")) {
-        Fail "uv not found after install. / uv not found in PATH after install."
+        Fail "❌ 已安装但未找到 uv，请检查 PATH / uv not found in PATH"
     }
 
-    Write-Ok "uv installed. / uv installed successfully."
+    Write-Ok "✅ uv 安装完成 / uv installed"
 }
 
 function Ensure-Python {
-    Write-Info "Installing Python $MinPython via uv... / Installing Python $MinPython with uv..."
+    Write-Info "🐍 准备 Python $MinPython / Installing Python $MinPython"
     try {
         uv python install $MinPython
     }
     catch {
-        Fail "Python installation failed. / Failed to install Python $MinPython."
+        Fail "❌ Python 安装失败 / Failed to install Python $MinPython"
     }
-    Write-Ok "Python is ready. / Python installed or already available."
+    Write-Ok "✅ Python 已就绪 / Python is ready"
 }
 
 function Install-Bao {
-    Write-Info "Installing bao-ai from PyPI... / Installing bao-ai from PyPI..."
+    Write-Info "🚀 正在安装 bao-ai / Installing bao-ai from PyPI"
     try {
         uv tool install --upgrade bao-ai
     }
     catch {
-        Fail "Failed to install bao-ai. / bao-ai install failed."
+        Fail "❌ bao-ai 安装失败 / Failed to install bao-ai"
     }
 
-    Write-Info "Verifying installation... / Verifying installation..."
+    Write-Info "🔎 正在验证安装 / Verifying installation"
     try {
         uvx --from bao-ai bao --version | Out-Null
     }
     catch {
-        Fail "bao command verification failed. / Failed to verify bao command."
+        Fail "❌ bao 命令验证失败 / Failed to verify bao"
     }
-    Write-Ok "bao-ai installed successfully. / bao-ai installed successfully."
+    Write-Ok "✅ bao-ai 安装成功 / bao-ai installed"
 }
 
 function Print-Finish {
     Write-Host ""
-    Write-Ok "All done. Run: bao"
+    Write-Ok "🎉 全部完成 / All done."
+    Write-Info "👉 现在运行 bao 即可使用 / Run 'bao' to start"
     if (-not (Has-Command "bao")) {
-        Write-Info "If 'bao' is not found, open a new terminal or add this path:"
+        Write-Info "🛠️ 若找不到 bao，请重开终端或加入 PATH / If 'bao' is not found, reopen terminal or add PATH:"
         Write-Info "$HOME\.local\bin"
     }
 }
 
-Write-Info "Bao one-click installer (Windows) / Bao one-click installer (Windows)"
+Write-Info "🍞 Bao 一键安装（Windows）/ Bao one-click installer (Windows)"
 Ensure-Windows
 Ensure-Uv
 Ensure-Python

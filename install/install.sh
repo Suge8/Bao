@@ -24,51 +24,52 @@ has_cmd() {
 
 ensure_macos() {
   if [[ "$(uname -s)" != "Darwin" ]]; then
-    fail "This script is for macOS only. / This script supports macOS only."
+    fail "🖥️ 仅支持 macOS / macOS only"
   fi
 }
 
 ensure_uv() {
   if has_cmd uv; then
-    success "uv is already installed. / uv already available."
+    success "✅ uv 已就绪 / uv is ready"
     return
   fi
 
-  has_cmd curl || fail "curl is required to install uv. / Please install curl first."
-  info "Installing uv... / Installing uv..."
-  curl -LsSf "$UV_INSTALL_URL" | sh || fail "Failed to install uv. / uv installation failed."
+  has_cmd curl || fail "❌ 缺少 curl，无法继续 / curl is required"
+  info "📦 正在安装 uv / Installing uv"
+  curl -LsSf "$UV_INSTALL_URL" | sh || fail "❌ uv 安装失败 / Failed to install uv"
 
   export PATH="$HOME/.local/bin:$PATH"
-  has_cmd uv || fail "uv not found after install. / uv not found in PATH after install."
-  success "uv installed. / uv installed successfully."
+  has_cmd uv || fail "❌ 已安装但未找到 uv，请检查 PATH / uv not found in PATH"
+  success "✅ uv 安装完成 / uv installed"
 }
 
 ensure_python() {
-  info "Installing Python ${MIN_PYTHON} via uv... / Installing Python ${MIN_PYTHON} with uv..."
-  uv python install "$MIN_PYTHON" || fail "Python installation failed. / Failed to install Python ${MIN_PYTHON}."
-  success "Python is ready. / Python installed or already available."
+  info "🐍 准备 Python ${MIN_PYTHON} / Installing Python ${MIN_PYTHON}"
+  uv python install "$MIN_PYTHON" || fail "❌ Python 安装失败 / Failed to install Python ${MIN_PYTHON}"
+  success "✅ Python 已就绪 / Python is ready"
 }
 
 install_bao() {
-  info "Installing bao-ai from PyPI... / Installing bao-ai from PyPI..."
-  uv tool install --upgrade bao-ai || fail "Failed to install bao-ai. / bao-ai install failed."
+  info "🚀 正在安装 bao-ai / Installing bao-ai from PyPI"
+  uv tool install --upgrade bao-ai || fail "❌ bao-ai 安装失败 / Failed to install bao-ai"
 
-  info "Verifying installation... / Verifying installation..."
-  uvx --from bao-ai bao --version >/dev/null || fail "bao command verification failed. / Failed to verify bao command."
-  success "bao-ai installed successfully. / bao-ai installed successfully."
+  info "🔎 正在验证安装 / Verifying installation"
+  uvx --from bao-ai bao --version >/dev/null || fail "❌ bao 命令验证失败 / Failed to verify bao"
+  success "✅ bao-ai 安装成功 / bao-ai installed"
 }
 
 print_finish() {
   printf '\n'
-  success "All done. Run: bao"
+  success "🎉 全部完成 / All done."
+  info "👉 现在运行 bao 即可使用 / Run 'bao' to start"
   if ! has_cmd bao; then
-    info "If 'bao' is not found, add this to your shell profile:"
+    info "🛠️ 若找不到 bao，请加入 PATH / If 'bao' is not found, add PATH:"
     info "export PATH=\"$HOME/.local/bin:\$PATH\""
   fi
 }
 
 main() {
-  info "Bao one-click installer (macOS) / Bao one-click installer (macOS)"
+  info "🍞 Bao 一键安装（macOS）/ Bao one-click installer (macOS)"
   ensure_macos
   ensure_uv
   ensure_python
