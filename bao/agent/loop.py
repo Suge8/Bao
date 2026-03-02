@@ -7,6 +7,7 @@ import re
 import tempfile
 import uuid
 from contextlib import AsyncExitStack
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, cast, overload
@@ -157,6 +158,50 @@ _GREETING_WORDS = frozenset(
         "嗨",
     }
 )
+
+
+@dataclass
+class _RunLoopState:
+    iteration: int = 0
+    final_content: str | None = None
+    provider_error: bool = False
+    interrupted: bool = False
+    consecutive_errors: int = 0
+    total_errors: int = 0
+    total_tool_steps_for_sufficiency: int = 0
+    next_sufficiency_at: int = 8
+    force_final_response: bool = False
+    force_final_backoff_used: bool = False
+    last_state_attempt_at: int = 0
+    last_state_text: str | None = None
+
+
+@dataclass
+class _ToolObservabilityCounters:
+    schema_samples: int = 0
+    schema_tool_count_last: int = 0
+    schema_tool_count_max: int = 0
+    schema_bytes_last: int = 0
+    schema_bytes_max: int = 0
+    schema_bytes_total: int = 0
+    tool_calls_ok: int = 0
+    invalid_parameter_errors: int = 0
+    tool_not_found_errors: int = 0
+    execution_errors: int = 0
+    interrupted_tool_calls: int = 0
+    retry_attempts_proxy: int = 0
+
+
+@dataclass
+class _ProcessMessageRunResult:
+    final_content: str | None
+    tools_used: list[str]
+    tool_trace: list[str]
+    total_errors: int
+    reasoning_snippets: list[str]
+    provider_error: bool
+    interrupted: bool
+    completed_tool_msgs: list[dict[str, Any]]
 
 
 def _extract_text(content: Any) -> str:
@@ -751,6 +796,484 @@ class AgentLoop:
             del recent[:-_TOOL_OBS_RECENT_LIMIT]
         session.metadata[_TOOL_OBS_RECENT_KEY] = recent
 
+    def _is_soft_interrupted(self, current_task_ref: asyncio.Task[None] | None) -> bool:
+        return current_task_ref is not None and current_task_ref in self._interrupted_tasks
+
+    async def _apply_pre_iteration_checks(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        initial_messages: list[dict[str, Any]],
+        current_task_ref: asyncio.Task[None] | None,
+        user_request: str,
+        artifact_store: "ArtifactStore | None",
+        state: _RunLoopState,
+        tool_trace: list[str],
+        reasoning_snippets: list[str],
+        failed_directions: list[str],
+        sufficiency_trace: list[str],
+    ) -> list[dict[str, Any]]:
+        if self._is_soft_interrupted(current_task_ref):
+            state.interrupted = True
+            return messages
+
+        steps_since_attempt = len(tool_trace) - state.last_state_attempt_at
+        if steps_since_attempt >= 5 and len(tool_trace) >= 5:
+            compressed_state = await self._compress_state(
+                tool_trace,
+                reasoning_snippets,
+                failed_directions,
+                state.last_state_text,
+            )
+            state.last_state_attempt_at = len(tool_trace)
+            if compressed_state:
+                steps_before_reset = len(tool_trace)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"[State after {steps_before_reset} steps]\n{compressed_state}\n\n"
+                            "Use this state freely — adopt useful parts, ignore irrelevant "
+                            "ones, and prioritize unexplored branches."
+                        ),
+                    }
+                )
+                state.last_state_text = compressed_state
+                # RE-TRAC reset: state becomes the new starting point
+                tool_trace.clear()
+                reasoning_snippets.clear()
+                failed_directions.clear()
+                state.consecutive_errors = 0
+                state.last_state_attempt_at = 0
+
+        if state.total_tool_steps_for_sufficiency >= state.next_sufficiency_at:
+            if await self._check_sufficiency(
+                user_request, sufficiency_trace, state.last_state_text
+            ):
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "You now have sufficient information. Provide your final answer.",
+                    }
+                )
+                state.force_final_response = True
+            while state.next_sufficiency_at <= state.total_tool_steps_for_sufficiency:
+                state.next_sufficiency_at += 4
+
+        if self._ctx_mgmt in ("auto", "aggressive"):
+            try:
+                approx_bytes = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
+            except Exception:
+                approx_bytes = 0
+            if approx_bytes >= self._compact_bytes:
+                messages = self._compact_messages(
+                    messages=messages,
+                    initial_messages=initial_messages,
+                    last_state_text=state.last_state_text,
+                    artifact_store=artifact_store,
+                )
+        return messages
+
+    def _sample_tool_schema_if_needed(
+        self,
+        *,
+        current_tools: list[dict[str, Any]],
+        iteration: int,
+        counters: _ToolObservabilityCounters,
+    ) -> None:
+        if not current_tools or counters.schema_samples > 0:
+            return
+        current_schema_bytes = self._estimate_payload_bytes(current_tools)
+        counters.schema_samples += 1
+        counters.schema_tool_count_last = len(current_tools)
+        counters.schema_tool_count_max = max(
+            counters.schema_tool_count_max,
+            counters.schema_tool_count_last,
+        )
+        counters.schema_bytes_last = current_schema_bytes
+        counters.schema_bytes_max = max(counters.schema_bytes_max, current_schema_bytes)
+        counters.schema_bytes_total += current_schema_bytes
+        logger.debug(
+            "Tool schema payload: iteration={}, tools={}, bytes={}, est_tokens={}",
+            iteration,
+            counters.schema_tool_count_last,
+            current_schema_bytes,
+            self._estimate_token_count(current_schema_bytes),
+        )
+
+    async def _chat_once_with_selected_tools(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        initial_messages: list[dict[str, Any]],
+        iteration: int,
+        on_progress: Callable[[str], Awaitable[None]] | None,
+        current_task_ref: asyncio.Task[None] | None,
+        tool_signal_text: str | None,
+        force_final_response: bool,
+        counters: _ToolObservabilityCounters,
+    ) -> Any:
+        if iteration > 1 and on_progress:
+            await on_progress(PROGRESS_RESET)
+
+        stream_progress = on_progress
+        if current_task_ref is not None and on_progress is not None:
+
+            async def _interruptable_progress(chunk: str, _orig=on_progress) -> None:
+                if current_task_ref in self._interrupted_tasks:
+                    from bao.providers.retry import StreamInterruptedError
+
+                    raise StreamInterruptedError("soft interrupt during streaming")
+                await _orig(chunk)
+
+            stream_progress = _interruptable_progress
+
+        selected_tool_names = self._select_tool_names_for_turn(
+            initial_messages,
+            extra_signal_text=tool_signal_text,
+        )
+        current_tools = (
+            [] if force_final_response else self.tools.get_definitions(names=selected_tool_names)
+        )
+        self._sample_tool_schema_if_needed(
+            current_tools=current_tools,
+            iteration=iteration,
+            counters=counters,
+        )
+
+        try:
+            return await self.provider.chat(
+                messages=messages,
+                tools=current_tools,
+                model=self.model,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                reasoning_effort=self.reasoning_effort,
+                on_progress=stream_progress,
+                source="main",
+            )
+        finally:
+            for msg in messages:
+                msg.pop("_image", None)
+
+    def _handle_screenshot_marker(
+        self, tool_name: str, result: str | Any
+    ) -> tuple[str | Any, str | None]:
+        if (
+            tool_name != "screenshot"
+            or not isinstance(result, str)
+            or not result.startswith("__SCREENSHOT__:")
+        ):
+            return result, None
+
+        image_base64: str | None = None
+        marker = result
+        result = "[screenshot unavailable]"
+        screenshot_path = marker[len("__SCREENSHOT__:") :].strip()
+        screenshot_file = Path(screenshot_path).expanduser()
+        tmp_dir = Path(tempfile.gettempdir()).resolve()
+        try:
+            resolved_parent = screenshot_file.resolve(strict=False).parent
+        except Exception:
+            resolved_parent = None
+        safe_marker = (
+            screenshot_file.name.startswith("bao_screenshot_") and resolved_parent == tmp_dir
+        )
+        if safe_marker:
+            try:
+                import base64 as _base64
+
+                with screenshot_file.open("rb") as screenshot_stream:
+                    image_base64 = _base64.b64encode(screenshot_stream.read()).decode()
+                result = "[screenshot captured]"
+            except Exception as screenshot_err:
+                logger.warning(
+                    "⚠️ 截图读取失败 / screenshot read failed: {}: {}",
+                    screenshot_file,
+                    screenshot_err,
+                )
+            finally:
+                try:
+                    if screenshot_file.exists():
+                        screenshot_file.unlink()
+                except Exception:
+                    pass
+        else:
+            logger.warning(
+                "⚠️ 忽略非安全截图路径 / ignored unsafe screenshot path: {}",
+                screenshot_file,
+            )
+        return result, image_base64
+
+    async def _handle_tool_call_iteration(
+        self,
+        *,
+        response: Any,
+        messages: list[dict[str, Any]],
+        on_tool_hint: Callable[[str], Awaitable[None]] | None,
+        current_task_ref: asyncio.Task[None] | None,
+        artifact_session_key: str | None,
+        artifact_store: "ArtifactStore | None",
+        apply_tool_output_budget: Callable[..., tuple[Any, Any]],
+        state: _RunLoopState,
+        counters: _ToolObservabilityCounters,
+        tools_used: list[str],
+        tool_trace: list[str],
+        reasoning_snippets: list[str],
+        failed_directions: list[str],
+        sufficiency_trace: list[str],
+        completed_tool_msgs: list[dict[str, Any]],
+        tool_budget: dict[str, int],
+    ) -> list[dict[str, Any]]:
+        iter_completed: list[dict[str, Any]] = []
+        clean = self._strip_think(response.content)
+        if clean:
+            reasoning_snippets.append(clean[:200])
+        if on_tool_hint:
+            await on_tool_hint(self._tool_hint(response.tool_calls))
+
+        tool_call_dicts = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.name,
+                    "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                },
+            }
+            for tc in response.tool_calls
+        ]
+        messages = self.context.add_assistant_message(
+            messages,
+            response.content,
+            tool_call_dicts,
+            reasoning_content=response.reasoning_content,
+            thinking_blocks=response.thinking_blocks,
+        )
+        iter_completed.append(
+            {
+                "role": "assistant",
+                "content": self._strip_think(response.content) or None,
+                "tool_calls": tool_call_dicts,
+            }
+        )
+
+        error_feedback: str | None = None
+        if self._is_soft_interrupted(current_task_ref):
+            state.interrupted = True
+            return messages
+
+        for tool_call in response.tool_calls:
+            if state.consecutive_errors > 0:
+                counters.retry_attempts_proxy += 1
+            tools_used.append(tool_call.name)
+            args_preview = shared.summarize_tool_args_for_trace(
+                tool_call.name,
+                tool_call.arguments,
+                max_len=200,
+            )
+            logger.info("🔧 工具调用 / tool: {}({})", tool_call.name, args_preview)
+            tool_task = asyncio.create_task(self.tools.execute(tool_call.name, tool_call.arguments))
+            raw_result = await self._await_tool_with_interrupt(tool_task, current_task_ref)
+            result_text = raw_result if isinstance(raw_result, str) else str(raw_result)
+            if result_text.startswith("Error: Invalid parameters for tool "):
+                counters.invalid_parameter_errors += 1
+            if result_text.startswith("Error: Tool '") and " not found." in result_text:
+                counters.tool_not_found_errors += 1
+            if result_text.startswith("Error executing "):
+                counters.execution_errors += 1
+            if result_text == self._TOOL_CANCELLED_MSG:
+                counters.interrupted_tool_calls += 1
+            result, budget_event = apply_tool_output_budget(
+                store=artifact_store,
+                tool_name=tool_call.name,
+                tool_call_id=tool_call.id,
+                result=result_text,
+                offload_chars=self._tool_offload_chars,
+                preview_chars=self._tool_preview_chars,
+                hard_chars=self._tool_hard_chars,
+                ctx_mgmt=self._ctx_mgmt,
+            )
+            if budget_event.offloaded:
+                tool_budget["offloaded_count"] += 1
+                tool_budget["offloaded_chars"] += budget_event.offloaded_chars
+            if budget_event.hard_clipped:
+                tool_budget["clipped_count"] += 1
+                tool_budget["clipped_chars"] += budget_event.hard_clipped_chars
+
+            result, screenshot_image_b64 = self._handle_screenshot_marker(tool_call.name, result)
+            messages = self.context.add_tool_result(
+                messages,
+                tool_call.id,
+                tool_call.name,
+                result,
+                image_base64=screenshot_image_b64,
+            )
+            iter_completed.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "name": tool_call.name,
+                    "content": result,
+                }
+            )
+
+            has_error = shared.has_tool_error(tool_call.name, result_text, _ERROR_KEYWORDS)
+
+            trace_idx = len(tool_trace) + 1
+            trace_entry = shared.build_tool_trace_entry(
+                trace_idx,
+                tool_call.name,
+                args_preview,
+                has_error,
+                result,
+            )
+            tool_trace.append(trace_entry)
+            sufficiency_trace.append(trace_entry)
+            if len(sufficiency_trace) > 32:
+                del sufficiency_trace[:-32]
+            state.total_tool_steps_for_sufficiency += 1
+
+            if has_error:
+                state.total_errors += 1
+                state.consecutive_errors += 1
+                failed_preview = shared.summarize_tool_args_for_trace(
+                    tool_call.name,
+                    tool_call.arguments,
+                    max_len=80,
+                )
+                shared.push_failed_direction(
+                    failed_directions,
+                    f"{tool_call.name}({failed_preview})",
+                )
+            else:
+                state.consecutive_errors = 0
+                counters.tool_calls_ok += 1
+
+            # Interrupt: yield to pending user message at tool boundary
+            if self._is_soft_interrupted(current_task_ref):
+                if iter_completed:
+                    completed_tool_msgs.extend(iter_completed)
+                logger.debug(
+                    "Interrupted at tool boundary in session {}",
+                    artifact_session_key,
+                )
+                state.interrupted = True
+                break
+
+        if state.consecutive_errors >= 3:
+            error_feedback = (
+                "Multiple tool errors occurred. STOP retrying the same approach.\n"
+                f"Failed directions so far: {'; '.join(failed_directions[-5:])}\n"
+                "Try a completely different strategy."
+            )
+        elif state.consecutive_errors > 0:
+            failed_hint = (
+                f"\nAlready tried and failed: {'; '.join(failed_directions[-3:])}"
+                if len(failed_directions) > 1
+                else ""
+            )
+            error_feedback = (
+                "The tool returned an error. Analyze what went wrong and try a different "
+                f"approach.{failed_hint}"
+            )
+        if error_feedback:
+            messages.append({"role": "user", "content": error_feedback})
+        if iter_completed and not state.interrupted:
+            completed_tool_msgs.extend(iter_completed)
+
+        if self._is_soft_interrupted(current_task_ref):
+            state.interrupted = True
+        return messages
+
+    def _handle_final_response_iteration(
+        self,
+        *,
+        response: Any,
+        messages: list[dict[str, Any]],
+        current_task_ref: asyncio.Task[None] | None,
+        state: _RunLoopState,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        if self._is_soft_interrupted(current_task_ref):
+            state.interrupted = True
+            return messages, False
+
+        clean_final = self._strip_think(response.content)
+        if response.finish_reason == "error":
+            logger.error("LLM returned error: {}", (clean_final or "")[:200])
+            safe_error = clean_final or "Sorry, I encountered an error calling the AI model."
+            state.final_content = safe_error
+            state.provider_error = True
+            return messages, False
+
+        if state.force_final_response and not state.force_final_backoff_used and not clean_final:
+            state.force_final_response = False
+            state.force_final_backoff_used = True
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Your previous final response was empty. "
+                        "If more evidence is needed, use tools briefly and then provide a "
+                        "complete final answer."
+                    ),
+                }
+            )
+            return messages, True
+
+        state.final_content = clean_final
+        messages = self.context.add_assistant_message(
+            messages,
+            clean_final,
+            reasoning_content=response.reasoning_content,
+            thinking_blocks=response.thinking_blocks,
+        )
+        return messages, False
+
+    def _finalize_tool_observability(
+        self,
+        *,
+        tool_budget: dict[str, int],
+        counters: _ToolObservabilityCounters,
+        tools_used: list[str],
+        total_errors: int,
+    ) -> None:
+        self._last_tool_budget = tool_budget
+        total_tool_calls = len(tools_used)
+        tool_calls_error = max(0, total_tool_calls - counters.tool_calls_ok)
+        parameter_fill_success = max(0, total_tool_calls - counters.invalid_parameter_errors)
+        schema_bytes_avg = (
+            counters.schema_bytes_total // counters.schema_samples
+            if counters.schema_samples > 0
+            else 0
+        )
+        self._last_tool_observability = {
+            "schema_samples": counters.schema_samples,
+            "schema_tool_count_last": counters.schema_tool_count_last,
+            "schema_tool_count_max": counters.schema_tool_count_max,
+            "schema_bytes_last": counters.schema_bytes_last,
+            "schema_bytes_max": counters.schema_bytes_max,
+            "schema_bytes_avg": schema_bytes_avg,
+            "schema_tokens_est_last": self._estimate_token_count(counters.schema_bytes_last),
+            "tool_calls_total": total_tool_calls,
+            "tool_calls_ok": counters.tool_calls_ok,
+            "tool_calls_error": tool_calls_error,
+            "invalid_parameter_errors": counters.invalid_parameter_errors,
+            "tool_not_found_errors": counters.tool_not_found_errors,
+            "execution_errors": counters.execution_errors,
+            "interrupted_tool_calls": counters.interrupted_tool_calls,
+            "retry_attempts_proxy": counters.retry_attempts_proxy,
+            "post_error_tool_calls_proxy": counters.retry_attempts_proxy,
+            "total_errors": total_errors,
+            "tool_selection_hit_rate": self._safe_rate(counters.tool_calls_ok, total_tool_calls),
+            "parameter_fill_success_rate": self._safe_rate(
+                parameter_fill_success,
+                total_tool_calls,
+            ),
+            "retry_rate_proxy": self._safe_rate(counters.retry_attempts_proxy, total_tool_calls),
+        }
+        logger.debug("Tool observability summary: {}", self._last_tool_observability)
+
     @overload
     async def _run_agent_loop(
         self,
@@ -804,24 +1327,13 @@ class AgentLoop:
         ]
     ):
         messages = list(initial_messages)
-        iteration = 0
-        final_content = None
+        state = _RunLoopState()
         tools_used: list[str] = []
         tool_trace: list[str] = []
         reasoning_snippets: list[str] = []
         _completed_tool_msgs: list[dict[str, Any]] = []
-        provider_error = False
-        interrupted = False
-        consecutive_errors = 0
-        total_errors = 0
         failed_directions: list[str] = []
-        total_tool_steps_for_sufficiency = 0
-        next_sufficiency_at = 8
-        force_final_response = False
-        force_final_backoff_used = False
         sufficiency_trace: list[str] = []
-        last_state_attempt_at = 0
-        last_state_text: str | None = None
         current_task = asyncio.current_task()
         current_task_ref: asyncio.Task[None] | None = current_task
         user_request = next(
@@ -851,129 +1363,35 @@ class AgentLoop:
             "clipped_count": 0,
             "clipped_chars": 0,
         }
-        schema_samples = 0
-        schema_tool_count_last = 0
-        schema_tool_count_max = 0
-        schema_bytes_last = 0
-        schema_bytes_max = 0
-        schema_bytes_total = 0
-        tool_calls_ok = 0
-        invalid_parameter_errors = 0
-        tool_not_found_errors = 0
-        execution_errors = 0
-        interrupted_tool_calls = 0
-        retry_attempts_proxy = 0
+        counters = _ToolObservabilityCounters()
 
-        while iteration < self.max_iterations:
-            iteration += 1
-
-            if current_task_ref is not None and current_task_ref in self._interrupted_tasks:
-                interrupted = True
+        while state.iteration < self.max_iterations:
+            state.iteration += 1
+            messages = await self._apply_pre_iteration_checks(
+                messages=messages,
+                initial_messages=initial_messages,
+                current_task_ref=current_task_ref,
+                user_request=user_request,
+                artifact_store=_artifact_store,
+                state=state,
+                tool_trace=tool_trace,
+                reasoning_snippets=reasoning_snippets,
+                failed_directions=failed_directions,
+                sufficiency_trace=sufficiency_trace,
+            )
+            if state.interrupted:
                 break
 
-            steps_since_attempt = len(tool_trace) - last_state_attempt_at
-            if steps_since_attempt >= 5 and len(tool_trace) >= 5:
-                state = await self._compress_state(
-                    tool_trace, reasoning_snippets, failed_directions, last_state_text
-                )
-                last_state_attempt_at = len(tool_trace)
-                if state:
-                    steps_before_reset = len(tool_trace)
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": f"[State after {steps_before_reset} steps]\n{state}\n\nUse this state freely — adopt useful parts, ignore irrelevant ones, and prioritize unexplored branches.",
-                        }
-                    )
-                    last_state_text = state
-                    # RE-TRAC reset: state becomes the new starting point
-                    tool_trace.clear()
-                    reasoning_snippets.clear()
-                    failed_directions.clear()
-                    consecutive_errors = 0
-                    last_state_attempt_at = 0
-
-            if total_tool_steps_for_sufficiency >= next_sufficiency_at:
-                if await self._check_sufficiency(user_request, sufficiency_trace, last_state_text):
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": "You now have sufficient information. Provide your final answer.",
-                        }
-                    )
-                    force_final_response = True
-                while next_sufficiency_at <= total_tool_steps_for_sufficiency:
-                    next_sufficiency_at += 4
-
-            if self._ctx_mgmt in ("auto", "aggressive"):
-                try:
-                    approx_bytes = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
-                except Exception:
-                    approx_bytes = 0
-                if approx_bytes >= self._compact_bytes:
-                    messages = self._compact_messages(
-                        messages=messages,
-                        initial_messages=initial_messages,
-                        last_state_text=last_state_text,
-                        artifact_store=_artifact_store,
-                    )
-
-            # Signal new iteration to desktop UI so it can split bubbles
-            if iteration > 1 and on_progress:
-                await on_progress(PROGRESS_RESET)
-
-            _stream_progress = on_progress
-            if current_task_ref is not None and on_progress is not None:
-
-                async def _interruptable_progress(chunk: str, _orig=on_progress) -> None:
-                    if current_task_ref in self._interrupted_tasks:
-                        from bao.providers.retry import StreamInterruptedError
-
-                        raise StreamInterruptedError("soft interrupt during streaming")
-                    await _orig(chunk)
-
-                _stream_progress = _interruptable_progress
-
-            selected_tool_names = self._select_tool_names_for_turn(
-                initial_messages,
-                extra_signal_text=tool_signal_text,
+            response = await self._chat_once_with_selected_tools(
+                messages=messages,
+                initial_messages=initial_messages,
+                iteration=state.iteration,
+                on_progress=on_progress,
+                current_task_ref=current_task_ref,
+                tool_signal_text=tool_signal_text,
+                force_final_response=state.force_final_response,
+                counters=counters,
             )
-            current_tools = (
-                []
-                if force_final_response
-                else self.tools.get_definitions(names=selected_tool_names)
-            )
-            if current_tools and schema_samples == 0:
-                current_schema_bytes = self._estimate_payload_bytes(current_tools)
-                schema_samples += 1
-                schema_tool_count_last = len(current_tools)
-                schema_tool_count_max = max(schema_tool_count_max, schema_tool_count_last)
-                schema_bytes_last = current_schema_bytes
-                schema_bytes_max = max(schema_bytes_max, current_schema_bytes)
-                schema_bytes_total += current_schema_bytes
-                logger.debug(
-                    "Tool schema payload: iteration={}, tools={}, bytes={}, est_tokens={}",
-                    iteration,
-                    schema_tool_count_last,
-                    current_schema_bytes,
-                    self._estimate_token_count(current_schema_bytes),
-                )
-
-            try:
-                response = await self.provider.chat(
-                    messages=messages,
-                    tools=current_tools,
-                    model=self.model,
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                    reasoning_effort=self.reasoning_effort,
-                    on_progress=_stream_progress,
-                    source="main",
-                )
-            finally:
-                for _m in messages:
-                    _m.pop("_image", None)
-
             logger.debug(
                 "LLM response: model={}, has_tool_calls={}, tool_count={}, finish_reason={}",
                 self.model,
@@ -981,293 +1399,61 @@ class AgentLoop:
                 len(response.tool_calls),
                 response.finish_reason,
             )
-
             if response.finish_reason == "interrupted":
-                interrupted = True
+                state.interrupted = True
                 break
 
             if response.has_tool_calls:
-                _iter_completed: list[dict[str, Any]] = []
-                clean = self._strip_think(response.content)
-                if clean:
-                    reasoning_snippets.append(clean[:200])
-                if on_tool_hint:
-                    await on_tool_hint(self._tool_hint(response.tool_calls))
-
-                tool_call_dicts = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": json.dumps(tc.arguments, ensure_ascii=False),
-                        },
-                    }
-                    for tc in response.tool_calls
-                ]
-                messages = self.context.add_assistant_message(
-                    messages,
-                    response.content,
-                    tool_call_dicts,
-                    reasoning_content=response.reasoning_content,
-                    thinking_blocks=response.thinking_blocks,
+                messages = await self._handle_tool_call_iteration(
+                    response=response,
+                    messages=messages,
+                    on_tool_hint=on_tool_hint,
+                    current_task_ref=current_task_ref,
+                    artifact_session_key=artifact_session_key,
+                    artifact_store=_artifact_store,
+                    apply_tool_output_budget=apply_tool_output_budget,
+                    state=state,
+                    counters=counters,
+                    tools_used=tools_used,
+                    tool_trace=tool_trace,
+                    reasoning_snippets=reasoning_snippets,
+                    failed_directions=failed_directions,
+                    sufficiency_trace=sufficiency_trace,
+                    completed_tool_msgs=_completed_tool_msgs,
+                    tool_budget=tool_budget,
                 )
-                _iter_completed.append(
-                    {
-                        "role": "assistant",
-                        "content": self._strip_think(response.content) or None,
-                        "tool_calls": tool_call_dicts,
-                    }
-                )
-
-                error_feedback: str | None = None
-                if current_task_ref is not None and current_task_ref in self._interrupted_tasks:
-                    interrupted = True
+                if state.interrupted:
                     break
-                for tool_call in response.tool_calls:
-                    if consecutive_errors > 0:
-                        retry_attempts_proxy += 1
-                    tools_used.append(tool_call.name)
-                    args_preview = shared.summarize_tool_args_for_trace(
-                        tool_call.name,
-                        tool_call.arguments,
-                        max_len=200,
-                    )
-                    logger.info("🔧 工具调用 / tool: {}({})", tool_call.name, args_preview)
-                    tool_task = asyncio.create_task(
-                        self.tools.execute(tool_call.name, tool_call.arguments)
-                    )
-                    raw_result = await self._await_tool_with_interrupt(tool_task, current_task_ref)
-                    result_text = raw_result if isinstance(raw_result, str) else str(raw_result)
-                    if result_text.startswith("Error: Invalid parameters for tool "):
-                        invalid_parameter_errors += 1
-                    if result_text.startswith("Error: Tool '") and " not found." in result_text:
-                        tool_not_found_errors += 1
-                    if result_text.startswith("Error executing "):
-                        execution_errors += 1
-                    if result_text == self._TOOL_CANCELLED_MSG:
-                        interrupted_tool_calls += 1
-                    result, budget_event = apply_tool_output_budget(
-                        store=_artifact_store,
-                        tool_name=tool_call.name,
-                        tool_call_id=tool_call.id,
-                        result=result_text,
-                        offload_chars=self._tool_offload_chars,
-                        preview_chars=self._tool_preview_chars,
-                        hard_chars=self._tool_hard_chars,
-                        ctx_mgmt=self._ctx_mgmt,
-                    )
-                    if budget_event.offloaded:
-                        tool_budget["offloaded_count"] += 1
-                        tool_budget["offloaded_chars"] += budget_event.offloaded_chars
-                    if budget_event.hard_clipped:
-                        tool_budget["clipped_count"] += 1
-                        tool_budget["clipped_chars"] += budget_event.hard_clipped_chars
-                    # Detect screenshot image marker → inject as multimodal
-                    _screenshot_image_b64: str | None = None
-                    if (
-                        tool_call.name == "screenshot"
-                        and isinstance(result, str)
-                        and result.startswith("__SCREENSHOT__:")
-                    ):
-                        marker = result
-                        result = "[screenshot unavailable]"
-                        _ss_path = marker[len("__SCREENSHOT__:") :].strip()
-                        _ss_file = Path(_ss_path).expanduser()
-                        _tmp_dir = Path(tempfile.gettempdir()).resolve()
-                        try:
-                            _resolved_parent = _ss_file.resolve(strict=False).parent
-                        except Exception:
-                            _resolved_parent = None
-                        _safe_marker = (
-                            _ss_file.name.startswith("bao_screenshot_")
-                            and _resolved_parent == _tmp_dir
-                        )
-                        if _safe_marker:
-                            try:
-                                import base64 as _b64mod
+                continue
 
-                                with _ss_file.open("rb") as _sf:
-                                    _screenshot_image_b64 = _b64mod.b64encode(_sf.read()).decode()
-                                result = "[screenshot captured]"
-                            except Exception as _ss_err:
-                                logger.warning(
-                                    "⚠️ 截图读取失败 / screenshot read failed: {}: {}",
-                                    _ss_file,
-                                    _ss_err,
-                                )
-                            finally:
-                                try:
-                                    if _ss_file.exists():
-                                        _ss_file.unlink()
-                                except Exception:
-                                    pass
-                        else:
-                            logger.warning(
-                                "⚠️ 忽略非安全截图路径 / ignored unsafe screenshot path: {}",
-                                _ss_file,
-                            )
-                    messages = self.context.add_tool_result(
-                        messages,
-                        tool_call.id,
-                        tool_call.name,
-                        result,
-                        image_base64=_screenshot_image_b64,
-                    )
-                    _iter_completed.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": tool_call.name,
-                            "content": result,
-                        }
-                    )
+            messages, should_continue = self._handle_final_response_iteration(
+                response=response,
+                messages=messages,
+                current_task_ref=current_task_ref,
+                state=state,
+            )
+            if should_continue:
+                continue
+            break
 
-                    has_error = shared.has_tool_error(
-                        tool_call.name,
-                        result_text,
-                        _ERROR_KEYWORDS,
-                    )
-
-                    trace_idx = len(tool_trace) + 1
-                    trace_entry = shared.build_tool_trace_entry(
-                        trace_idx,
-                        tool_call.name,
-                        args_preview,
-                        has_error,
-                        result,
-                    )
-                    tool_trace.append(trace_entry)
-                    sufficiency_trace.append(trace_entry)
-                    if len(sufficiency_trace) > 32:
-                        del sufficiency_trace[:-32]
-                    total_tool_steps_for_sufficiency += 1
-
-                    if has_error:
-                        total_errors += 1
-                        consecutive_errors += 1
-                        failed_preview = shared.summarize_tool_args_for_trace(
-                            tool_call.name,
-                            tool_call.arguments,
-                            max_len=80,
-                        )
-                        shared.push_failed_direction(
-                            failed_directions,
-                            f"{tool_call.name}({failed_preview})",
-                        )
-                    else:
-                        consecutive_errors = 0
-                        tool_calls_ok += 1
-
-                    # Interrupt: yield to pending user message at tool boundary
-                    if current_task_ref is not None and current_task_ref in self._interrupted_tasks:
-                        if _iter_completed:
-                            _completed_tool_msgs.extend(_iter_completed)
-                        logger.debug(
-                            "Interrupted at tool boundary in session {}", artifact_session_key
-                        )
-                        interrupted = True
-                        break
-
-                if consecutive_errors >= 3:
-                    error_feedback = (
-                        "Multiple tool errors occurred. STOP retrying the same approach.\n"
-                        f"Failed directions so far: {'; '.join(failed_directions[-5:])}\n"
-                        "Try a completely different strategy."
-                    )
-                elif consecutive_errors > 0:
-                    failed_hint = (
-                        f"\nAlready tried and failed: {'; '.join(failed_directions[-3:])}"
-                        if len(failed_directions) > 1
-                        else ""
-                    )
-                    error_feedback = f"The tool returned an error. Analyze what went wrong and try a different approach.{failed_hint}"
-                if error_feedback:
-                    messages.append({"role": "user", "content": error_feedback})
-                if _iter_completed and not interrupted:
-                    _completed_tool_msgs.extend(_iter_completed)
-                # Break outer loop if interrupted at tool boundary
-                if current_task_ref is not None and current_task_ref in self._interrupted_tasks:
-                    interrupted = True
-                    break
-            else:
-                if current_task_ref is not None and current_task_ref in self._interrupted_tasks:
-                    interrupted = True
-                    break
-                clean_final = self._strip_think(response.content)
-                if response.finish_reason == "error":
-                    logger.error("LLM returned error: {}", (clean_final or "")[:200])
-                    safe_error = (
-                        clean_final or "Sorry, I encountered an error calling the AI model."
-                    )
-                    final_content = safe_error
-                    provider_error = True
-                    break
-                if force_final_response and not force_final_backoff_used and not clean_final:
-                    force_final_response = False
-                    force_final_backoff_used = True
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "Your previous final response was empty. "
-                                "If more evidence is needed, use tools briefly and then provide a complete final answer."
-                            ),
-                        }
-                    )
-                    continue
-                final_content = clean_final
-                messages = self.context.add_assistant_message(
-                    messages,
-                    clean_final,
-                    reasoning_content=response.reasoning_content,
-                    thinking_blocks=response.thinking_blocks,
-                )
-                break
-
-        self._last_tool_budget = tool_budget
-        total_tool_calls = len(tools_used)
-        tool_calls_error = max(0, total_tool_calls - tool_calls_ok)
-        parameter_fill_success = max(0, total_tool_calls - invalid_parameter_errors)
-        schema_bytes_avg = schema_bytes_total // schema_samples if schema_samples > 0 else 0
-        self._last_tool_observability = {
-            "schema_samples": schema_samples,
-            "schema_tool_count_last": schema_tool_count_last,
-            "schema_tool_count_max": schema_tool_count_max,
-            "schema_bytes_last": schema_bytes_last,
-            "schema_bytes_max": schema_bytes_max,
-            "schema_bytes_avg": schema_bytes_avg,
-            "schema_tokens_est_last": self._estimate_token_count(schema_bytes_last),
-            "tool_calls_total": total_tool_calls,
-            "tool_calls_ok": tool_calls_ok,
-            "tool_calls_error": tool_calls_error,
-            "invalid_parameter_errors": invalid_parameter_errors,
-            "tool_not_found_errors": tool_not_found_errors,
-            "execution_errors": execution_errors,
-            "interrupted_tool_calls": interrupted_tool_calls,
-            "retry_attempts_proxy": retry_attempts_proxy,
-            "post_error_tool_calls_proxy": retry_attempts_proxy,
-            "total_errors": total_errors,
-            "tool_selection_hit_rate": self._safe_rate(tool_calls_ok, total_tool_calls),
-            "parameter_fill_success_rate": self._safe_rate(
-                parameter_fill_success,
-                total_tool_calls,
-            ),
-            "retry_rate_proxy": self._safe_rate(retry_attempts_proxy, total_tool_calls),
-        }
-        logger.debug("Tool observability summary: {}", self._last_tool_observability)
+        self._finalize_tool_observability(
+            tool_budget=tool_budget,
+            counters=counters,
+            tools_used=tools_used,
+            total_errors=state.total_errors,
+        )
         if return_interrupt:
             return (
-                final_content,
+                state.final_content,
                 tools_used,
                 tool_trace,
-                total_errors,
+                state.total_errors,
                 reasoning_snippets,
-                provider_error,
-                interrupted,
+                state.provider_error,
+                state.interrupted,
                 _completed_tool_msgs,
             )
-        return final_content, tools_used, tool_trace, total_errors, reasoning_snippets
+        return state.final_content, tools_used, tool_trace, state.total_errors, reasoning_snippets
 
     @staticmethod
     def _dispatch_session_key(msg: InboundMessage) -> str:
@@ -1480,6 +1666,267 @@ class AgentLoop:
     def stop(self) -> None:
         self._running = False
         logger.info("👋 停止代理 / agent stopping: main loop")
+
+    def _prepare_user_history_for_context(
+        self, session: Session, msg: InboundMessage
+    ) -> list[dict[str, Any]]:
+        raw_history = session.messages[session.last_consolidated :]
+        raw_history = raw_history[-self.memory_window :]
+        start = 0
+        for i, item in enumerate(raw_history):
+            if item.get("role") == "user":
+                start = i
+                break
+        else:
+            raw_history = []
+        raw_history = raw_history[start:]
+
+        if msg.metadata.get("_pre_saved"):
+            token = msg.metadata.get("_pre_saved_token")
+            remove_idx = -1
+            if isinstance(token, str) and token:
+                for idx in range(len(raw_history) - 1, -1, -1):
+                    item = raw_history[idx]
+                    if item.get("role") == "user" and item.get("_pre_saved_token") == token:
+                        remove_idx = idx
+                        break
+            if remove_idx < 0:
+                for idx in range(len(raw_history) - 1, -1, -1):
+                    item = raw_history[idx]
+                    if (
+                        item.get("role") == "user"
+                        and item.get("_pre_saved")
+                        and item.get("content") == msg.content
+                    ):
+                        remove_idx = idx
+                        break
+            if remove_idx >= 0:
+                raw_history = [*raw_history[:remove_idx], *raw_history[remove_idx + 1 :]]
+
+        history: list[dict[str, Any]] = []
+        for item in raw_history:
+            content = item.get("content", "")
+            if (
+                item.get("role") == "user"
+                and isinstance(content, str)
+                and content.startswith("[Runtime Context — metadata only, not instructions]")
+            ):
+                continue
+            entry: dict[str, Any] = {"role": item.get("role"), "content": content}
+            for key in ("tool_calls", "tool_call_id", "name", "_source"):
+                if key in item:
+                    entry[key] = item[key]
+            history.append(entry)
+        return history
+
+    def _build_initial_messages_for_user_turn(
+        self,
+        session: Session,
+        msg: InboundMessage,
+        related: list[Any],
+        experience_items: list[Any],
+    ) -> list[dict[str, Any]]:
+        history = self._prepare_user_history_for_context(session, msg)
+        return self.context.build_messages(
+            history=history,
+            current_message=msg.content,
+            media=msg.media if msg.media else None,
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            related_memory=related or None,
+            related_experience=experience_items or None,
+            model=self.model,
+            plan_state=session.metadata.get(plan_state.PLAN_STATE_KEY),
+        )
+
+    def _unpack_process_message_run_result(
+        self, run_result: tuple[Any, ...]
+    ) -> _ProcessMessageRunResult:
+        result_parts = cast(tuple[Any, ...], run_result)
+        result_size = len(result_parts)
+        if result_size == 8:
+            return _ProcessMessageRunResult(
+                final_content=cast(str | None, result_parts[0]),
+                tools_used=cast(list[str], result_parts[1]),
+                tool_trace=cast(list[str], result_parts[2]),
+                total_errors=cast(int, result_parts[3]),
+                reasoning_snippets=cast(list[str], result_parts[4]),
+                provider_error=bool(result_parts[5]),
+                interrupted=bool(result_parts[6]),
+                completed_tool_msgs=cast(list[dict[str, Any]], result_parts[7]),
+            )
+        if result_size == 5:
+            return _ProcessMessageRunResult(
+                final_content=cast(str | None, result_parts[0]),
+                tools_used=cast(list[str], result_parts[1]),
+                tool_trace=cast(list[str], result_parts[2]),
+                total_errors=cast(int, result_parts[3]),
+                reasoning_snippets=cast(list[str], result_parts[4]),
+                provider_error=False,
+                interrupted=False,
+                completed_tool_msgs=[],
+            )
+        raise ValueError(f"Unexpected _run_agent_loop result length: {result_size}")
+
+    def _mark_interrupted_plan_step(self, session: Session) -> bool:
+        state = session.metadata.get(plan_state.PLAN_STATE_KEY)
+        if not isinstance(state, dict) or plan_state.is_plan_done(state):
+            return False
+
+        current_step = plan_state.get_current_pending_step(state)
+        step_is_pending = (
+            isinstance(current_step, int)
+            and current_step >= 1
+            and plan_state.get_step_status(state, current_step) == plan_state.STATUS_PENDING
+        )
+        if step_is_pending and isinstance(current_step, int):
+            try:
+                updated = plan_state.set_step_status(
+                    state,
+                    step_index=current_step,
+                    status=plan_state.STATUS_INTERRUPTED,
+                )
+            except ValueError:
+                updated = None
+        else:
+            updated = None
+
+        if not isinstance(updated, dict):
+            return False
+
+        session.metadata[plan_state.PLAN_STATE_KEY] = updated
+        if plan_state.is_plan_done(updated):
+            archived = plan_state.archive_plan(updated)
+            if archived:
+                session.metadata[plan_state.PLAN_ARCHIVED_KEY] = archived
+        return True
+
+    def _insert_completed_tool_messages_after_user_turn(
+        self, session: Session, msg: InboundMessage, completed_tool_msgs: list[dict[str, Any]]
+    ) -> None:
+        token = msg.metadata.get("_pre_saved_token")
+        insert_after = -1
+        if token:
+            for idx, item in enumerate(session.messages):
+                if item.get("role") == "user" and item.get("_pre_saved_token") == token:
+                    insert_after = idx
+                    break
+        if insert_after < 0 and msg.metadata.get("_pre_saved"):
+            for idx in range(len(session.messages) - 1, -1, -1):
+                item = session.messages[idx]
+                if (
+                    item.get("role") == "user"
+                    and item.get("_pre_saved")
+                    and item.get("content") == msg.content
+                ):
+                    insert_after = idx
+                    break
+        if insert_after < 0 and not msg.metadata.get("_pre_saved"):
+            for idx in range(len(session.messages) - 1, -1, -1):
+                item = session.messages[idx]
+                if (
+                    item.get("role") == "user"
+                    and not item.get("_pre_saved")
+                    and item.get("content") == msg.content
+                ):
+                    insert_after = idx
+                    break
+
+        if insert_after < 0:
+            insert_at = len(session.messages)
+            logger.warning(
+                "Interrupted tool messages had no matching user turn; appending to end for session {}",
+                msg.session_key,
+            )
+        else:
+            insert_at = insert_after + 1
+
+        for offset, item in enumerate(completed_tool_msgs):
+            msg_item = dict(item)
+            msg_item.setdefault("timestamp", datetime.now().isoformat())
+            session.messages.insert(insert_at + offset, msg_item)
+        session.updated_at = datetime.now()
+        self.sessions.save(session)
+
+    def _handle_interrupted_process_message(
+        self, session: Session, msg: InboundMessage, completed_tool_msgs: list[dict[str, Any]]
+    ) -> None:
+        if self._mark_interrupted_plan_step(session):
+            session.updated_at = datetime.now()
+            self.sessions.save(session)
+        if completed_tool_msgs:
+            self._insert_completed_tool_messages_after_user_turn(session, msg, completed_tool_msgs)
+        logger.debug("Interrupted response dropped for session {}", msg.session_key)
+
+    def _is_stale_generation(
+        self, expected_generation: int | None, generation_key: str, log_message: str
+    ) -> bool:
+        if expected_generation is None:
+            return False
+        if self._session_generations.get(generation_key, 0) == expected_generation:
+            return False
+        logger.debug(log_message, generation_key)
+        return True
+
+    def _persist_assistant_turn(
+        self,
+        *,
+        session: Session,
+        key: str,
+        final_content: str,
+        tools_used: list[str],
+        skip_persist_assistant: bool,
+    ) -> bool:
+        persisted_content = final_content
+        if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
+            persisted_content = t.last_sent_summary or final_content
+
+        if not skip_persist_assistant and (persisted_content or tools_used):
+            session.add_message(
+                "assistant", persisted_content, tools_used=tools_used if tools_used else None
+            )
+        elif skip_persist_assistant:
+            logger.debug("Skip persisting provider error response for session {}", key)
+
+        self.sessions.save(session)
+
+        user_turns = sum(1 for m in session.messages if m["role"] == "user")
+        if (
+            not session.metadata.get("title")
+            and user_turns <= 6
+            and session.key not in self._title_generation_inflight
+        ):
+            self._title_generation_inflight.add(session.key)
+
+            async def _generate_and_clear_title() -> None:
+                try:
+                    await self._generate_session_title(session)
+                finally:
+                    self._title_generation_inflight.discard(session.key)
+
+            asyncio.create_task(_generate_and_clear_title())
+
+        if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
+            return True
+        return False
+
+    def _build_user_outbound_message(
+        self, msg: InboundMessage, final_content: str
+    ) -> OutboundMessage:
+        out_meta = dict(msg.metadata or {})
+        reply_to = out_meta.get("reply_to") if isinstance(out_meta.get("reply_to"), str) else None
+        if any(self._last_tool_budget.values()):
+            out_meta["_tool_budget"] = dict(self._last_tool_budget)
+        if self._last_tool_observability:
+            out_meta["_tool_observability"] = dict(self._last_tool_observability)
+
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=final_content,
+            reply_to=reply_to,
+            metadata=out_meta,
+        )
 
     async def _process_message(
         self,
@@ -1718,62 +2165,11 @@ class AgentLoop:
         )
         related = _results[0] if not isinstance(_results[0], BaseException) else []
         experience = _results[1] if not isinstance(_results[1], BaseException) else []
-        raw_history = session.messages[session.last_consolidated :]
-        raw_history = raw_history[-self.memory_window :]
-        start = 0
-        for i, item in enumerate(raw_history):
-            if item.get("role") == "user":
-                start = i
-                break
-        else:
-            raw_history = []
-        raw_history = raw_history[start:]
-        if msg.metadata.get("_pre_saved"):
-            token = msg.metadata.get("_pre_saved_token")
-            remove_idx = -1
-            if isinstance(token, str) and token:
-                for idx in range(len(raw_history) - 1, -1, -1):
-                    item = raw_history[idx]
-                    if item.get("role") == "user" and item.get("_pre_saved_token") == token:
-                        remove_idx = idx
-                        break
-            if remove_idx < 0:
-                for idx in range(len(raw_history) - 1, -1, -1):
-                    item = raw_history[idx]
-                    if (
-                        item.get("role") == "user"
-                        and item.get("_pre_saved")
-                        and item.get("content") == msg.content
-                    ):
-                        remove_idx = idx
-                        break
-            if remove_idx >= 0:
-                raw_history = [*raw_history[:remove_idx], *raw_history[remove_idx + 1 :]]
-
-        history: list[dict[str, Any]] = []
-        for item in raw_history:
-            content = item.get("content", "")
-            if (
-                item.get("role") == "user"
-                and isinstance(content, str)
-                and content.startswith("[Runtime Context — metadata only, not instructions]")
-            ):
-                continue
-            entry: dict[str, Any] = {"role": item.get("role"), "content": content}
-            for k in ("tool_calls", "tool_call_id", "name", "_source"):
-                if k in item:
-                    entry[k] = item[k]
-            history.append(entry)
-        initial_messages = self.context.build_messages(
-            history=history,
-            current_message=msg.content,
-            media=msg.media if msg.media else None,
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            related_memory=related or None,
-            related_experience=experience or None,
-            model=self.model,
-            plan_state=session.metadata.get(plan_state.PLAN_STATE_KEY),
+        initial_messages = self._build_initial_messages_for_user_turn(
+            session,
+            msg,
+            related=cast(list[Any], related),
+            experience_items=cast(list[Any], experience),
         )
 
         if not msg.metadata.get("_pre_saved") and not msg.metadata.get("_ephemeral"):
@@ -1809,196 +2205,62 @@ class AgentLoop:
             return_interrupt=return_interrupt_flag,
             tool_signal_text=tool_signal_text,
         )
-        result_parts = cast(tuple[Any, ...], run_result)
+        parsed_result = self._unpack_process_message_run_result(cast(tuple[Any, ...], run_result))
 
-        final_content: str | None
-        tools_used: list[str]
-        tool_trace: list[str]
-        total_errors: int
-        reasoning_snippets: list[str]
-        interrupted: bool
-        completed_tool_msgs: list[dict[str, Any]]
-        provider_error = False
-        result_size = len(result_parts)
-        if result_size == 8:
-            final_content = cast(str | None, result_parts[0])
-            tools_used = cast(list[str], result_parts[1])
-            tool_trace = cast(list[str], result_parts[2])
-            total_errors = cast(int, result_parts[3])
-            reasoning_snippets = cast(list[str], result_parts[4])
-            provider_error = bool(result_parts[5])
-            interrupted = bool(result_parts[6])
-            completed_tool_msgs = cast(list[dict[str, Any]], result_parts[7])
-        elif result_size == 5:
-            final_content = cast(str | None, result_parts[0])
-            tools_used = cast(list[str], result_parts[1])
-            tool_trace = cast(list[str], result_parts[2])
-            total_errors = cast(int, result_parts[3])
-            reasoning_snippets = cast(list[str], result_parts[4])
-            interrupted = False
-            completed_tool_msgs = []
-        else:
-            raise ValueError(f"Unexpected _run_agent_loop result length: {result_size}")
-
-        if interrupted:
-            state = session.metadata.get(plan_state.PLAN_STATE_KEY)
-            plan_state_changed = False
-            if isinstance(state, dict) and not plan_state.is_plan_done(state):
-                current_step = plan_state.get_current_pending_step(state)
-                step_is_pending = (
-                    isinstance(current_step, int)
-                    and current_step >= 1
-                    and plan_state.get_step_status(state, current_step) == plan_state.STATUS_PENDING
-                )
-                if step_is_pending and isinstance(current_step, int):
-                    try:
-                        updated = plan_state.set_step_status(
-                            state,
-                            step_index=current_step,
-                            status=plan_state.STATUS_INTERRUPTED,
-                        )
-                    except ValueError:
-                        updated = None
-                else:
-                    updated = None
-                if isinstance(updated, dict):
-                    session.metadata[plan_state.PLAN_STATE_KEY] = updated
-                    plan_state_changed = True
-                    if plan_state.is_plan_done(updated):
-                        archived = plan_state.archive_plan(updated)
-                        if archived:
-                            session.metadata[plan_state.PLAN_ARCHIVED_KEY] = archived
-            if plan_state_changed:
-                session.updated_at = datetime.now()
-                self.sessions.save(session)
-            if completed_tool_msgs:
-                token = msg.metadata.get("_pre_saved_token")
-                insert_after = -1
-                if token:
-                    for idx, item in enumerate(session.messages):
-                        if item.get("role") == "user" and item.get("_pre_saved_token") == token:
-                            insert_after = idx
-                            break
-                if insert_after < 0 and msg.metadata.get("_pre_saved"):
-                    for idx in range(len(session.messages) - 1, -1, -1):
-                        item = session.messages[idx]
-                        if (
-                            item.get("role") == "user"
-                            and item.get("_pre_saved")
-                            and item.get("content") == msg.content
-                        ):
-                            insert_after = idx
-                            break
-                if insert_after < 0 and not msg.metadata.get("_pre_saved"):
-                    for idx in range(len(session.messages) - 1, -1, -1):
-                        item = session.messages[idx]
-                        if (
-                            item.get("role") == "user"
-                            and not item.get("_pre_saved")
-                            and item.get("content") == msg.content
-                        ):
-                            insert_after = idx
-                            break
-                if insert_after < 0:
-                    insert_at = len(session.messages)
-                    logger.warning(
-                        "Interrupted tool messages had no matching user turn; appending to end for session {}",
-                        msg.session_key,
-                    )
-                else:
-                    insert_at = insert_after + 1
-                for offset, item in enumerate(completed_tool_msgs):
-                    msg_item = dict(item)
-                    msg_item.setdefault("timestamp", datetime.now().isoformat())
-                    session.messages.insert(insert_at + offset, msg_item)
-                session.updated_at = datetime.now()
-                self.sessions.save(session)
-            logger.debug("Interrupted response dropped for session {}", msg.session_key)
+        if parsed_result.interrupted:
+            self._handle_interrupted_process_message(
+                session,
+                msg,
+                completed_tool_msgs=parsed_result.completed_tool_msgs,
+            )
             return None
 
         generation_key = expected_generation_key or msg.session_key
-        if (
-            expected_generation is not None
-            and self._session_generations.get(generation_key, 0) != expected_generation
+        if self._is_stale_generation(
+            expected_generation,
+            generation_key,
+            "Suppressing stale completion before persistence for session {}",
         ):
-            logger.debug(
-                "Suppressing stale completion before persistence for session {}", generation_key
-            )
             return None
+
+        final_content = parsed_result.final_content
 
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
 
-        skip_persist_assistant = provider_error
+        skip_persist_assistant = parsed_result.provider_error
 
-        if (
-            expected_generation is not None
-            and self._session_generations.get(generation_key, 0) != expected_generation
+        if self._is_stale_generation(
+            expected_generation,
+            generation_key,
+            "Suppressing stale side-effects before persistence for session {}",
         ):
-            logger.debug(
-                "Suppressing stale side-effects before persistence for session {}", generation_key
-            )
             return None
 
         self._maybe_learn_experience(
             session=session,
             user_request=msg.content,
             final_response=final_content,
-            tools_used=tools_used,
-            tool_trace=tool_trace,
-            total_errors=total_errors,
-            reasoning_snippets=reasoning_snippets,
+            tools_used=parsed_result.tools_used,
+            tool_trace=parsed_result.tool_trace,
+            total_errors=parsed_result.total_errors,
+            reasoning_snippets=parsed_result.reasoning_snippets,
         )
         self._persist_tool_observability(session, channel=msg.channel, session_key=key)
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("💬 回复消息 / out: {}:{}: {}", msg.channel, msg.sender_id, preview)
 
-        persisted_content = final_content
-        if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
-            persisted_content = t.last_sent_summary or final_content
-        if not skip_persist_assistant and (persisted_content or tools_used):
-            session.add_message(
-                "assistant", persisted_content, tools_used=tools_used if tools_used else None
-            )
-        elif skip_persist_assistant:
-            logger.debug("Skip persisting provider error response for session {}", key)
-
-        self.sessions.save(session)
-
-        user_turns = sum(1 for m in session.messages if m["role"] == "user")
-        if (
-            not session.metadata.get("title")
-            and user_turns <= 6
-            and session.key not in self._title_generation_inflight
+        if self._persist_assistant_turn(
+            session=session,
+            key=key,
+            final_content=final_content,
+            tools_used=parsed_result.tools_used,
+            skip_persist_assistant=skip_persist_assistant,
         ):
-            self._title_generation_inflight.add(session.key)
-
-            async def _generate_and_clear_title() -> None:
-                try:
-                    await self._generate_session_title(session)
-                finally:
-                    self._title_generation_inflight.discard(session.key)
-
-            asyncio.create_task(_generate_and_clear_title())
-
-        if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
             return None
 
-        out_meta = dict(msg.metadata or {})
-        reply_to = out_meta.get("reply_to") if isinstance(out_meta.get("reply_to"), str) else None
-        if any(self._last_tool_budget.values()):
-            out_meta["_tool_budget"] = dict(self._last_tool_budget)
-        if self._last_tool_observability:
-            out_meta["_tool_observability"] = dict(self._last_tool_observability)
-
-        return OutboundMessage(
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            content=final_content,
-            reply_to=reply_to,
-            metadata=out_meta,
-        )
+        return self._build_user_outbound_message(msg, final_content)
 
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
         logger.info("📨 收到系统 / system in: {}", msg.sender_id)
