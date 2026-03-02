@@ -22,6 +22,182 @@ class GatewayStack:
     channels: Any
 
 
+def _extract_primary_id(raw_uid: Any) -> str:
+    return str(raw_uid or "").split("|", 1)[0].strip()
+
+
+def _is_telegram_chat_id(chat_id: str) -> bool:
+    return bool(chat_id) and chat_id.lstrip("-").isdigit()
+
+
+def _collect_startup_targets(config: Any, logger: Any) -> list[tuple[str, str]]:
+    targets: list[tuple[str, str]] = []
+    seen_targets: set[tuple[str, str]] = set()
+
+    def _add_target(channel_name: str, chat_id: str) -> None:
+        if not chat_id:
+            logger.warning("⚠️ 问候目标跳过 / target skipped: {} empty chat_id", channel_name)
+            return
+        pair = (channel_name, chat_id)
+        if pair in seen_targets:
+            return
+        seen_targets.add(pair)
+        targets.append(pair)
+
+    channel_cfgs = [
+        ("telegram", config.channels.telegram),
+        ("feishu", config.channels.feishu),
+        ("dingtalk", config.channels.dingtalk),
+        ("imessage", config.channels.imessage),
+        ("qq", config.channels.qq),
+        ("email", config.channels.email),
+    ]
+    for name, cfg in channel_cfgs:
+        if not (cfg.enabled and cfg.allow_from):
+            continue
+        for uid in cfg.allow_from:
+            target = _extract_primary_id(uid)
+            if name == "telegram" and not _is_telegram_chat_id(target):
+                continue
+            _add_target(name, target)
+
+    wa = config.channels.whatsapp
+    if wa.enabled and wa.allow_from:
+        for uid in wa.allow_from:
+            bare = _extract_primary_id(uid)
+            if not bare:
+                logger.warning("⚠️ 问候目标跳过 / target skipped: whatsapp empty id")
+                continue
+            jid = bare if "@" in bare else f"{bare}@s.whatsapp.net"
+            _add_target("whatsapp", jid)
+
+    return targets
+
+
+def _log_startup_out(logger: Any, channel_name: str, chat_id: str, content: str) -> None:
+    preview = content[:60] + "..." if len(content) > 60 else content
+    preview = preview.replace("\n", " ")
+    logger.info("💬 启动问候 / out: {}:{}: {}", channel_name, chat_id, preview)
+
+
+def _extract_persona_language_tag(text: str) -> str | None:
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        m = re.search(r"(?:\*\*\s*)?(?:language|lang|语言)(?:\s*\*\*)?\s*[:：]\s*(.+)$", line, re.I)
+        if not m:
+            continue
+        value = m.group(1).strip().strip("`*")
+        return value or None
+    return None
+
+
+def _read_persona_text(workspace_path: Path, logger: Any) -> str:
+    try:
+        persona_path = workspace_path / "PERSONA.md"
+        if persona_path.exists():
+            return persona_path.read_text(encoding="utf-8").strip()
+    except OSError as e:
+        logger.warning("⚠️ 读取 PERSONA 失败 / read failed: {}", e)
+    return ""
+
+
+def _build_local_time(preferred_language: str, now_local: datetime) -> str:
+    zh_weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    ja_weekdays = ["月曜", "火曜", "水曜", "木曜", "金曜", "土曜", "日曜"]
+    ko_weekdays = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
+    en_weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    lang_lower = preferred_language.lower()
+    if any(k in lang_lower for k in ("中文", "chinese", "mandarin")):
+        weekdays = zh_weekdays
+    elif any(k in lang_lower for k in ("日本語", "japanese")):
+        weekdays = ja_weekdays
+    elif any(k in lang_lower for k in ("한국어", "korean")):
+        weekdays = ko_weekdays
+    else:
+        weekdays = en_weekdays
+    return f"{weekdays[now_local.weekday()]} {now_local.strftime('%H:%M')}"
+
+
+def _build_startup_prompt(preferred_language: str, local_time: str) -> str:
+    native_triggers: dict[str, str] = {
+        "中文": "我来啦，{t}",
+        "chinese": "我来啦，{t}",
+        "mandarin": "我来啦，{t}",
+        "日本語": "来たよ、{t}",
+        "japanese": "来たよ、{t}",
+        "한국어": "왔어요, {t}",
+        "korean": "왔어요, {t}",
+    }
+    lang_lower = preferred_language.lower()
+    trigger_tpl = next(
+        (v for k, v in native_triggers.items() if k in lang_lower),
+        "I just came online. It's {t}.",
+    )
+    return trigger_tpl.format(t=local_time)
+
+
+def _build_startup_system_prompt(persona_text: str, preferred_language: str) -> str:
+    system_parts: list[str] = []
+    if persona_text:
+        system_parts.append(f"## PERSONA.md\n{persona_text}")
+    system_parts.append(
+        f"User just came online. Respond in {preferred_language}. "
+        "Greet like a close friend — casual, warm, 1-2 sentences. "
+        "Naturally weave in the day/time. "
+        "Do NOT ask questions, offer help, or list capabilities."
+    )
+    return "\n\n---\n\n".join(system_parts)
+
+
+async def _generate_startup_greeting(
+    agent: Any,
+    logger: Any,
+    *,
+    system_prompt: str,
+    prompt: str,
+    channel: str,
+    chat_id: str,
+) -> str | None:
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        response = await agent.provider.chat(
+            messages=messages,
+            model=getattr(agent, "model", None),
+            max_tokens=100,
+            temperature=0.7,
+        )
+        text = (response.content or "").strip()
+        if text:
+            return text
+        raise RuntimeError("empty startup greeting")
+    except Exception as e:
+        logger.warning(
+            "⚠️ 启动问候轻量生成失败 / lightweight startup failed: {}:{} — {}",
+            channel,
+            chat_id,
+            e,
+        )
+        try:
+            text = await agent.process_direct(
+                prompt,
+                session_key=f"{channel}:{chat_id}",
+                channel=channel,
+                chat_id=chat_id,
+                ephemeral=True,
+            )
+        except Exception as e2:
+            logger.warning("⚠️ 启动问候失败 / startup failed: {}:{} — {}", channel, chat_id, e2)
+            return None
+    if not text:
+        return None
+    return text
+
+
 def build_gateway_stack(config: Any, provider: Any) -> GatewayStack:
     """Build the full gateway service stack from config and provider.
 
@@ -93,12 +269,6 @@ def build_gateway_stack(config: Any, provider: Any) -> GatewayStack:
         return response
 
     cron.on_job = on_cron_job
-
-    def _extract_primary_id(raw_uid: Any) -> str:
-        return str(raw_uid or "").split("|", 1)[0].strip()
-
-    def _is_telegram_chat_id(chat_id: str) -> bool:
-        return bool(chat_id) and chat_id.lstrip("-").isdigit()
 
     def _iter_heartbeat_targets() -> list[tuple[str, str]]:
         targets: list[tuple[str, str]] = []
@@ -185,10 +355,6 @@ async def send_startup_greeting(
     *,
     on_desktop_greeting: Any | None = None,
 ) -> None:
-    """Send startup greeting to all enabled channels.
-    Each channel gets an independent LLM call with its own session context.
-    Channels where allow_from != chat_id are skipped (discord/slack/mochat).
-    """
     from loguru import logger
 
     from bao.bus.events import OutboundMessage
@@ -204,59 +370,7 @@ async def send_startup_greeting(
             logger.warning("⚠️ 桌面回调失败 / callback failed: {} — {}", phase, e)
 
     await asyncio.sleep(5)
-
-    def _extract_primary_id(raw_uid: Any) -> str:
-        return str(raw_uid or "").split("|", 1)[0].strip()
-
-    def _is_telegram_chat_id(chat_id: str) -> bool:
-        return bool(chat_id) and chat_id.lstrip("-").isdigit()
-
-    targets: list[tuple[str, str]] = []
-    seen_targets: set[tuple[str, str]] = set()
-
-    def _add_target(channel_name: str, chat_id: str) -> None:
-        if not chat_id:
-            logger.warning("⚠️ 问候目标跳过 / target skipped: {} empty chat_id", channel_name)
-            return
-        pair = (channel_name, chat_id)
-        if pair in seen_targets:
-            return
-        seen_targets.add(pair)
-        targets.append(pair)
-
-    def _log_startup_out(channel_name: str, chat_id: str, content: str) -> None:
-        preview = content[:60] + "..." if len(content) > 60 else content
-        preview = preview.replace("\n", " ")
-        logger.info("💬 启动问候 / out: {}:{}: {}", channel_name, chat_id, preview)
-
-    # Channels where allow_from directly maps to chat_id
-    channel_cfgs = [
-        ("telegram", config.channels.telegram),
-        ("feishu", config.channels.feishu),
-        ("dingtalk", config.channels.dingtalk),
-        ("imessage", config.channels.imessage),
-        ("qq", config.channels.qq),
-        ("email", config.channels.email),
-    ]
-    for name, cfg in channel_cfgs:
-        if not (cfg.enabled and cfg.allow_from):
-            continue
-        for uid in cfg.allow_from:
-            target = _extract_primary_id(uid)
-            if name == "telegram" and not _is_telegram_chat_id(target):
-                continue
-            _add_target(name, target)
-
-    # WhatsApp: phone -> JID (skip if already a JID)
-    wa = config.channels.whatsapp
-    if wa.enabled and wa.allow_from:
-        for uid in wa.allow_from:
-            bare = _extract_primary_id(uid)
-            if not bare:
-                logger.warning("⚠️ 问候目标跳过 / target skipped: whatsapp empty id")
-                continue
-            jid = bare if "@" in bare else f"{bare}@s.whatsapp.net"
-            _add_target("whatsapp", jid)
+    targets = _collect_startup_targets(config, logger)
 
     from bao.config.onboarding import (
         LANG_PICKER,
@@ -280,7 +394,7 @@ async def send_startup_greeting(
                 await bus.publish_outbound(
                     OutboundMessage(channel=ch, chat_id=cid, content=content)
                 )
-                _log_startup_out(ch, cid, content)
+                _log_startup_out(logger, ch, cid, content)
             except Exception as e:
                 logger.warning("⚠️ 入门问候失败 / onboarding failed: {}:{} — {}", ch, cid, e)
         await _emit_desktop_greeting(content, "Onboarding")
@@ -288,128 +402,41 @@ async def send_startup_greeting(
 
     # Ready stage: personalized greeting per channel
     now_local = datetime.now().astimezone()
-
-    def _extract_persona_language_tag(text: str) -> str | None:
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            m = re.search(
-                r"(?:\*\*\s*)?(?:language|lang|语言)(?:\s*\*\*)?\s*[:：]\s*(.+)$", line, re.I
-            )
-            if not m:
-                continue
-            value = m.group(1).strip().strip("`*")
-            return value or None
-        return None
-
-    persona_text = ""
-    try:
-        persona_path = workspace_path / "PERSONA.md"
-        if persona_path.exists():
-            persona_text = persona_path.read_text(encoding="utf-8").strip()
-    except OSError as e:
-        logger.warning("⚠️ 读取 PERSONA 失败 / read failed: {}", e)
+    persona_text = _read_persona_text(workspace_path, logger)
 
     persona_lang_tag = _extract_persona_language_tag(persona_text) if persona_text else None
     preferred_language = persona_lang_tag or infer_language(workspace_path)
-
-    # Localized time format — CJK languages use native weekday names
-    zh_weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    ja_weekdays = ["月曜", "火曜", "水曜", "木曜", "金曜", "土曜", "日曜"]
-    ko_weekdays = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
-    en_weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    _lang_lower = preferred_language.lower()
-    if any(k in _lang_lower for k in ("中文", "chinese", "mandarin")):
-        _wd = zh_weekdays
-    elif any(k in _lang_lower for k in ("日本語", "japanese")):
-        _wd = ja_weekdays
-    elif any(k in _lang_lower for k in ("한국어", "korean")):
-        _wd = ko_weekdays
-    else:
-        _wd = en_weekdays
-    local_time = f"{_wd[now_local.weekday()]} {now_local.strftime('%H:%M')}"
-
-    # Native-language user trigger — LLMs strongly follow user message language
-    native_triggers: dict[str, str] = {
-        "中文": "我来啦，{t}",
-        "chinese": "我来啦，{t}",
-        "mandarin": "我来啦，{t}",
-        "日本語": "来たよ、{t}",
-        "japanese": "来たよ、{t}",
-        "한국어": "왔어요, {t}",
-        "korean": "왔어요, {t}",
-    }
-    _trigger_tpl = next(
-        (v for k, v in native_triggers.items() if k in _lang_lower),
-        "I just came online. It's {t}.",
-    )
-    prompt = _trigger_tpl.format(t=local_time)
-
-    system_parts: list[str] = []
-    if persona_text:
-        system_parts.append(f"## PERSONA.md\n{persona_text}")
-    system_parts.append(
-        f"User just came online. Respond in {preferred_language}. "
-        "Greet like a close friend — casual, warm, 1-2 sentences. "
-        "Naturally weave in the day/time. "
-        "Do NOT ask questions, offer help, or list capabilities."
-    )
-    system_prompt = "\n\n---\n\n".join(system_parts)
-
-    async def _generate_greeting(_channel: str, _chat_id: str) -> str | None:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ]
-        try:
-            response = await agent.provider.chat(
-                messages=messages,
-                model=getattr(agent, "model", None),
-                max_tokens=100,
-                temperature=0.7,
-            )
-            text = (response.content or "").strip()
-            if text:
-                return text
-            raise RuntimeError("empty startup greeting")
-        except Exception as e:
-            logger.warning(
-                "⚠️ 启动问候轻量生成失败 / lightweight startup failed: {}:{} — {}",
-                _channel,
-                _chat_id,
-                e,
-            )
-            try:
-                text = await agent.process_direct(
-                    prompt,
-                    session_key=f"{_channel}:{_chat_id}",
-                    channel=_channel,
-                    chat_id=_chat_id,
-                    ephemeral=True,
-                )
-            except Exception as e2:
-                logger.warning(
-                    "⚠️ 启动问候失败 / startup failed: {}:{} — {}", _channel, _chat_id, e2
-                )
-                return None
-        if not text:
-            return None
-        return text
+    local_time = _build_local_time(preferred_language, now_local)
+    prompt = _build_startup_prompt(preferred_language, local_time)
+    system_prompt = _build_startup_system_prompt(persona_text, preferred_language)
 
     # External channels
     for ch, cid in targets:
-        text = await _generate_greeting(ch, cid)
+        text = await _generate_startup_greeting(
+            agent,
+            logger,
+            system_prompt=system_prompt,
+            prompt=prompt,
+            channel=ch,
+            chat_id=cid,
+        )
         if text:
             try:
                 await bus.publish_outbound(OutboundMessage(channel=ch, chat_id=cid, content=text))
-                _log_startup_out(ch, cid, text)
+                _log_startup_out(logger, ch, cid, text)
             except Exception as e:
                 logger.warning("⚠️ 问候发送失败 / send failed: {}:{} — {}", ch, cid, e)
 
     # Desktop channel (not in ChannelManager, uses callback)
     if on_desktop_greeting:
-        text = await _generate_greeting("desktop", "local")
+        text = await _generate_startup_greeting(
+            agent,
+            logger,
+            system_prompt=system_prompt,
+            prompt=prompt,
+            channel="desktop",
+            chat_id="local",
+        )
         if text:
             await _emit_desktop_greeting(text, "Desktop startup")
 
