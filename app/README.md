@@ -76,4 +76,6 @@ app\scripts\package_win_installer.bat
 
 补充：Desktop 后端已增加 `AsyncioRunner` 关闭收敛（先排空再取消残留任务）与 `SessionService.shutdown()` 生命周期清理，用于降低 Qt 测试批量运行时的间歇性崩溃风险。
 
+补充：Settings 下拉字段统一走 `SettingsSelect.qml` 的自定义样式（输入框、箭头动效、弹层选项列表），避免平台默认下拉外观不一致。
+
 > 开发细节（架构、测试命令、UI 坑点、技术要点）见 `AGENTS.md`。

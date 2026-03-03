@@ -15,6 +15,7 @@ Item {
     // For SettingsView.collectFields()
     property var currentValue: _loaded ? valueForIndex(combo.currentIndex) : undefined
     property bool _loaded: false
+    property int popupMaxHeight: 240
 
     signal valueChanged(var value)
 
@@ -22,13 +23,13 @@ Item {
     implicitHeight: col.implicitHeight
 
     function valueForIndex(i) {
-        if (!options || options.length === undefined) return undefined
+        if (!options) return undefined
         if (i < 0 || i >= options.length) return undefined
         return options[i].value
     }
 
     function indexForValue(v) {
-        if (!options || options.length === undefined) return -1
+        if (!options) return -1
         for (var i = 0; i < options.length; i++) {
             if (options[i].value === v) return i
         }
@@ -37,7 +38,8 @@ Item {
 
     function presetValue(v) {
         var idx = indexForValue(v)
-        if (idx >= 0) combo.currentIndex = idx
+        if (idx < 0) return
+        combo.currentIndex = idx
     }
 
     Component.onCompleted: {
@@ -90,6 +92,7 @@ Item {
                 leftPadding: 14
                 rightPadding: 32
                 font.pixelSize: 14
+                hoverEnabled: true
 
                 model: {
                     var labels = []
@@ -114,6 +117,62 @@ Item {
                     text: "▾"
                     color: textTertiary
                     font.pixelSize: 14
+                    rotation: combo.popup.visible ? 180 : 0
+
+                    Behavior on rotation { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+                }
+
+                delegate: ItemDelegate {
+                    id: optionDelegate
+                    width: ListView.view ? ListView.view.width : combo.width
+                    height: 34
+                    highlighted: combo.highlightedIndex === index
+
+                    contentItem: Text {
+                        text: modelData
+                        color: optionDelegate.highlighted ? textPrimary : textSecondary
+                        font.pixelSize: 13
+                        verticalAlignment: Text.AlignVCenter
+                        elide: Text.ElideRight
+                    }
+
+                    background: Rectangle {
+                        radius: radiusSm
+                        color: optionDelegate.highlighted
+                               ? (isDark ? "#267C6CF0" : "#147C6CF0")
+                               : (optionDelegate.hovered
+                                  ? (isDark ? "#10FFFFFF" : "#08000000")
+                                  : "transparent")
+
+                        Behavior on color { ColorAnimation { duration: 120 } }
+                    }
+                }
+
+                popup: Popup {
+                    y: combo.height + 6
+                    width: combo.width
+                    padding: 6
+
+                    implicitHeight: Math.min(contentItem.implicitHeight + topPadding + bottomPadding, root.popupMaxHeight)
+
+                    contentItem: ListView {
+                        clip: true
+                        model: combo.popup.visible ? combo.delegateModel : null
+                        currentIndex: combo.highlightedIndex
+                        boundsBehavior: Flickable.StopAtBounds
+                        implicitHeight: contentHeight
+
+                        ScrollBar.vertical: ScrollBar {
+                            policy: ScrollBar.AsNeeded
+                        }
+                    }
+
+                    background: Rectangle {
+                        radius: radiusSm
+                        color: bgInput
+                        border.color: borderSubtle
+                        border.width: 1
+                    }
                 }
 
                 onActivated: function(index) {
