@@ -4,6 +4,24 @@ All notable changes to Bao are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/), and this project uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.2] - 2026-03-03
+
+### Added
+
+- **工具路由打分与自动扩容** — `toolExposure.mode=auto` 下按意图和参数命中对工具打分，先 top-K 曝光，连续未触发工具调用时自动扩容并可回退全量曝光
+- **悬空 tool_call 自愈** — provider 调用前自动补齐缺失的 tool 结果占位，避免 API 因 assistant/tool 不配对而拒绝请求（主代理与子代理一致）
+
+### Changed
+
+- **记忆检索升级为混合候选** — 向量召回与 BM25 文本候选合并后统一 rerank，新增文本信号权重，检索稳定性更高
+- **长期记忆写入去重优化** — long-term 内容归一化后若无变化则跳过 delete/re-insert 与 embedding 调度，减少无效写入与额外开销
+- **Anthropic 推理预算映射** — `reasoning_effort` 映射到更高 `budget_tokens`（`low=2048` / `medium=4096` / `high=8192`），thinking 默认类型改为 `adaptive`
+
+### Fixed
+
+- **/session 选择漂移** — 会话列表展示时缓存 key 顺序，按序号选择时优先使用缓存快照，避免中间 metadata 更新导致序号错位
+- **Runtime 主机信息可见性** — system prompt 的 Runtime 区块增加 `Host:` 前缀并声明为权威事实，降低重复询问已有环境信息
+
 ## [0.3.1] - 2026-03-03
 
 ### Changed
