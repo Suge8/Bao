@@ -213,3 +213,69 @@ def test_save_rejects_invalid_bool_value(tmp_path):
     data = json.loads(_strip_comments(cfg.read_text(encoding="utf-8")))
     assert data["channels"]["mochat"]["socketDisableMsgpack"] is False
     assert any("Config validation failed" in e for e in errors)
+
+
+def test_get_providers_sorted_by_order(tmp_path):
+    from app.backend.config import ConfigService
+
+    config_with_ordered_providers = """{
+  "providers": {
+    "late": {
+      "type": "openai",
+      "apiKey": "sk-late",
+      "order": 5
+    },
+    "early": {
+      "type": "openai",
+      "apiKey": "sk-early",
+      "order": 1
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": "openai/gpt-4o"
+    }
+  }
+}"""
+    cfg = tmp_path / "config.jsonc"
+    cfg.write_text(config_with_ordered_providers, encoding="utf-8")
+    svc = ConfigService()
+    with patch("bao.config.loader.get_config_path", return_value=cfg):
+        svc.load()
+
+    providers = svc.getProviders()
+    assert [p["name"] for p in providers] == ["early", "late"]
+    assert providers[0]["order"] == 1
+    assert providers[1]["order"] == 5
+
+
+def test_get_providers_missing_order_falls_back_to_index(tmp_path):
+    from app.backend.config import ConfigService
+
+    config_without_order = """{
+  "providers": {
+    "first": {
+      "type": "openai",
+      "apiKey": "sk-first"
+    },
+    "second": {
+      "type": "openai",
+      "apiKey": "sk-second"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": "openai/gpt-4o"
+    }
+  }
+}"""
+    cfg = tmp_path / "config.jsonc"
+    cfg.write_text(config_without_order, encoding="utf-8")
+    svc = ConfigService()
+    with patch("bao.config.loader.get_config_path", return_value=cfg):
+        svc.load()
+
+    providers = svc.getProviders()
+    assert [p["name"] for p in providers] == ["first", "second"]
+    assert providers[0]["order"] == 0
+    assert providers[1]["order"] == 1

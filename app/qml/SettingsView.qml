@@ -12,6 +12,7 @@ Rectangle {
                                  ? (appRoot.uiLanguage === "zh" || (appRoot.uiLanguage === "auto" && appRoot.autoLanguage === "zh"))
                                  : false
     property var _providerList: []
+    property string _pendingExpandProviderName: ""
 
     function tr(zh, en) {
         return isZh ? zh : en
@@ -30,18 +31,78 @@ Rectangle {
     function _loadProviders() {
         if (!configService) return
         _providerList = configService.getProviders() || []
+        if (_pendingExpandProviderName !== "") {
+            Qt.callLater(function() {
+                _expandAndFocusProvider(_pendingExpandProviderName)
+                _pendingExpandProviderName = ""
+            })
+        }
+    }
+
+    function _expandAndFocusProvider(name) {
+        if (!name) return
+        for (var i = 0; i < _providerList.length; i++) {
+            if (_providerList[i] && _providerList[i].name === name) {
+                var item = providerRepeater.itemAt(i)
+                if (!item) {
+                    Qt.callLater(function() { _expandAndFocusProvider(name) })
+                    return
+                }
+                item.expanded = true
+                Qt.callLater(function() { _scrollToProviderItem(item) })
+                return
+            }
+        }
+    }
+
+    function _scrollToProviderItem(item) {
+        if (!item) return
+        var flick = settingsScroll.contentItem
+        if (!flick) return
+        var top = item.mapToItem(scrollContent, 0, 0).y
+        var maxY = Math.max(0, flick.contentHeight - flick.height)
+        var target = Math.max(0, Math.min(maxY, top - 12))
+        flick.contentY = target
     }
 
     // No longer needed — _addNewProvider uses dotpath insertion
 
     function _addNewProvider() {
         if (!configService) return
-        var name = "provider" + (_providerList.length + 1)
+        var used = {}
+        for (var i = 0; i < _providerList.length; i++) {
+            if (_providerList[i] && _providerList[i].name) used[_providerList[i].name] = true
+        }
+        var idx = _providerList.length + 1
+        var name = "provider" + idx
+        while (used[name]) {
+            idx += 1
+            name = "provider" + idx
+        }
+
+        var maxOrder = -1
+        for (var j = 0; j < _providerList.length; j++) {
+            var ord = Number(_providerList[j] && _providerList[j].order)
+            if (!isNaN(ord) && ord > maxOrder) maxOrder = ord
+        }
+
         var changes = {}
-        changes["providers." + name] = {"type": "openai", "apiKey": ""}
+        var providerValue = {"type": "openai", "apiKey": "", "order": maxOrder + 1}
+        var existingProviders = configService.getValue("providers")
+        if (existingProviders && typeof existingProviders === "object" && !Array.isArray(existingProviders)) {
+            changes["providers." + name] = providerValue
+        } else {
+            var initialProviders = {}
+            initialProviders[name] = providerValue
+            changes["providers"] = initialProviders
+        }
+
         var ok = configService.save(changes)
         toast.show(ok ? strings.settings_saved_hint : strings.settings_save_failed, ok)
-        if (ok) _loadProviders()
+        if (ok) {
+            _pendingExpandProviderName = name
+            _loadProviders()
+        }
     }
 
     function saveAll() {
@@ -49,23 +110,97 @@ Rectangle {
         var changes = {}
         collectFields(innerCol, changes)
 
-        var providerChanges = {}
+        var allProviders = configService.getValue("providers")
+        var providerEntries = []
+        var seenProviderNames = {}
+        var providerRename = false
+        var providerHasDotName = false
         for (var i = 0; i < root._providerList.length; i++) {
             var prefix = "_prov_" + i + "_"
-            var origName = root._providerList[i].name
-            var newName = changes[prefix + "name"] || origName
-            var prov = {}
+            var original = root._providerList[i] || ({})
+            var origName = original.name
+            var requestedName = changes[prefix + "name"]
+            var newName = origName
+            if (requestedName !== undefined) {
+                var trimmedName = String(requestedName).trim()
+                if (trimmedName !== "") newName = trimmedName
+            }
+            if (seenProviderNames[newName]) {
+                toast.show(tr("保存失败：提供商名称重复（" + newName + "）", "Save failed: duplicate provider name (" + newName + ")"), false)
+                return
+            }
+            seenProviderNames[newName] = true
+            if (newName.indexOf(".") !== -1) {
+                providerHasDotName = true
+            }
+
+            var sourceProvider = original
+            if (allProviders && typeof allProviders === "object" && !Array.isArray(allProviders)
+                    && allProviders[origName] && typeof allProviders[origName] === "object") {
+                sourceProvider = allProviders[origName]
+            }
+
+            var merged = {}
+            for (var sourceKey in sourceProvider) merged[sourceKey] = sourceProvider[sourceKey]
+            if (merged["type"] === undefined || merged["type"] === null || merged["type"] === "") {
+                merged["type"] = original.type || "openai"
+            }
+            if (merged["apiKey"] === undefined || merged["apiKey"] === null) {
+                merged["apiKey"] = (original.apiKey !== undefined && original.apiKey !== null) ? original.apiKey : ""
+            }
+            var mergedOrder = NaN
+            if (typeof merged["order"] === "number") {
+                mergedOrder = merged["order"]
+            } else if (typeof merged["order"] === "string" && merged["order"].trim() !== "") {
+                mergedOrder = Number(merged["order"])
+            }
+            if (isNaN(mergedOrder)) {
+                var fallbackOrder = NaN
+                if (typeof original.order === "number") {
+                    fallbackOrder = original.order
+                } else if (typeof original.order === "string" && original.order.trim() !== "") {
+                    fallbackOrder = Number(original.order)
+                }
+                merged["order"] = isNaN(fallbackOrder) ? i : fallbackOrder
+            } else {
+                merged["order"] = mergedOrder
+            }
+
+            var changedFields = []
             var fieldNames = ["type", "apiKey", "apiBase"]
             for (var j = 0; j < fieldNames.length; j++) {
                 var fk = prefix + fieldNames[j]
-                if (changes[fk] !== undefined) prov[fieldNames[j]] = changes[fk]
+                if (changes[fk] !== undefined) {
+                    merged[fieldNames[j]] = changes[fk]
+                    changedFields.push(fieldNames[j])
+                }
                 delete changes[fk]
             }
             delete changes[prefix + "name"]
-            if (Object.keys(prov).length > 0) {
-                providerChanges[newName] = prov
-                for (var key in prov) {
-                    changes["providers." + newName + "." + key] = prov[key]
+
+            providerEntries.push({
+                "name": newName,
+                "origName": origName,
+                "merged": merged,
+                "changedFields": changedFields
+            })
+            if (newName !== origName) {
+                providerRename = true
+            }
+        }
+
+        if (providerRename || providerHasDotName) {
+            var nextProviders = {}
+            for (var p = 0; p < providerEntries.length; p++) {
+                nextProviders[providerEntries[p].name] = providerEntries[p].merged
+            }
+            changes["providers"] = nextProviders
+        } else {
+            for (var e = 0; e < providerEntries.length; e++) {
+                var entry = providerEntries[e]
+                for (var c = 0; c < entry.changedFields.length; c++) {
+                    var field = entry.changedFields[c]
+                    changes["providers." + entry.name + "." + field] = entry.merged[field]
                 }
             }
         }
@@ -248,6 +383,7 @@ Rectangle {
                         spacing: spacingMd
 
                         Repeater {
+                            id: providerRepeater
                             model: root._providerList
 
                             delegate: Rectangle {

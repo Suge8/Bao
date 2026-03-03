@@ -43,6 +43,21 @@ def _as_str(value: object, default: str = "") -> str:
     return default
 
 
+def _as_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 class ConfigService(QObject):
     configLoaded: ClassVar[Signal] = Signal()
     saveError: ClassVar[Signal] = Signal(str)
@@ -150,26 +165,34 @@ class ConfigService(QObject):
 
     @_typed_slot(result="QVariant")
     def getProviders(self) -> list[dict[str, object]]:
-        """Return list of {name, type, apiKey, apiBase, extraHeaders} for all providers."""
         providers = _as_dict(self._data.get("providers", {}))
         if providers is None:
             return []
-        result: list[dict[str, object]] = []
-        for name, provider in providers.items():
+        indexed: list[tuple[int, dict[str, object], int]] = []
+        for idx, (name, provider) in enumerate(providers.items()):
             provider_dict = _as_dict(provider)
             if provider_dict is None:
                 continue
             extra_headers = _as_dict(provider_dict.get("extraHeaders")) or {}
-            result.append(
-                {
-                    "name": name,
-                    "type": _as_str(provider_dict.get("type", "")),
-                    "apiKey": _as_str(provider_dict.get("apiKey", "")),
-                    "apiBase": _as_str(provider_dict.get("apiBase", "")),
-                    "extraHeaders": extra_headers,
-                }
+            order = _as_int(provider_dict.get("order"))
+            if order is None:
+                order = idx
+            indexed.append(
+                (
+                    order,
+                    {
+                        "name": name,
+                        "type": _as_str(provider_dict.get("type", "")),
+                        "apiKey": _as_str(provider_dict.get("apiKey", "")),
+                        "apiBase": _as_str(provider_dict.get("apiBase", "")),
+                        "extraHeaders": extra_headers,
+                        "order": order,
+                    },
+                    idx,
+                )
             )
-        return result
+        indexed.sort(key=lambda x: (x[0], x[2]))
+        return [item for _, item, _ in indexed]
 
     @_typed_slot(str, result=bool)
     def removeProvider(self, name: str) -> bool:

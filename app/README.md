@@ -31,10 +31,10 @@ uv run python app/main.py
 ### 3. 使用流程
 
 1. 打开 App → 若首次使用且未配置 Provider/Model，会自动跳转 Settings 页面；填写配置
-2. 点击 Save → 切换到 Chat 页面，网关自动启动
-3. Gateway 启动后，桌面聊天 + 所有已启用 Channels 同时运行
-4. 可在标题栏右侧查看网关状态、停止或重启网关
-5. 修改配置后点击 Save → 在标题栏点击重启即可应用
+2. 侧边栏不再提供 chat/settings 导航按钮，左下角 logo 是进入 Settings 的入口
+3. 在 Settings 页面点击左侧任一会话，会直接切回 Chat 并切换到该会话
+4. 网关通过侧边栏顶部网关胶囊手动启动/停止，状态与按钮在同一区域展示
+5. 修改配置后点击 Save → 在网关胶囊执行重启即可应用
 6. 左侧 Sidebar 的 Plan 面板会实时展示当前会话计划（目标、进度、步骤状态）；计划清空后自动收起并显示最近完成摘要
 7. 在 Settings 点击“+ 添加 LLM 提供商”后，新增项会自动展开并滚动到该卡片位置，方便直接填写
 8. Settings 的 Agent Defaults 新增推理强度选项：`Auto` / `off` / `low` / `medium` / `high`（保存后重启 Gateway 生效）
@@ -53,6 +53,7 @@ uv run python app/main.py
 ## 当前限制
 
 - 配置保存后需手动重启 Gateway（非热重载，by design）
+- 流式回复进行中切换会话会延后到当前回复完成后生效（避免中断正在执行的回复链路）
 
 ## 打包
 
