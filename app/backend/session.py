@@ -112,6 +112,7 @@ class SessionService(QObject):
         self._allow_active_selection = False
         self._active_key = ""
         self._pending_select_key: str | None = None
+        self._last_emitted_active_key = ""
         self._model = SessionListModel()
         self._pending_deletes: dict[str, tuple[list[dict[str, Any]], str]] = {}
         self._list_fp: tuple[Any, ...] | None = None
@@ -138,6 +139,11 @@ class SessionService(QObject):
         self.refresh()
         self._unread_timer.start()
 
+    def _emit_active_key_if_changed(self, new_key: str) -> None:
+        """Emit activeKeyChanged only if key actually changed."""
+        if new_key != self._last_emitted_active_key:
+            self._last_emitted_active_key = new_key
+            self.activeKeyChanged.emit(new_key)
     # ------------------------------------------------------------------
     # Public slots
     # ------------------------------------------------------------------
@@ -178,7 +184,7 @@ class SessionService(QObject):
             self._model.set_active(key)
             if _DEBUG_SWITCH:
                 logger.debug(f"session_select_commit key={key}")
-            self.activeKeyChanged.emit(key)
+            self._emit_active_key_if_changed(key)
         fut = self._runner.submit(self._select_session(key))
         fut.add_done_callback(self._on_select_done)
 
@@ -205,7 +211,7 @@ class SessionService(QObject):
         self._active_key = new_active
         self._model.reset_sessions(sessions_after, new_active)
         self.sessionsChanged.emit()
-        self.activeKeyChanged.emit(new_active)
+        self._emit_active_key_if_changed(new_active)
 
         fut = self._runner.submit(self._delete_session(key))
         fut.add_done_callback(lambda future, k=key: self._on_delete_done(k, future))
@@ -332,7 +338,7 @@ class SessionService(QObject):
         self._model.reset_sessions(sessions, active, unread_keys)
         self.sessionsChanged.emit()
         if active:
-            self.activeKeyChanged.emit(active)
+            self._emit_active_key_if_changed(active)
 
     def _handle_select_result(self, ok: bool, error: str, key: str) -> None:
         if self._pending_select_key is not None and key != self._pending_select_key:
@@ -346,7 +352,7 @@ class SessionService(QObject):
         if self._active_key != key:
             self._active_key = key
             self._model.set_active(key)
-            self.activeKeyChanged.emit(key)
+            self._emit_active_key_if_changed(key)
 
     def _handle_mutate_result(self, ok: bool, error: str) -> None:
         if not ok:
@@ -362,7 +368,7 @@ class SessionService(QObject):
                 self._active_key = active_before
                 self._model.reset_sessions(sessions_before, active_before)
                 self.sessionsChanged.emit()
-                self.activeKeyChanged.emit(active_before)
+                self._emit_active_key_if_changed(active_before)
             self.errorOccurred.emit(error)
             self.deleteCompleted.emit(key, False, error)
             return
