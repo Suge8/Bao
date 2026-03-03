@@ -322,6 +322,7 @@ def test_sync_active_history_skips_while_processing():
 def test_handle_history_result_ignores_stale_session_payload():
     svc, model = make_service()
     svc._session_key = "imessage:active"
+    svc._desired_session_key = "imessage:active"
 
     svc._handle_history_result(
         True,
@@ -335,6 +336,7 @@ def test_handle_history_result_ignores_stale_session_payload():
 def test_handle_history_result_skips_reload_when_signature_unchanged():
     svc, model = make_service()
     svc._session_key = "imessage:active"
+    svc._desired_session_key = "imessage:active"
     payload = ("imessage:active", [{"role": "user", "content": "hello", "timestamp": "t"}])
 
     with patch.object(model, "load_history", wraps=model.load_history) as mocked:
@@ -344,56 +346,107 @@ def test_handle_history_result_skips_reload_when_signature_unchanged():
     assert mocked.call_count == 1
 
 
-def test_set_session_key_deferred_while_processing():
+def test_set_session_key_switches_immediately_while_processing():
     svc, model = make_service()
+    svc._session_manager = object()
     svc._processing = True
     row = model.append_assistant("", status="typing")
     svc._active_streaming_row = row
-
-    with patch.object(svc, "_apply_session_key") as mocked_apply:
-        svc.setSessionKey("imessage:new")
-        assert svc._pending_session_key == "imessage:new"
-        svc._handle_send_result(row, True, "done")
-
-    mocked_apply.assert_called_once_with("imessage:new")
-
-
-def test_handle_history_result_defers_when_streaming():
-    svc, model = make_service()
-    svc._session_key = "imessage:active"
-    svc._processing = True
-    row = model.append_assistant("", status="typing")
-    svc._active_streaming_row = row
-    svc._history_latest_seq = 1
+    svc._active_streaming_session_key = "imessage:active"
     called = []
     svc._request_history_load = lambda key: called.append(key)
+
+    svc.setSessionKey("imessage:new")
+
+    assert svc._desired_session_key == "imessage:new"
+    assert svc._committed_session_key == "imessage:new"
+    assert svc._switch_gen == 1
+    assert svc._active_streaming_row == -1
+    assert model.rowCount() == 0
+    assert called == ["imessage:new"]
+
+
+def test_handle_history_result_applies_while_streaming_when_generation_matches():
+    svc, model = make_service()
+    svc._session_key = "imessage:active"
+    svc._desired_session_key = "imessage:active"
+    svc._processing = True
+    row = model.append_assistant("", status="typing")
+    svc._active_streaming_row = row
+    svc._active_streaming_session_key = "imessage:active"
+    svc._history_latest_seq = 1
 
     svc._handle_history_result(
         True,
         "",
         ("imessage:active", 1, [{"role": "user", "content": "hello", "timestamp": "t"}]),
     )
-    assert svc._pending_history_refresh is True
 
-    svc._handle_send_result(row, True, "done")
+    assert model.rowCount() == 1
+    assert model._messages[0]["content"] == "hello"
 
-    assert called == ["imessage:active"]
+
+def test_handle_history_result_rejects_stale_generation_payload():
+    svc, model = make_service()
+    svc._session_key = "imessage:active"
+    svc._desired_session_key = "imessage:active"
+    svc._switch_gen = 3
+    svc._history_latest_seq = 1
+    prepared = [
+        {
+            "id": 1,
+            "createdat": 0,
+            "role": "assistant",
+            "content": "hello",
+            "format": "markdown",
+            "status": "done",
+            "entrancestyle": "none",
+            "entrancepending": False,
+            "entranceconsumed": True,
+        }
+    ]
+    sig = svc._history_signature(prepared)
+
+    svc._handle_history_result(True, "", ("imessage:active", 1, 2, sig, prepared))
+
+    assert model.rowCount() == 0
+
+
+def test_switch_while_streaming_does_not_show_old_session_content():
+    svc, model = make_service()
+    svc._session_key = "desktop:old"
+    svc._desired_session_key = "desktop:old"
+    svc._committed_session_key = "desktop:old"
+    row = model.append_assistant("", status="typing")
+    svc._active_streaming_row = row
+    svc._active_streaming_session_key = "desktop:old"
+    svc._processing = True
+
+    svc.setSessionKey("desktop:new")
+    assert model.rowCount() == 0
+
+    svc._handle_progress_update(-1, "old-stream")
+    svc._handle_send_result(row, True, "old-final")
+
+    assert model.rowCount() == 0
+    assert svc._committed_session_key == "desktop:new"
 
 
 def test_set_session_key_same_key_still_loads_when_history_not_initialized():
-    svc, model = make_service()
+    svc, _ = make_service()
     svc._session_key = "desktop:local"
+    svc._desired_session_key = "desktop:local"
+    svc._committed_session_key = "desktop:local"
     svc._history_initialized = False
     svc._processing = True
-    row = model.append_assistant("", status="typing")
-    svc._active_streaming_row = row
+    svc._session_manager = object()
+    called = []
+    svc._request_history_load = lambda key: called.append(key)
 
-    with patch.object(svc, "_apply_session_key") as mocked_apply:
-        svc.setSessionKey("desktop:local")
-        assert svc._pending_session_key == "desktop:local"
-        svc._handle_send_result(row, True, "done")
+    svc.setSessionKey("desktop:local")
 
-    mocked_apply.assert_called_once_with("desktop:local")
+    assert called == ["desktop:local"]
+    assert svc._switch_gen == 1
 
 
 def test_load_history_uses_display_history_for_ui_model():
@@ -403,11 +456,12 @@ def test_load_history_uses_display_history_for_ui_model():
     svc._session_manager = MagicMock()
     svc._session_manager.get_or_create.return_value = session
 
-    payload = asyncio.run(svc._load_history("desktop:local", 3))
+    payload = asyncio.run(svc._load_history("desktop:local", 3, 200, 7))
 
     assert payload[0] == "desktop:local"
     assert payload[1] == 3
-    assert payload[3] == [
+    assert payload[2] == 7
+    assert payload[4] == [
         {
             "id": 1,
             "createdat": 0,
@@ -426,6 +480,7 @@ def test_load_history_uses_display_history_for_ui_model():
 def test_handle_history_result_does_not_reset_when_only_entrance_differs():
     svc, model = make_service()
     svc._session_key = "desktop:local"
+    svc._desired_session_key = "desktop:local"
     row = model.append_assistant("hello", status="done", entrance_pending=True)
     model.mark_entrance_pending(row)
     prepared = [

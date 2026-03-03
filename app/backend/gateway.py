@@ -54,11 +54,13 @@ class ChatService(QObject):
         self._heartbeat: Any = None
         self._background_tasks: list[asyncio.Task[Any]] = []
         self._session_key = "desktop:local"
+        self._desired_session_key = self._session_key
+        self._committed_session_key = self._session_key
+        self._switch_gen = 0
         self._history_initialized = False
         self._history_fingerprint: tuple[int, str] | None = None
         self._history_loading = False
-        self._pending_session_key: str | None = None
-        self._pending_history_refresh = False
+        self._history_cache: dict[str, tuple[tuple[int, str], list[dict[str, Any]]]] = {}
         self._history_request_seq = 0
         self._history_latest_seq = 0
         self._send_queue: queue.Queue[tuple[str, str]] = queue.Queue()
@@ -69,6 +71,7 @@ class ChatService(QObject):
         self._session_manager: Any = None
         self._pending_system: list[tuple[str, str, str]] = []
         self._active_streaming_row: int = -1
+        self._active_streaming_session_key: str | None = None
         self._active_has_content = False
         self._pending_split = False
 
@@ -158,18 +161,40 @@ class ChatService(QObject):
         """Called when SessionService switches active session. Loads history."""
         if not key:
             return
-        if key == self._session_key and self._history_initialized:
-            return
-        if self._processing or self._active_streaming_row >= 0:
-            self._pending_session_key = key
+        if key == self._desired_session_key and self._history_initialized:
             return
         self._apply_session_key(key)
 
     def _apply_session_key(self, key: str) -> None:
+        previous_committed = self._committed_session_key
+        self._switch_gen += 1
+        self._desired_session_key = key
+        self._committed_session_key = key
         self._session_key = key
-        self._history_fingerprint = None
-        self._pending_history_refresh = False
-        self._pending_system.clear()
+        if _DEBUG_SWITCH:
+            logger.debug(
+                "switch_request desired={} committed={} gen={}",
+                self._desired_session_key,
+                self._committed_session_key,
+                self._switch_gen,
+            )
+
+        cached_history = self._history_cache.get(key)
+        if previous_committed != key or cached_history is None:
+            self._active_streaming_row = -1
+            self._active_has_content = False
+            self._pending_split = False
+
+        if cached_history is not None:
+            cached_fingerprint, cached_prepared = cached_history
+            self._history_initialized = True
+            self._history_fingerprint = cached_fingerprint
+            self._model.load_prepared([dict(msg) for msg in cached_prepared])
+        else:
+            self._history_initialized = False
+            self._history_fingerprint = None
+            self._model.clear()
+
         if self._session_manager is None:
             return
         self._request_history_load(key)
@@ -187,15 +212,16 @@ class ChatService(QObject):
         self._history_request_seq += 1
         seq = self._history_request_seq
         self._history_latest_seq = seq
-        fut = self._runner.submit(self._load_history(key, seq))
+        gen = self._switch_gen
+        if _DEBUG_SWITCH:
+            logger.debug("history_load key={} seq={} gen={}", key, seq, gen)
+        fut = self._runner.submit(self._load_history(key, seq, 200, gen))
         fut.add_done_callback(self._on_history_done)
 
     async def _load_history(
-        self, key: str, seq: int
-    ) -> tuple[str, int, tuple[int, str], list[dict[str, Any]]]:
+        self, key: str, seq: int, limit: int, gen: int
+    ) -> tuple[str, int, int, tuple[int, str], list[dict[str, Any]]]:
         """Load session message history from SessionManager (runs on asyncio thread)."""
-        if _DEBUG_SWITCH:
-            logger.debug(f"switch_request desired={key} current={self._session_key}")
         session = self._session_manager.get_or_create(key)
         raw_messages: Any
         try:
@@ -204,9 +230,11 @@ class ChatService(QObject):
             raw_messages = None
         if not isinstance(raw_messages, list):
             raw_messages = session.get_history() if hasattr(session, "get_history") else []
+        if limit > 0:
+            raw_messages = raw_messages[-limit:]
         fingerprint = self._history_signature(raw_messages)
         prepared_messages = ChatMessageModel.prepare_history(raw_messages)
-        return key, seq, fingerprint, prepared_messages
+        return key, seq, gen, fingerprint, prepared_messages
 
     def _on_history_done(self, future: Any) -> None:
         """Runs on asyncio thread — only emits signal."""
@@ -223,14 +251,19 @@ class ChatService(QObject):
             return
         loaded_key = self._session_key
         loaded_seq = 0
+        loaded_gen = self._switch_gen
         loaded_messages = messages or []
         loaded_fingerprint: tuple[int, str] | None = None
         loaded_prepared = False
-        if isinstance(messages, tuple) and len(messages) == 4:
+        if isinstance(messages, tuple) and len(messages) == 5:
+            loaded_key, loaded_seq, loaded_gen, loaded_fingerprint, loaded_messages = messages
+            loaded_messages = loaded_messages or []
+            loaded_prepared = True
+        elif isinstance(messages, tuple) and len(messages) == 4:
             loaded_key, loaded_seq, loaded_fingerprint, loaded_messages = messages
             loaded_messages = loaded_messages or []
             loaded_prepared = True
-        if isinstance(messages, tuple) and len(messages) == 3:
+        elif isinstance(messages, tuple) and len(messages) == 3:
             loaded_key, loaded_seq, loaded_messages = messages
             loaded_messages = loaded_messages or []
         elif isinstance(messages, tuple) and len(messages) == 2:
@@ -242,10 +275,15 @@ class ChatService(QObject):
                     f"history_gating loaded_seq={loaded_seq} latest={self._history_latest_seq}"
                 )
             return
-        if loaded_key != self._session_key:
+        if loaded_key != self._desired_session_key:
             return
-        if self._processing or self._active_streaming_row >= 0:
-            self._pending_history_refresh = True
+        if loaded_gen != self._switch_gen:
+            if _DEBUG_SWITCH:
+                logger.debug(
+                    "history_gating loaded_gen={} current_gen={}",
+                    loaded_gen,
+                    self._switch_gen,
+                )
             return
         fingerprint = loaded_fingerprint or self._history_signature(loaded_messages)
         if self._history_initialized and fingerprint == self._history_fingerprint:
@@ -253,8 +291,15 @@ class ChatService(QObject):
             return
         self._history_initialized = True
         self._history_fingerprint = fingerprint
+        self._committed_session_key = loaded_key
+        self._session_key = loaded_key
         if loaded_prepared:
-            self._model.load_prepared(loaded_messages)
+            prepared_messages = [dict(msg) for msg in loaded_messages]
+            self._history_cache[loaded_key] = (
+                fingerprint,
+                [dict(msg) for msg in prepared_messages],
+            )
+            self._model.load_prepared(prepared_messages)
         else:
             self._model.load_history(loaded_messages)
         self._set_history_loading(False)
@@ -381,6 +426,7 @@ class ChatService(QObject):
 
         assistant_row = self._model.append_assistant("", status="typing")
         self._active_streaming_row = assistant_row
+        self._active_streaming_session_key = session_key
         self._active_has_content = False
         self._pending_split = False
         self.messageAppended.emit(assistant_row)
@@ -398,48 +444,47 @@ class ChatService(QObject):
 
     def _handle_send_result(self, _row: int, ok: bool, content: str) -> None:
         """Runs on Qt main thread. Finalizes the active streaming bubble."""
-        active = self._active_streaming_row if self._active_streaming_row >= 0 else _row
+        should_render_in_ui = self._active_streaming_session_key in (
+            None,
+            self._committed_session_key,
+        )
+        active = self._active_streaming_row
+        if active < 0 and should_render_in_ui:
+            active = _row
         if ok and self._pending_split and self._active_has_content and content:
-            self._model.set_status(active, "done")
-            active = self._model.append_assistant("", status="typing")
-            self._active_streaming_row = active
-            self._active_has_content = False
-            self.messageAppended.emit(active)
+            if active >= 0:
+                self._model.set_status(active, "done")
+                active = self._model.append_assistant("", status="typing")
+                self._active_streaming_row = active
+                self._active_has_content = False
+                self.messageAppended.emit(active)
         if not ok:
-            self._model.update_content(active, content)
-            self._model.set_status(active, "error")
+            if active >= 0:
+                self._model.update_content(active, content)
+                self._model.set_status(active, "error")
         else:
             if content:
-                self._model.update_content(active, content)
-                self._active_has_content = True
-            self._model.set_status(active, "done")
+                if active >= 0:
+                    self._model.update_content(active, content)
+                self._active_has_content = active >= 0
+            if active >= 0:
+                self._model.set_status(active, "done")
         self._active_streaming_row = -1
+        self._active_streaming_session_key = None
         self._active_has_content = False
         self._pending_split = False
         # Drain pending system responses before releasing lock
         pending: list[tuple[str, str, str]] = []
-        pending_session_key: str | None = None
-        needs_history_refresh = False
         with self._lock:
             self._processing = False
             pending = self._pending_system[:]
             self._pending_system.clear()
-            pending_session_key = self._pending_session_key
-            self._pending_session_key = None
-            needs_history_refresh = self._pending_history_refresh
-            self._pending_history_refresh = False
         for msg, entrance_style, target_session_key in pending:
             self._show_system_response(
                 msg,
                 entrance_style=entrance_style,
                 session_key=target_session_key,
             )
-        if pending_session_key and (
-            pending_session_key != self._session_key or not self._history_initialized
-        ):
-            self._apply_session_key(pending_session_key)
-        elif needs_history_refresh:
-            self._request_history_load(self._session_key)
 
     async def _call_agent(self, text: str, session_key: str) -> str:
         if self._agent is None:
