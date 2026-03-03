@@ -16,6 +16,9 @@ def _matches_where(row: dict[str, object], where: str | None) -> bool:
         return row.get("type") == "experience"
     if where == "type = 'long_term'":
         return row.get("type") == "long_term"
+    if where.startswith("category = '") and where.endswith("'"):
+        category = where[len("category = '") : -1]
+        return row.get("category") == category
     if where.startswith("key = '") and where.endswith("'"):
         key = where[len("key = '") : -1]
         return row.get("key") == key
@@ -96,6 +99,11 @@ class _FlakyEmbed:
         if self.query_calls == 1:
             raise TimeoutError("temporary timeout")
         return [[0.9, 0.1]]
+
+
+class _QueryEmbed:
+    def compute_query_embeddings(self, _query: str):
+        return [[0.4, 0.6]]
 
 
 def _build_store() -> MemoryStore:
@@ -300,3 +308,203 @@ def test_enrich_vector_results_uses_key_lookup_beyond_500_rows():
 
     assert len(enriched) == 1
     assert enriched[0]["key"] == "e1250"
+
+
+def test_search_memory_merges_vector_and_text_candidates():
+    store = _build_store()
+    setattr(store, "_embed_fn", cast(object, _QueryEmbed()))
+    setattr(
+        store,
+        "_tbl",
+        _FakeTable(
+            [
+                {
+                    "key": "k_vec",
+                    "content": "vector memory content",
+                    "type": "history",
+                    "category": "general",
+                    "quality": 3,
+                    "uses": 0,
+                    "successes": 0,
+                    "updated_at": "",
+                    "deprecated": False,
+                },
+                {
+                    "key": "k_text",
+                    "content": "special token memory",
+                    "type": "history",
+                    "category": "general",
+                    "quality": 3,
+                    "uses": 0,
+                    "successes": 0,
+                    "updated_at": "",
+                    "deprecated": False,
+                },
+            ]
+        ),
+    )
+    setattr(
+        store,
+        "_vec_tbl",
+        cast(
+            object,
+            _FakeTable(
+                [
+                    {
+                        "key": "k_vec",
+                        "content": "vector memory content",
+                        "type": "history",
+                        "_distance": 0.05,
+                    }
+                ]
+            ),
+        ),
+    )
+
+    results = store.search_memory("special token", limit=2)
+
+    assert "vector memory content" in results
+    assert "special token memory" in results
+
+
+def test_write_long_term_skips_embedding_schedule_when_unchanged():
+    store = _build_store()
+    setattr(
+        store,
+        "_tbl",
+        _FakeTable(
+            [
+                {
+                    "key": "long_term_general",
+                    "content": "same",
+                    "type": "long_term",
+                    "category": "general",
+                }
+            ]
+        ),
+    )
+
+    calls = {"count": 0}
+
+    def _schedule() -> None:
+        calls["count"] += 1
+
+    setattr(store, "_schedule_long_term_embedding", _schedule)
+
+    store.write_long_term("same", "general")
+    assert calls["count"] == 0
+
+    store.write_long_term("changed", "general")
+    assert calls["count"] == 1
+
+
+def test_write_categorized_memory_skips_embedding_when_unchanged():
+    store = _build_store()
+    setattr(
+        store,
+        "_tbl",
+        _FakeTable(
+            [
+                {
+                    "key": "long_term_general",
+                    "content": "g",
+                    "type": "long_term",
+                    "category": "general",
+                },
+                {
+                    "key": "long_term_preference",
+                    "content": "p",
+                    "type": "long_term",
+                    "category": "preference",
+                },
+            ]
+        ),
+    )
+
+    calls = {"count": 0}
+
+    def _schedule() -> None:
+        calls["count"] += 1
+
+    setattr(store, "_schedule_long_term_embedding", _schedule)
+
+    store.write_categorized_memory({"general": "g", "preference": "p"})
+    assert calls["count"] == 0
+
+    store.write_categorized_memory({"general": "g2", "preference": "p"})
+    assert calls["count"] == 1
+
+
+def test_remember_skips_aggregate_embedding_when_unchanged():
+    store = _build_store()
+    setattr(
+        store,
+        "_tbl",
+        _FakeTable(
+            [
+                {
+                    "key": "long_term_general",
+                    "content": "alpha",
+                    "type": "long_term",
+                    "category": "general",
+                }
+            ]
+        ),
+    )
+
+    calls = {"count": 0}
+
+    def _aggregate() -> None:
+        calls["count"] += 1
+
+    setattr(store, "_embed_long_term_aggregate", _aggregate)
+
+    store.remember("alpha", "general")
+    assert calls["count"] == 0
+
+    store.remember("beta", "general")
+    assert calls["count"] == 1
+
+
+def test_update_memory_skips_aggregate_embedding_when_unchanged():
+    store = _build_store()
+    setattr(
+        store,
+        "_tbl",
+        _FakeTable(
+            [
+                {
+                    "key": "long_term_general",
+                    "content": "gamma",
+                    "type": "long_term",
+                    "category": "general",
+                }
+            ]
+        ),
+    )
+
+    calls = {"count": 0}
+
+    def _aggregate() -> None:
+        calls["count"] += 1
+
+    setattr(store, "_embed_long_term_aggregate", _aggregate)
+
+    store.update_memory("general", "gamma")
+    assert calls["count"] == 0
+
+    store.update_memory("general", "delta")
+    assert calls["count"] == 1
+
+
+def test_merge_candidates_preserves_both_scores_on_duplicate():
+    store = _build_store()
+    vec_row = {"key": "dup", "content": "shared content", "type": "history", "_distance": 0.1}
+    text_row = {"key": "dup", "content": "shared content", "type": "history", "_text_score": 2.5}
+
+    merged = store._merge_memory_candidates([vec_row], [text_row])
+
+    assert len(merged) == 1
+    assert merged[0]["key"] == "dup"
+    assert merged[0]["_distance"] == 0.1
+    assert merged[0]["_text_score"] == 2.5

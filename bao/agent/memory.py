@@ -596,6 +596,12 @@ class MemoryStore:
             else:
                 semantic = 0.5  # neutral when no vector score
 
+            text_score_raw = r.get("_text_score", 0.0)
+            if isinstance(text_score_raw, (int, float)) and text_score_raw > 0:
+                text_signal = float(text_score_raw) / (1.0 + float(text_score_raw))
+            else:
+                text_signal = 0.0
+
             # Factor 2: recency (exponential decay)
             days_old = self._days_since(r.get("updated_at", ""), now)
             recency = exp(-days_old / 90)
@@ -611,7 +617,13 @@ class MemoryStore:
             # which is intentional — reliability only differentiates experience rows.
             reliability = self._confidence(r)
 
-            score = 0.35 * semantic + 0.25 * recency + 0.25 * importance + 0.15 * reliability
+            score = (
+                0.30 * semantic
+                + 0.20 * text_signal
+                + 0.20 * recency
+                + 0.20 * importance
+                + 0.10 * reliability
+            )
             scored.append((score, r))
 
         scored.sort(key=lambda x: x[0], reverse=True)
@@ -736,6 +748,34 @@ class MemoryStore:
                 logger.warning("⚠️ 按键删除失败 / delete by key failed: {}", e)
                 return False
 
+    def _read_long_term_content_locked(self, category: str) -> str:
+        rows = (
+            self._tbl.search()
+            .where(f"type = 'long_term' AND category = '{category}'")
+            .limit(1)
+            .to_list()
+        )
+        return str(rows[0].get("content", "")) if rows else ""
+
+    def _upsert_long_term_locked(self, category: str, normalized: str) -> bool:
+        current = self._read_long_term_content_locked(category)
+        if current == normalized:
+            return False
+
+        self._tbl.delete(f"type = 'long_term' AND category = '{category}'")
+        if normalized:
+            self._tbl.add(
+                [
+                    self._make_row(
+                        key=f"long_term_{category}",
+                        content=normalized,
+                        type_="long_term",
+                        category=category,
+                    )
+                ]
+            )
+        return True
+
     def write_long_term(self, content: str, category: str = "general") -> None:
         """Write long-term memory for a specific category."""
         if category not in MEMORY_CATEGORIES:
@@ -743,22 +783,13 @@ class MemoryStore:
         cap = MEMORY_CATEGORY_CAPS.get(category, MEMORY_CATEGORY_CAPS["general"])
         normalized = self._normalize_memory(content, max_chars=cap)
         with self._store_lock:
-            self._tbl.delete(f"type = 'long_term' AND category = '{category}'")
-            if normalized:
-                self._tbl.add(
-                    [
-                        self._make_row(
-                            key=f"long_term_{category}",
-                            content=normalized,
-                            type_="long_term",
-                            category=category,
-                        )
-                    ]
-                )
-        self._schedule_long_term_embedding()
+            changed = self._upsert_long_term_locked(category, normalized)
+        if changed:
+            self._schedule_long_term_embedding()
 
     def write_categorized_memory(self, updates: dict[str, Any]) -> None:
         """Write multiple memory categories at once."""
+        changed_any = False
         with self._store_lock:
             for cat, content in updates.items():
                 if cat not in MEMORY_CATEGORIES:
@@ -776,19 +807,10 @@ class MemoryStore:
                     continue
 
                 normalized = self._normalize_memory(content_str, max_chars=cap)
-                self._tbl.delete(f"type = 'long_term' AND category = '{cat}'")
-                if normalized:
-                    self._tbl.add(
-                        [
-                            self._make_row(
-                                key=f"long_term_{cat}",
-                                content=normalized,
-                                type_="long_term",
-                                category=cat,
-                            )
-                        ]
-                    )
-        self._schedule_long_term_embedding()
+                if self._upsert_long_term_locked(cat, normalized):
+                    changed_any = True
+        if changed_any:
+            self._schedule_long_term_embedding()
 
     def append_history(self, entry: str) -> None:
         cleaned = entry.rstrip()
@@ -852,9 +874,74 @@ class MemoryStore:
         except Exception as e:
             logger.warning("⚠️ 向量写入失败 / embedding store failed: {}", e)
 
+    @staticmethod
+    def _candidate_identity(row: dict[str, Any]) -> tuple[str, str] | tuple[str, str, str]:
+        key = str(row.get("key", "")).strip()
+        if key:
+            return ("key", key)
+        return (
+            "content",
+            str(row.get("type", "")),
+            str(row.get("content", "")),
+        )
+
+    def _merge_memory_candidates(self, *groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: dict[tuple[str, ...], dict[str, Any]] = {}
+        for group in groups:
+            for row in group:
+                identity = self._candidate_identity(row)
+                if identity in seen:
+                    existing = seen[identity]
+                    if "_text_score" in row and "_text_score" not in existing:
+                        existing["_text_score"] = row["_text_score"]
+                    if "_distance" in row and "_distance" not in existing:
+                        existing["_distance"] = row["_distance"]
+                    continue
+                seen[identity] = row
+                merged.append(row)
+        return merged
+
+    def _fallback_text_candidates(
+        self,
+        query: str,
+        type_filter: str | None = None,
+        limit: int = 5,
+        exclude_types: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        with self._store_lock:
+            try:
+                if type_filter:
+                    where = f"type = '{type_filter}'"
+                elif exclude_types:
+                    quoted = ", ".join(f"'{t}'" for t in exclude_types)
+                    where = f"type NOT IN ({quoted})"
+                else:
+                    where = "type != '_init_'"
+                if not (rows := self._tbl.search().where(where).limit(100).to_list()):
+                    return []
+
+                ranked = self._bm25_rank(query, rows)
+                if ranked:
+                    out: list[dict[str, Any]] = []
+                    for score, row in ranked[:limit]:
+                        if not row.get("content"):
+                            continue
+                        item = dict(row)
+                        item["_text_score"] = score
+                        out.append(item)
+                    return out
+
+                return [dict(r) for r in rows[:limit] if r.get("content")]
+            except Exception as e:
+                logger.warning("⚠️ 文本回退失败 / text fallback failed: {}", e)
+                return []
+
     def search_memory(self, query: str, limit: int = 5) -> list[str]:
-        """Two-stage retrieval: wide recall → multi-factor rerank → top-k."""
         embed_fn = self._embed_fn
+        fetch = max(limit * 3, 6)
+        vec_enriched: list[dict[str, Any]] = []
+
         if embed_fn and self._vec_tbl:
             try:
                 vectors = self._compute_query_embeddings(query)
@@ -863,30 +950,36 @@ class MemoryStore:
                     raise ValueError("query embedding returned empty vector")
                 with self._store_lock:
                     if not self._vec_tbl:
-                        return self._fallback_text_search(
-                            query, limit=limit, exclude_types=["experience", "long_term"]
+                        vec_rows = []
+                    else:
+                        vec_rows = (
+                            self._vec_tbl.search(vec)
+                            .where("type NOT IN ('experience', 'long_term')")
+                            .limit(fetch)
+                            .to_list()
                         )
-                    # Stage 1: wide recall
-                    vec_rows = (
-                        self._vec_tbl.search(vec)
-                        .where("type NOT IN ('experience', 'long_term')")
-                        .limit(limit * 3)
-                        .to_list()
-                    )
                 if vec_rows:
-                    # Enrich with main table metadata for rerank
-                    enriched = self._enrich_for_rerank(vec_rows)
-                    if enriched:
-                        # Stage 2: rerank
-                        reranked = self._rerank_candidates(
-                            enriched, limit=limit, has_vector_score=True
-                        )
-                        return [r["content"] for r in reranked if r.get("content")]
+                    vec_enriched = self._enrich_for_rerank(vec_rows)
             except Exception as e:
                 logger.warning("⚠️ 语义检索失败 / semantic search failed: {}", e)
-        return self._fallback_text_search(
-            query, limit=limit, exclude_types=["experience", "long_term"]
+
+        text_candidates = self._fallback_text_candidates(
+            query,
+            limit=fetch,
+            exclude_types=["experience", "long_term"],
         )
+
+        candidates = self._merge_memory_candidates(vec_enriched, text_candidates)
+        if candidates:
+            reranked = self._rerank_candidates(
+                candidates,
+                limit=limit,
+                has_vector_score=bool(vec_enriched),
+            )
+            if reranked:
+                return [r["content"] for r in reranked if r.get("content")]
+
+        return []
 
     # ── Experience (columnar) ──
     def append_experience(
@@ -1359,24 +1452,13 @@ class MemoryStore:
         limit: int = 5,
         exclude_types: list[str] | None = None,
     ) -> list[str]:
-        with self._store_lock:
-            try:
-                if type_filter:
-                    where = f"type = '{type_filter}'"
-                elif exclude_types:
-                    quoted = ", ".join(f"'{t}'" for t in exclude_types)
-                    where = f"type NOT IN ({quoted})"
-                else:
-                    where = "type != '_init_'"
-                if not (rows := self._tbl.search().where(where).limit(100).to_list()):
-                    return []
-                ranked = self._bm25_rank(query, rows)
-                if ranked:
-                    return [r["content"] for _, r in ranked[:limit] if r.get("content")]
-                return [r["content"] for r in rows[:limit] if r.get("content")]
-            except Exception as e:
-                logger.warning("⚠️ 文本回退失败 / text fallback failed: {}", e)
-                return []
+        rows = self._fallback_text_candidates(
+            query,
+            type_filter=type_filter,
+            limit=limit,
+            exclude_types=exclude_types,
+        )
+        return [r["content"] for r in rows if r.get("content")]
 
     def get_memory_context(self, max_chars: int | None = None) -> str:
         parts: list[tuple[str, str]] = []
@@ -1488,28 +1570,12 @@ class MemoryStore:
             category = "general"
         cap = MEMORY_CATEGORY_CAPS.get(category, MEMORY_CATEGORY_CAPS["general"])
         with self._store_lock:
-            rows = (
-                self._tbl.search()
-                .where(f"type = 'long_term' AND category = '{category}'")
-                .limit(1)
-                .to_list()
-            )
-            existing = rows[0].get("content", "") if rows else ""
+            existing = self._read_long_term_content_locked(category)
             updated = f"{existing}\n{content}" if existing else content
-            updated = self._normalize_memory(updated, max_chars=cap)
-            self._tbl.delete(f"type = 'long_term' AND category = '{category}'")
-            if updated:
-                self._tbl.add(
-                    [
-                        self._make_row(
-                            key=f"long_term_{category}",
-                            content=updated,
-                            type_="long_term",
-                            category=category,
-                        )
-                    ]
-                )
-        self._embed_long_term_aggregate()
+            normalized = self._normalize_memory(updated, max_chars=cap)
+            changed = self._upsert_long_term_locked(category, normalized)
+        if changed:
+            self._embed_long_term_aggregate()
         return f"Remembered in [{category}]: {content[:80]}"
 
     def forget(self, query: str) -> str:
@@ -1536,17 +1602,7 @@ class MemoryStore:
         cap = MEMORY_CATEGORY_CAPS.get(category, MEMORY_CATEGORY_CAPS["general"])
         normalized = self._normalize_memory(content, max_chars=cap)
         with self._store_lock:
-            self._tbl.delete(f"type = 'long_term' AND category = '{category}'")
-            if normalized:
-                self._tbl.add(
-                    [
-                        self._make_row(
-                            key=f"long_term_{category}",
-                            content=normalized,
-                            type_="long_term",
-                            category=category,
-                        )
-                    ]
-                )
-        self._embed_long_term_aggregate()
+            changed = self._upsert_long_term_locked(category, normalized)
+        if changed:
+            self._embed_long_term_aggregate()
         return f"Updated [{category}] memory."
