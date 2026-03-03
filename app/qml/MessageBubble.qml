@@ -20,7 +20,7 @@ Item {
     property bool _entranceStarted: false
     property bool _entranceQueued: false
 
-    readonly property bool shouldAnimateEntrance: entranceStyle !== "none" && entrancePending && !entranceConsumed
+    readonly property bool shouldAnimateEntrance: entranceStyle !== "none" && entrancePending && !entranceConsumed && !(ListView.view && ListView.view.sessionSwitching)
     readonly property int entranceOpacityDuration: entranceStyle === "greeting" ? 240 : (isSystem ? 260 : (isUser ? 160 : 200))
     readonly property int entranceScaleDuration: entranceStyle === "greeting" ? 260 : (isSystem ? 320 : (isUser ? 200 : 220))
     readonly property real entranceStartScale: entranceStyle === "greeting" ? 0.965 : (isSystem ? 0.94 : (isUser ? 0.976 : 0.972))
