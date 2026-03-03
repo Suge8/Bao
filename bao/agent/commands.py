@@ -167,8 +167,10 @@ def handle_session_command(
     current_key = active or natural_key
 
     lines = ["📋 会话列表:\n  0. 取消\n"]
+    session_keys: list[str] = []
     for i, s in enumerate(all_sessions, 1):
         skey = str(s.get("key") or natural_key)
+        session_keys.append(skey)
         metadata = s.get("metadata") or {}
         title = metadata.get("title")
         name = title or format_session_name(skey, natural_key)
@@ -179,6 +181,7 @@ def handle_session_command(
 
     default_session = sessions.get_or_create(current_key)
     default_session.metadata["_pending_session_select"] = True
+    default_session.metadata["_session_list_keys"] = session_keys
     sessions.save(default_session)
 
     return reply(msg, "\n".join(lines))
@@ -190,20 +193,24 @@ def select_session(
     natural_key: str,
     *,
     sessions: SessionManager,
+    cached_keys: list[str] | None = None,
 ) -> OutboundMessage:
     """Switch to the session at the given index."""
     if idx == 0:
         return reply(msg, "已取消 👌")
 
-    all_sessions = sessions.list_sessions_for(natural_key) or [
-        {"key": natural_key, "updated_at": None}
-    ]
+    if cached_keys:
+        keys = cached_keys
+    else:
+        all_sessions = sessions.list_sessions_for(natural_key) or [
+            {"key": natural_key, "updated_at": None}
+        ]
+        keys = [str(s.get("key") or natural_key) for s in all_sessions]
 
-    if idx < 1 or idx > len(all_sessions):
-        return reply(msg, f"无效选择，请输入 0-{len(all_sessions)}")
+    if idx < 1 or idx > len(keys):
+        return reply(msg, f"无效选择，请输入 0-{len(keys)}")
 
-    selected = all_sessions[idx - 1]
-    selected_key = str(selected.get("key") or natural_key)
+    selected_key = keys[idx - 1]
 
     active = sessions.get_active_session_key(natural_key)
     current_key = active or natural_key
@@ -215,7 +222,7 @@ def select_session(
     else:
         sessions.set_active_session_key(natural_key, selected_key)
 
-    metadata = selected.get("metadata") or {}
-    title = metadata.get("title")
+    target = sessions.get_or_create(selected_key)
+    title = target.metadata.get("title")
     name = title or format_session_name(selected_key, natural_key)
     return reply(msg, f"已切换到会话「{name}」 🔄")
