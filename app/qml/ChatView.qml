@@ -38,7 +38,7 @@ Rectangle {
                 pendingFollowAnimated = false
                 emptyBurstWatching = false
                 emptyBurstTimer.stop()
-                autoFollow = true
+                // Do NOT force autoFollow = true here; let per-session state restore handle it
             }
 
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
@@ -51,6 +51,8 @@ Rectangle {
             property bool gatewayRunning: chatService ? chatService.state === "running" : false
             property bool animateProgrammaticScroll: false
             property bool forceFollowAfterSwitch: false
+            property bool sessionSwitching: false
+            property var scrollStateByKey: ({})
 
             property bool batchReloading: false
             property real savedReadingContentY: 0
