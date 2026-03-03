@@ -4,6 +4,21 @@ All notable changes to Bao are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/), and this project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [0.3.4] - 2026-03-04
+
+### Changed
+
+- **工具路由一致性增强** — `toolExposure.mode=auto` 下将 `exec` 纳入 core/rescue，并在执行层复用同轮 allowlist，杜绝“未暴露工具仍被执行”
+- **非流式通道退出语义调整** — iMessage/WhatsApp 停止时改为清空进度缓冲（clear）而非强制 flush，避免退出时补发陈旧半句
+
+### Fixed
+
+- **forced-final 工具执行缺口** — 强制收口阶段采用空 allowlist，provider 异常回传的 `tool_call` 不会被执行
+- **重复抑制日志错位** — 仅在实际会发布 outbound 时记录 `💬 回复消息 / out`，避免“日志显示已回复但用户未收到”的误导
+- **进度清理残留状态** — `ProgressBuffer.clear_only` 补齐 `_open/_last_time` 清理，避免多 chat_id 长时运行状态堆积
+
 ## [0.3.3] - 2026-03-03
 
 ### Added
@@ -205,6 +220,7 @@ Bao 首个正式版本。
 - **Docker** — `docker-compose.yml` + `Dockerfile`（Python + Node 混合构建）
 - **测试** — 54 个测试文件，pytest + asyncio_mode=auto
 
+[0.3.4]: https://github.com/Suge8/Bao/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/Suge8/Bao/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/Suge8/Bao/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/Suge8/Bao/compare/v0.3.0...v0.3.1
@@ -212,3 +228,4 @@ Bao 首个正式版本。
 [0.2.1]: https://github.com/Suge8/Bao/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Suge8/Bao/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Suge8/Bao/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Suge8/Bao/compare/v0.3.4...HEAD
