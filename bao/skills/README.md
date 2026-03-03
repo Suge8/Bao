@@ -16,7 +16,7 @@ The skill format and metadata structure follow [OpenClaw](https://github.com/ope
 
 | Skill | Description |
 |-------|-------------|
-| `memory` | LanceDB-backed memory with auto-consolidation and experience learning |
+| `memory` | LanceDB-backed memory with query-aware recall gating, cache-assisted retrieval, auto-consolidation, and experience learning |
 | `github` | Interact with GitHub using the `gh` CLI |
 | `weather` | Get weather info using wttr.in and Open-Meteo |
 | `summarize` | Summarize URLs, files, and YouTube videos |

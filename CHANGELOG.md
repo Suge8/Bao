@@ -6,6 +6,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+### Added
+
+- **Desktop 推理强度设置项** — Settings 的 Agent Defaults 新增 `reasoningEffort` 选项（`Auto/off/low/medium/high`），可直接通过界面保存到配置
+
+### Changed
+
+- **记忆检索延迟优化** — 低信息输入（如确认/寒暄短句）跳过重检索，重复查询复用检索缓存；记忆/经验发生变更时自动失效缓存并按修订号隔离
+- **无 token 记忆注入语义调整** — `get_relevant_memory_context` 在 query 无有效 token 时返回空注入路径，不再回退整段全量长期记忆
+- **推理强度 `off` 语义打通** — OpenAI/OpenAI Codex/Anthropic/Gemini 统一支持 `reasoningEffort=off`，`off` 时不再发送对应 reasoning/thinking 配置
+
+### Fixed
+
+- **Desktop finalize 气泡瞬闪** — `ChatMessageModel.load_prepared()` 的渲染等价判定改为仅比较 `role/content/format/status`（忽略 `entrance*` 差异），避免回复收口后因 history refresh 触发不必要 reset；同时将 `ChatView/MessageBubble` 的 `role` fallback 统一为 `assistant`，消除 delegate 重建空窗误闪 user 大气泡
+
 ## [0.3.4] - 2026-03-04
 
 ### Changed

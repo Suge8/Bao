@@ -32,6 +32,8 @@ Bao 不一样。它**记得住**、**学得会**、**能进化**。
 
 向量表与主记忆表按 `key` 强一致同步，启动时自动校验维度并在不匹配时重建回填；Embedding 调用内置轻量超时与重试，长期运行更稳。
 
+检索链路按查询信息量动态调度：像“好的/谢谢”这类低信息输入会跳过重检索，重复查询优先命中检索缓存；当查询没有有效 token 时，长期记忆注入走零注入路径，不再回退整段全量注入。
+
 你的偏好、你的项目、你的习惯，Bao 全部记住。旧上下文自动整合，重要信息跨会话、跨重启永久留存，过时内容主动清理。
 
 ### 经验持续积累
@@ -123,6 +125,7 @@ Bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 
 - **Layer 1**：tool 输出超过阈值自动外置到本地文件，messages 中只保留预览+指针
 - **Layer 2**：context 过大时自动压实，保留最近对话轮次 + 最近工具块，并维持时间线顺序
+- **Layer 3**：长期记忆按 query 相关性注入；低信息输入或无有效 token 时可零注入，避免无效 token 开销
   默认 `auto` 模式，大输出自动外置、长对话自动压实。设为 `"off"` 可关闭。
 
 ### 长任务引擎
@@ -292,7 +295,7 @@ bao
 
 Provider 名称可自定义（如 `my-proxy/claude-sonnet-4-6`），前缀自动剥离。所有 Provider 类型均支持第三方代理，SDK 兼容性自动处理。OpenAI 兼容端点默认自动探测并切换 Responses / Chat Completions（无需配置 `apiMode`）。
 
-`agents.defaults.reasoningEffort` 支持 `low` / `medium` / `high`。Anthropic 会映射为 `thinking.budget_tokens`（`2048` / `4096` / `8192`）并使用 `thinking.type="adaptive"`；未设置时，对支持 thinking 的 Claude 默认使用 `adaptive + 1024`。Gemini 映射为 `1024` / `2048` / `4096`，OpenAI/Codex 则透传 effort。
+`agents.defaults.reasoningEffort` 支持 `off` / `low` / `medium` / `high`。`off` 会显式关闭推理/思考扩展（Anthropic/Gemini 不发送 thinking，OpenAI/Codex 不发送 reasoning）；`low` / `medium` / `high` 时，Anthropic 映射为 `thinking.budget_tokens`（`2048` / `4096` / `8192`）并使用 `thinking.type="adaptive"`，Gemini 映射为 `1024` / `2048` / `4096`，OpenAI/Codex 透传 effort。未设置时，对支持 thinking 的 Claude 仍默认 `adaptive + 1024`。
 
 ## 🔌 MCP 支持
 
@@ -449,6 +452,8 @@ Bao is different. It **remembers**, **reflects**, and **evolves**.
 
 Persistent memory powered by **LanceDB** — vector + keyword hybrid retrieval with candidate merging and multi-factor rerank. Works with or without an embedding model.
 
+Retrieval is query-aware for latency control: low-information turns (for example, quick acknowledgements) can skip heavy recall, repeated queries reuse retrieval cache, and no-token queries use a zero-injection path instead of full-memory fallback.
+
 Your preferences, your projects, your patterns — Bao remembers all of it. Old context consolidates automatically. Important details survive across sessions, across restarts, indefinitely. Stale content is actively cleaned up.
 
 #### Experience That Compounds
@@ -538,6 +543,7 @@ Built-in layered context management keeps long tasks from exhausting the context
 
 - **Layer 1**: Large tool outputs are offloaded to local files; messages retain only a preview + pointer
 - **Layer 2**: When context grows too large, context is compacted to keep recent dialogue turns plus recent tool blocks while preserving timeline order
+- **Layer 3**: Long-term memory injection is query-aware; low-information or no-token turns can use zero-injection to avoid wasted prompt budget
   Default `auto` mode auto-offloads large outputs and compacts long conversations. Set `"off"` to disable.
 
 ### Long-Task Engine
@@ -709,7 +715,7 @@ Covers 99% of what's out there, plus an OAuth option.
 
 Provider names are customizable — model prefixes are auto-stripped. All provider types support third-party proxies with automatic SDK compatibility. OpenAI-compatible endpoints automatically detect and switch between Responses and Chat Completions (no `apiMode` config needed).
 
-`agents.defaults.reasoningEffort` accepts `low` / `medium` / `high`. Anthropic maps it to `thinking.budget_tokens` (`2048` / `4096` / `8192`) and uses `thinking.type="adaptive"`; when unset, thinking-capable Claude models default to `adaptive + 1024`. Gemini maps to `1024` / `2048` / `4096`, while OpenAI/Codex passes effort through directly.
+`agents.defaults.reasoningEffort` accepts `off` / `low` / `medium` / `high`. `off` explicitly disables extra reasoning/thinking paths (Anthropic/Gemini send no thinking config, OpenAI/Codex send no reasoning field). For `low` / `medium` / `high`, Anthropic maps to `thinking.budget_tokens` (`2048` / `4096` / `8192`) with `thinking.type="adaptive"`, Gemini maps to `1024` / `2048` / `4096`, and OpenAI/Codex pass effort through. When unset, thinking-capable Claude models still default to `adaptive + 1024`.
 
 ### 🔌 MCP Support
 

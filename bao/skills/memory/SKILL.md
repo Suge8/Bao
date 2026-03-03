@@ -14,6 +14,9 @@ always: true
 - Experience ranking uses quality-based retention (quality 5 = 365 days, 1 = 14 days) with Laplace-smoothed confidence.
 - High-quality, frequently reused experiences (quality ≥ 5, uses ≥ 3) are immune from cleanup unless deprecated.
 - Old text-based schemas are auto-migrated on first load.
+- Retrieval is query-aware: low-information turns can skip heavy recall.
+- Retrieval results are cached and automatically invalidated when memory/experience content changes.
+- If a query has no useful tokens, relevant long-term-memory injection can return empty context (zero-injection path).
 
 ## Explicit Memory Tools
 
@@ -28,6 +31,7 @@ Use these tools when the user explicitly asks to remember, forget, or update som
 - Save durable user facts (preferences, project constraints, relationships) to the appropriate category.
 - Reuse recalled memory in responses, but avoid repeating irrelevant history.
 - Let the system manage consolidation and cleanup; no manual file maintenance is required.
+- Treat occasional no-memory injection on short/low-information turns as expected behavior, not a memory failure.
 
 ## Notes
 
