@@ -64,7 +64,6 @@ python -m nuitka ^
     --nofollow-import-to=distutils ^
     --nofollow-import-to=turtledemo ^
     --nofollow-import-to=test ^
-    REM -- lark_oapi (Feishu SDK): keep only im, exclude 54 unused API modules --
     --nofollow-import-to=lark_oapi.api.acs ^
     --nofollow-import-to=lark_oapi.api.admin ^
     --nofollow-import-to=lark_oapi.api.aily ^
@@ -139,6 +138,6 @@ echo ========================================
 echo.
 echo Next steps:
 echo   - Test: %BUILD_DIR%\main.dist\%APP_NAME%.exe
-echo   - Package: Use Inno Setup with app\scripts\bao_installer.iss
+echo   - Package: app\scripts\package_win_installer.bat
 
 popd

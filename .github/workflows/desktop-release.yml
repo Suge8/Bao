@@ -9,14 +9,13 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
-    inputs:
-      skip_notarize:
-        description: 'Skip macOS notarization'
-        type: boolean
-        default: true
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
   PYTHON_VERSION: '3.11'
@@ -24,6 +23,7 @@ env:
 jobs:
   build-mac:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - runner: macos-14
@@ -40,6 +40,21 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Restore compiler caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ccache
+            .nuitka-cache
+          key: ${{ runner.os }}-${{ matrix.arch }}-desktop-${{ hashFiles('uv.lock', 'app/scripts/build_mac.sh') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-desktop-
+
+      - name: Install ccache
+        run: brew install ccache
 
       - name: Install dependencies
         run: |
@@ -49,15 +64,18 @@ jobs:
       - name: Patch Nuitka 4.0.1 bugs
         run: |
           NUITKA_DIR=$(uv run python -c "import nuitka, os; print(os.path.dirname(nuitka.__file__))")
-          # Bug A: Distributions.py — getDistributionName() returns None in multiple places
           sed -i.bak 's/key=lambda d: getDistributionName(d))/key=lambda d: getDistributionName(d) or "")/' "$NUITKA_DIR/utils/Distributions.py"
           sed -i.bak 's/return len(getDistributionName(dist))/return len(getDistributionName(dist) or "")/' "$NUITKA_DIR/utils/Distributions.py"
-          # Bug B: Recursion.py assertion fails for _pytest module
           sed -i.bak 's/assert _package_part == package_part, (_package_part, package_part)/if _package_part != package_part: package_finding = "not-found"/' "$NUITKA_DIR/importing/Recursion.py"
-          # Clear bytecode cache
           find "$NUITKA_DIR" -name '*.pyc' -delete
+
       - name: Build with Nuitka
-        run: bash app/scripts/build_mac.sh --arch ${{ matrix.arch }}
+        env:
+          NUITKA_CACHE_DIR: ${{ github.workspace }}/.nuitka-cache
+        run: CC="ccache clang" CXX="ccache clang++" bash app/scripts/build_mac.sh --arch ${{ matrix.arch }}
+
+      - name: Show ccache stats
+        run: ccache -s
 
       - name: Install create-dmg
         run: brew install create-dmg
@@ -70,6 +88,7 @@ jobs:
         with:
           name: bao-macos-${{ matrix.arch }}
           path: dist/*.dmg
+          retention-days: 14
 
   build-windows:
     runs-on: windows-latest
@@ -82,6 +101,16 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Restore Nuitka cache
+        uses: actions/cache@v4
+        with:
+          path: .nuitka-cache
+          key: ${{ runner.os }}-x64-desktop-${{ hashFiles('uv.lock', 'app/scripts/build_win.bat') }}
+          restore-keys: |
+            ${{ runner.os }}-x64-desktop-
 
       - name: Install dependencies
         run: |
@@ -93,33 +122,39 @@ jobs:
         run: |
           $nuitkaDir = uv run python -c "import nuitka, os; print(os.path.dirname(nuitka.__file__))"
           $distFile = Join-Path $nuitkaDir 'utils/Distributions.py'
-          # Bug A: Distributions.py — getDistributionName() returns None in multiple places
           (Get-Content $distFile) -replace 'key=lambda d: getDistributionName\(d\)\)', 'key=lambda d: getDistributionName(d) or "")' | Set-Content $distFile
           (Get-Content $distFile) -replace 'return len\(getDistributionName\(dist\)\)', 'return len(getDistributionName(dist) or "")' | Set-Content $distFile
-          # Bug B: Recursion.py assertion fails for _pytest module
           $recFile = Join-Path $nuitkaDir 'importing/Recursion.py'
           (Get-Content $recFile) -replace 'assert _package_part == package_part, \(_package_part, package_part\)', 'if _package_part != package_part: package_finding = "not-found"' | Set-Content $recFile
-          # Clear bytecode cache
           Get-ChildItem -Path $nuitkaDir -Recurse -Filter '*.pyc' | Remove-Item -Force
+
+      - name: Validate Windows build script continuation
+        run: python app/scripts/validate_build_win_bat.py
+
       - name: Build with Nuitka
+        env:
+          NUITKA_CACHE_DIR: ${{ github.workspace }}\.nuitka-cache
         run: app\scripts\build_win.bat
 
       - name: Install Inno Setup
         run: choco install innosetup -y
 
       - name: Create installer
-        run: iscc app\scripts\bao_installer.iss
+        run: app\scripts\package_win_installer.bat
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: bao-windows-x64
           path: dist/Bao-*-windows-x64-setup.exe
+          retention-days: 14
 
   release:
     needs: [build-mac, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
