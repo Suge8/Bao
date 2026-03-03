@@ -39,6 +39,15 @@ Rectangle {
                 emptyBurstWatching = false
                 emptyBurstTimer.stop()
                 // Do NOT force autoFollow = true here; let per-session state restore handle it
+                // But if autoFollow is true, immediately position at end to avoid top-flash
+                if (autoFollow && count > 0) {
+                    Qt.callLater(function() {
+                        if (messageList.autoFollow) {
+                            messageList.positionViewAtEnd()
+                            messageList.contentY = messageList.maxContentY()
+                        }
+                    })
+                }
             }
 
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
