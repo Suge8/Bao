@@ -4,6 +4,23 @@ All notable changes to Bao are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/), and this project uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.3] - 2026-03-03
+
+### Added
+
+- **子代理委派可见提示** — `spawn` 成功后立即推送“已委派子代理处理中”状态消息，并按会话语言（zh/en）输出，保留线程元数据用于 Slack thread 对齐
+
+### Changed
+
+- **消息工具线程上下文继承增强** — `message` 默认目标会继承会话级 reply metadata（`thread_ts/channel_type`），并对 channel/chat_id 做规范化比较，减少 thread 脱线
+- **空响应兜底本地化扩展** — 用户路径与 system 路径在 `final_content` 为空或仅空白时统一走短文本本地化兜底
+
+### Fixed
+
+- **message 单轮并发竞态** — 引入每轮发送锁，修复并发工具调用下可能双发的问题
+- **工具取消语义一致性** — `message` 与 `spawn` 在通知发送阶段遇到 `CancelledError` 时透传取消，不再被包装为普通错误
+- **spawn 成功结果解析鲁棒性** — 改为基于标准化文本 + `task_id` 正则提取，前导空白等格式波动不再导致通知丢失
+
 ## [0.3.2] - 2026-03-03
 
 ### Added
@@ -188,6 +205,9 @@ Bao 首个正式版本。
 - **Docker** — `docker-compose.yml` + `Dockerfile`（Python + Node 混合构建）
 - **测试** — 54 个测试文件，pytest + asyncio_mode=auto
 
+[0.3.3]: https://github.com/Suge8/Bao/compare/v0.3.2...v0.3.3
+[0.3.2]: https://github.com/Suge8/Bao/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/Suge8/Bao/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Suge8/Bao/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Suge8/Bao/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Suge8/Bao/compare/v0.1.0...v0.2.0
