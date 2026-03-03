@@ -81,7 +81,7 @@ class WhatsAppChannel(BaseChannel):
 
     async def stop(self) -> None:
         """Stop the WhatsApp channel."""
-        await self._progress.flush_all()
+        self._progress.clear_all()
         self._running = False
         self._connected = False
         if self._ws:
@@ -96,6 +96,7 @@ class WhatsAppChannel(BaseChannel):
             msg.content or "",
             is_progress=bool(meta.get("_progress")),
             is_tool_hint=bool(meta.get("_tool_hint")),
+            clear_only=bool(meta.get("_progress_clear")),
         )
 
     async def _send_text(self, chat_id: str, text: str) -> None:

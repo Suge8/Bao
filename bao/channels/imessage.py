@@ -50,7 +50,7 @@ class IMessageChannel(BaseChannel):
             await asyncio.sleep(self._poll_interval)
 
     async def stop(self) -> None:
-        await self._progress.flush_all()
+        self._progress.clear_all()
         self._running = False
 
     async def send(self, msg: OutboundMessage) -> None:
@@ -60,6 +60,7 @@ class IMessageChannel(BaseChannel):
             msg.content or "",
             is_progress=bool(meta.get("_progress")),
             is_tool_hint=bool(meta.get("_tool_hint")),
+            clear_only=bool(meta.get("_progress_clear")),
         )
         for file_path in msg.media or []:
             if Path(file_path).is_file():

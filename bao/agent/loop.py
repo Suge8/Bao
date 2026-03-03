@@ -62,6 +62,7 @@ _TOOL_ROUTE_INTENT_THRESHOLD = 0.65
 _ROUTE_RESCUE_TOOLS = frozenset(
     {
         "message",
+        "exec",
         "create_plan",
         "update_plan_step",
         "spawn",
@@ -116,6 +117,7 @@ _CODE_SIGNAL_TOKENS = (
 _CORE_TOOL_NAMES = frozenset(
     {
         "message",
+        "exec",
         "create_plan",
         "update_plan_step",
         "clear_plan",
@@ -148,7 +150,6 @@ _CODE_TOOL_NAMES = frozenset(
         "write_file",
         "edit_file",
         "list_dir",
-        "exec",
         "coding_agent",
         "coding_agent_details",
     }
@@ -1129,7 +1130,7 @@ class AgentLoop:
         counters: _ToolObservabilityCounters,
         on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
         exposure_level: int = 0,
-    ) -> Any:
+    ) -> tuple[Any, set[str] | None]:
         if iteration > 1:
             if on_progress:
                 await on_progress(PROGRESS_RESET)
@@ -1180,7 +1181,7 @@ class AgentLoop:
             )
 
         try:
-            return await self.provider.chat(
+            response = await self.provider.chat(
                 messages=messages,
                 tools=current_tools,
                 model=self.model,
@@ -1190,6 +1191,9 @@ class AgentLoop:
                 on_progress=stream_progress,
                 source="main",
             )
+            if force_final_response:
+                return response, set()
+            return response, selected_tool_names
         finally:
             for msg in messages:
                 msg.pop("_image", None)
@@ -1248,6 +1252,7 @@ class AgentLoop:
         *,
         response: Any,
         messages: list[dict[str, Any]],
+        allowed_tool_names: set[str] | None,
         on_tool_hint: Callable[[str], Awaitable[None]] | None,
         current_task_ref: asyncio.Task[None] | None,
         artifact_session_key: str | None,
@@ -1325,9 +1330,24 @@ class AgentLoop:
                 await on_event(
                     StreamEvent(type=StreamEventType.TOOL_START, meta={"tool_name": tool_call.name})
                 )
-            tool_task = asyncio.create_task(self.tools.execute(tool_call.name, tool_call.arguments))
-            raw_result = await self._await_tool_with_interrupt(tool_task, current_task_ref)
-            result_text = raw_result if isinstance(raw_result, str) else str(raw_result)
+            if allowed_tool_names is not None and tool_call.name not in allowed_tool_names:
+                allowed_names = sorted(allowed_tool_names)
+                if allowed_names:
+                    preview = ", ".join(allowed_names[:10])
+                    overflow = len(allowed_names) - 10
+                    allowed = f"{preview}, ... (+{overflow} more)" if overflow > 0 else preview
+                else:
+                    allowed = "none"
+                result_text = (
+                    f"Error: Tool '{tool_call.name}' not found. Available tools: {allowed}."
+                    "\n\n[Analyze the error above and try a different approach.]"
+                )
+            else:
+                tool_task = asyncio.create_task(
+                    self.tools.execute(tool_call.name, tool_call.arguments)
+                )
+                raw_result = await self._await_tool_with_interrupt(tool_task, current_task_ref)
+                result_text = raw_result if isinstance(raw_result, str) else str(raw_result)
             _tool_err = shared.parse_tool_error(tool_call.name, result_text, _ERROR_KEYWORDS)
             if _tool_err:
                 if _tool_err.category == "invalid_params":
@@ -1662,7 +1682,7 @@ class AgentLoop:
             if state.interrupted:
                 break
 
-            response = await self._chat_once_with_selected_tools(
+            response, allowed_tool_names = await self._chat_once_with_selected_tools(
                 messages=messages,
                 initial_messages=initial_messages,
                 iteration=state.iteration,
@@ -1689,6 +1709,7 @@ class AgentLoop:
                 messages = await self._handle_tool_call_iteration(
                     response=response,
                     messages=messages,
+                    allowed_tool_names=allowed_tool_names,
                     on_tool_hint=on_tool_hint,
                     current_task_ref=current_task_ref,
                     artifact_session_key=artifact_session_key,
@@ -2241,6 +2262,22 @@ class AgentLoop:
             metadata=out_meta,
         )
 
+    async def _clear_progress_buffer(
+        self, *, channel: str, chat_id: str, metadata: dict[str, Any] | None = None
+    ) -> None:
+        clear_meta: dict[str, Any] = {
+            "_progress": True,
+            "_progress_clear": True,
+        }
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel=channel,
+                chat_id=chat_id,
+                content="",
+                metadata={**(metadata or {}), **clear_meta},
+            )
+        )
+
     async def _process_message(
         self,
         msg: InboundMessage,
@@ -2573,9 +2610,6 @@ class AgentLoop:
         )
         self._persist_tool_observability(session, channel=msg.channel, session_key=key)
 
-        preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
-        logger.info("💬 回复消息 / out: {}:{}: {}", msg.channel, msg.sender_id, preview)
-
         if self._persist_assistant_turn(
             session=session,
             key=key,
@@ -2583,7 +2617,20 @@ class AgentLoop:
             tools_used=parsed_result.tools_used,
             skip_persist_assistant=skip_persist_assistant,
         ):
+            await self._clear_progress_buffer(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                metadata=msg.metadata,
+            )
+            logger.debug(
+                "Suppressing duplicate outbound after message tool send for {}:{}",
+                msg.channel,
+                msg.chat_id,
+            )
             return None
+
+        preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
+        logger.info("💬 回复消息 / out: {}:{}: {}", msg.channel, msg.sender_id, preview)
 
         return self._build_user_outbound_message(msg, final_content)
 
@@ -2695,6 +2742,11 @@ class AgentLoop:
 
         # If message tool already sent content, suppress duplicate outbound
         if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
+            await self._clear_progress_buffer(
+                channel=origin_channel,
+                chat_id=origin_chat_id,
+                metadata=msg.metadata,
+            )
             return None
 
         out_meta: dict[str, Any] = dict(msg.metadata or {})

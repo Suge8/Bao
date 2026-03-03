@@ -140,9 +140,22 @@ class ProgressBuffer:
     # -- public API --
 
     async def handle(
-        self, chat_id: str, text: str, *, is_progress: bool, is_tool_hint: bool
+        self,
+        chat_id: str,
+        text: str,
+        *,
+        is_progress: bool,
+        is_tool_hint: bool,
+        clear_only: bool = False,
     ) -> None:
         """Route an outbound message through buffer + dedup."""
+        if clear_only:
+            self._buf.pop(chat_id, None)
+            self._open.pop(chat_id, None)
+            self._last_text.pop(chat_id, None)
+            self._last_time.pop(chat_id, None)
+            return
+
         if is_progress and not is_tool_hint:
             if not text:
                 return
@@ -170,6 +183,12 @@ class ProgressBuffer:
         """Force-flush all active buffers (call on channel stop)."""
         for chat_id in list(self._buf):
             await self._flush(chat_id, force=True)
+
+    def clear_all(self) -> None:
+        self._buf.clear()
+        self._open.clear()
+        self._last_text.clear()
+        self._last_time.clear()
 
     # -- internals --
 
