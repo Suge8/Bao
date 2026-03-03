@@ -34,8 +34,6 @@ ApplicationWindow {
     }
 
     readonly property var stringsZh: ({
-        "nav_chat": "聊天",
-        "nav_settings": "设置",
         "sidebar_sessions": "会话",
         "sidebar_no_sessions": "暂无会话",
         "chat_empty_title": "开始对话",
@@ -66,15 +64,14 @@ ApplicationWindow {
         "settings_saved_hint": "已保存 — 重启网关以应用",
         "settings_save_failed": "保存失败",
         "empty_setup_title": "欢迎使用 Bao",
-        "empty_setup_hint": "请先在设置中配置 Provider 和模型",
-        "empty_setup_btn": "打开设置",
+        "empty_setup_hint": "请先在设置中配置 Provider 和模型（点击左下角 logo 进入设置）",
         "empty_starting_hint": "正在连接…",
         "empty_error_hint": "网关启动失败",
         "empty_error_btn": "重试",
         "empty_chat_title": "准备就绪",
         "empty_chat_hint": "在下方输入消息开始对话",
         "empty_idle_title": "网关未启动",
-        "empty_idle_hint": "点击左侧 ⏻ 按钮启动网关",
+        "empty_idle_hint": "点击左侧网关胶囊启动网关",
         "session_delete_ok": "会话已删除",
         "session_delete_fail": "删除失败",
         "channel_desktop": "桌面",
@@ -100,8 +97,6 @@ ApplicationWindow {
     })
 
     readonly property var stringsEn: ({
-        "nav_chat": "Chat",
-        "nav_settings": "Settings",
         "sidebar_sessions": "Sessions",
         "sidebar_no_sessions": "No sessions yet",
         "chat_empty_title": "Start a conversation",
@@ -132,15 +127,14 @@ ApplicationWindow {
         "settings_saved_hint": "Saved \u2014 restart gateway to apply",
         "settings_save_failed": "Save failed",
         "empty_setup_title": "Welcome to Bao",
-        "empty_setup_hint": "Configure a Provider and Model in Settings first",
-        "empty_setup_btn": "Open Settings",
+        "empty_setup_hint": "Configure a Provider and Model in Settings first (click the logo in the bottom-left to open settings)",
         "empty_starting_hint": "Connecting\u2026",
         "empty_error_hint": "Gateway failed to start",
         "empty_error_btn": "Retry",
         "empty_chat_title": "Ready to go",
         "empty_chat_hint": "Type a message below to start chatting",
         "empty_idle_title": "Gateway not started",
-        "empty_idle_hint": "Click the ⏻ button in the sidebar to start",
+        "empty_idle_hint": "Click the gateway capsule in the sidebar to start",
         "session_delete_ok": "Session deleted",
         "session_delete_fail": "Delete failed",
         "channel_desktop": "Desktop",
@@ -383,7 +377,11 @@ ApplicationWindow {
                         currentView: root.startView
                         onViewRequested: function(view) { stack.currentIndex = view === "chat" ? 0 : 1 }
                         onNewSessionRequested: if (sessionService) sessionService.newSession("")
-                        onSessionSelected: function(key) { if (sessionService) sessionService.selectSession(key) }
+                        onSessionSelected: function(key) {
+                            if (sessionService) sessionService.selectSession(key)
+                            stack.currentIndex = 0
+                            sidebar.currentView = "chat"
+                        }
                         onSessionDeleteRequested: function(key) { if (sessionService) sessionService.deleteSession(key) }
                     }
 
@@ -403,10 +401,6 @@ ApplicationWindow {
 
                         ChatView {
                             id: chatView
-                            onOpenSettings: {
-                                stack.currentIndex = 1
-                                sidebar.currentView = "settings"
-                            }
                             onMessageCopied: globalToast.show(strings.copied_ok, true)
                         }
 

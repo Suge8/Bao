@@ -135,39 +135,14 @@ Rectangle {
         anchors.fill: parent
         spacing: 0
 
-        // ── Nav buttons ───────────────────────────────────────────
-        ColumnLayout {
-            Layout.fillWidth: true
-            Layout.topMargin: 16
-            Layout.leftMargin: 10
-            Layout.rightMargin: 10
-            Layout.bottomMargin: 4
-            spacing: 4
-            Repeater {
-                model: [
-                    { iconSource: "../resources/icons/chat.svg", view: "chat" },
-                    { iconSource: "../resources/icons/settings.svg", view: "settings" }
-                ]
-                delegate: NavButton {
-                    Layout.fillWidth: true
-                    iconSource: modelData.iconSource
-                    label: modelData.view === "chat" ? strings.nav_chat : strings.nav_settings
-                    active: root.currentView === modelData.view
-                    onClicked: {
-                        root.currentView = modelData.view
-                        root.viewRequested(modelData.view)
-                    }
-                }
-            }
-        }
-
         // ── Gateway status capsule ────────────────────────────────────
         Rectangle {
             id: gwCapsule
             Layout.fillWidth: true
             Layout.leftMargin: 10; Layout.rightMargin: 10
-            Layout.topMargin: 8; Layout.bottomMargin: 2
-            height: 36; radius: radiusMd
+            Layout.topMargin: 16; Layout.bottomMargin: 2
+            height: 48
+            radius: height / 2
             visible: chatService !== null
 
             property bool isRunning: chatService && chatService.state === "running"
@@ -273,17 +248,17 @@ Rectangle {
             // ── Content row ───────────────────────────────────────────
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 12; anchors.rightMargin: 10
-                spacing: 8
+                anchors.leftMargin: 14; anchors.rightMargin: 12
+                spacing: 10
 
                 // Status dot
                 Item {
                     Layout.alignment: Qt.AlignVCenter
-                    width: 9; height: 9
+                    width: 10; height: 10
                     Rectangle {
                         id: gwDot
                         anchors.centerIn: parent
-                        width: 7; height: 7; radius: 3.5
+                        width: 8; height: 8; radius: 4
                         color: {
                             if (!chatService) return textTertiary
                             switch (chatService.state) {
@@ -340,8 +315,8 @@ Rectangle {
                         // idle — purple accent text
                         return isDark ? "#A89CF0" : "#6B5BD9"
                     }
-                    font.pixelSize: 13
-                    font.weight: Font.Medium
+                    font.pixelSize: 14
+                    font.weight: Font.DemiBold
                     font.letterSpacing: 0.3
                     Behavior on color { ColorAnimation { duration: 250 } }
                 }
@@ -352,9 +327,9 @@ Rectangle {
                     source: gwCapsule.isRunning
                             ? "../resources/icons/stop.svg"
                             : "../resources/icons/power.svg"
-                    sourceSize: Qt.size(14, 14)
-                    width: 14; height: 14
-                    opacity: gwHover.containsMouse ? 0.9 : 0.55
+                    sourceSize: Qt.size(16, 16)
+                    width: 16; height: 16
+                    opacity: gwHover.containsMouse ? 0.95 : 0.65
                     Behavior on opacity { NumberAnimation { duration: 150 } }
                 }
             }
@@ -632,9 +607,10 @@ Rectangle {
                         speechBubble.show = false
                     }
                     onClicked: {
-                        var target = root.currentView === "settings" ? "chat" : "settings"
-                        root.currentView = target
-                        root.viewRequested(target)
+                        if (root.currentView !== "settings") {
+                            root.currentView = "settings"
+                            root.viewRequested("settings")
+                        }
                     }
                 }
             }

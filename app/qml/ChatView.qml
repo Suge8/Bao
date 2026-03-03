@@ -6,8 +6,6 @@ Rectangle {
     id: root
     color: "transparent"
 
-    // Signal to request switching to settings page
-    signal openSettings()
     signal messageCopied()
 
     ColumnLayout {
@@ -432,26 +430,6 @@ Rectangle {
                             horizontalAlignment: Text.AlignHCenter
                             width: parent.width
                             wrapMode: Text.WordWrap
-                        }
-                        Rectangle {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            width: 140; height: 40; radius: radiusMd
-                            color: setupBtnHover.containsMouse ? accentHover : accent
-                            Behavior on color { ColorAnimation { duration: 150 } }
-                            Text {
-                                anchors.centerIn: parent
-                                text: strings.empty_setup_btn
-                                color: "#FFFFFF"
-                                font.pixelSize: 14
-                                font.weight: Font.DemiBold
-                            }
-                            MouseArea {
-                                id: setupBtnHover
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: root.openSettings()
-                            }
                         }
                     }
 
