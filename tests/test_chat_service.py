@@ -222,6 +222,48 @@ def test_pending_split_without_previous_content_does_not_split_mid_iteration():
     assert svc._pending_split is False
 
 
+def test_tool_hint_after_content_creates_dedicated_typing_bubble():
+    svc, model = make_service()
+    row0 = model.append_assistant("working", status="typing")
+    svc._active_streaming_row = row0
+    svc._active_has_content = True
+
+    svc._handle_tool_hint_update("running tool")
+
+    assert model.rowCount() == 2
+    assert model._messages[0]["status"] == "done"
+    assert model._messages[1]["status"] == "typing"
+    assert model._messages[1]["content"] == ""
+    assert svc._active_streaming_row == 1
+    assert svc._active_has_content is False
+
+
+def test_tool_hint_without_content_does_not_create_extra_bubble():
+    svc, model = make_service()
+    row0 = model.append_assistant("", status="typing")
+    svc._active_streaming_row = row0
+    svc._active_has_content = False
+
+    svc._handle_tool_hint_update("running tool")
+
+    assert model.rowCount() == 1
+    assert svc._active_streaming_row == 0
+
+
+def test_tool_hint_ignored_when_pending_split():
+    svc, model = make_service()
+    row0 = model.append_assistant("working", status="typing")
+    svc._active_streaming_row = row0
+    svc._active_has_content = True
+    svc._pending_split = True
+
+    svc._handle_tool_hint_update("running tool")
+
+    assert model.rowCount() == 1
+    assert model._messages[0]["status"] == "typing"
+    assert svc._active_streaming_row == 0
+
+
 def test_send_result_pending_split_with_final_content_creates_new_final_bubble():
     svc, model = make_service()
     row0 = model.append_assistant("first", status="typing")

@@ -39,6 +39,7 @@ class ChatService(QObject):
     _sendResult = Signal(int, bool, str)  # row, ok, content_or_error
     _historyResult = Signal(bool, str, object)  # ok, error, messages_list
     _progressUpdate = Signal(int, str)  # row, accumulated_content (asyncio → Qt)
+    _toolHintUpdate = Signal(str)
     _systemResponse = Signal(str, str)
 
     def __init__(self, model: ChatMessageModel, runner: AsyncioRunner, parent: Any = None) -> None:
@@ -75,6 +76,7 @@ class ChatService(QObject):
         self._sendResult.connect(self._handle_send_result)
         self._historyResult.connect(self._handle_history_result)
         self._progressUpdate.connect(self._handle_progress_update)
+        self._toolHintUpdate.connect(self._handle_tool_hint_update)
         self._systemResponse.connect(self._handle_system_response)
 
         self._history_sync_timer = QTimer(self)
@@ -443,6 +445,7 @@ class ChatService(QObject):
         if self._agent is None:
             raise RuntimeError("Agent not initialized")
 
+        from bao.agent.protocol import StreamEventType
         from bao.providers.retry import PROGRESS_RESET
 
         accumulated = [""]
@@ -455,12 +458,19 @@ class ChatService(QObject):
             accumulated[0] += delta
             self._progressUpdate.emit(-1, accumulated[0])
 
+        async def _on_event(event: Any) -> None:
+            if getattr(event, "type", "") == StreamEventType.TOOL_HINT:
+                hint_text = getattr(event, "text", "")
+                if isinstance(hint_text, str) and hint_text.strip():
+                    self._toolHintUpdate.emit(hint_text)
+
         result = await self._agent.process_direct(
             text,
             session_key=session_key,
             channel="desktop",
             chat_id="local",
             on_progress=_on_progress,
+            on_event=_on_event,
         )
         return result
 
@@ -483,6 +493,21 @@ class ChatService(QObject):
         if target >= 0:
             self._model.update_content(target, content)
             self._active_has_content = bool(content)
+
+    def _handle_tool_hint_update(self, _hint: str) -> None:
+        if self._active_streaming_row < 0:
+            return
+        if not self._active_has_content:
+            return
+        if self._pending_split:
+            return
+        current_row = self._active_streaming_row
+        self._model.set_status(current_row, "done")
+        new_row = self._model.append_assistant("", status="typing")
+        self._active_streaming_row = new_row
+        self._active_has_content = False
+        self._pending_split = False
+        self.messageAppended.emit(new_row)
 
     def _handle_system_response(self, content: str, session_key: str = "") -> None:
         """Runs on Qt main thread. Queue if streaming, else show immediately."""

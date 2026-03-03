@@ -266,6 +266,40 @@ Item {
             lineHeight: 1.4
         }
 
+        Item {
+            id: typingIndicator
+            anchors.centerIn: parent
+            visible: bubble.isTyping
+            width: 32
+            height: 10
+
+            Row {
+                anchors.centerIn: parent
+                spacing: 5
+
+                Repeater {
+                    model: 3
+
+                    Rectangle {
+                        width: 6
+                        height: 6
+                        radius: 3
+                        color: root.isUser ? "#FFFFFF" : textSecondary
+                        opacity: 0.28
+
+                        SequentialAnimation on opacity {
+                            running: typingIndicator.visible
+                            loops: Animation.Infinite
+                            PauseAnimation { duration: index * 120 }
+                            NumberAnimation { to: 1.0; duration: 240; easing.type: Easing.OutCubic }
+                            NumberAnimation { to: 0.28; duration: 240; easing.type: Easing.OutCubic }
+                            PauseAnimation { duration: 220 }
+                        }
+                    }
+                }
+            }
+        }
+
         Rectangle { anchors.fill: parent; radius: parent.radius; color: "#15F87171"; visible: root.status === "error" }
     }
 }
