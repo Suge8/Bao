@@ -32,7 +32,7 @@ class AnthropicProvider(LLMProvider):
 
     Supports:
     - Claude 3.5 Sonnet, 3.7 Sonnet, 3.7 Haiku
-    - Extended Thinking (Claude 3.7 Sonnet with thinking enabled)
+    - Adaptive Thinking (Claude models with thinking support)
     - Prompt Caching (cache_control on system messages and tools)
     - Native tool use (tool_use content blocks)
 
@@ -87,7 +87,7 @@ class AnthropicProvider(LLMProvider):
         if not reasoning_effort:
             return None
         effort = reasoning_effort.strip().lower()
-        return {"low": 512, "medium": 1024, "high": 2048}.get(effort)
+        return {"low": 2048, "medium": 4096, "high": 8192}.get(effort)
 
     def _convert_messages(
         self,
@@ -350,15 +350,15 @@ class AnthropicProvider(LLMProvider):
         if tools:
             request_kwargs["tools"] = self._convert_tools(tools)
 
-        # Handle thinking (extended thinking for Claude 3.7)
+        # Handle thinking (adaptive thinking for supported Claude models)
         thinking = kwargs.get("thinking")
         if thinking is None:
             effort_budget = self._budget_from_reasoning_effort(kwargs.get("reasoning_effort"))
             if effort_budget:
-                thinking = {"type": "enabled", "budget_tokens": effort_budget}
+                thinking = {"type": "adaptive", "budget_tokens": effort_budget}
         if thinking is None and self._supports_extended_thinking(resolved_model):
-            # Default to enabling thinking for supported models
-            thinking = {"type": "enabled", "budget_tokens": 1024}
+            # Default to adaptive thinking for supported models
+            thinking = {"type": "adaptive", "budget_tokens": 1024}
 
         if thinking:
             request_kwargs["thinking"] = thinking
