@@ -14,11 +14,16 @@ class CronTool(Tool):
         self._cron = cron_service
         self._channel = ""
         self._chat_id = ""
+        self._in_cron_context = False
 
     def set_context(self, channel: str, chat_id: str) -> None:
         """Set the current session context for delivery."""
         self._channel = channel
         self._chat_id = chat_id
+
+    def set_cron_context(self, active: bool) -> None:
+        """Mark whether the tool is executing inside a cron job callback."""
+        self._in_cron_context = active
 
     @property
     def name(self) -> str:
@@ -72,6 +77,8 @@ class CronTool(Tool):
         **kwargs: Any,
     ) -> str:
         if action == "add":
+            if self._in_cron_context:
+                return "Error: cannot schedule new jobs from within a cron job execution"
             return self._add_job(message, every_seconds, cron_expr, tz, at)
         elif action == "list":
             return self._list_jobs()
