@@ -420,7 +420,7 @@ class DesktopConfig(Base):
 
 
 class ToolExposureConfig(Base):
-    mode: str = "off"
+    mode: str = "auto"
     bundles: list[str] = Field(default_factory=lambda: ["core", "web", "desktop", "code"])
 
     @model_validator(mode="after")

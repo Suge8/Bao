@@ -55,6 +55,20 @@ _TOOL_BUNDLE_CODE = "code"
 _TOOL_BUNDLES = frozenset(
     {_TOOL_BUNDLE_CORE, _TOOL_BUNDLE_WEB, _TOOL_BUNDLE_DESKTOP, _TOOL_BUNDLE_CODE}
 )
+_TOOL_ROUTE_TOPK_TIER0 = 12
+_TOOL_ROUTE_TOPK_TIER1 = 28
+_TOOL_ROUTE_MAX_ESCALATIONS = 2
+_TOOL_ROUTE_INTENT_THRESHOLD = 0.65
+_ROUTE_RESCUE_TOOLS = frozenset(
+    {
+        "message",
+        "create_plan",
+        "update_plan_step",
+        "spawn",
+        "check_tasks",
+        "check_tasks_json",
+    }
+)
 _WEB_SIGNAL_TOKENS = (
     "http://",
     "https://",
@@ -142,6 +156,7 @@ _CODE_TOOL_NAMES = frozenset(
 _SESSION_LANG_KEY = "_session_lang"
 _CJK_CHAR_RE = re.compile(r"[\u3400-\u9FFF]")
 _LATIN_CHAR_RE = re.compile(r"[A-Za-z]")
+_ROUTE_WORD_RE = re.compile(r"[a-z0-9_./:-]+", re.IGNORECASE)
 
 _GREETING_WORDS = frozenset(
     {
@@ -331,8 +346,8 @@ class AgentLoop:
             raw_mcp_slim_schema if isinstance(raw_mcp_slim_schema, bool) else True
         )
         tool_exposure_cfg = getattr(tools_cfg, "tool_exposure", None)
-        raw_mode = str(getattr(tool_exposure_cfg, "mode", "off") or "off").lower()
-        self._tool_exposure_mode = raw_mode if raw_mode in ("off", "auto") else "off"
+        raw_mode = str(getattr(tool_exposure_cfg, "mode", "auto") or "auto").lower()
+        self._tool_exposure_mode = raw_mode if raw_mode in ("off", "auto") else "auto"
         raw_bundles = getattr(tool_exposure_cfg, "bundles", None)
         bundles = (
             [str(item).strip().lower() for item in raw_bundles]
@@ -402,6 +417,11 @@ class AgentLoop:
                 path_append=self.exec_config.path_append,
                 sandbox_mode=self.exec_config.sandbox_mode,
             )
+        )
+        self.context.tool_hints.append(
+            "- exec: run shell commands on the Runtime host for local operations. "
+            "When user asks to operate this machine (e.g., mute volume), execute directly "
+            "instead of only giving manual steps."
         )
         from bao.agent.tools.coding_agent import CodingAgentDetailsTool, CodingAgentTool
 
@@ -528,8 +548,7 @@ class AgentLoop:
                 logger.info("🖥️ 启用桌面 / desktop enabled: desktop automation tools")
             except ImportError:
                 logger.warning(
-                    "⚠️ 桌面依赖缺失 / desktop deps missing: "
-                    "mss, pyautogui, pillow are required"
+                    "⚠️ 桌面依赖缺失 / desktop deps missing: mss, pyautogui, pillow are required"
                 )
 
     async def _connect_mcp(self) -> None:
@@ -715,13 +734,81 @@ class AgentLoop:
             bundles.add(_TOOL_BUNDLE_CODE)
         return bundles
 
+    @staticmethod
+    def _route_tokens(text: str) -> set[str]:
+        if not text:
+            return set()
+        normalized = text.lower()
+        tokens = set(_ROUTE_WORD_RE.findall(normalized))
+        cjk_chars = [ch for ch in normalized if _CJK_CHAR_RE.match(ch)]
+        tokens.update(cjk_chars)
+        tokens.update(
+            normalized[i : i + 2]
+            for i in range(len(normalized) - 1)
+            if _CJK_CHAR_RE.match(normalized[i])
+        )
+        return {tok for tok in tokens if tok}
+
+    def _tool_intent_score(self, user_text: str) -> float:
+        if not user_text:
+            return 0.0
+        score = 0.0
+        if "http://" in user_text or "https://" in user_text:
+            score += 0.35
+        if any(token in user_text for token in _WEB_SIGNAL_TOKENS):
+            score += 0.25
+        if any(token in user_text for token in _CODE_SIGNAL_TOKENS):
+            score += 0.25
+        if any(token in user_text for token in _DESKTOP_SIGNAL_TOKENS):
+            score += 0.2
+        if any(token in user_text for token in ("读取", "修改", "执行", "run", "command", "命令")):
+            score += 0.2
+        return min(score, 1.0)
+
+    def _score_tool_for_routing(self, name: str, user_text: str, user_tokens: set[str]) -> float:
+        bundle = self._bundle_for_tool_name(name)
+        if bundle is None:
+            return -1.0
+
+        score = 0.0
+        if bundle == _TOOL_BUNDLE_CORE:
+            score += 0.15
+        if bundle == _TOOL_BUNDLE_WEB and any(token in user_text for token in _WEB_SIGNAL_TOKENS):
+            score += 0.9
+        if bundle == _TOOL_BUNDLE_CODE and any(token in user_text for token in _CODE_SIGNAL_TOKENS):
+            score += 0.9
+        if bundle == _TOOL_BUNDLE_DESKTOP and any(
+            token in user_text for token in _DESKTOP_SIGNAL_TOKENS
+        ):
+            score += 0.9
+
+        name_tokens = {part for part in re.split(r"[_\-./]", name.lower()) if part}
+        if name.lower() in user_text:
+            score += 1.0
+        overlap = len(name_tokens & user_tokens)
+        if overlap:
+            score += min(0.6, overlap * 0.2)
+
+        tool = self.tools.get(name)
+        if tool is not None:
+            params = tool.parameters if isinstance(tool.parameters, dict) else {}
+            properties = params.get("properties", {})
+            if isinstance(properties, dict):
+                param_hits = sum(1 for key in properties if str(key).lower() in user_text)
+                score += min(0.4, param_hits * 0.1)
+
+        return score
+
     def _select_tool_names_for_turn(
         self,
         initial_messages: list[dict[str, Any]],
         extra_signal_text: str | None = None,
+        exposure_level: int = 0,
     ) -> set[str] | None:
         mode = self._tool_exposure_mode
         if mode == "off":
+            return None
+        if exposure_level >= _TOOL_ROUTE_MAX_ESCALATIONS:
             return None
         enabled_bundles = self._tool_exposure_bundles
         user_text = self._latest_user_text(initial_messages)
@@ -730,13 +817,31 @@ class AgentLoop:
         selected_bundles = self._auto_route_bundles(user_text) & enabled_bundles
         if not selected_bundles:
             selected_bundles = {_TOOL_BUNDLE_CORE} & enabled_bundles
-        selected_names: set[str] = set()
+        scored: list[tuple[float, str]] = []
+        user_tokens = self._route_tokens(user_text)
         for name in self.tools.tool_names:
             bundle = self._bundle_for_tool_name(name)
-            if bundle and bundle in selected_bundles:
-                selected_names.add(name)
-            elif bundle is None:
-                selected_names.add(name)
+            if bundle is None or bundle not in selected_bundles:
+                continue
+            score = self._score_tool_for_routing(name, user_text, user_tokens)
+            scored.append((score, name))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        topk = _TOOL_ROUTE_TOPK_TIER0 if exposure_level == 0 else _TOOL_ROUTE_TOPK_TIER1
+        selected_names = {name for _, name in scored[:topk]}
+        selected_names.update(
+            name
+            for name in _ROUTE_RESCUE_TOOLS
+            if name in self.tools.tool_names
+            and self._bundle_for_tool_name(name) in selected_bundles
+        )
+
+        if not selected_names:
+            selected_names = {
+                name
+                for name in self.tools.tool_names
+                if self._bundle_for_tool_name(name) == _TOOL_BUNDLE_CORE
+            }
         return selected_names
 
     @staticmethod
@@ -1009,6 +1114,7 @@ class AgentLoop:
         force_final_response: bool,
         counters: _ToolObservabilityCounters,
         on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
+        exposure_level: int = 0,
     ) -> Any:
         if iteration > 1:
             if on_progress:
@@ -1041,6 +1147,7 @@ class AgentLoop:
         selected_tool_names = self._select_tool_names_for_turn(
             initial_messages,
             extra_signal_text=tool_signal_text,
+            exposure_level=exposure_level,
         )
         current_tools = (
             [] if force_final_response else self.tools.get_definitions(names=selected_tool_names)
@@ -1050,6 +1157,13 @@ class AgentLoop:
             iteration=iteration,
             counters=counters,
         )
+
+        repaired = shared.patch_dangling_tool_results(messages)
+        if repaired:
+            logger.warning(
+                "Patched {} dangling tool_call(s) before provider chat",
+                repaired,
+            )
 
         try:
             return await self.provider.chat(
@@ -1373,6 +1487,9 @@ class AgentLoop:
         counters: _ToolObservabilityCounters,
         tools_used: list[str],
         total_errors: int,
+        routing_tier: int = 0,
+        escalation_count: int = 0,
+        escalation_reasons: list[str] | None = None,
     ) -> None:
         self._last_tool_budget = tool_budget
         total_tool_calls = len(tools_used)
@@ -1410,6 +1527,10 @@ class AgentLoop:
                 total_tool_calls,
             ),
             "retry_rate_proxy": self._safe_rate(counters.retry_attempts_proxy, total_tool_calls),
+            "routing_tier_final": routing_tier,
+            "routing_escalation_count": escalation_count,
+            "routing_escalation_reasons": escalation_reasons or [],
+            "routing_full_exposure": routing_tier >= _TOOL_ROUTE_MAX_ESCALATIONS,
         }
         logger.debug("Tool observability summary: {}", self._last_tool_observability)
 
@@ -1506,6 +1627,9 @@ class AgentLoop:
             "clipped_chars": 0,
         }
         counters = _ToolObservabilityCounters()
+        _exposure_level = 0
+        _escalation_count = 0
+        _escalation_reasons: list[str] = []
 
         while state.iteration < self.max_iterations:
             state.iteration += 1
@@ -1534,6 +1658,7 @@ class AgentLoop:
                 force_final_response=state.force_final_response,
                 counters=counters,
                 on_event=on_event,
+                exposure_level=_exposure_level,
             )
             logger.debug(
                 "LLM response: model={}, has_tool_calls={}, tool_count={}, finish_reason={}",
@@ -1570,6 +1695,27 @@ class AgentLoop:
                     break
                 continue
 
+            # --- Auto-escalation: if high tool intent but no tool_call, widen exposure ---
+            if (
+                self._tool_exposure_mode == "auto"
+                and not state.force_final_response
+                and _exposure_level < _TOOL_ROUTE_MAX_ESCALATIONS
+            ):
+                user_text = self._latest_user_text(initial_messages)
+                if isinstance(tool_signal_text, str) and tool_signal_text.strip():
+                    user_text = f"{user_text} {tool_signal_text.strip().lower()}"
+                intent = self._tool_intent_score(user_text)
+                if intent >= _TOOL_ROUTE_INTENT_THRESHOLD:
+                    _exposure_level += 1
+                    _escalation_count += 1
+                    _escalation_reasons.append("intent_no_tool")
+                    logger.debug(
+                        "Tool routing escalation: level={}, reason=intent_no_tool, intent={:.2f}",
+                        _exposure_level,
+                        intent,
+                    )
+                    continue
+
             messages, should_continue = self._handle_final_response_iteration(
                 response=response,
                 messages=messages,
@@ -1585,6 +1731,9 @@ class AgentLoop:
             counters=counters,
             tools_used=tools_used,
             total_errors=state.total_errors,
+            routing_tier=_exposure_level,
+            escalation_count=_escalation_count,
+            escalation_reasons=_escalation_reasons,
         )
         if return_interrupt:
             return (
@@ -2189,6 +2338,7 @@ class AgentLoop:
 
         pending = session.metadata.pop("_pending_model_select", None)
         pending_session = session.metadata.pop("_pending_session_select", None)
+        cached_keys = session.metadata.pop("_session_list_keys", None)
         if pending and cmd.isdigit():
             return commands.switch_model(
                 int(cmd),
@@ -2206,6 +2356,7 @@ class AgentLoop:
                 msg,
                 natural_key,
                 sessions=self.sessions,
+                cached_keys=cached_keys,
             )
 
         if (
@@ -2589,6 +2740,7 @@ class AgentLoop:
     def _clear_model_session_state(self, session: Session) -> None:
         session.metadata.pop("_pending_model_select", None)
         session.metadata.pop("_pending_session_select", None)
+        session.metadata.pop("_session_list_keys", None)
 
     def _clear_interactive_state(self, session: Session) -> bool:
         keys = (

@@ -12,7 +12,7 @@ def test_migrate_v2_adds_tool_exposure_defaults() -> None:
     }
     migrated, _ = migrate_config(data)
     assert migrated["config_version"] == CURRENT_VERSION
-    assert migrated["tools"]["toolExposure"]["mode"] == "off"
+    assert migrated["tools"]["toolExposure"]["mode"] == "auto"
     assert migrated["tools"]["toolExposure"]["bundles"] == ["core", "web", "desktop", "code"]
 
 

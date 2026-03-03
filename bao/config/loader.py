@@ -253,9 +253,9 @@ _JSONC_TEMPLATE = """\
       "enabled": true
     },
     // 工具暴露策略 | Tool exposure policy
-    //   mode: off(全量暴露) | auto(按关键词动态暴露)
+    //   mode: auto(智能路由，按需曝光) | off(全量暴露)
     "toolExposure": {
-      "mode": "off"
+      "mode": "auto"
     },
     // MCP tool 注册总上限（0 表示不限）| Global cap for registered MCP tools (0 = unlimited)
     "mcpMaxTools": 50,
@@ -307,7 +307,6 @@ def ensure_first_run() -> bool:
 
 def _handle_config_error(path: Path, error: Exception) -> Config:
     """Handle config parse/validation failure: backup, warn, and optionally raise."""
-    # Backup broken file
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup = path.with_suffix(f".broken.{ts}{path.suffix}")
     try:
@@ -315,25 +314,47 @@ def _handle_config_error(path: Path, error: Exception) -> Config:
     except OSError:
         backup = None
 
-    backup_msg = f"  备份 Backup: {backup}" if backup else ""
-    msg = (
-        f"\n⚠️  配置文件解析失败 / Config file parse error\n"
-        f"  文件 File: {path}\n"
-        f"  错误 Error: {error}\n"
-        f"{backup_msg}"
-    )
+    parts: list[str] = ["", "❌ 配置文件有误 / Config file error", ""]
+    parts.append(f"   📄 文件 File: {path}")
+
+    if isinstance(error, json.JSONDecodeError):
+        parts.append(
+            f"   📍 位置 Location: 第 {error.lineno} 行, 第 {error.colno} 列"
+            f" / line {error.lineno}, col {error.colno}"
+        )
+        parts.append(f"   💬 原因 Reason: {error.msg}")
+        try:
+            src = path.read_text(encoding="utf-8").splitlines()
+            start = max(0, error.lineno - 3)
+            end = min(len(src), error.lineno)
+            if start < end:
+                parts.append("")
+                for i in range(start, end):
+                    ln = i + 1
+                    marker = " 👉" if ln == error.lineno else "   "
+                    parts.append(f"  {marker} {ln:>4} | {src[i]}")
+        except OSError:
+            pass
+    else:
+        parts.append(f"   💬 原因 Reason: {error}")
+
+    if backup:
+        parts.append(f"   💾 已备份 Backup: {backup}")
+
+    parts.append("")
 
     strict = os.environ.get("BAO_CONFIG_STRICT", "1") != "0"
     if strict:
-        raise ConfigLoadError(
-            f"Failed to load config from {path}: {error}\n"
-            f"Set BAO_CONFIG_STRICT=0 to fall back to defaults."
-        ) from error
+        parts.append("   💡 修复后重新运行 / Fix and re-run: bao")
+        parts.append("   💡 或跳过检查 / Or skip: BAO_CONFIG_STRICT=0 bao")
+        parts.append("")
+        print("\n".join(parts))
+        raise SystemExit(1)
 
-    print(msg)
-    print("  ⚡ BAO_CONFIG_STRICT=0 → 使用默认配置继续 / Using defaults\n")
+    parts.append("   ⚡ BAO_CONFIG_STRICT=0 → 使用默认配置继续 / Using defaults")
+    parts.append("")
+    print("\n".join(parts))
     return Config()
-
 
 def _apply_env_overlay(data: dict[str, Any]) -> dict[str, Any]:
     """Deep-merge BAO_* env vars into config data. Env wins over file."""

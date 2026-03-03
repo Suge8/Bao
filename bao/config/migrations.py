@@ -66,11 +66,11 @@ def _migrate_v2_to_v3(data: dict[str, Any]) -> dict[str, Any]:
     exposure = tools.get("toolExposure")
     if not isinstance(exposure, dict):
         tools["toolExposure"] = {
-            "mode": "off",
+            "mode": "auto",
             "bundles": ["core", "web", "desktop", "code"],
         }
         return data
-    exposure.setdefault("mode", "off")
+    exposure.setdefault("mode", "auto")
     bundles = exposure.get("bundles")
     if not isinstance(bundles, list):
         exposure["bundles"] = ["core", "web", "desktop", "code"]
