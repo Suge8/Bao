@@ -2,7 +2,7 @@
 
 基于 PySide6 + QML 的桌面客户端，**Bao 的 `bao` CLI 纯 UI 壳子**。
 
-所有核心逻辑（AgentLoop、Channels、Cron、Heartbeat、startup greeting、首次落盘）均来自 `bao/` core，Desktop 不重复实现任何业务逻辑。启动问候由 core 侧轻量 `provider.chat` 生成（PERSONA.md 置于 system prompt 最前面锚定语气 + CJK 本地化时间 + 原生语言 user trigger，不注入工具/技能上下文）；发送成功会打印 `💬 启动问候 / out` 日志（60 字预览），轻量路径失败时自动回退到 `process_direct(ephemeral=True)` 保底发送。网关需用户手动启动（点击侧边栏 ⏻ 按钮），启动后桌面聊天窗口作为 `desktop` channel 与 Telegram、iMessage 等其他渠道共存运行。
+所有核心逻辑（AgentLoop、Channels、Cron、Heartbeat、startup greeting、首次落盘）均来自 `bao/` core，Desktop 不重复实现任何业务逻辑。启动问候由 core 侧轻量 `provider.chat` 生成（PERSONA.md 置于 system prompt 最前面锚定语气 + CJK 本地化时间 + 原生语言 user trigger，不注入工具/技能上下文）；desktop 问候与外部渠道并发触发，减少跨渠道串行等待。发送成功会打印 `💬 启动问候 / out` 日志（60 字预览），轻量路径失败时自动回退到 `process_direct(ephemeral=True)` 保底发送。网关需用户手动启动（点击侧边栏网关胶囊），启动后桌面聊天窗口作为 `desktop` channel 与 Telegram、iMessage 等其他渠道共存运行。
 
 当前窗口外观默认使用系统标题栏；在 Windows 上会尝试调用 DWM 请求原生圆角（Windows 11 效果最佳）。
 
@@ -61,13 +61,15 @@ bash app/scripts/create_dmg.sh --arch arm64
 
 # Windows 本地构建
 app\scripts\build_win.bat
-iscc app\scripts\bao_installer.iss
+app\scripts\package_win_installer.bat
 ```
 
-推送 `v*` tag 自动触发 GitHub Actions 构建双平台安装包。
+推送 `v*` tag 自动触发 GitHub Actions 构建双平台安装包（`desktop-release.yml`）；PR/非 tag push 使用轻量流水线 `desktop-ci-lite.yml` 做依赖可安装性与脚本校验。
 
 `v0.3.0` 为当前发布版本，详见 [`../CHANGELOG.md`](../CHANGELOG.md)。
 
 完整打包指南见 [`docs/desktop-packaging.md`](../docs/desktop-packaging.md)。
+
+补充：Desktop 后端已增加 `AsyncioRunner` 关闭收敛（先排空再取消残留任务）与 `SessionService.shutdown()` 生命周期清理，用于降低 Qt 测试批量运行时的间歇性崩溃风险。
 
 > 开发细节（架构、测试命令、UI 坑点、技术要点）见 `AGENTS.md`。

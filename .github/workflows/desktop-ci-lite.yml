@@ -1,0 +1,88 @@
+name: Desktop CI Lite
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/desktop-*.yml'
+      - 'app/**'
+      - 'bao/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+  push:
+    branches: ['**']
+    tags-ignore: ['v*']
+    paths:
+      - '.github/workflows/desktop-*.yml'
+      - 'app/**'
+      - 'bao/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-ci-lite-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  validate-mac-deps:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install desktop dependencies
+        run: |
+          uv sync --extra desktop
+          uv pip install nuitka ordered-set zstandard
+
+      - name: Validate import graph
+        run: uv run python -c "import bao, PySide6, lancedb"
+
+      - name: Validate shell scripts
+        run: bash -n app/scripts/build_mac.sh app/scripts/create_dmg.sh
+
+  validate-windows-deps:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install desktop dependencies
+        run: |
+          uv sync --extra desktop
+          uv pip install nuitka ordered-set zstandard
+
+      - name: Validate Windows build script continuation
+        run: python app/scripts/validate_build_win_bat.py
+
+      - name: Validate import graph
+        run: uv run python -c "import bao, PySide6, lancedb"

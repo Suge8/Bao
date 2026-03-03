@@ -1,10 +1,12 @@
 ; ──────────────────────────────────────────────────────────────
 ; Bao Desktop — Windows Inno Setup Installer Script
-; Compile with: iscc app\scripts\bao_installer.iss
+; Compile with: app\scripts\package_win_installer.bat
 ; ──────────────────────────────────────────────────────────────
 
 #define MyAppName "Bao"
-#define MyAppVersion "0.3.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "0.0.0"
+#endif
 #define MyAppPublisher "Bao Contributors"
 #define MyAppURL "https://github.com/bao-project/Bao"
 #define MyAppExeName "Bao.exe"
