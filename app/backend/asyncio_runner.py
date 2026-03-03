@@ -7,6 +7,7 @@ Usage:
     result = future.result(timeout=5)
     runner.shutdown(grace_s=3.0)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -32,6 +33,7 @@ class AsyncioRunner:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._started = threading.Event()
+        self._state_lock = threading.Lock()
         self._stopped = False
 
     # ------------------------------------------------------------------
@@ -40,36 +42,85 @@ class AsyncioRunner:
 
     def start(self) -> None:
         """Start the background asyncio thread (idempotent)."""
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._stopped = False
-        self._started.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True, name="asyncio-runner")
-        self._thread.start()
-        self._started.wait(timeout=5)
+        with self._state_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stopped = False
+            self._loop = None
+            self._started.clear()
+            self._thread = threading.Thread(target=self._run, daemon=True, name="asyncio-runner")
+            self._thread.start()
+
+        if not self._started.wait(timeout=5):
+            raise RuntimeError("AsyncioRunner failed to start within 5 seconds")
 
     def _run(self) -> None:
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        self._loop.set_exception_handler(self._handle_exception)
-        self._started.set()
+        loop = asyncio.new_event_loop()
+        self._loop = loop
+        asyncio.set_event_loop(loop)
+        loop.set_exception_handler(self._handle_exception)
+        loop.call_soon(self._started.set)
         try:
-            self._loop.run_forever()
+            loop.run_forever()
         finally:
-            # Drain remaining tasks
-            pending = asyncio.all_tasks(self._loop)
+            pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+            for task in pending:
+                task.cancel()
             if pending:
-                self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            self._loop.close()
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.run_until_complete(loop.shutdown_default_executor())
+            loop.close()
+            self._loop = None
+
+    async def _drain_pending_tasks(self, timeout_s: float) -> None:
+        current = asyncio.current_task()
+        pending = [task for task in asyncio.all_tasks() if task is not current and not task.done()]
+        if not pending:
+            return
+
+        done, still_pending = await asyncio.wait(
+            pending,
+            timeout=max(0.01, timeout_s),
+            return_when=asyncio.ALL_COMPLETED,
+        )
+        del done
+        if not still_pending:
+            return
+
+        for task in still_pending:
+            task.cancel()
+        await asyncio.gather(*still_pending, return_exceptions=True)
 
     def shutdown(self, grace_s: float = 3.0) -> None:
         """Stop the event loop and wait for the thread to finish."""
-        if self._loop is None or self._stopped:
-            return
-        self._stopped = True
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._thread:
-            self._thread.join(timeout=grace_s)
+        with self._state_lock:
+            loop = self._loop
+            thread = self._thread
+            if loop is None or self._stopped:
+                return
+            self._stopped = True
+
+        timeout_s = max(0.1, grace_s)
+        if loop.is_running():
+            try:
+                drain_future = asyncio.run_coroutine_threadsafe(
+                    self._drain_pending_tasks(timeout_s * 0.8),
+                    loop,
+                )
+                drain_future.result(timeout=timeout_s)
+            except Exception:
+                logger.debug("AsyncioRunner drain timed out or failed", exc_info=True)
+            finally:
+                try:
+                    loop.call_soon_threadsafe(loop.stop)
+                except RuntimeError:
+                    pass
+
+        if thread:
+            thread.join(timeout=timeout_s)
+            if thread.is_alive():
+                logger.warning("AsyncioRunner thread did not stop within %.2fs", timeout_s)
 
     # ------------------------------------------------------------------
     # Submission
@@ -77,6 +128,8 @@ class AsyncioRunner:
 
     def submit(self, coro: Coroutine[Any, Any, T]) -> concurrent.futures.Future[T]:
         """Schedule *coro* on the background loop; return a Future."""
+        if self._stopped:
+            raise RuntimeError("AsyncioRunner is shutting down")
         if self._loop is None or not self._loop.is_running():
             raise RuntimeError("AsyncioRunner is not running — call start() first")
         return asyncio.run_coroutine_threadsafe(coro, self._loop)
@@ -85,9 +138,7 @@ class AsyncioRunner:
     # Error handling
     # ------------------------------------------------------------------
 
-    def _handle_exception(
-        self, loop: asyncio.AbstractEventLoop, context: dict[str, Any]
-    ) -> None:
+    def _handle_exception(self, loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
         exc = context.get("exception")
         msg = context.get("message", "unknown asyncio error")
         if exc:

@@ -6,6 +6,7 @@ Internal signals marshal results back to the Qt main thread.
 
 from __future__ import annotations
 
+from collections.abc import Coroutine
 from datetime import datetime
 from typing import Any
 
@@ -14,9 +15,11 @@ from loguru import logger
 
 from PySide6.QtCore import (
     Property,
+    QByteArray,
     QAbstractListModel,
     QModelIndex,
     QObject,
+    QPersistentModelIndex,
     Qt,
     QTimer,
     Signal,
@@ -27,17 +30,25 @@ from app.backend.asyncio_runner import AsyncioRunner
 
 _DEBUG_SWITCH = os.getenv("BAO_DESKTOP_DEBUG_SWITCH") == "1"
 
+_ROLE_BASE = int(Qt.ItemDataRole.UserRole)
+_ROLE_KEY = _ROLE_BASE + 1
+_ROLE_TITLE = _ROLE_BASE + 2
+_ROLE_IS_ACTIVE = _ROLE_BASE + 3
+_ROLE_UPDATED_AT = _ROLE_BASE + 4
+_ROLE_CHANNEL = _ROLE_BASE + 5
+_ROLE_HAS_UNREAD = _ROLE_BASE + 6
+
 
 class SessionListModel(QAbstractListModel):
     """Simple list model exposing session dicts to QML."""
 
     _ROLES = {
-        Qt.UserRole + 1: b"key",
-        Qt.UserRole + 2: b"title",
-        Qt.UserRole + 3: b"isActive",
-        Qt.UserRole + 4: b"updatedAt",
-        Qt.UserRole + 5: b"channel",
-        Qt.UserRole + 6: b"hasUnread",
+        _ROLE_KEY: QByteArray(b"key"),
+        _ROLE_TITLE: QByteArray(b"title"),
+        _ROLE_IS_ACTIVE: QByteArray(b"isActive"),
+        _ROLE_UPDATED_AT: QByteArray(b"updatedAt"),
+        _ROLE_CHANNEL: QByteArray(b"channel"),
+        _ROLE_HAS_UNREAD: QByteArray(b"hasUnread"),
     }
 
     def __init__(self, parent: Any = None) -> None:
@@ -46,32 +57,40 @@ class SessionListModel(QAbstractListModel):
         self._active_key: str = ""
         self._unread_keys: set[str] = set()
 
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008
+    def rowCount(self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()) -> int:  # noqa: B008
+        if parent.isValid():
+            return 0
         return len(self._sessions)
 
-    def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> Any:
+    def data(
+        self,
+        index: QModelIndex | QPersistentModelIndex,
+        role: int = int(Qt.ItemDataRole.DisplayRole),
+    ) -> Any:
         if not index.isValid() or not (0 <= index.row() < len(self._sessions)):
             return None
         s = self._sessions[index.row()]
-        if role == Qt.UserRole + 1:
+        if role == _ROLE_KEY:
             return s.get("key", "")
-        if role == Qt.UserRole + 2:
+        if role == _ROLE_TITLE:
             return s.get("title", s.get("key", ""))
-        if role == Qt.UserRole + 3:
+        if role == _ROLE_IS_ACTIVE:
             return s.get("key", "") == self._active_key
-        if role == Qt.UserRole + 4:
+        if role == _ROLE_UPDATED_AT:
             return s.get("updated_at", 0)
-        if role == Qt.UserRole + 5:
+        if role == _ROLE_CHANNEL:
             return s.get("channel", "other")
-        if role == Qt.UserRole + 6:
+        if role == _ROLE_HAS_UNREAD:
             return s.get("key", "") in self._unread_keys
         return None
 
-    def roleNames(self) -> dict[int, bytes]:
-        return {int(k): v for k, v in self._ROLES.items()}
+    def roleNames(self) -> dict[int, QByteArray]:
+        return dict(self._ROLES)
 
     def reset_sessions(
-        self, sessions: list[dict[str, Any]], active_key: str,
+        self,
+        sessions: list[dict[str, Any]],
+        active_key: str,
         unread_keys: set[str] | None = None,
     ) -> None:
         self.beginResetModel()
@@ -89,7 +108,7 @@ class SessionListModel(QAbstractListModel):
         for i, s in enumerate(self._sessions):
             if s.get("key") in (old_key, key):
                 idx = self.index(i)
-                self.dataChanged.emit(idx, idx, [Qt.UserRole + 3])
+                self.dataChanged.emit(idx, idx, [_ROLE_IS_ACTIVE])
 
 
 class SessionService(QObject):
@@ -116,6 +135,7 @@ class SessionService(QObject):
         self._model = SessionListModel()
         self._pending_deletes: dict[str, tuple[list[dict[str, Any]], str]] = {}
         self._list_fp: tuple[Any, ...] | None = None
+        self._disposed = False
         self._unread_timer = QTimer(self)
         self._unread_timer.setInterval(5000)
         self._unread_timer.timeout.connect(self.refresh)
@@ -135,24 +155,49 @@ class SessionService(QObject):
 
     def initialize(self, session_manager: Any) -> None:
         """Called after ChatService has initialized the Bao SessionManager."""
+        if self._disposed:
+            return
         self._session_manager = session_manager
         self.refresh()
         self._unread_timer.start()
+
+    @Slot()
+    def shutdown(self) -> None:
+        if self._disposed:
+            return
+        self._disposed = True
+        if self._unread_timer.isActive():
+            self._unread_timer.stop()
+        self._pending_select_key = None
+        self._pending_deletes.clear()
+        self._session_manager = None
+
+    def _submit_safe(self, coro: Coroutine[Any, Any, Any]) -> Any:
+        try:
+            return self._runner.submit(coro)
+        except RuntimeError:
+            coro.close()
+            return None
 
     def _emit_active_key_if_changed(self, new_key: str) -> None:
         """Emit activeKeyChanged only if key actually changed."""
         if new_key != self._last_emitted_active_key:
             self._last_emitted_active_key = new_key
             self.activeKeyChanged.emit(new_key)
+
     # ------------------------------------------------------------------
     # Public slots
     # ------------------------------------------------------------------
 
     @Slot()
     def refresh(self) -> None:
+        if self._disposed:
+            return
         if self._session_manager is None:
             return
-        fut = self._runner.submit(self._list_sessions())
+        fut = self._submit_safe(self._list_sessions())
+        if fut is None:
+            return
         fut.add_done_callback(self._on_list_done)
 
     @Slot()
@@ -161,11 +206,17 @@ class SessionService(QObject):
 
     @Slot(str)
     def newSession(self, name: str = "") -> None:
-        fut = self._runner.submit(self._create_session(name))
+        if self._disposed:
+            return
+        fut = self._submit_safe(self._create_session(name))
+        if fut is None:
+            return
         fut.add_done_callback(self._on_mutate_done)
 
     @Slot(str)
     def selectSession(self, key: str) -> None:
+        if self._disposed:
+            return
         if _DEBUG_SWITCH:
             logger.debug(f"session_select_request key={key}")
         if not key:
@@ -173,9 +224,9 @@ class SessionService(QObject):
         # Mark old + new session as read (fire-and-forget)
         old_key = self._active_key
         if old_key and old_key != key:
-            self._runner.submit(self._mark_read(old_key))
+            self._submit_safe(self._mark_read(old_key))
             self._model._unread_keys.discard(old_key)
-        self._runner.submit(self._mark_read(key))
+        self._submit_safe(self._mark_read(key))
         self._model._unread_keys.discard(key)
         self._pending_select_key = key
         if self._active_key != key:
@@ -185,11 +236,15 @@ class SessionService(QObject):
             if _DEBUG_SWITCH:
                 logger.debug(f"session_select_commit key={key}")
             self._emit_active_key_if_changed(key)
-        fut = self._runner.submit(self._select_session(key))
+        fut = self._submit_safe(self._select_session(key))
+        if fut is None:
+            return
         fut.add_done_callback(self._on_select_done)
 
     @Slot(str)
     def deleteSession(self, key: str) -> None:
+        if self._disposed:
+            return
         if not key or self._session_manager is None or key in self._pending_deletes:
             return
         sessions_before = [dict(s) for s in self._model._sessions]
@@ -213,14 +268,17 @@ class SessionService(QObject):
         self.sessionsChanged.emit()
         self._emit_active_key_if_changed(new_active)
 
-        fut = self._runner.submit(self._delete_session(key))
+        fut = self._submit_safe(self._delete_session(key))
+        if fut is None:
+            self._pending_deletes.pop(key, None)
+            return
         fut.add_done_callback(lambda future, k=key: self._on_delete_done(k, future))
 
     # ------------------------------------------------------------------
     # Async helpers (run on asyncio thread)
     # ------------------------------------------------------------------
 
-    async def _list_sessions(self) -> tuple[list[dict], str, set[str]]:
+    async def _list_sessions(self) -> tuple[list[dict[str, Any]], str, set[str]]:
         sm = self._session_manager
         sessions = sm.list_sessions()
         active = sm.get_active_session_key(self._natural_key) or ""
@@ -279,6 +337,8 @@ class SessionService(QObject):
     # ------------------------------------------------------------------
 
     def _on_list_done(self, future: Any) -> None:
+        if self._disposed:
+            return
         exc = future.exception()
         if exc:
             self._listResult.emit(False, str(exc), None)
@@ -286,6 +346,8 @@ class SessionService(QObject):
             self._listResult.emit(True, "", future.result())
 
     def _on_select_done(self, future: Any) -> None:
+        if self._disposed:
+            return
         exc = future.exception()
         if exc:
             self._selectResult.emit(False, str(exc), "")
@@ -293,6 +355,8 @@ class SessionService(QObject):
             self._selectResult.emit(True, "", future.result())
 
     def _on_mutate_done(self, future: Any) -> None:
+        if self._disposed:
+            return
         exc = future.exception()
         if exc:
             self._mutateResult.emit(False, str(exc))
@@ -300,6 +364,8 @@ class SessionService(QObject):
             self._mutateResult.emit(True, "")
 
     def _on_delete_done(self, key: str, future: Any) -> None:
+        if self._disposed:
+            return
         exc = future.exception()
         if exc:
             self._deleteResult.emit(key, False, str(exc))
@@ -311,6 +377,8 @@ class SessionService(QObject):
     # ------------------------------------------------------------------
 
     def _handle_list_result(self, ok: bool, error: str, data: Any) -> None:
+        if self._disposed:
+            return
         if not ok:
             self.errorOccurred.emit(error)
             return
@@ -329,7 +397,8 @@ class SessionService(QObject):
         # Fingerprint check — skip rebuild if nothing changed
         fp = (
             tuple((s["key"], s.get("title", "")) for s in sessions),
-            active, frozenset(unread_keys),
+            active,
+            frozenset(unread_keys),
         )
         if self._list_fp == fp:
             return
@@ -341,6 +410,8 @@ class SessionService(QObject):
             self._emit_active_key_if_changed(active)
 
     def _handle_select_result(self, ok: bool, error: str, key: str) -> None:
+        if self._disposed:
+            return
         if self._pending_select_key is not None and key != self._pending_select_key:
             return
         self._pending_select_key = None
@@ -355,12 +426,16 @@ class SessionService(QObject):
             self._emit_active_key_if_changed(key)
 
     def _handle_mutate_result(self, ok: bool, error: str) -> None:
+        if self._disposed:
+            return
         if not ok:
             self.errorOccurred.emit(error)
             return
         self.refresh()
 
     def _handle_delete_result(self, key: str, ok: bool, error: str) -> None:
+        if self._disposed:
+            return
         snapshot = self._pending_deletes.pop(key, None)
         if not ok:
             if snapshot is not None:

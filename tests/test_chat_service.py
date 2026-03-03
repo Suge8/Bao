@@ -19,6 +19,25 @@ def qt_app():
     yield app
 
 
+_LIVE_CHAT_SERVICES = []
+
+
+@pytest.fixture(autouse=True)
+def cleanup_chat_services(qt_app):
+    yield
+    while _LIVE_CHAT_SERVICES:
+        svc = _LIVE_CHAT_SERVICES.pop()
+        try:
+            svc._history_sync_timer.stop()
+        except Exception:
+            pass
+        try:
+            svc.deleteLater()
+        except Exception:
+            pass
+    qt_app.processEvents()
+
+
 def make_service():
     from app.backend.chat import ChatMessageModel
     from app.backend.gateway import ChatService
@@ -26,6 +45,7 @@ def make_service():
     model = ChatMessageModel()
     runner = MagicMock()
     svc = ChatService(model, runner)
+    _LIVE_CHAT_SERVICES.append(svc)
     return svc, model
 
 

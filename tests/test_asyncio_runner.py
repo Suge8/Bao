@@ -46,6 +46,16 @@ def test_shutdown_does_not_hang(runner):
     assert fut.result(timeout=3) == "ok"
 
 
+def test_submit_after_shutdown_raises():
+    r = AsyncioRunner()
+    r.start()
+    r.shutdown(grace_s=3.0)
+    coro = asyncio.sleep(0)
+    with pytest.raises(RuntimeError):
+        r.submit(coro)
+    coro.close()
+
+
 def test_start_idempotent():
     r = AsyncioRunner()
     r.start()

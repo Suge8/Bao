@@ -26,6 +26,25 @@ def qt_app():
     yield app
 
 
+_LIVE_SESSION_SERVICES: list[Any] = []
+
+
+@pytest.fixture(autouse=True)
+def cleanup_session_services(qt_app):
+    yield
+    while _LIVE_SESSION_SERVICES:
+        svc = _LIVE_SESSION_SERVICES.pop()
+        try:
+            svc.shutdown()
+        except Exception:
+            pass
+        try:
+            svc.deleteLater()
+        except Exception:
+            pass
+    qt_app.processEvents()
+
+
 # ── SessionListModel tests ────────────────────────────────────────────────────
 
 
@@ -42,7 +61,9 @@ def _new_session_model():
 
 def _new_session_service(runner: AsyncioRunner):
     _, session_service_cls = _session_classes()
-    return session_service_cls(runner)
+    svc = session_service_cls(runner)
+    _LIVE_SESSION_SERVICES.append(svc)
+    return svc
 
 
 def _sessions_model(svc: Any) -> Any:
@@ -156,6 +177,29 @@ def test_service_initial_active_key():
     try:
         svc = _new_session_service(runner)
         assert svc.activeKey == ""
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_service_shutdown_stops_unread_timer():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(
+            sessions=[{"key": "desktop:local::s1", "title": "Chat 1"}],
+            active_key="desktop:local::s1",
+        )
+        svc.initialize(sm)
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        assert svc._unread_timer.isActive() is True
+        svc.shutdown()
+        assert svc._unread_timer.isActive() is False
+        svc.refresh()
     finally:
         runner.shutdown(grace_s=1.0)
 
