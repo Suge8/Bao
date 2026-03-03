@@ -28,7 +28,7 @@ Bao 不一样。它**记得住**、**学得会**、**能进化**。
 
 ### 记忆不会消失
 
-基于 **LanceDB** 的持久化记忆 — 向量搜索 + 关键词降级，双检索架构。有没有 Embedding 模型都能用。
+基于 **LanceDB** 的持久化记忆 — 向量搜索 + 关键词混合检索（hybrid retrieval），双通道候选合并 + 多因子 rerank。有没有 Embedding 模型都能用。
 
 向量表与主记忆表按 `key` 强一致同步，启动时自动校验维度并在不匹配时重建回填；Embedding 调用内置轻量超时与重试，长期运行更稳。
 
@@ -155,7 +155,7 @@ Bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 |:---|:---|:---|:---|
 | 语言 | TypeScript | **Python 3.11+** | Python 生态成熟，AI/自动化集成更直接 |
 | 核心代码量 | 430,000+ 行 | **~14,000 行核心代码** | 更轻量，维护和迭代成本更低 |
-| 记忆系统 | Markdown 文件记忆（手动维护） | **LanceDB 向量检索 + BM25 降级，四分类长期记忆，自动整合去重** | 从手工记录升级为可检索、可治理的长期记忆系统 |
+| 记忆系统 | Markdown 文件记忆（手动维护） | **LanceDB 向量+BM25 混合检索（hybrid retrieval），四分类长期记忆，自动整合去重，写入侧内容未变跳过 embedding** | 从手工记录升级为可检索、可治理的长期记忆系统 |
 | 经验学习 | 无闭环经验引擎 | **闭环经验引擎（Laplace 平滑、冲突检测、负面学习、主动遗忘）** | 具备可持续自我优化能力 |
 | 自我反思 | 无内置反思重试 | **Retry with Reflection（失败后反思并重试）** | 失败可恢复，任务完成率更稳 |
 | 后台任务 | 单线程阻塞式 | **子代理独立运行 + 进度追踪 + 里程碑推送 + 可取消** | 前台不被长任务阻塞，协作与可观测性更好 |
@@ -292,6 +292,8 @@ bao
 
 Provider 名称可自定义（如 `my-proxy/claude-sonnet-4-6`），前缀自动剥离。所有 Provider 类型均支持第三方代理，SDK 兼容性自动处理。OpenAI 兼容端点默认自动探测并切换 Responses / Chat Completions（无需配置 `apiMode`）。
 
+`agents.defaults.reasoningEffort` 支持 `low` / `medium` / `high`。Anthropic 会映射为 `thinking.budget_tokens`（`2048` / `4096` / `8192`）并使用 `thinking.type="adaptive"`；未设置时，对支持 thinking 的 Claude 默认使用 `adaptive + 1024`。Gemini 映射为 `1024` / `2048` / `4096`，OpenAI/Codex 则透传 effort。
+
 ## 🔌 MCP 支持
 
 Model Context Protocol — 接入任何工具生态。配置兼容 **Claude Desktop 和 Cursor**：
@@ -300,8 +302,7 @@ Model Context Protocol — 接入任何工具生态。配置兼容 **Claude Desk
 {
   "tools": {
     "toolExposure": {
-      "mode": "off",
-      "bundles": ["core", "web", "desktop", "code"]
+      "mode": "auto"
     },
     "mcpMaxTools": 50,
     "mcpSlimSchema": true,
@@ -317,7 +318,7 @@ Model Context Protocol — 接入任何工具生态。配置兼容 **Claude Desk
 }
 ```
 
-`toolExposure.mode` 支持 `off`（全量工具）和 `auto`（按关键词启用 bundle）；`toolExposure.bundles` 支持 `core/web/desktop/code` 开关。
+`toolExposure.mode` 默认 `auto`（智能路由：按需打分曝光 top-K 工具 + 自动扩容回退至全量，用户无需配置）；也可设为 `off`（全量暴露所有工具）。`toolExposure.bundles` 支持 `core/web/desktop/code` 开关。
 `mcpMaxTools` 用于限制 MCP 工具总注册数（`0` 表示不限制）；`mcpSlimSchema` 用于精简 MCP schema 的冗余元数据，减少 token 占用。`mcpServers.<name>.slimSchema/maxTools` 可按 server 覆盖全局策略。
 
 默认会记录每轮 tools schema 的体积与质量代理指标到 debug 日志和 session metadata（含 post-error 调用代理，不注入 LLM 上下文，不额外消耗 prompt token）；软中断工具调用会单独计入 `interrupted_tool_calls`，并从 `tool_calls_ok` / `tool_calls_error` 中排除，避免质量指标失真。
@@ -446,7 +447,7 @@ Bao is different. It **remembers**, **reflects**, and **evolves**.
 
 #### Memory That Stays
 
-Persistent memory powered by **LanceDB** — vector search with keyword fallback. Dual retrieval that works with or without an embedding model.
+Persistent memory powered by **LanceDB** — vector + keyword hybrid retrieval with candidate merging and multi-factor rerank. Works with or without an embedding model.
 
 Your preferences, your projects, your patterns — Bao remembers all of it. Old context consolidates automatically. Important details survive across sessions, across restarts, indefinitely. Stale content is actively cleaned up.
 
@@ -571,7 +572,7 @@ You'll never have to ask "where were you again?" **It already knows.**
 |:---|:---|:---|:---|
 | Language | TypeScript | **Python 3.11+** | Strong Python AI ecosystem makes automation integrations faster |
 | Core code size | 430,000+ LOC | **~14,000 LOC (core)** | Leaner codebase is easier to maintain and evolve |
-| Memory system | Markdown file memory (manual upkeep) | **LanceDB vector retrieval + BM25 fallback, 4-category long-term memory, auto merge/dedup** | Upgrades memory from manual notes to searchable managed knowledge |
+| Memory system | Markdown file memory (manual upkeep) | **LanceDB vector+BM25 hybrid retrieval, 4-category long-term memory, auto merge/dedup, write-side embedding skip when unchanged** | Upgrades memory from manual notes to searchable managed knowledge |
 | Experience learning | No closed-loop experience engine | **Closed-loop engine (Laplace smoothing, conflict checks, negative learning, active forgetting)** | Delivers continuous self-improvement over time |
 | Self-reflection | No built-in reflection retry | **Retry with Reflection after failures** | Better recovery path and more stable completion rate |
 | Background tasks | Single-thread blocking flow | **Independent subagents + progress tracking + milestones + cancellation** | Long tasks no longer block foreground interactions |
@@ -708,6 +709,8 @@ Covers 99% of what's out there, plus an OAuth option.
 
 Provider names are customizable — model prefixes are auto-stripped. All provider types support third-party proxies with automatic SDK compatibility. OpenAI-compatible endpoints automatically detect and switch between Responses and Chat Completions (no `apiMode` config needed).
 
+`agents.defaults.reasoningEffort` accepts `low` / `medium` / `high`. Anthropic maps it to `thinking.budget_tokens` (`2048` / `4096` / `8192`) and uses `thinking.type="adaptive"`; when unset, thinking-capable Claude models default to `adaptive + 1024`. Gemini maps to `1024` / `2048` / `4096`, while OpenAI/Codex passes effort through directly.
+
 ### 🔌 MCP Support
 
 Model Context Protocol — plug into any tool ecosystem. Config format is **compatible with Claude Desktop and Cursor**:
@@ -716,8 +719,7 @@ Model Context Protocol — plug into any tool ecosystem. Config format is **comp
 {
   "tools": {
     "toolExposure": {
-      "mode": "off",
-      "bundles": ["core", "web", "desktop", "code"]
+      "mode": "auto"
     },
     "mcpMaxTools": 50,
     "mcpSlimSchema": true,
@@ -733,7 +735,7 @@ Model Context Protocol — plug into any tool ecosystem. Config format is **comp
 }
 ```
 
-`toolExposure.mode` supports `off` (all tools) and `auto` (keyword-based bundle activation). `toolExposure.bundles` supports `core/web/desktop/code` switches.
+`toolExposure.mode` defaults to `auto` (smart routing: scores and exposes only the most relevant tools per turn, with automatic escalation fallback to full exposure — no user configuration needed). Set to `off` to expose all tools unconditionally. `toolExposure.bundles` supports `core/web/desktop/code` switches.
 `mcpMaxTools` caps the total number of MCP tools registered (`0` = unlimited). `mcpSlimSchema` strips redundant schema metadata to reduce token usage. `mcpServers.<name>.slimSchema/maxTools` can override global behavior per server.
 
 By default, per-turn tool schema size and quality proxy metrics are recorded in debug logs and session metadata (including a post-error-call proxy; not injected into LLM context, so no prompt token overhead). Soft-interrupted tool calls are tracked in `interrupted_tool_calls` and excluded from both `tool_calls_ok` and `tool_calls_error` so quality metrics are not skewed.
