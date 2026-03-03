@@ -215,6 +215,18 @@ Rectangle {
                                         {"label": tr("激进", "aggressive"), "value": "aggressive"}
                                     ]
                                 }
+                                SettingsSelect {
+                                    label: tr("推理强度", "Reasoning Effort")
+                                    dotpath: "agents.defaults.reasoningEffort"
+                                    description: tr("控制模型推理扩展强度；Auto = 不显式设置", "Controls model reasoning extension; Auto = do not set explicitly")
+                                    options: [
+                                        {"label": tr("自动", "Auto"), "value": null},
+                                        {"label": "off", "value": "off"},
+                                        {"label": "low", "value": "low"},
+                                        {"label": "medium", "value": "medium"},
+                                        {"label": "high", "value": "high"}
+                                    ]
+                                }
                                 SettingsField { label: tr("工具输出预览字符", "Tool Output Preview Chars"); dotpath: "agents.defaults.toolOutputPreviewChars"; placeholder: "3000"; inputType: "number"; description: tr("外置后保留在消息中的预览长度", "Preview length kept in message after offloading") }
                                 SettingsField { label: tr("工具输出外置字符", "Tool Output Offload Chars"); dotpath: "agents.defaults.toolOutputOffloadChars"; placeholder: "8000"; inputType: "number"; description: tr("超过此长度的工具输出自动外置到文件", "Tool output exceeding this length is offloaded to file") }
                                 SettingsField { label: tr("上下文压实字节估算", "Context Compact Bytes Est"); dotpath: "agents.defaults.contextCompactBytesEst"; placeholder: "240000"; inputType: "number"; description: tr("触发上下文压实的估算字节阈值", "Estimated byte threshold to trigger context compaction") }

@@ -99,6 +99,24 @@ def test_save_patches_value(tmp_path):
     assert data["agents"]["defaults"]["model"] == "anthropic/claude-3-5-sonnet"
 
 
+def test_save_reasoning_effort_off(tmp_path):
+    from app.backend.config import ConfigService
+    from app.backend.jsonc_patch import _strip_comments
+
+    cfg = tmp_path / "config.jsonc"
+    cfg.write_text(MINIMAL_CONFIG, encoding="utf-8")
+    svc = ConfigService()
+    with patch("bao.config.loader.get_config_path", return_value=cfg):
+        svc.load()
+
+    ok = svc.save({"agents.defaults.reasoningEffort": "off"})
+    assert ok is True
+
+    written = cfg.read_text(encoding="utf-8")
+    data = json.loads(_strip_comments(written))
+    assert data["agents"]["defaults"]["reasoningEffort"] == "off"
+
+
 def test_save_after_missing_load_marks_valid(tmp_path):
     from app.backend.config import ConfigService
 
