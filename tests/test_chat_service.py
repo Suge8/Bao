@@ -132,7 +132,7 @@ def test_show_system_response_immediate():
     svc, model = make_service()
     svc._show_system_response("Task done")
     assert model.rowCount() == 1
-    assert model._messages[0]["role"] == "assistant"
+    assert model._messages[0]["role"] == "system"
     assert model._messages[0]["content"] == "Task done"
     assert model._messages[0]["status"] == "done"
 
@@ -144,19 +144,41 @@ def test_system_response_queued_while_processing():
     svc._handle_system_response("Queued msg")
     assert model.rowCount() == 0  # not displayed yet
     assert len(svc._pending_system) == 1
+    assert svc._pending_system[0] == ("Queued msg", "assistantReceived", "desktop:local")
 
 
 def test_system_response_drained_after_send():
     """Pending system responses should drain after send completes."""
     svc, model = make_service()
     svc._processing = True
-    svc._pending_system.append("Deferred")
+    svc._pending_system.append(("Deferred", "assistantReceived", svc._session_key))
     row = model.append_assistant("reply", status="typing")
     svc._handle_send_result(row, True, "reply")
     assert model._messages[0]["status"] == "done"
     # Deferred system response should now be displayed
     assert model.rowCount() == 2
+    assert model._messages[1]["role"] == "system"
     assert model._messages[1]["content"] == "Deferred"
+
+
+def test_system_response_for_other_session_persisted_but_not_shown():
+    svc, model = make_service()
+    svc._session_key = "desktop:active"
+    session = MagicMock()
+    sm = MagicMock()
+    sm.get_or_create.return_value = session
+    svc._session_manager = sm
+
+    svc._handle_system_response("Deferred", "desktop:other")
+
+    assert model.rowCount() == 0
+    sm.get_or_create.assert_called_once_with("desktop:other")
+    session.add_message.assert_called_once_with(
+        "system",
+        "Deferred",
+        status="done",
+        _source="desktop-system",
+    )
 
 
 def test_system_response_empty_ignored():
@@ -351,6 +373,39 @@ def test_load_history_uses_display_history_for_ui_model():
             "content": "a1",
             "format": "markdown",
             "status": "done",
+            "entrancestyle": "none",
+            "entrancepending": False,
+            "entranceconsumed": True,
         }
     ]
     session.get_display_history.assert_called_once()
+
+
+def test_handle_history_result_does_not_reset_when_only_entrance_differs():
+    svc, model = make_service()
+    svc._session_key = "desktop:local"
+    row = model.append_assistant("hello", status="done", entrance_pending=True)
+    model.mark_entrance_pending(row)
+    prepared = [
+        {
+            "id": 1,
+            "createdat": 0,
+            "role": "assistant",
+            "content": "hello",
+            "format": "markdown",
+            "status": "done",
+            "entrancestyle": "none",
+            "entrancepending": False,
+            "entranceconsumed": True,
+        }
+    ]
+    sig = svc._history_signature(prepared)
+    resets = []
+    model.modelReset.connect(lambda: resets.append(True))
+    svc._history_initialized = True
+    svc._history_fingerprint = (1, "stale")
+    svc._history_latest_seq = 1
+
+    svc._handle_history_result(True, "", ("desktop:local", 1, sig, prepared))
+
+    assert resets == []

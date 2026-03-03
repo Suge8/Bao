@@ -11,16 +11,26 @@ import time
 from enum import IntEnum
 from typing import Any
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt
+from PySide6.QtCore import (
+    QAbstractListModel,
+    QByteArray,
+    QModelIndex,
+    QPersistentModelIndex,
+    Qt,
+)
 
 
 class _Role(IntEnum):
-    Id = Qt.UserRole + 1
-    Role = Qt.UserRole + 2
-    Content = Qt.UserRole + 3
-    Format = Qt.UserRole + 4
-    Status = Qt.UserRole + 5
-    CreatedAt = Qt.UserRole + 6
+    _BASE = int(Qt.ItemDataRole.UserRole)
+    Id = _BASE + 1
+    Role = _BASE + 2
+    Content = _BASE + 3
+    Format = _BASE + 4
+    Status = _BASE + 5
+    CreatedAt = _BASE + 6
+    EntranceStyle = _BASE + 7
+    EntrancePending = _BASE + 8
+    EntranceConsumed = _BASE + 9
 
 
 class ChatMessageModel(QAbstractListModel):
@@ -36,6 +46,9 @@ class ChatMessageModel(QAbstractListModel):
         _Role.Format: b"format",
         _Role.Status: b"status",
         _Role.CreatedAt: b"createdAt",
+        _Role.EntranceStyle: b"entranceStyle",
+        _Role.EntrancePending: b"entrancePending",
+        _Role.EntranceConsumed: b"entranceConsumed",
     }
 
     def __init__(self, parent: Any = None) -> None:
@@ -47,10 +60,17 @@ class ChatMessageModel(QAbstractListModel):
     # QAbstractListModel interface
     # ------------------------------------------------------------------
 
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008
+    def rowCount(
+        self,
+        parent: QModelIndex | QPersistentModelIndex = QModelIndex(),  # noqa: B008
+    ) -> int:
         return len(self._messages)
 
-    def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> Any:
+    def data(
+        self,
+        index: QModelIndex | QPersistentModelIndex,
+        role: int = int(Qt.ItemDataRole.DisplayRole),
+    ) -> Any:
         if not index.isValid() or not (0 <= index.row() < len(self._messages)):
             return None
         msg = self._messages[index.row()]
@@ -60,8 +80,8 @@ class ChatMessageModel(QAbstractListModel):
             return None
         return msg.get(r.name.lower())
 
-    def roleNames(self) -> dict[int, bytes]:
-        return {int(k): v for k, v in self._ROLE_NAMES.items()}
+    def roleNames(self) -> dict[int, QByteArray]:
+        return {int(k): QByteArray(v) for k, v in self._ROLE_NAMES.items()}
 
     # ------------------------------------------------------------------
     # Mutation API
@@ -71,17 +91,80 @@ class ChatMessageModel(QAbstractListModel):
         """Append a user message; return its row index."""
         return self._append({"role": "user", "content": text, "format": "plain", "status": "done"})
 
-    def append_assistant(self, text: str = "", status: str = "typing") -> int:
+    def append_assistant(
+        self,
+        text: str = "",
+        status: str = "typing",
+        entrance_style: str = "assistantReceived",
+        entrance_pending: bool = True,
+    ) -> int:
         """Append an assistant message placeholder; return its row index."""
         return self._append(
-            {"role": "assistant", "content": text, "format": "markdown", "status": status}
+            {
+                "role": "assistant",
+                "content": text,
+                "format": "markdown",
+                "status": status,
+                "entranceStyle": entrance_style,
+                "entrancePending": entrance_pending,
+                "entranceConsumed": not entrance_pending,
+            }
         )
 
-    def append_system(self, text: str, status: str = "done") -> int:
+    def append_system(
+        self,
+        text: str,
+        status: str = "done",
+        *,
+        entrance_style: str = "system",
+        entrance_pending: bool = True,
+    ) -> int:
         """Append a system message (gateway status, errors, etc.); return row index."""
         return self._append(
-            {"role": "system", "content": text, "format": "plain", "status": status}
+            {
+                "role": "system",
+                "content": text,
+                "format": "plain",
+                "status": status,
+                "entranceStyle": entrance_style,
+                "entrancePending": entrance_pending,
+                "entranceConsumed": not entrance_pending,
+            }
         )
+
+    def consumeEntrance(self, row: int) -> None:
+        if not (0 <= row < len(self._messages)):
+            return
+        msg = self._messages[row]
+        if msg.get("entranceconsumed") is True and msg.get("entrancepending") is False:
+            return
+        msg["entrancepending"] = False
+        msg["entranceconsumed"] = True
+        idx = self.index(row)
+        self.dataChanged.emit(idx, idx, [int(_Role.EntrancePending), int(_Role.EntranceConsumed)])
+
+    def consumeEntranceById(self, message_id: int) -> None:
+        row = self._row_by_message_id(message_id)
+        if row < 0:
+            return
+        self.consumeEntrance(row)
+
+    def mark_entrance_pending(self, row: int) -> None:
+        if not (0 <= row < len(self._messages)):
+            return
+        msg = self._messages[row]
+        if msg.get("entrancepending") is True and msg.get("entranceconsumed") is False:
+            return
+        msg["entrancepending"] = True
+        msg["entranceconsumed"] = False
+        idx = self.index(row)
+        self.dataChanged.emit(idx, idx, [int(_Role.EntrancePending), int(_Role.EntranceConsumed)])
+
+    def mark_entrance_pending_by_id(self, message_id: int) -> None:
+        row = self._row_by_message_id(message_id)
+        if row < 0:
+            return
+        self.mark_entrance_pending(row)
 
     def update_content(self, row: int, new_text: str) -> None:
         """Replace the content of an existing row (incremental typewriter update)."""
@@ -108,11 +191,18 @@ class ChatMessageModel(QAbstractListModel):
         self.endRemoveRows()
 
     @staticmethod
+    def _normalize_status(status: Any, default: str = "done") -> str:
+        if isinstance(status, str) and status in {"typing", "done", "error"}:
+            return status
+        return default
+
+    @staticmethod
     def prepare_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         prepared: list[dict[str, Any]] = []
         for i, m in enumerate(messages):
             role = m.get("role", "user")
             content = m.get("content", "")
+            status = ChatMessageModel._normalize_status(m.get("status"), default="done")
             if role == "assistant":
                 prepared.append(
                     {
@@ -121,7 +211,10 @@ class ChatMessageModel(QAbstractListModel):
                         "role": "assistant",
                         "content": content,
                         "format": "markdown",
-                        "status": "done",
+                        "status": status,
+                        "entrancestyle": "none",
+                        "entrancepending": False,
+                        "entranceconsumed": True,
                     }
                 )
             elif role == "system":
@@ -132,7 +225,10 @@ class ChatMessageModel(QAbstractListModel):
                         "role": "system",
                         "content": content,
                         "format": "plain",
-                        "status": "done",
+                        "status": status,
+                        "entrancestyle": "none",
+                        "entrancepending": False,
+                        "entranceconsumed": True,
                     }
                 )
             elif role == "user":
@@ -144,7 +240,10 @@ class ChatMessageModel(QAbstractListModel):
                             "role": "system",
                             "content": content,
                             "format": "plain",
-                            "status": "done",
+                            "status": status,
+                            "entrancestyle": "none",
+                            "entrancepending": False,
+                            "entranceconsumed": True,
                         }
                     )
                 else:
@@ -155,7 +254,10 @@ class ChatMessageModel(QAbstractListModel):
                             "role": "user",
                             "content": content,
                             "format": "plain",
-                            "status": "done",
+                            "status": status,
+                            "entrancestyle": "none",
+                            "entrancepending": False,
+                            "entranceconsumed": True,
                         }
                     )
             elif role in ("tool", "tool_calls"):
@@ -167,12 +269,17 @@ class ChatMessageModel(QAbstractListModel):
                         "role": "system",
                         "content": label,
                         "format": "plain",
-                        "status": "done",
+                        "status": status,
+                        "entrancestyle": "none",
+                        "entrancepending": False,
+                        "entranceconsumed": True,
                     }
                 )
         return prepared
 
     def load_prepared(self, prepared_messages: list[dict[str, Any]]) -> None:
+        if self._is_render_equivalent(prepared_messages):
+            return
         self.beginResetModel()
         self._messages = prepared_messages
         self._next_id = len(prepared_messages) + 1
@@ -189,11 +296,48 @@ class ChatMessageModel(QAbstractListModel):
             "createdat": int(time.time() * 1000),
             **{k.lower(): v for k, v in fields.items()},
         }
+        msg.setdefault("entrancestyle", "none")
+        msg.setdefault("entrancepending", False)
+        msg.setdefault("entranceconsumed", True)
         self._next_id += 1
         self.beginInsertRows(QModelIndex(), row, row)
         self._messages.append(msg)
         self.endInsertRows()
         return row
+
+    def _row_by_message_id(self, message_id: int) -> int:
+        for i, msg in enumerate(self._messages):
+            if msg.get("id") == message_id:
+                return i
+        return -1
+
+    def remove_row(self, row: int) -> None:
+        if not (0 <= row < len(self._messages)):
+            return
+        self.beginRemoveRows(QModelIndex(), row, row)
+        del self._messages[row]
+        self.endRemoveRows()
+
+    def _is_render_equivalent(self, prepared_messages: list[dict[str, Any]]) -> bool:
+        if len(prepared_messages) != len(self._messages):
+            return False
+        for left, right in zip(self._messages, prepared_messages):
+            if self._render_tuple(left) != self._render_tuple(right):
+                return False
+        return True
+
+    @staticmethod
+    def _render_tuple(message: dict[str, Any]) -> tuple[str, str, str, str]:
+        role = message.get("role", "")
+        content = message.get("content", "")
+        fmt = message.get("format", "")
+        status = message.get("status", "")
+        return (
+            role if isinstance(role, str) else str(role),
+            content if isinstance(content, str) else str(content),
+            fmt if isinstance(fmt, str) else str(fmt),
+            status if isinstance(status, str) else str(status),
+        )
 
     def load_history(self, messages: list[dict[str, Any]]) -> None:
         """Replace all messages with session history from SessionManager."""

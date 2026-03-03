@@ -85,7 +85,7 @@ class Session:
             ):
                 continue
             entry: dict[str, Any] = {"role": m["role"], "content": m.get("content", "")}
-            for k in ("tool_calls", "tool_call_id", "name", "_source"):
+            for k in ("tool_calls", "tool_call_id", "name", "_source", "status"):
                 if k in m:
                     entry[k] = m[k]
             out.append(entry)
@@ -105,7 +105,7 @@ class Session:
             ):
                 continue
             entry: dict[str, Any] = {"role": m["role"], "content": m.get("content", "")}
-            for k in ("tool_calls", "tool_call_id", "name", "_source"):
+            for k in ("tool_calls", "tool_call_id", "name", "_source", "status"):
                 if k in m:
                     entry[k] = m[k]
             out.append(entry)

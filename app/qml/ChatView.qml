@@ -369,9 +369,15 @@ Rectangle {
 
             delegate: MessageBubble {
                 width: messageList.width
-                role: model.role ?? "user"
+                role: model.role ?? "assistant"
                 content: model.content ?? ""
+                format: model.format ?? "plain"
                 status: model.status ?? "done"
+                messageId: model.id ?? -1
+                messageRow: index
+                entranceStyle: model.entranceStyle ?? "none"
+                entrancePending: model.entrancePending ?? false
+                entranceConsumed: model.entranceConsumed ?? true
                 toastFunc: function() { root.messageCopied() }
             }
 

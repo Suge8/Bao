@@ -3,63 +3,194 @@ import QtQuick 2.15
 Item {
     id: root
 
-    property string role: "user"
+    property string role: "assistant"
     property string content: ""
+    property string format: "plain"
     property string status: "done"
-
-    // Toast callback — set by parent (ChatView)
+    property int messageId: -1
+    property int messageRow: -1
+    property string entranceStyle: "none"
+    property bool entrancePending: false
+    property bool entranceConsumed: true
     property var toastFunc: null
 
     property bool isUser: role === "user"
     property bool isSystem: role === "system"
-    property bool _entrancePlayed: false
+    property bool isMarkdown: format === "markdown"
+    property bool _entranceStarted: false
+    property bool _entranceQueued: false
 
-    height: isSystem ? systemText.height + 16 : bubble.height + 10
+    readonly property bool shouldAnimateEntrance: entranceStyle !== "none" && entrancePending && !entranceConsumed
+    readonly property int entranceOpacityDuration: entranceStyle === "greeting" ? 240 : (isSystem ? 260 : (isUser ? 160 : 200))
+    readonly property int entranceScaleDuration: entranceStyle === "greeting" ? 260 : (isSystem ? 320 : (isUser ? 200 : 220))
+    readonly property real entranceStartScale: entranceStyle === "greeting" ? 0.965 : (isSystem ? 0.94 : (isUser ? 0.976 : 0.972))
+    readonly property real entranceStartY: isSystem ? 18 : 0
+
+    height: isSystem ? systemBubble.height + 14 : bubble.height + 10
     width: parent ? parent.width : 600
 
-    function playEntranceIfAllowed() {
-        if (_entrancePlayed) return
+    function playEntrance() {
+        if (_entranceStarted || _entranceQueued || !shouldAnimateEntrance) return
+        _entranceQueued = true
+        entranceStartTimer.restart()
+    }
+
+    function consumeEntrance() {
         var view = ListView.view
-        if (isSystem) return
-        if (!view) return
-        if (view.suspendEntranceAnimations) return
-        if (!view.autoFollow) return
-        if (view.dragging || view.flicking || view.moving) return
-        if (typeof index === "number" && index !== view.count - 1) return
-        _entrancePlayed = true
-        bubble.opacity = 0.0
-        enterTranslate.y = 10
-        entranceAnim.start()
+        if (!view || !view.model) return
+        if (messageId >= 0 && view.model.consumeEntranceById) {
+            view.model.consumeEntranceById(messageId)
+            return
+        }
+        if (messageRow >= 0 && view.model.consumeEntrance) {
+            view.model.consumeEntrance(messageRow)
+        }
     }
 
-    Component.onCompleted: Qt.callLater(playEntranceIfAllowed)
+    function copyToClipboard(text) {
+        if (!text) return
+        clipHelper.text = text
+        clipHelper.selectAll()
+        clipHelper.copy()
+        clipHelper.deselect()
+        if (root.toastFunc) root.toastFunc()
+    }
 
-    // ── System message (centered, no bubble) ──────────────────────
-    Text {
-        id: systemText
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.top: parent.top; anchors.topMargin: 8
-        width: root.width * 0.85
+    Component.onCompleted: playEntrance()
+    onShouldAnimateEntranceChanged: {
+        if (shouldAnimateEntrance) playEntrance()
+    }
+
+    Timer {
+        id: entranceStartTimer
+        interval: 0
+        repeat: false
+        onTriggered: {
+            root._entranceQueued = false
+            if (root._entranceStarted || !root.shouldAnimateEntrance) return
+            root._entranceStarted = true
+            if (root.isSystem) {
+                systemAuraNear.opacity = 0.0
+                systemAuraFar.opacity = 0.0
+                systemShift.y = root.entranceStartY
+                systemEntranceAnim.restart()
+            } else {
+                entranceAnim.restart()
+            }
+        }
+    }
+
+    Rectangle {
+        id: systemAuraFar
         visible: isSystem
-        text: root.content
-        color: root.status === "error" ? statusError : textTertiary
-        font.pixelSize: 13
-        font.italic: true
-        wrapMode: Text.Wrap
-        horizontalAlignment: Text.AlignHCenter
-        lineHeight: 1.4
+        anchors.fill: systemBubble
+        anchors.margins: -12
+        radius: systemBubble.radius + 12
+        color: root.status === "error" ? "#2EF87171" : (isDark ? "#2C9AA8FF" : "#247C6CF0")
+        opacity: 0.0
     }
 
-    // ── Hidden metrics text (no anchors to bubble → breaks binding loop) ──
+    Rectangle {
+        id: systemAuraNear
+        visible: isSystem
+        anchors.fill: systemBubble
+        anchors.margins: -6
+        radius: systemBubble.radius + 6
+        color: root.status === "error" ? "#44F87171" : (isDark ? "#249AA8FF" : "#1E7C6CF0")
+        opacity: 0.0
+    }
+
+    Rectangle {
+        id: systemBubble
+        visible: isSystem
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.top: parent.top
+        anchors.topMargin: 7
+        width: Math.max(60, Math.min(root.width * 0.9, systemText.implicitWidth + 34))
+        height: systemText.contentHeight + 14
+        radius: 11
+        color: root.status === "error" ? (isDark ? "#20F87171" : "#14F87171") : (isDark ? "#14FFFFFF" : "#12000000")
+        border.width: 1
+        border.color: root.status === "error" ? (isDark ? "#58F87171" : "#42F87171") : borderSubtle
+        opacity: shouldAnimateEntrance && !_entranceStarted ? 0.0 : 1.0
+        scale: shouldAnimateEntrance && !_entranceStarted ? entranceStartScale : 1.0
+        transformOrigin: Item.Center
+        transform: Translate { id: systemShift; y: 0 }
+
+        Behavior on color { ColorAnimation { duration: 180; easing.type: Easing.OutCubic } }
+        Behavior on border.color { ColorAnimation { duration: 180; easing.type: Easing.OutCubic } }
+
+        Rectangle {
+            anchors.fill: parent
+            radius: parent.radius
+            color: root.status === "error" ? "#08F87171" : (isDark ? "#0D7C6CF0" : "#097C6CF0")
+        }
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.leftMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            width: 3
+            height: Math.max(16, parent.height - 12)
+            radius: 2
+            color: root.status === "error" ? statusError : accent
+            opacity: 0.82
+        }
+
+        Text {
+            id: systemText
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: 17
+            anchors.rightMargin: 10
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.content
+            color: root.status === "error" ? statusError : textSecondary
+            font.pixelSize: 12
+            font.weight: Font.Medium
+            font.letterSpacing: 0.2
+            wrapMode: Text.Wrap
+            horizontalAlignment: Text.AlignHCenter
+            lineHeight: 1.35
+            textFormat: Text.PlainText
+        }
+
+        HoverHandler { cursorShape: Qt.PointingHandCursor }
+        MouseArea {
+            anchors.fill: parent
+            z: 10
+            preventStealing: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.copyToClipboard(root.content)
+        }
+    }
+
+    ParallelAnimation {
+        id: systemEntranceAnim
+        onStopped: root.consumeEntrance()
+        NumberAnimation { target: systemBubble; property: "opacity"; from: 0.0; to: 1.0; duration: entranceOpacityDuration; easing.type: Easing.OutCubic }
+        NumberAnimation { target: systemBubble; property: "scale"; from: entranceStartScale; to: 1.0; duration: entranceScaleDuration; easing.type: Easing.OutCubic }
+        NumberAnimation { target: systemShift; property: "y"; from: entranceStartY; to: 0; duration: entranceScaleDuration; easing.type: Easing.OutCubic }
+        SequentialAnimation {
+            NumberAnimation { target: systemAuraNear; property: "opacity"; from: 0.0; to: 0.24; duration: 170; easing.type: Easing.OutCubic }
+            NumberAnimation { target: systemAuraNear; property: "opacity"; to: 0.0; duration: 520; easing.type: Easing.OutCubic }
+        }
+        SequentialAnimation {
+            NumberAnimation { target: systemAuraFar; property: "opacity"; from: 0.0; to: 0.14; duration: 220; easing.type: Easing.OutCubic }
+            NumberAnimation { target: systemAuraFar; property: "opacity"; to: 0.0; duration: 700; easing.type: Easing.OutCubic }
+        }
+    }
+
+    TextEdit { id: clipHelper; visible: false }
+
     Text {
         id: contentMetrics
         text: root.content
         font.pixelSize: 15
-        textFormat: Text.MarkdownText
+        textFormat: root.isMarkdown ? Text.MarkdownText : Text.PlainText
         visible: false
     }
 
-    // ── Chat bubble (user / assistant) ────────────────────────────
     Rectangle {
         id: bubble
         visible: !isSystem
@@ -75,31 +206,17 @@ Item {
         width: isTyping ? 72 : Math.min(contentMetrics.implicitWidth + 32, root.width * 0.75)
         height: isTyping ? 42 : contentText.contentHeight + 28
         radius: 18
-        opacity: 1.0
+        opacity: shouldAnimateEntrance && !_entranceStarted ? 0.0 : 1.0
+        scale: shouldAnimateEntrance && !_entranceStarted ? entranceStartScale : 1.0
+        transformOrigin: Item.Center
         transform: Translate { id: enterTranslate; y: 0 }
 
-        color: {
-            if (isUser) return hoverHandler.hovered ? accentHover : accent
-            return hoverHandler.hovered ? bgCardHover : bgCard
-        }
-
+        color: isUser ? (hoverHandler.hovered ? accentHover : accent) : (hoverHandler.hovered ? bgCardHover : bgCard)
         border.color: isUser ? "transparent" : borderSubtle
         border.width: isUser ? 0 : 1
-
         Behavior on color { ColorAnimation { duration: 150 } }
 
-        // ── Hover + pointer cursor ───────────────────────
-        HoverHandler {
-            id: hoverHandler
-            cursorShape: Qt.PointingHandCursor
-        }
-
-        // ── Hidden TextEdit for clipboard (pure QML, no Python call) ──
-        TextEdit {
-            id: clipHelper
-            visible: false
-        }
-        // ── Click to copy (z:10 covers Text to block MarkdownText press) ──
+        HoverHandler { id: hoverHandler; cursorShape: Qt.PointingHandCursor }
         MouseArea {
             id: clickArea
             anchors.fill: parent
@@ -108,131 +225,47 @@ Item {
             cursorShape: Qt.PointingHandCursor
             onClicked: function(mouse) {
                 if (bubble.isTyping || root.content === "") return
-                // Check if click hit a link
-                var localPt = clickArea.mapToItem(contentText, mouse.x, mouse.y)
-                var link = contentText.linkAt(localPt.x, localPt.y)
-                if (link) {
-                    Qt.openUrlExternally(link)
-                    return
+                if (root.isMarkdown) {
+                    var localPt = clickArea.mapToItem(contentText, mouse.x, mouse.y)
+                    var link = contentText.linkAt(localPt.x, localPt.y)
+                    if (link) {
+                        Qt.openUrlExternally(link)
+                        return
+                    }
                 }
-                // Copy content via hidden TextEdit
-                clipHelper.text = root.content
-                clipHelper.selectAll()
-                clipHelper.copy()
-                clipHelper.deselect()
+                root.copyToClipboard(root.content)
                 copyFlash.opacity = 0.0
                 copyFlashAnim.restart()
-                if (root.toastFunc) root.toastFunc()
             }
         }
 
-        // ── Copy animation — non-geometric flash (no layout shift) ─────
-        Rectangle {
-            id: copyFlash
-            anchors.fill: parent
-            radius: parent.radius
-            z: 1
-            color: root.isUser ? "#40FFFFFF" : accentGlow
-            opacity: 0.0
-        }
-
+        Rectangle { id: copyFlash; anchors.fill: parent; radius: parent.radius; z: 1; color: root.isUser ? "#40FFFFFF" : accentGlow; opacity: 0.0 }
         SequentialAnimation {
             id: copyFlashAnim
-            NumberAnimation {
-                target: copyFlash
-                property: "opacity"
-                from: 0.0
-                to: 0.32
-                duration: 90
-                easing.type: Easing.OutCubic
-            }
-            NumberAnimation {
-                target: copyFlash
-                property: "opacity"
-                to: 0.0
-                duration: 180
-                easing.type: Easing.OutCubic
-            }
+            NumberAnimation { target: copyFlash; property: "opacity"; from: 0.0; to: 0.32; duration: 90; easing.type: Easing.OutCubic }
+            NumberAnimation { target: copyFlash; property: "opacity"; to: 0.0; duration: 180; easing.type: Easing.OutCubic }
         }
-        // ── Entrance animation — fade + slight slide up ────────
+
         ParallelAnimation {
             id: entranceAnim
-            NumberAnimation {
-                target: bubble
-                property: "opacity"
-                to: 1.0
-                duration: 160
-                easing.type: Easing.OutCubic
-            }
-            NumberAnimation {
-                target: enterTranslate
-                property: "y"
-                to: 0
-                duration: 220
-                easing.type: Easing.OutCubic
-            }
+            onStopped: root.consumeEntrance()
+            NumberAnimation { target: bubble; property: "opacity"; from: 0.0; to: 1.0; duration: entranceOpacityDuration; easing.type: Easing.OutCubic }
+            NumberAnimation { target: bubble; property: "scale"; from: entranceStartScale; to: 1.0; duration: entranceScaleDuration; easing.type: Easing.OutCubic }
+            NumberAnimation { target: enterTranslate; property: "y"; from: 10; to: 0; duration: entranceScaleDuration; easing.type: Easing.OutCubic }
         }
 
-        // ── Typing indicator — elastic pulse dots ──────────────────
-        Row {
-            anchors.centerIn: parent
-            spacing: 5
-            visible: bubble.isTyping
-
-            Repeater {
-                model: 3
-                delegate: Rectangle {
-                    id: dot
-                    width: 6; height: 6; radius: 3
-                    color: isDark ? "#8A8AA0" : "#9CA3AF"
-                    opacity: 0.45
-                    scale: 1.0
-                    transformOrigin: Item.Center
-
-                    SequentialAnimation on scale {
-                        running: bubble.isTyping
-                        loops: Animation.Infinite
-                        PauseAnimation { duration: index * 160 }
-                        NumberAnimation { to: 1.5; duration: 320; easing.type: Easing.OutBack }
-                        NumberAnimation { to: 1.0; duration: 280; easing.type: Easing.InOutQuad }
-                        PauseAnimation { duration: (2 - index) * 160 + 400 }
-                    }
-
-                    SequentialAnimation on opacity {
-                        running: bubble.isTyping
-                        loops: Animation.Infinite
-                        PauseAnimation { duration: index * 160 }
-                        NumberAnimation { to: 1.0; duration: 320; easing.type: Easing.OutCubic }
-                        NumberAnimation { to: 0.45; duration: 280; easing.type: Easing.InCubic }
-                        PauseAnimation { duration: (2 - index) * 160 + 400 }
-                    }
-                }
-            }
-        }
-
-        // ── Message text (read-only display, no mouse handling) ──
         Text {
             id: contentText
-            anchors {
-                top: parent.top; topMargin: 14
-                left: parent.left; leftMargin: 16
-                right: parent.right; rightMargin: 16
-            }
+            anchors { top: parent.top; topMargin: 14; left: parent.left; leftMargin: 16; right: parent.right; rightMargin: 16 }
             text: root.content
             visible: root.content !== ""
             color: root.isUser ? "#FFFFFF" : textPrimary
             font.pixelSize: 15
             wrapMode: Text.Wrap
-            textFormat: Text.MarkdownText
+            textFormat: root.isMarkdown ? Text.MarkdownText : Text.PlainText
             lineHeight: 1.4
         }
 
-        // Error tint
-        Rectangle {
-            anchors.fill: parent
-            radius: parent.radius
-            color: "#15F87171"
-            visible: root.status === "error"
-        }
+        Rectangle { anchors.fill: parent; radius: parent.radius; color: "#15F87171"; visible: root.status === "error" }
     }
 }

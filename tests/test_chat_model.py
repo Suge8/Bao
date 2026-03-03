@@ -131,3 +131,72 @@ def test_load_history_source_renders_as_system(qapp):
     assert m.data(m.index(3), Qt.UserRole + 2) == "assistant"
     # normal user message stays user
     assert m.data(m.index(4), Qt.UserRole + 2) == "user"
+
+
+def test_load_prepared_skips_reset_when_render_equivalent(qapp):
+    from app.backend.chat import ChatMessageModel
+
+    m = _new_model()
+    raw = [
+        {"role": "assistant", "content": "hello"},
+        {"role": "user", "content": "world"},
+    ]
+    prepared = ChatMessageModel.prepare_history(raw)
+    resets = []
+    m.modelReset.connect(lambda: resets.append(True))
+
+    m.load_prepared(prepared)
+    m.load_prepared([dict(item) for item in prepared])
+
+    assert len(resets) == 1
+
+
+def test_load_prepared_skips_reset_when_only_entrance_flags_differ(qapp):
+    from app.backend.chat import ChatMessageModel
+
+    m = _new_model()
+    row = m.append_assistant("hello", status="done", entrance_pending=True)
+    m.mark_entrance_pending(row)
+    prepared = ChatMessageModel.prepare_history(
+        [{"role": "assistant", "content": "hello", "status": "done"}]
+    )
+    resets = []
+    m.modelReset.connect(lambda: resets.append(True))
+
+    m.load_prepared(prepared)
+
+    assert len(resets) == 0
+
+
+def test_prepare_history_preserves_valid_status(qapp):
+    from app.backend.chat import ChatMessageModel
+
+    prepared = ChatMessageModel.prepare_history(
+        [
+            {"role": "assistant", "content": "a", "status": "error"},
+            {"role": "system", "content": "s", "status": "typing"},
+            {"role": "user", "content": "u", "_source": "cron", "status": "error"},
+            {"role": "tool", "content": "t", "status": "typing"},
+        ]
+    )
+
+    assert prepared[0]["status"] == "error"
+    assert prepared[1]["status"] == "typing"
+    assert prepared[2]["status"] == "error"
+    assert prepared[3]["status"] == "typing"
+
+
+def test_prepare_history_invalid_status_falls_back_done(qapp):
+    from app.backend.chat import ChatMessageModel
+
+    prepared = ChatMessageModel.prepare_history(
+        [
+            {"role": "assistant", "content": "a", "status": "bad"},
+            {"role": "system", "content": "s", "status": 1},
+            {"role": "user", "content": "u", "_source": "subagent", "status": None},
+        ]
+    )
+
+    assert prepared[0]["status"] == "done"
+    assert prepared[1]["status"] == "done"
+    assert prepared[2]["status"] == "done"
