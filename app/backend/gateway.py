@@ -72,6 +72,7 @@ class ChatService(QObject):
         self._pending_system: list[tuple[str, str, str]] = []
         self._active_streaming_row: int = -1
         self._active_streaming_session_key: str | None = None
+        self._active_send_future: Any = None
         self._active_has_content = False
         self._pending_split = False
 
@@ -432,6 +433,7 @@ class ChatService(QObject):
         self.messageAppended.emit(assistant_row)
 
         fut = self._runner.submit(self._call_agent(text, session_key))
+        self._active_send_future = fut
         fut.add_done_callback(lambda f: self._on_send_done(f, assistant_row))
 
     def _on_send_done(self, future: Any, row: int) -> None:
@@ -674,3 +676,17 @@ class ChatService(QObject):
             self._agent.stop()
         if self._channels:
             await self._channels.stop_all()
+
+    def handle_session_deleted(self, key: str, success: bool, _error: str) -> None:
+        """Handle session deletion - cancel streaming if needed."""
+        if not success:
+            return
+        if key == self._active_streaming_session_key and self._active_send_future:
+            try:
+                self._active_send_future.cancel()
+            except Exception:
+                pass
+            self._active_streaming_session_key = None
+            self._active_send_future = None
+        if key in self._history_cache:
+            del self._history_cache[key]

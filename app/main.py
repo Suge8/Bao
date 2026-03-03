@@ -428,6 +428,9 @@ def main() -> int:
     # Wire session → gateway: when active session changes, update gateway session key
     set_session_key = cast(Callable[[str], None], chat_service.setSessionKey)
     _ = session_service.activeKeyChanged.connect(set_session_key)
+    # Wire session deletion → gateway: cancel streaming if needed
+    handle_deleted = cast(Callable[[str, bool, str], None], chat_service.handle_session_deleted)
+    _ = session_service.deleteCompleted.connect(handle_deleted)
 
     context = engine.rootContext()
     context.setContextProperty("chatService", chat_service)
