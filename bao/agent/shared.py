@@ -243,6 +243,7 @@ def has_tool_error(tool_name: str, result: str, error_keywords: tuple[str, ...])
     info = parse_tool_error(tool_name, result, error_keywords)
     return bool(info and info.is_error)
 
+
 def sanitize_trace_text(text: Any, max_len: int) -> str:
     normalized = str(text or "").replace("\r", " ").replace("\n", " ").strip()
     compact = " ".join(normalized.split())
@@ -531,9 +532,74 @@ async def check_sufficiency(
         return False
 
 
-# ---------------------------------------------------------------------------
-# 5. compact_messages — Layer 2 context compaction
-# ---------------------------------------------------------------------------
+def patch_dangling_tool_results(
+    messages: list[dict[str, Any]],
+    *,
+    placeholder_content: str = "[Tool call was interrupted and did not return a result.]",
+) -> int:
+    if not messages:
+        return 0
+
+    existing_tool_ids = {
+        str(m.get("tool_call_id")).strip()
+        for m in messages
+        if m.get("role") == "tool" and isinstance(m.get("tool_call_id"), str)
+    }
+    existing_tool_ids.discard("")
+
+    patched: list[dict[str, Any]] = []
+    inserted_ids: set[str] = set()
+    inserted_count = 0
+
+    for msg in messages:
+        patched.append(msg)
+        if msg.get("role") != "assistant":
+            continue
+
+        tool_calls = msg.get("tool_calls")
+        if not isinstance(tool_calls, list) or not tool_calls:
+            continue
+
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+
+            raw_id = tc.get("id")
+            if not isinstance(raw_id, str):
+                continue
+            tool_call_id = raw_id.strip()
+            if not tool_call_id:
+                continue
+            if tool_call_id in existing_tool_ids or tool_call_id in inserted_ids:
+                continue
+
+            tool_name = "unknown"
+            fn = tc.get("function")
+            if (
+                isinstance(fn, dict)
+                and isinstance(fn.get("name"), str)
+                and fn.get("name", "").strip()
+            ):
+                tool_name = fn["name"].strip()
+            elif isinstance(tc.get("name"), str) and tc.get("name", "").strip():
+                tool_name = tc["name"].strip()
+
+            patched.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "name": tool_name,
+                    "content": placeholder_content,
+                }
+            )
+            existing_tool_ids.add(tool_call_id)
+            inserted_ids.add(tool_call_id)
+            inserted_count += 1
+
+    if inserted_count:
+        messages[:] = patched
+
+    return inserted_count
 
 
 def compact_messages(

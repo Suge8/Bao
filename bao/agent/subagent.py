@@ -707,6 +707,12 @@ class SubagentManager:
         *,
         force_final_response: bool,
     ) -> Any:
+        repaired = shared.patch_dangling_tool_results(messages)
+        if repaired:
+            logger.warning(
+                "Subagent repaired {} dangling tool_call(s) before provider chat",
+                repaired,
+            )
         try:
             return await self.provider.chat(
                 messages=messages,
