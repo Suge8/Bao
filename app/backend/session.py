@@ -6,17 +6,16 @@ Internal signals marshal results back to the Qt main thread.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Coroutine
 from datetime import datetime
 from typing import Any
 
-import os
 from loguru import logger
-
 from PySide6.QtCore import (
     Property,
-    QByteArray,
     QAbstractListModel,
+    QByteArray,
     QModelIndex,
     QObject,
     QPersistentModelIndex,
@@ -133,7 +132,7 @@ class SessionService(QObject):
         self._pending_select_key: str | None = None
         self._last_emitted_active_key = ""
         self._model = SessionListModel()
-        self._pending_deletes: dict[str, tuple[list[dict[str, Any]], str]] = {}
+        self._pending_deletes: dict[str, tuple[list[dict[str, Any]], str, str, set[str]]] = {}
         self._list_fp: tuple[Any, ...] | None = None
         self._disposed = False
         self._unread_timer = QTimer(self)
@@ -249,26 +248,54 @@ class SessionService(QObject):
             return
         sessions_before = [dict(s) for s in self._model._sessions]
         active_before = self._active_key
+        removed_index = next(
+            (i for i, s in enumerate(sessions_before) if s.get("key") == key),
+            -1,
+        )
         sessions_after = [s for s in sessions_before if s.get("key") != key]
-        if len(sessions_after) == len(sessions_before):
+        if removed_index < 0 or len(sessions_after) == len(sessions_before):
             return
 
         new_active = active_before
         if active_before == key:
             if sessions_after:
-                desktop = [s for s in sessions_after if s.get("channel") == "desktop"]
-                pick = desktop[0] if desktop else sessions_after[0]
+                removed_channel = sessions_before[removed_index].get("channel")
+                pick = None
+                left = removed_index - 1
+                right = removed_index
+                while left >= 0 or right < len(sessions_after):
+                    if right < len(sessions_after):
+                        candidate = sessions_after[right]
+                        if candidate.get("channel") == removed_channel:
+                            pick = candidate
+                            break
+                    if left >= 0:
+                        candidate = sessions_after[left]
+                        if candidate.get("channel") == removed_channel:
+                            pick = candidate
+                            break
+                    right += 1
+                    left -= 1
+                if pick is None:
+                    pick_index = min(removed_index, len(sessions_after) - 1)
+                    pick = sessions_after[pick_index]
                 new_active = str(pick.get("key", ""))
             else:
                 new_active = ""
 
-        self._pending_deletes[key] = (sessions_before, active_before)
+        unread_before = set(self._model._unread_keys)
+        unread_after = set(unread_before)
+        unread_after.discard(key)
+        if new_active:
+            unread_after.discard(new_active)
+
+        self._pending_deletes[key] = (sessions_before, active_before, new_active, unread_before)
         self._active_key = new_active
-        self._model.reset_sessions(sessions_after, new_active)
+        self._model.reset_sessions(sessions_after, new_active, unread_after)
         self.sessionsChanged.emit()
         self._emit_active_key_if_changed(new_active)
 
-        fut = self._submit_safe(self._delete_session(key))
+        fut = self._submit_safe(self._delete_session(key, new_active))
         if fut is None:
             self._pending_deletes.pop(key, None)
             return
@@ -326,11 +353,24 @@ class SessionService(QObject):
         session.metadata["desktop_last_read_at"] = datetime.now().isoformat()
         sm.save(session)
 
-    async def _delete_session(self, key: str) -> None:
+    async def _delete_session(self, key: str, new_active: str) -> None:
         was_active = self._session_manager.get_active_session_key(self._natural_key) == key
-        self._session_manager.delete_session(key)
+        deleted = self._session_manager.delete_session(key)
+        if not deleted:
+            still_exists = True
+            try:
+                still_exists = any(
+                    s.get("key") == key for s in self._session_manager.list_sessions()
+                )
+            except Exception:
+                still_exists = True
+            if still_exists:
+                raise RuntimeError(f"delete session failed: {key}")
         if was_active:
-            self._session_manager.clear_active_session_key(self._natural_key)
+            if new_active:
+                self._session_manager.set_active_session_key(self._natural_key, new_active)
+            else:
+                self._session_manager.clear_active_session_key(self._natural_key)
 
     # ------------------------------------------------------------------
     # Callbacks (asyncio thread — emit signals only, no Qt ops)
@@ -383,6 +423,14 @@ class SessionService(QObject):
             self.errorOccurred.emit(error)
             return
         sessions, active, unread_keys = data
+        pending_keys = set(self._pending_deletes.keys())
+        if pending_keys:
+            sessions = [s for s in sessions if s.get("key") not in pending_keys]
+            unread_keys.difference_update(pending_keys)
+            if active in pending_keys:
+                active = self._active_key if self._active_key not in pending_keys else ""
+        if active and not any(s.get("key") == active for s in sessions):
+            active = ""
         if not self._allow_active_selection:
             active = ""
         elif not active and sessions:
@@ -394,9 +442,11 @@ class SessionService(QObject):
         # Active session is always "read" — prevent stale poll from re-adding red dot
         if self._active_key:
             unread_keys.discard(self._active_key)
+        if active:
+            unread_keys.discard(active)
         # Fingerprint check — skip rebuild if nothing changed
         fp = (
-            tuple((s["key"], s.get("title", "")) for s in sessions),
+            tuple((s["key"], s.get("title", ""), s.get("updated_at", "")) for s in sessions),
             active,
             frozenset(unread_keys),
         )
@@ -439,11 +489,28 @@ class SessionService(QObject):
         snapshot = self._pending_deletes.pop(key, None)
         if not ok:
             if snapshot is not None:
-                sessions_before, active_before = snapshot
-                self._active_key = active_before
-                self._model.reset_sessions(sessions_before, active_before)
-                self.sessionsChanged.emit()
-                self._emit_active_key_if_changed(active_before)
+                sessions_before, active_before, optimistic_active, unread_before = snapshot
+                if self._active_key == optimistic_active:
+                    pending_keys = set(self._pending_deletes.keys())
+                    if pending_keys:
+                        sessions_before = [
+                            s for s in sessions_before if str(s.get("key", "")) not in pending_keys
+                        ]
+                        unread_before = {
+                            unread_key
+                            for unread_key in unread_before
+                            if unread_key not in pending_keys
+                        }
+                        if active_before in pending_keys:
+                            active_before = self._active_key
+                    self._active_key = active_before
+                    if active_before:
+                        unread_before.discard(active_before)
+                    self._model.reset_sessions(sessions_before, active_before, unread_before)
+                    self.sessionsChanged.emit()
+                    self._emit_active_key_if_changed(active_before)
+                else:
+                    self.refresh()
             self.errorOccurred.emit(error)
             self.deleteCompleted.emit(key, False, error)
             return

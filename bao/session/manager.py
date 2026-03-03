@@ -228,6 +228,11 @@ class SessionManager:
                     if meta.get("created_at")
                     else datetime.now()
                 ),
+                updated_at=(
+                    datetime.fromisoformat(meta["updated_at"])
+                    if meta.get("updated_at")
+                    else datetime.now()
+                ),
                 metadata=json.loads(meta.get("metadata_json") or "{}"),
                 last_consolidated=meta.get("last_consolidated", 0),
             )
@@ -307,43 +312,95 @@ class SessionManager:
     def invalidate(self, key: str) -> None:
         self._cache.pop(key, None)
 
-    def _delete_meta_row(self, key: str) -> None:
+    def _delete_meta_row(self, key: str) -> bool:
         try:
             self._meta_tbl.delete(f"session_key = '{_escape(key)}'")
+            return True
         except Exception:
-            pass
+            return False
 
     def delete_session(self, key: str) -> bool:
-        self._delete_meta_row(key)
         safe = _escape(key)
+        prev_meta: list[dict[str, Any]] = []
+        prev_msgs: list[dict[str, Any]] = []
+        try:
+            prev_meta = self._meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
+        except Exception:
+            prev_meta = []
+        try:
+            prev_msgs = self._msg_tbl.search().where(f"session_key = '{safe}'").to_list()
+        except Exception:
+            prev_msgs = []
+
+        ok = self._delete_meta_row(key)
         try:
             self._msg_tbl.delete(f"session_key = '{safe}'")
         except Exception:
-            pass
+            ok = False
+        if not ok:
+            try:
+                self._meta_tbl.delete(f"session_key = '{safe}'")
+            except Exception:
+                pass
+            try:
+                self._msg_tbl.delete(f"session_key = '{safe}'")
+            except Exception:
+                pass
+            if prev_meta:
+                try:
+                    self._meta_tbl.add(prev_meta)
+                except Exception:
+                    pass
+            if prev_msgs:
+                try:
+                    self._msg_tbl.add(prev_msgs)
+                except Exception:
+                    pass
+            self._cache.pop(key, None)
+            return False
         self._cache.pop(key, None)
         # Defensive: clear _active_cache if it points to the deleted session
         for nk, ak in list(self._active_cache.items()):
             if ak == key:
                 self._active_cache.pop(nk, None)
         try:
+            rows = self._meta_tbl.search().where("session_key != '_init_'").to_list()
+            for row in rows:
+                session_key = str(row.get("session_key", ""))
+                if not session_key.startswith("_active:"):
+                    continue
+                natural_key = session_key[len("_active:") :]
+                active_key = json.loads(row.get("metadata_json") or "{}").get("active_key")
+                if active_key == key:
+                    if not self._delete_meta_row(session_key):
+                        ok = False
+                    self._active_cache.pop(natural_key, None)
+        except Exception:
+            ok = False
+        try:
             from bao.agent.artifacts import ArtifactStore
 
             ArtifactStore(self.workspace, key, 0).cleanup_session()
         except Exception:
             pass
-        return True
+        return ok
 
     def get_active_session_key(self, natural_key: str) -> str | None:
         if natural_key in self._active_cache:
             return self._active_cache[natural_key]
         safe = _escape(f"_active:{natural_key}")
         try:
-            rows = self._meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
+            rows = self._meta_tbl.search().where(f"session_key = '{safe}'").to_list()
             if rows:
-                val = json.loads(rows[0].get("metadata_json") or "{}").get("active_key")
-                if val:
-                    self._active_cache[natural_key] = val
-                return val
+                rows.sort(key=lambda row: str(row.get("updated_at", "")), reverse=True)
+                for row in rows:
+                    try:
+                        val = json.loads(row.get("metadata_json") or "{}").get("active_key")
+                    except Exception:
+                        continue
+                    if val:
+                        self._active_cache[natural_key] = val
+                        return val
         except Exception:
             pass
         return None
