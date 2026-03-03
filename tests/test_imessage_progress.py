@@ -199,3 +199,43 @@ def test_imessage_progress_waits_for_boundary_to_avoid_awkward_cut(monkeypatch) 
     assert len(scripts) == 2
     assert 'send "杰哥，我先去几个科技新闻源抓一下最近三小时的内容。" to targetBuddy' in scripts[0]
     assert 'send "下一步" to targetBuddy' in scripts[1]
+
+
+def test_imessage_progress_clear_marker_drops_buffer_without_sending(monkeypatch) -> None:
+    scripts: list[str] = []
+
+    async def _fake_exec(*args, **kwargs):
+        del kwargs
+        scripts.append(args[2])
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    channel = IMessageChannel(IMessageConfig(enabled=True), MessageBus())
+
+    async def _run() -> None:
+        await channel.send(
+            OutboundMessage(
+                channel="imessage",
+                chat_id="+86100",
+                content='运行这条命令静音：\nosascript -e "set volume output muted true"',
+                metadata={"_progress": True},
+            )
+        )
+        await channel.send(
+            OutboundMessage(
+                channel="imessage",
+                chat_id="+86100",
+                content="",
+                metadata={"_progress": True, "_progress_clear": True},
+            )
+        )
+        await channel.stop()
+
+    asyncio.run(_run())
+
+    assert scripts == []
+    assert channel._progress._buf == {}
+    assert channel._progress._open == {}
+    assert channel._progress._last_text == {}
+    assert channel._progress._last_time == {}

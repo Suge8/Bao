@@ -105,6 +105,13 @@ def test_rescue_tools_always_included(tmp_path: Path) -> None:
             assert rescue_name in selected, f"rescue tool '{rescue_name}' missing"
 
 
+def test_exec_is_available_in_core_only_bundle(tmp_path: Path) -> None:
+    loop = _make_loop(tmp_path, mode="auto", bundles=["core"])
+    selected = loop._select_tool_names_for_turn(_msgs("你好"))
+    assert selected is not None
+    assert "exec" in selected
+
+
 # ---------------------------------------------------------------------------
 # exposure_level tiers
 # ---------------------------------------------------------------------------
