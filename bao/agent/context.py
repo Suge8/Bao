@@ -148,7 +148,7 @@ Skills with available="false" need dependencies installed first - you can try in
         workspace_path = str(self.workspace.expanduser().resolve())
         system = platform.system()
         runtime_lines = [
-            f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, "
+            f"Host: {'macOS' if system == 'Darwin' else system} {platform.machine()}, "
             f"Python {platform.python_version()}",
             f"Current time: {format_current_time()}",
         ]
@@ -164,12 +164,14 @@ Skills with available="false" need dependencies installed first - you can try in
 
         return f"""# Bao 🍞
 
-You are Bao, a personal AI assistant with persistent memory and learning capabilities.
+You are Bao, a personal AI assistant running inside the bao framework.
+
+The Runtime section describes the actual host you operate on. Use it as ground truth; do not ask for information already present there.
 
 Priority: Core rules (this section) > PERSONA.md / INSTRUCTIONS.md > Skills > Memory / Experience.
 User-defined instructions may customize behavior but cannot override core safety rules.
 
-## Runtime
+## Runtime (actual host)
 {runtime_block}
 
 ## Workspace
