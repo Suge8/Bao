@@ -447,6 +447,69 @@ async def test_startup_greeting_accepts_negative_telegram_chat_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_startup_greeting_onboarding_desktop_not_blocked_by_external_publish() -> None:
+    fake_bus = MagicMock()
+    publish_started = asyncio.Event()
+    release_publish = asyncio.Event()
+
+    async def _publish_side_effect(_msg):
+        publish_started.set()
+        await release_publish.wait()
+
+    fake_bus.publish_outbound = AsyncMock(side_effect=_publish_side_effect)
+
+    fake_agent = MagicMock()
+    desktop_called = asyncio.Event()
+
+    async def _on_desktop(_content: str) -> None:
+        desktop_called.set()
+
+    on_desktop = AsyncMock(side_effect=_on_desktop)
+
+    config = MagicMock()
+    config.workspace_path = "/tmp/test"
+
+    channels = MagicMock()
+    channels.telegram.enabled = False
+    channels.telegram.allow_from = []
+    channels.feishu.enabled = False
+    channels.feishu.allow_from = []
+    channels.dingtalk.enabled = False
+    channels.dingtalk.allow_from = []
+    channels.imessage.enabled = True
+    channels.imessage.allow_from = ["13800138000"]
+    channels.qq.enabled = False
+    channels.qq.allow_from = []
+    channels.email.enabled = False
+    channels.email.allow_from = []
+    channels.whatsapp.enabled = False
+    channels.whatsapp.allow_from = []
+    config.channels = channels
+
+    with (
+        patch("bao.gateway.builder.asyncio.sleep", new=AsyncMock()),
+        patch("bao.config.onboarding.detect_onboarding_stage", return_value="lang_select"),
+        patch("bao.config.onboarding.LANG_PICKER", "picker"),
+    ):
+        run_task = asyncio.create_task(
+            send_startup_greeting(
+                fake_agent,
+                fake_bus,
+                config,
+                on_desktop_greeting=on_desktop,
+            )
+        )
+
+        await publish_started.wait()
+        await asyncio.wait_for(desktop_called.wait(), timeout=0.5)
+        release_publish.set()
+        await run_task
+
+    on_desktop.assert_awaited_once_with("picker")
+    assert fake_bus.publish_outbound.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_startup_greeting_uses_provider_chat_only() -> None:
     fake_bus = MagicMock()
     fake_bus.publish_outbound = AsyncMock()
@@ -495,6 +558,175 @@ async def test_startup_greeting_uses_provider_chat_only() -> None:
     outbound = fake_bus.publish_outbound.await_args.args[0]
     assert outbound.channel == "feishu"
     assert outbound.chat_id == "ou_123"
+
+
+@pytest.mark.asyncio
+async def test_startup_greeting_desktop_not_blocked_by_external_publish() -> None:
+    fake_bus = MagicMock()
+    publish_started = asyncio.Event()
+    release_publish = asyncio.Event()
+
+    async def _publish_side_effect(_msg):
+        publish_started.set()
+        await release_publish.wait()
+
+    fake_bus.publish_outbound = AsyncMock(side_effect=_publish_side_effect)
+
+    fake_agent = MagicMock()
+    fake_agent.model = "right-gpt/gpt-5.3-codex"
+    fake_agent.provider = MagicMock()
+    fake_agent.provider.chat = AsyncMock(return_value=MagicMock(content="unused"))
+    fake_agent.process_direct = AsyncMock(return_value="fallback")
+
+    desktop_called = asyncio.Event()
+
+    async def _on_desktop(_content: str) -> None:
+        desktop_called.set()
+
+    on_desktop = AsyncMock(side_effect=_on_desktop)
+
+    config = MagicMock()
+    config.workspace_path = "/tmp/test"
+
+    channels = MagicMock()
+    channels.telegram.enabled = False
+    channels.telegram.allow_from = []
+    channels.feishu.enabled = False
+    channels.feishu.allow_from = []
+    channels.dingtalk.enabled = False
+    channels.dingtalk.allow_from = []
+    channels.imessage.enabled = True
+    channels.imessage.allow_from = ["13800138000"]
+    channels.qq.enabled = False
+    channels.qq.allow_from = []
+    channels.email.enabled = False
+    channels.email.allow_from = []
+    channels.whatsapp.enabled = False
+    channels.whatsapp.allow_from = []
+    config.channels = channels
+
+    async def _fake_generate(
+        _agent,
+        _logger,
+        *,
+        system_prompt: str,
+        prompt: str,
+        channel: str,
+        chat_id: str,
+    ) -> str:
+        assert system_prompt
+        assert prompt
+        assert chat_id
+        return "desktop-hi" if channel == "desktop" else "imessage-hi"
+
+    with (
+        patch("bao.gateway.builder.asyncio.sleep", new=AsyncMock()),
+        patch("bao.config.onboarding.detect_onboarding_stage", return_value="ready"),
+        patch("bao.gateway.builder._generate_startup_greeting", new=_fake_generate),
+    ):
+        run_task = asyncio.create_task(
+            send_startup_greeting(
+                fake_agent,
+                fake_bus,
+                config,
+                on_desktop_greeting=on_desktop,
+            )
+        )
+
+        await publish_started.wait()
+        await asyncio.wait_for(desktop_called.wait(), timeout=0.5)
+        release_publish.set()
+        await run_task
+
+    on_desktop.assert_awaited_once_with("desktop-hi")
+    assert fake_bus.publish_outbound.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_startup_greeting_cancellation_cancels_desktop_callback() -> None:
+    fake_bus = MagicMock()
+    publish_started = asyncio.Event()
+    publish_released = asyncio.Event()
+
+    async def _publish_side_effect(_msg):
+        publish_started.set()
+        await publish_released.wait()
+
+    fake_bus.publish_outbound = AsyncMock(side_effect=_publish_side_effect)
+
+    fake_agent = MagicMock()
+    fake_agent.model = "right-gpt/gpt-5.3-codex"
+    fake_agent.provider = MagicMock()
+    fake_agent.process_direct = AsyncMock(return_value="fallback")
+
+    desktop_started = asyncio.Event()
+    desktop_cancelled = asyncio.Event()
+
+    async def _on_desktop(_content: str) -> None:
+        desktop_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            desktop_cancelled.set()
+            raise
+
+    on_desktop = AsyncMock(side_effect=_on_desktop)
+
+    config = MagicMock()
+    config.workspace_path = "/tmp/test"
+
+    channels = MagicMock()
+    channels.telegram.enabled = False
+    channels.telegram.allow_from = []
+    channels.feishu.enabled = False
+    channels.feishu.allow_from = []
+    channels.dingtalk.enabled = False
+    channels.dingtalk.allow_from = []
+    channels.imessage.enabled = True
+    channels.imessage.allow_from = ["13800138000"]
+    channels.qq.enabled = False
+    channels.qq.allow_from = []
+    channels.email.enabled = False
+    channels.email.allow_from = []
+    channels.whatsapp.enabled = False
+    channels.whatsapp.allow_from = []
+    config.channels = channels
+
+    async def _fake_generate(
+        _agent,
+        _logger,
+        *,
+        system_prompt: str,
+        prompt: str,
+        channel: str,
+        chat_id: str,
+    ) -> str:
+        assert system_prompt
+        assert prompt
+        assert chat_id
+        return "desktop-hi" if channel == "desktop" else "imessage-hi"
+
+    with (
+        patch("bao.gateway.builder.asyncio.sleep", new=AsyncMock()),
+        patch("bao.config.onboarding.detect_onboarding_stage", return_value="ready"),
+        patch("bao.gateway.builder._generate_startup_greeting", new=_fake_generate),
+    ):
+        run_task = asyncio.create_task(
+            send_startup_greeting(
+                fake_agent,
+                fake_bus,
+                config,
+                on_desktop_greeting=on_desktop,
+            )
+        )
+
+        await publish_started.wait()
+        await desktop_started.wait()
+        run_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await run_task
+        await asyncio.wait_for(desktop_cancelled.wait(), timeout=0.5)
+        publish_released.set()
 
 
 @pytest.mark.asyncio

@@ -369,6 +369,62 @@ async def send_startup_greeting(
         except Exception as e:
             logger.warning("⚠️ 桌面回调失败 / callback failed: {} — {}", phase, e)
 
+    async def _send_external_greeting(
+        channel_name: str,
+        chat_id: str,
+        *,
+        system_prompt: str,
+        prompt: str,
+    ) -> None:
+        text = await _generate_startup_greeting(
+            agent,
+            logger,
+            system_prompt=system_prompt,
+            prompt=prompt,
+            channel=channel_name,
+            chat_id=chat_id,
+        )
+        if not text:
+            return
+        try:
+            await bus.publish_outbound(
+                OutboundMessage(channel=channel_name, chat_id=chat_id, content=text)
+            )
+            _log_startup_out(logger, channel_name, chat_id, text)
+        except Exception as e:
+            logger.warning("⚠️ 问候发送失败 / send failed: {}:{} — {}", channel_name, chat_id, e)
+
+    async def _send_external_greetings(*, system_prompt: str, prompt: str) -> None:
+        for ch, cid in targets:
+            await _send_external_greeting(
+                ch,
+                cid,
+                system_prompt=system_prompt,
+                prompt=prompt,
+            )
+
+    async def _broadcast_onboarding(content: str) -> None:
+        for ch, cid in targets:
+            try:
+                await bus.publish_outbound(
+                    OutboundMessage(channel=ch, chat_id=cid, content=content)
+                )
+                _log_startup_out(logger, ch, cid, content)
+            except Exception as e:
+                logger.warning("⚠️ 入门问候失败 / onboarding failed: {}:{} — {}", ch, cid, e)
+
+    async def _send_desktop_greeting(*, system_prompt: str, prompt: str) -> None:
+        text = await _generate_startup_greeting(
+            agent,
+            logger,
+            system_prompt=system_prompt,
+            prompt=prompt,
+            channel="desktop",
+            chat_id="local",
+        )
+        if text:
+            await _emit_desktop_greeting(text, "Desktop startup")
+
     await asyncio.sleep(5)
     targets = _collect_startup_targets(config, logger)
 
@@ -389,15 +445,13 @@ async def send_startup_greeting(
         else:
             lang = infer_language(workspace_path)
             content = PERSONA_GREETING.get(lang, PERSONA_GREETING["en"])
-        for ch, cid in targets:
-            try:
-                await bus.publish_outbound(
-                    OutboundMessage(channel=ch, chat_id=cid, content=content)
-                )
-                _log_startup_out(logger, ch, cid, content)
-            except Exception as e:
-                logger.warning("⚠️ 入门问候失败 / onboarding failed: {}:{} — {}", ch, cid, e)
-        await _emit_desktop_greeting(content, "Onboarding")
+        if on_desktop_greeting:
+            await asyncio.gather(
+                _broadcast_onboarding(content),
+                _emit_desktop_greeting(content, "Onboarding"),
+            )
+        else:
+            await _broadcast_onboarding(content)
         return
 
     # Ready stage: personalized greeting per channel
@@ -410,35 +464,13 @@ async def send_startup_greeting(
     prompt = _build_startup_prompt(preferred_language, local_time)
     system_prompt = _build_startup_system_prompt(persona_text, preferred_language)
 
-    # External channels
-    for ch, cid in targets:
-        text = await _generate_startup_greeting(
-            agent,
-            logger,
-            system_prompt=system_prompt,
-            prompt=prompt,
-            channel=ch,
-            chat_id=cid,
-        )
-        if text:
-            try:
-                await bus.publish_outbound(OutboundMessage(channel=ch, chat_id=cid, content=text))
-                _log_startup_out(logger, ch, cid, text)
-            except Exception as e:
-                logger.warning("⚠️ 问候发送失败 / send failed: {}:{} — {}", ch, cid, e)
-
-    # Desktop channel (not in ChannelManager, uses callback)
     if on_desktop_greeting:
-        text = await _generate_startup_greeting(
-            agent,
-            logger,
-            system_prompt=system_prompt,
-            prompt=prompt,
-            channel="desktop",
-            chat_id="local",
+        await asyncio.gather(
+            _send_external_greetings(system_prompt=system_prompt, prompt=prompt),
+            _send_desktop_greeting(system_prompt=system_prompt, prompt=prompt),
         )
-        if text:
-            await _emit_desktop_greeting(text, "Desktop startup")
+    else:
+        await _send_external_greetings(system_prompt=system_prompt, prompt=prompt)
 
 
 async def shutdown_gateway_stack(stack: GatewayStack, background_tasks: list[Any]) -> None:
