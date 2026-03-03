@@ -75,6 +75,8 @@ class ChatService(QObject):
         self._active_send_future: Any = None
         self._active_has_content = False
         self._pending_split = False
+        self._progress_buffer = ""
+        self._progress_pending = False
 
         self._initResult.connect(self._handle_init_result)
         self._sendResult.connect(self._handle_send_result)
@@ -84,6 +86,13 @@ class ChatService(QObject):
         self._systemResponse.connect(self._handle_system_response)
 
         self._history_sync_timer = QTimer(self)
+        self._history_sync_timer.setInterval(1200)
+        self._history_sync_timer.timeout.connect(self._sync_active_history)
+        self._history_sync_timer.start()
+
+        self._progress_coalesce_timer = QTimer(self)
+        self._progress_coalesce_timer.setInterval(33)
+        self._progress_coalesce_timer.timeout.connect(self._flush_progress_buffer)
         self._history_sync_timer.setInterval(1200)
         self._history_sync_timer.timeout.connect(self._sync_active_history)
         self._history_sync_timer.start()
@@ -503,7 +512,10 @@ class ChatService(QObject):
                 accumulated[0] = ""
                 return
             accumulated[0] += delta
-            self._progressUpdate.emit(-1, accumulated[0])
+            self._progress_buffer = accumulated[0]
+            if not self._progress_pending:
+                self._progress_pending = True
+                self._progress_coalesce_timer.start()
 
         async def _on_event(event: Any) -> None:
             if getattr(event, "type", "") == StreamEventType.TOOL_HINT:
@@ -690,3 +702,10 @@ class ChatService(QObject):
             self._active_send_future = None
         if key in self._history_cache:
             del self._history_cache[key]
+
+    def _flush_progress_buffer(self) -> None:
+        """Flush buffered progress updates to UI (runs on Qt thread)."""
+        if self._progress_pending:
+            self._progressUpdate.emit(-1, self._progress_buffer)
+            self._progress_pending = False
+            self._progress_coalesce_timer.stop()
