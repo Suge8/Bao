@@ -80,7 +80,7 @@ Bao 首个正式版本。
 - **分层上下文管理** — Layer 1 大输出外置 + Layer 2 自动压实（保留最近对话轮次 + 最近工具块）
 - **用户图片自动压缩** — 大于 1MB 或非原生格式自动 JPEG 压缩（EXIF 修正 + 透明通道合成 + 1568px 长边缩放）
 - **渠道格式指引** — 按渠道注入 system prompt，新增渠道需同步添加
-- **Runtime Context** — 运行时元数据拼入 system prompt 的 `## Runtime` section
+- **Runtime Context** — 运行时元数据拼入 system prompt 的 `## Runtime (actual host)` section，`Host:` 前缀标识主机环境，身份描述声明 Runtime 为权威事实
 - **Thinking Protocol** — 条件跳过 + channel format hints
 
 ### Subagent
@@ -127,7 +127,7 @@ Bao 首个正式版本。
 
 - **SecretStr 凭据保护** — 所有凭据字段统一 `pydantic.SecretStr`，`model_dump()` 输出 `"**********"`
 - **JSONC 加载管线** — 5 状态字符级状态机去注释 → 版本化迁移 → env overlay（`BAO_*` 深度合并）→ Pydantic 验证
-- **工具暴露控制** — `toolExposure.mode`（off/auto）+ `toolExposure.bundles`（core/web/desktop/code）
+- **工具暴露控制** — `toolExposure.mode` 默认 `auto`（智能路由：按需打分曝光 + 自动扩容回退至全量） / `off`（全量暴露）+ `toolExposure.bundles`（core/web/desktop/code）
 - **模板 i18n** — workspace 模板按语言存放 `bao/templates/workspace/{zh,en}/`
 - **首次引导** — 双语语言选择 + persona 设置 + workspace 模板写入
 
