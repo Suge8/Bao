@@ -210,7 +210,7 @@ class ChatMessageModel(QAbstractListModel):
                         "createdat": 0,
                         "role": "assistant",
                         "content": content,
-                        "format": "markdown",
+                        "format": "plain",
                         "status": status,
                         "entrancestyle": "none",
                         "entrancepending": False,

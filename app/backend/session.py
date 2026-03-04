@@ -99,6 +99,11 @@ class SessionListModel(QAbstractListModel):
             self._unread_keys = unread_keys
         self.endResetModel()
 
+    def clear_unread(self, keys: list[str]) -> None:
+        """Clear unread status for given keys."""
+        for key in keys:
+            self._unread_keys.discard(key)
+
     def set_active(self, key: str) -> None:
         if self._active_key == key:
             return
@@ -220,13 +225,13 @@ class SessionService(QObject):
             logger.debug(f"session_select_request key={key}")
         if not key:
             return
-        # Mark old + new session as read (fire-and-forget)
         old_key = self._active_key
-        if old_key and old_key != key:
-            self._submit_safe(self._mark_read(old_key))
-            self._model._unread_keys.discard(old_key)
-        self._submit_safe(self._mark_read(key))
-        self._model._unread_keys.discard(key)
+        # Clear unread immediately
+        keys_to_clear = [k for k in [old_key, key] if k]
+        self._model.clear_unread(keys_to_clear)
+        # Mark as read in background
+        for k in keys_to_clear:
+            self._submit_safe(self._mark_read(k))
         self._pending_select_key = key
         if self._active_key != key:
             self._allow_active_selection = True
@@ -348,10 +353,9 @@ class SessionService(QObject):
         return key
 
     async def _mark_read(self, key: str) -> None:
-        sm = self._session_manager
-        session = sm.get_or_create(key)
-        session.metadata["desktop_last_read_at"] = datetime.now().isoformat()
-        sm.save(session)
+        self._session_manager.update_metadata_only(
+            key, {"desktop_last_read_at": datetime.now().isoformat()}
+        )
 
     async def _delete_session(self, key: str, new_active: str) -> None:
         was_active = self._session_manager.get_active_session_key(self._natural_key) == key
@@ -444,6 +448,9 @@ class SessionService(QObject):
             unread_keys.discard(self._active_key)
         if active:
             unread_keys.discard(active)
+        # Merge with current state: keep cleared keys cleared, add new unreads
+        current_cleared = set(self._model._sessions[i]["key"] for i in range(len(self._model._sessions))) - self._model._unread_keys
+        unread_keys -= current_cleared
         # Fingerprint check — skip rebuild if nothing changed
         fp = (
             tuple((s["key"], s.get("title", ""), s.get("updated_at", "")) for s in sessions),

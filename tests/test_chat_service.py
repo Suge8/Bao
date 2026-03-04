@@ -299,7 +299,7 @@ def test_sync_active_history_requests_reload_when_idle():
     svc._session_manager = object()
     svc._history_initialized = True
     called = []
-    svc._request_history_load = lambda key: called.append(key)
+    svc._request_history_load = lambda key, **kwargs: called.append(key)
 
     svc._sync_active_history()
 
@@ -312,7 +312,7 @@ def test_sync_active_history_skips_while_processing():
     svc._history_initialized = True
     svc._processing = True
     called = []
-    svc._request_history_load = lambda key: called.append(key)
+    svc._request_history_load = lambda key, **kwargs: called.append(key)
 
     svc._sync_active_history()
 
@@ -354,7 +354,7 @@ def test_set_session_key_switches_immediately_while_processing():
     svc._active_streaming_row = row
     svc._active_streaming_session_key = "imessage:active"
     called = []
-    svc._request_history_load = lambda key: called.append(key)
+    svc._request_history_load = lambda key, **kwargs: called.append(key)
 
     svc.setSessionKey("imessage:new")
 
@@ -398,7 +398,7 @@ def test_handle_history_result_rejects_stale_generation_payload():
             "createdat": 0,
             "role": "assistant",
             "content": "hello",
-            "format": "markdown",
+            "format": "plain",
             "status": "done",
             "entrancestyle": "none",
             "entrancepending": False,
@@ -441,7 +441,7 @@ def test_set_session_key_same_key_still_loads_when_history_not_initialized():
     svc._processing = True
     svc._session_manager = object()
     called = []
-    svc._request_history_load = lambda key: called.append(key)
+    svc._request_history_load = lambda key, **kwargs: called.append(key)
 
     svc.setSessionKey("desktop:local")
 
@@ -467,7 +467,7 @@ def test_load_history_uses_display_history_for_ui_model():
             "createdat": 0,
             "role": "assistant",
             "content": "a1",
-            "format": "markdown",
+            "format": "plain",
             "status": "done",
             "entrancestyle": "none",
             "entrancepending": False,

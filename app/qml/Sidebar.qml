@@ -32,6 +32,11 @@ Rectangle {
     }
 
     ListModel { id: groupModel }
+    Timer {
+        id: rebuildTimer
+        interval: 100
+        onTriggered: root.rebuildGroupModel()
+    }
 
     property var expandedGroups: ({})
     property bool gatewayIdle: !chatService || chatService.state === "idle" || chatService.state === "stopped"
@@ -113,7 +118,7 @@ Rectangle {
 
     Connections {
         target: sessionService
-        function onSessionsChanged() { root.rebuildGroupModel() }
+        function onSessionsChanged() { rebuildTimer.restart() }
         function onActiveKeyChanged(key) {
             for (var i = 0; i < groupModel.count; i++) {
                 var item = groupModel.get(i)
@@ -121,7 +126,7 @@ Rectangle {
                     var wasActive = item.isActive
                     var isNowActive = item.itemKey === key
                     groupModel.setProperty(i, "isActive", isNowActive)
-                    // Clear unread for session being left and session being entered
+                    // Clear unread immediately for instant feedback
                     if (wasActive || isNowActive)
                         groupModel.setProperty(i, "itemHasUnread", false)
                 }

@@ -22,7 +22,7 @@ Rectangle {
             topMargin: 20
             bottomMargin: 12
             boundsBehavior: Flickable.StopAtBounds
-            cacheBuffer: 1400
+            cacheBuffer: 400
             reuseItems: false
             highlightFollowsCurrentItem: false
             highlightRangeMode: ListView.NoHighlightRange
@@ -38,15 +38,14 @@ Rectangle {
                 pendingFollowAnimated = false
                 emptyBurstWatching = false
                 emptyBurstTimer.stop()
-                // Do NOT force autoFollow = true here; let per-session state restore handle it
-                // But if autoFollow is true, immediately position at end to avoid top-flash
+                _modelJustChanged = true
+                // Skip positioning during history loading - let onHistoryLoadingChanged handle it
+                if (historyLoading) return
+                // Immediately position at end if autoFollow is true, no delay
                 if (autoFollow && count > 0) {
-                    Qt.callLater(function() {
-                        if (messageList.autoFollow) {
-                            messageList.positionViewAtEnd()
-                            messageList.contentY = messageList.maxContentY()
-                        }
-                    })
+                    animateProgrammaticScroll = false
+                    positionViewAtEnd()
+                    contentY = maxContentY()
                 }
             }
 
@@ -59,19 +58,14 @@ Rectangle {
             property bool historyLoading: chatService ? chatService.historyLoading : false
             property bool gatewayRunning: chatService ? chatService.state === "running" : false
             property bool animateProgrammaticScroll: false
-            property bool forceFollowAfterSwitch: false
-            property bool sessionSwitching: false
-            property var scrollStateByKey: ({})
-
+            property bool _modelJustChanged: false
             property bool batchReloading: false
-            property real savedReadingContentY: 0
             property real savedDistanceToEnd: 0
             property bool savedWasFollowing: true
 
             property bool pendingFollow: false
             property bool pendingFollowAnimated: false
             property bool emptyBurstWatching: false
-            property int followRetryLeft: 0
 
             property bool suspendEntranceAnimations: false
             property int _prevCount: 0
@@ -120,19 +114,17 @@ Rectangle {
                 if (count <= 0) return
                 animateProgrammaticScroll = !!animated
                 contentY = maxContentY()
-                Qt.callLater(function () {
-                    animateProgrammaticScroll = false
-                    if (messageList.userInteracting) return
+                if (!animated) animateProgrammaticScroll = false
+                if (!userInteracting) {
                     clampContentY()
                     if (!atYEnd) contentY = maxContentY()
-                })
-                if (!animated) animateProgrammaticScroll = false
+                }
+                animateProgrammaticScroll = false
             }
 
             function beginBatchReload() {
                 batchReloading = true
                 suspendEntranceAnimations = true
-                savedReadingContentY = contentY
                 savedDistanceToEnd = Math.max(0, maxContentY() - contentY)
             }
 
@@ -155,24 +147,15 @@ Rectangle {
                 interval: 16
                 repeat: false
                 onTriggered: {
-                    Qt.callLater(function () {
-                        // While switching sessions we do a progressive follow loop.
-                        // Any instant jump here can land in a "no delegates created" region.
-                        if (messageList.forceFollowAfterSwitch) {
-                            messageList.pendingFollow = false
-                            messageList.pendingFollowAnimated = false
-                            return
-                        }
-                        if (messageList.batchReloading) {
-                            messageList.finishBatchReload()
-                            return
-                        }
-                        if (messageList.pendingFollow && messageList.autoFollow && !messageList.userInteracting) {
-                            messageList.applyScrollToEnd(messageList.pendingFollowAnimated)
-                        }
-                        messageList.pendingFollow = false
-                        messageList.pendingFollowAnimated = false
-                    })
+                    if (messageList.batchReloading) {
+                        messageList.finishBatchReload()
+                        return
+                    }
+                    if (messageList.pendingFollow && messageList.autoFollow && !messageList.userInteracting) {
+                        messageList.applyScrollToEnd(messageList.pendingFollowAnimated)
+                    }
+                    messageList.pendingFollow = false
+                    messageList.pendingFollowAnimated = false
                 }
             }
 
@@ -186,62 +169,6 @@ Rectangle {
                 }
             }
 
-            Timer {
-                id: followRetryTimer
-                interval: 16
-                repeat: false
-                onTriggered: {
-                    if (messageList.userInteracting) {
-                        messageList.followRetryLeft = 0
-                        return
-                    }
-                    if (messageList.count <= 0) {
-                        if (messageList.followRetryLeft > 0) {
-                            messageList.followRetryLeft -= 1
-                            followRetryTimer.restart()
-                        } else {
-                            messageList.forceFollowAfterSwitch = false
-                        }
-                        return
-                    }
-
-                    // If the view has not created any delegates yet, a direct jump to the
-                    // target scroll position can land in a blank region. Force a populate
-                    // pass first, then progress toward the end.
-                    var hasDelegates = messageList.contentItem
-                                      && messageList.contentItem.childrenRect.height > 1
-                    if (!hasDelegates) {
-                        messageList.positionViewAtEnd()
-                        if (messageList.followRetryLeft > 0) {
-                            messageList.followRetryLeft -= 1
-                            followRetryTimer.restart()
-                        }
-                        return
-                    }
-
-                    var target = messageList.maxContentY()
-                    var delta = target - messageList.contentY
-                    if (Math.abs(delta) <= 1.5 || messageList.atYEnd || messageList.isNearEnd()) {
-                        messageList.contentY = target
-                        messageList.clampContentY()
-                        messageList.followRetryLeft = 0
-                        messageList.forceFollowAfterSwitch = false
-                        return
-                    }
-
-                    // Jump directly to bottom to avoid progressive scrolling,
-                    // but keep retrying in case new delegates adjust the contentHeight.
-                    messageList.animateProgrammaticScroll = false
-                    messageList.positionViewAtEnd()
-                    messageList.contentY = messageList.maxContentY()
-                    messageList.clampContentY()
-
-                    if (messageList.followRetryLeft > 0) {
-                        messageList.followRetryLeft -= 1
-                        followRetryTimer.restart()
-                    }
-                }
-            }
 
             Behavior on contentY {
                 enabled: messageList.animateProgrammaticScroll && !messageList.moving && !messageList.dragging
@@ -254,13 +181,10 @@ Rectangle {
                 recomputeAutoFollow()
                 if (!gatewayRunning) return
                 if (autoFollow) requestFollow(false, false)
-                else savedReadingContentY = contentY
             }
 
             onContentYChanged: {
-                if (!autoFollow && !batchReloading) {
-                    savedReadingContentY = contentY
-                }
+                // Empty - no longer tracking reading position
             }
 
             onCountChanged: {
@@ -291,14 +215,6 @@ Rectangle {
                     settleTimer.restart()
                 }
 
-                if (autoFollow && !userInteracting) {
-                    if (!forceFollowAfterSwitch) requestFollow(true, false)
-                }
-
-                if (forceFollowAfterSwitch && !historyLoading && count > 0 && followRetryLeft <= 0) {
-                    followRetryLeft = 8
-                    followRetryTimer.restart()
-                }
             }
 
             onContentHeightChanged: {
@@ -307,15 +223,14 @@ Rectangle {
                     settleTimer.restart()
                     return
                 }
+                // If model just changed and autoFollow is true, ensure we're at the end
+                if (_modelJustChanged && autoFollow && count > 0) {
+                    animateProgrammaticScroll = false
+                    contentY = maxContentY()
+                    _modelJustChanged = false
+                    return
+                }
                 if (!userInteracting) clampContentY()
-                if (!gatewayRunning) return
-                if (autoFollow && !userInteracting) {
-                    if (!forceFollowAfterSwitch) requestFollow(false, false)
-                }
-                if (forceFollowAfterSwitch && !historyLoading && followRetryLeft <= 0) {
-                    followRetryLeft = 60
-                    followRetryTimer.restart()
-                }
             }
 
             onHeightChanged: {
@@ -325,10 +240,6 @@ Rectangle {
                     return
                 }
                 if (!userInteracting) clampContentY()
-                if (!gatewayRunning) return
-                if (autoFollow && !userInteracting) {
-                    if (!forceFollowAfterSwitch) requestFollow(false, true)
-                }
             }
 
             Connections {
@@ -338,8 +249,6 @@ Rectangle {
                         messageList.suspendEntranceAnimations = true
                         messageList.emptyBurstWatching = false
                         emptyBurstTimer.stop()
-                        followRetryTimer.stop()
-                        messageList.followRetryLeft = 0
                         messageList.pendingFollow = false
                         messageList.pendingFollowAnimated = false
                         messageList.savedWasFollowing = messageList.autoFollow
@@ -351,27 +260,29 @@ Rectangle {
                     }
 
                     messageList.suspendEntranceAnimations = false
-                    if (messageList.forceFollowAfterSwitch) {
+                    if (messageList.savedWasFollowing) {
                         messageList.autoFollow = true
-                        messageList.followRetryLeft = 60
-                        followRetryTimer.restart()
-                    } else if (messageList.savedWasFollowing) {
-                        messageList.autoFollow = true
-                        messageList.requestFollow(false, true)
+                        // Only reposition if not already at end
+                        if (messageList.count > 0 && !messageList.atYEnd) {
+                            messageList.animateProgrammaticScroll = false
+                            messageList.contentY = messageList.maxContentY()
+                        }
                     } else {
                         messageList.autoFollow = false
-                        messageList.contentY = messageList.maxContentY() - messageList.savedDistanceToEnd
-                        messageList.clampContentY()
-                    }
+                        var targetY = messageList.maxContentY() - messageList.savedDistanceToEnd
+                        // Only reposition if position actually changed
+                        if (Math.abs(messageList.contentY - targetY) > 1) {
+                            messageList.contentY = targetY
+                            messageList.clampContentY()
+                        }
                 }
+            }
             }
 
             Connections {
                 target: sessionService
                 function onActiveKeyChanged(_key) {
-                    messageList.forceFollowAfterSwitch = true
-                    messageList.followRetryLeft = 0
-                    followRetryTimer.stop()
+                    // Session switch will trigger onModelChanged, which handles positioning
                 }
             }
 
@@ -398,7 +309,6 @@ Rectangle {
                 visible: messageList.count === 0
                          && !messageList.batchReloading
                          && !messageList.historyLoading
-                         && !messageList.forceFollowAfterSwitch
 
                 Column {
                     id: emptyCol

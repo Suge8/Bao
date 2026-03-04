@@ -28,6 +28,8 @@ uv run python app/main.py
 
 聊天渲染已做收口防闪：reply finalize 后的 history refresh 仅在 `role/content/format/status` 存在渲染差异时才会触发全量 reset；仅 `entrance` 元数据差异会被视为等价并跳过重载。delegate 的 `role` 兜底统一为 `assistant`，避免重建空窗误闪 user 样式大气泡。
 
+会话切换已采用分层预加载：启动后优先预热 desktop 会话（hot 16 条，depth 20），随后延迟补 warm 预热（最多 64 条，depth 12，默认延迟 150ms）；切换时命中缓存会直接秒开，未命中再走两阶段历史加载（先 8 条、再补 200 条）。
+
 ### 3. 使用流程
 
 1. 打开 App → 若首次使用且未配置 Provider/Model，会自动跳转 Settings 页面；填写配置
@@ -38,6 +40,7 @@ uv run python app/main.py
 6. 左侧 Sidebar 的 Plan 面板会实时展示当前会话计划（目标、进度、步骤状态）；计划清空后自动收起并显示最近完成摘要
 7. 在 Settings 点击“+ 添加 LLM 提供商”后，新增项会自动展开并滚动到该卡片位置，方便直接填写
 8. Settings 的 Agent Defaults 新增推理强度选项：`Auto` / `off` / `low` / `medium` / `high`（保存后重启 Gateway 生效）
+9. 需要查看切换性能与缓存命中时，可用 `BAO_DESKTOP_PROFILE=1 uv run python app/main.py` 启动，终端会输出 `History load`、`Session switch cache`、`prefetch` 埋点日志
 
 ## 命令行参数
 
