@@ -8,6 +8,8 @@ Rectangle {
 
     readonly property int composerMinHeight: 44
     readonly property int composerMaxHeight: 140
+    readonly property int composerScrollInset: 12
+    readonly property int composerBottomSafeGap: 4
 
     signal messageCopied()
 
@@ -448,7 +450,13 @@ Rectangle {
                 Rectangle {
                     Layout.fillWidth: true
                     Layout.preferredHeight: Math.min(
-                                              Math.max(messageInput.contentHeight + 24, root.composerMinHeight),
+                                              Math.max(
+                                                  messageInput.contentHeight
+                                                  + messageInput.topPadding
+                                                  + messageInput.bottomPadding
+                                                  + root.composerScrollInset,
+                                                  root.composerMinHeight
+                                              ),
                                               root.composerMaxHeight
                                           )
                     radius: radiusMd
@@ -481,14 +489,13 @@ Rectangle {
                             wrapMode: TextArea.Wrap
                             topPadding: 2
                             bottomPadding: 6
-                            implicitHeight: Math.max(contentHeight, 24)
                             font.pixelSize: 15
                             onCursorPositionChanged: {
                                 if (!activeFocus || cursorPosition !== length) return
                                 var flick = inputScroll.contentItem
                                 if (!flick) return
                                 if (flick.contentHeight > flick.height)
-                                    flick.contentY = flick.contentHeight - flick.height
+                                    flick.contentY = flick.contentHeight - flick.height + root.composerBottomSafeGap
                             }
                             Keys.onReturnPressed: function(event) {
                                 if (event.modifiers & Qt.ShiftModifier) {
