@@ -27,7 +27,7 @@ _PROFILE = os.getenv("BAO_DESKTOP_PROFILE") == "1"
 
 _PREFETCH_HOT_SESSIONS = 16
 _PREFETCH_WARM_SESSIONS = 64
-_PREFETCH_HOT_DEPTH = 20
+_PREFETCH_HOT_DEPTH = 15
 _PREFETCH_WARM_DEPTH = 12
 _PREFETCH_WARM_DELAY_MS = 150
 _HISTORY_PHASE1_LIMIT = 8
@@ -670,11 +670,14 @@ class ChatService(QObject):
                 self.messageAppended.emit(active)
         if not ok:
             if active >= 0:
+                self._model.set_format(active, "plain")
                 self._model.update_content(active, content)
                 self._model.set_status(active, "error")
         else:
             if content:
                 if active >= 0:
+                    if is_provider_error:
+                        self._model.set_format(active, "plain")
                     self._model.update_content(active, content)
                 self._active_has_content = active >= 0
             if active >= 0:

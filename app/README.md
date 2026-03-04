@@ -28,9 +28,11 @@ uv run python app/main.py
 
 聊天渲染已做收口防闪：reply finalize 后的 history refresh 仅在 `role/content/format/status` 存在渲染差异时才会触发全量 reset；仅 `entrance` 元数据差异会被视为等价并跳过重载。delegate 的 `role` 兜底统一为 `assistant`，避免重建空窗误闪 user 样式大气泡。消息格式渲染固定按 `format` 字段，不再按可见性动态切换 markdown/plain，避免滚动中气泡高度抖动。
 
-Provider 返回错误（如 403）会在聊天中保留为 assistant `status=error` 气泡（红色），并随会话历史持久化，不会再因 history sync 刷新后消失。
+Provider 返回错误（如 403）会在聊天中保留为 assistant `status=error` 气泡（红色），并随会话历史持久化，不会再因 history sync 刷新后消失。错误气泡内容会强制按 plain 渲染，避免 markdown/html 片段引发二次布局抖动。
 
 会话切换已采用分层预加载：启动后优先预热 desktop 会话（hot 16 条，depth 15），随后延迟补 warm 预热（最多 64 条，depth 12，默认延迟 150ms）；切换时命中缓存会直接秒开，未命中再走两阶段历史加载（先 8 条、再补 200 条）。
+
+其中 warm 预加载延迟用于让当前会话首屏加载先完成，避免 warm 批次与当前会话争用资源。
 
 未命中缓存且历史仍在加载时，聊天面板会显示显式 loading 提示，避免右侧出现长时间黑屏空窗。
 
