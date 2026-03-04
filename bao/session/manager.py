@@ -126,16 +126,17 @@ class SessionManager:
         self._cache: dict[str, Session] = {}
         self._active_cache: dict[str, str] = {}
         self._migrate_legacy(workspace)
+        self._ensure_indexes()
 
     def _ensure_indexes(self) -> None:
         """Create scalar indexes for frequently filtered columns."""
         try:
-            self._meta_tbl.create_scalar_index("session_key", replace=True)
-            self._msg_tbl.create_scalar_index("session_key", replace=True)
-            logger.debug("📊 索引已创建 / indexes created: session_key")
+            self._meta_tbl.create_scalar_index("session_key", replace=False)
+            self._msg_tbl.create_scalar_index("session_key", replace=False)
+            self._msg_tbl.create_scalar_index("idx", replace=False)
+            logger.debug("📊 索引已创建 / indexes created: session_key, idx")
         except Exception as e:
             logger.debug("⚠️ 索引创建跳过 / index creation skipped: {}", e)
-        self._ensure_indexes()
 
     def _migrate_legacy(self, workspace: Path) -> None:
         for d in (workspace / "sessions", Path.home() / ".bao" / "sessions"):
@@ -211,6 +212,7 @@ class SessionManager:
     def _load(self, key: str) -> "Session | None":
         import os
         import time
+
         _profile = os.getenv("BAO_DESKTOP_PROFILE") == "1"
         t0 = time.perf_counter() if _profile else 0
         safe = _escape(key)
@@ -232,15 +234,19 @@ class SessionManager:
                     "content": r["content"],
                     "timestamp": r["timestamp"],
                 }
-                extra = json.loads(r.get("extra_json") or "{}")
-                m.update(extra)
+                extra_json = r.get("extra_json") or "{}"
+                if extra_json != "{}":
+                    m.update(json.loads(extra_json))
                 messages.append(m)
             t3 = time.perf_counter() if _profile else 0
 
             if _profile:
                 logger.debug(
                     "📊 Session._load: meta={:.3f}s, msgs={:.3f}s, parse={:.3f}s, total_msgs={}",
-                    t1 - t0, t2 - t1, t3 - t2, len(messages)
+                    t1 - t0,
+                    t2 - t1,
+                    t3 - t2,
+                    len(messages),
                 )
 
             return Session(
@@ -262,15 +268,30 @@ class SessionManager:
         except Exception as e:
             logger.warning("⚠️ 会话加载失败 / load failed: {} — {}", key, e)
             return None
+
     def get_tail_messages(self, key: str, limit: int) -> list[dict[str, Any]]:
         """Get last N messages without loading full session (fast path for display)."""
         import os
         import time
+
+        cached = self._cache.get(key)
+        if cached is not None:
+            max_messages = limit if limit > 0 else 500
+            return cached.get_display_history(max_messages=max_messages)
+
         _profile = os.getenv("BAO_DESKTOP_PROFILE") == "1"
         t0 = time.perf_counter() if _profile else 0
         safe = _escape(key)
+        where_clause = f"session_key = '{safe}'"
         try:
-            msg_rows = self._msg_tbl.search().where(f"session_key = '{safe}'").to_list()
+            if limit > 0:
+                total = self._msg_tbl.count_rows(filter=where_clause)
+                if total <= 0:
+                    return []
+                start_idx = max(total - limit, 0)
+                where_clause = f"{where_clause} AND idx >= {start_idx}"
+
+            msg_rows = self._msg_tbl.search().where(where_clause).to_list()
             if not msg_rows:
                 return []
             msg_rows.sort(key=lambda r: r["idx"])
@@ -284,14 +305,17 @@ class SessionManager:
                     "content": r["content"],
                     "timestamp": r["timestamp"],
                 }
-                extra = json.loads(r.get("extra_json") or "{}")
-                m.update(extra)
+                extra_json = r.get("extra_json") or "{}"
+                if extra_json != "{}":
+                    m.update(json.loads(extra_json))
                 messages.append(m)
             t2 = time.perf_counter() if _profile else 0
             if _profile:
                 logger.debug(
                     "📊 get_tail_messages: fetch={:.3f}s, parse={:.3f}s, count={}",
-                    t1 - t0, t2 - t1, len(messages)
+                    t1 - t0,
+                    t2 - t1,
+                    len(messages),
                 )
             return messages
         except Exception as e:
@@ -378,17 +402,22 @@ class SessionManager:
             current_metadata = json.loads(meta.get("metadata_json") or "{}")
             current_metadata.update(metadata_updates)
             self._meta_tbl.delete(f"session_key = '{safe}'")
-            self._meta_tbl.add([{
-                "session_key": key,
-                "created_at": meta["created_at"],
-                "updated_at": meta["updated_at"],
-                "metadata_json": json.dumps(current_metadata, ensure_ascii=False),
-                "last_consolidated": meta.get("last_consolidated", 0),
-            }])
+            self._meta_tbl.add(
+                [
+                    {
+                        "session_key": key,
+                        "created_at": meta["created_at"],
+                        "updated_at": meta["updated_at"],
+                        "metadata_json": json.dumps(current_metadata, ensure_ascii=False),
+                        "last_consolidated": meta.get("last_consolidated", 0),
+                    }
+                ]
+            )
             if key in self._cache:
                 self._cache[key].metadata.update(metadata_updates)
         except Exception as e:
             logger.warning("⚠️ metadata update failed: {} — {}", key, e)
+
     def invalidate(self, key: str) -> None:
         self._cache.pop(key, None)
 

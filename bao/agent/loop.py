@@ -2209,18 +2209,19 @@ class AgentLoop:
         key: str,
         final_content: str,
         tools_used: list[str],
-        skip_persist_assistant: bool,
+        assistant_status: str,
     ) -> bool:
         persisted_content = final_content
         if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
             persisted_content = t.last_sent_summary or final_content
 
-        if not skip_persist_assistant and (persisted_content or tools_used):
+        if persisted_content or tools_used:
             session.add_message(
-                "assistant", persisted_content, tools_used=tools_used if tools_used else None
+                "assistant",
+                persisted_content,
+                tools_used=tools_used if tools_used else None,
+                status=assistant_status,
             )
-        elif skip_persist_assistant:
-            logger.debug("Skip persisting provider error response for session {}", key)
 
         self.sessions.save(session)
 
@@ -2590,7 +2591,7 @@ class AgentLoop:
         if not isinstance(final_content, str) or not final_content.strip():
             final_content = "处理完成。" if session_lang != "en" else "Completed."
 
-        skip_persist_assistant = parsed_result.provider_error
+        assistant_status = "error" if parsed_result.provider_error else "done"
 
         if self._is_stale_generation(
             expected_generation,
@@ -2615,7 +2616,7 @@ class AgentLoop:
             key=key,
             final_content=final_content,
             tools_used=parsed_result.tools_used,
-            skip_persist_assistant=skip_persist_assistant,
+            assistant_status=assistant_status,
         ):
             await self._clear_progress_buffer(
                 channel=msg.channel,
@@ -2707,7 +2708,7 @@ class AgentLoop:
                 "后台任务已完成。" if session_lang != "en" else "Background task completed."
             )
 
-        skip_persist_assistant = provider_error
+        assistant_status = "error" if provider_error else "done"
 
         self._maybe_learn_experience(
             session=session,
@@ -2730,13 +2731,12 @@ class AgentLoop:
         persisted_content = final_content
         if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
             persisted_content = t.last_sent_summary or final_content
-        if not skip_persist_assistant and (persisted_content or tools_used):
+        if persisted_content or tools_used:
             session.add_message(
-                "assistant", persisted_content, tools_used=tools_used if tools_used else None
-            )
-        elif skip_persist_assistant:
-            logger.debug(
-                "Skip persisting provider error response for system session {}", session_key
+                "assistant",
+                persisted_content,
+                tools_used=tools_used if tools_used else None,
+                status=assistant_status,
             )
         self.sessions.save(session)
 

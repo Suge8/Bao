@@ -434,7 +434,7 @@ async def test_interrupt_insert_fallback_appends_when_target_user_missing() -> N
 
 
 @pytest.mark.asyncio
-async def test_model_error_response_not_persisted_but_still_returned() -> None:
+async def test_model_error_response_persisted_as_error_and_returned() -> None:
     loop_bus = MessageBus()
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
@@ -486,7 +486,10 @@ async def test_model_error_response_not_persisted_but_still_returned() -> None:
         assert any(
             m.get("role") == "user" and m.get("content") == "trigger" for m in updated.messages
         )
-        assert not any(m.get("role") == "assistant" for m in updated.messages)
+        assistant_msgs = [m for m in updated.messages if m.get("role") == "assistant"]
+        assert assistant_msgs
+        assert assistant_msgs[-1].get("content") == "boom"
+        assert assistant_msgs[-1].get("status") == "error"
 
 
 @pytest.mark.asyncio

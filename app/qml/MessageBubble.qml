@@ -6,7 +6,6 @@ Item {
     property string role: "assistant"
     property string content: ""
     property string format: "plain"
-    property string _effectiveFormat: "plain"
     property string status: "done"
     property int messageId: -1
     property int messageRow: -1
@@ -17,36 +16,10 @@ Item {
 
     property bool isUser: role === "user"
     property bool isSystem: role === "system"
-    property bool isMarkdown: _effectiveFormat === "markdown"
+    property bool isMarkdown: format === "markdown"
     property bool _entranceStarted: false
     property bool _entranceQueued: false
-    property bool _isVisible: false
-
-    onVisibleChanged: {
-        if (visible && ListView.view) _checkVisibility()
-    }
-
-    function _checkVisibility() {
-        if (!ListView.view || format !== "markdown") return
-        var view = ListView.view
-        var itemY = y
-        var itemBottom = itemY + height
-        var viewTop = view.contentY
-        var viewBottom = viewTop + view.height
-        var nowVisible = (itemBottom > viewTop && itemY < viewBottom)
-        if (nowVisible !== _isVisible) {
-            _isVisible = nowVisible
-            _effectiveFormat = nowVisible ? "markdown" : "plain"
-        }
-    }
-
-    Connections {
-        target: ListView.view
-        function onContentYChanged() { _checkVisibility() }
-        function onHeightChanged() { _checkVisibility() }
-    }
-
-    readonly property bool shouldAnimateEntrance: entranceStyle !== "none" && entrancePending && !entranceConsumed && !(ListView.view && ListView.view.sessionSwitching)
+    readonly property bool shouldAnimateEntrance: entranceStyle !== "none" && entrancePending && !entranceConsumed
     readonly property int entranceOpacityDuration: entranceStyle === "greeting" ? 240 : (isSystem ? 260 : (isUser ? 160 : 200))
     readonly property int entranceScaleDuration: entranceStyle === "greeting" ? 260 : (isSystem ? 320 : (isUser ? 200 : 220))
     readonly property real entranceStartScale: entranceStyle === "greeting" ? 0.965 : (isSystem ? 0.94 : (isUser ? 0.976 : 0.972))

@@ -6,6 +6,9 @@ Rectangle {
     id: root
     color: "transparent"
 
+    readonly property int composerMinHeight: 44
+    readonly property int composerMaxHeight: 140
+
     signal messageCopied()
 
     ColumnLayout {
@@ -30,25 +33,6 @@ Rectangle {
 
             model: chatService ? chatService.messages : null
 
-            onModelChanged: {
-                _prevCount = count
-                batchReloading = false
-                suspendEntranceAnimations = historyLoading
-                pendingFollow = false
-                pendingFollowAnimated = false
-                emptyBurstWatching = false
-                emptyBurstTimer.stop()
-                _modelJustChanged = true
-                // Skip positioning during history loading - let onHistoryLoadingChanged handle it
-                if (historyLoading) return
-                // Immediately position at end if autoFollow is true, no delay
-                if (autoFollow && count > 0) {
-                    animateProgrammaticScroll = false
-                    positionViewAtEnd()
-                    contentY = maxContentY()
-                }
-            }
-
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
             // ── Smart follow / anti-flicker state ──────────────────────
@@ -56,27 +40,11 @@ Rectangle {
             property bool autoFollow: true
             property bool userInteracting: dragging || flicking
             property bool historyLoading: chatService ? chatService.historyLoading : false
-            property bool gatewayRunning: chatService ? chatService.state === "running" : false
             property bool animateProgrammaticScroll: false
-            property bool _modelJustChanged: false
-            property bool batchReloading: false
-            property real savedDistanceToEnd: 0
-            property bool savedWasFollowing: true
-
-            property bool pendingFollow: false
-            property bool pendingFollowAnimated: false
             property bool emptyBurstWatching: false
 
             property bool suspendEntranceAnimations: false
             property int _prevCount: 0
-
-            opacity: historyLoading ? 0.92 : 1.0
-            Behavior on opacity {
-                NumberAnimation {
-                    duration: 130
-                    easing.type: Easing.OutCubic
-                }
-            }
 
             function maxContentY() {
                 // ListView uses a shifted content coordinate system (originY can be negative).
@@ -103,11 +71,9 @@ Rectangle {
                 autoFollow = atYEnd || isNearEnd()
             }
 
-            function requestFollow(animated, restart) {
-                pendingFollow = true
-                pendingFollowAnimated = pendingFollowAnimated || animated
-                if (restart) settleTimer.restart()
-                else if (!settleTimer.running) settleTimer.start()
+            function requestFollow(animated) {
+                if (!autoFollow || userInteracting || count <= 0) return
+                applyScrollToEnd(animated)
             }
 
             function applyScrollToEnd(animated) {
@@ -122,50 +88,13 @@ Rectangle {
                 animateProgrammaticScroll = false
             }
 
-            function beginBatchReload() {
-                batchReloading = true
-                suspendEntranceAnimations = true
-                savedDistanceToEnd = Math.max(0, maxContentY() - contentY)
-            }
-
-            function finishBatchReload() {
-                batchReloading = false
-                suspendEntranceAnimations = false
-                pendingFollow = false
-                pendingFollowAnimated = false
-                autoFollow = savedWasFollowing
-                if (savedWasFollowing) {
-                    applyScrollToEnd(false)
-                    return
-                }
-                contentY = maxContentY() - savedDistanceToEnd
-                clampContentY()
-            }
-
-            Timer {
-                id: settleTimer
-                interval: 16
-                repeat: false
-                onTriggered: {
-                    if (messageList.batchReloading) {
-                        messageList.finishBatchReload()
-                        return
-                    }
-                    if (messageList.pendingFollow && messageList.autoFollow && !messageList.userInteracting) {
-                        messageList.applyScrollToEnd(messageList.pendingFollowAnimated)
-                    }
-                    messageList.pendingFollow = false
-                    messageList.pendingFollowAnimated = false
-                }
-            }
-
             Timer {
                 id: emptyBurstTimer
                 interval: 60
                 repeat: false
                 onTriggered: {
                     messageList.emptyBurstWatching = false
-                    if (!messageList.batchReloading) messageList.suspendEntranceAnimations = false
+                    messageList.suspendEntranceAnimations = false
                 }
             }
 
@@ -178,13 +107,8 @@ Rectangle {
             }
 
             onMovementEnded: {
+                if (historyLoading) return
                 recomputeAutoFollow()
-                if (!gatewayRunning) return
-                if (autoFollow) requestFollow(false, false)
-            }
-
-            onContentYChanged: {
-                // Empty - no longer tracking reading position
             }
 
             onCountChanged: {
@@ -192,17 +116,6 @@ Rectangle {
                 _prevCount = count
                 if (historyLoading) {
                     suspendEntranceAnimations = true
-                    if (!settleTimer.running) settleTimer.start()
-                    return
-                }
-                if (count === 0 && oldCount > 0) {
-                    savedWasFollowing = autoFollow
-                    beginBatchReload()
-                    if (!settleTimer.running) settleTimer.start()
-                    return
-                }
-                if (batchReloading) {
-                    requestFollow(false, true)
                     return
                 }
 
@@ -212,34 +125,19 @@ Rectangle {
                 } else if (emptyBurstWatching && count > 1) {
                     suspendEntranceAnimations = true
                     emptyBurstTimer.restart()
-                    settleTimer.restart()
+                }
+
+                if (count > oldCount && autoFollow && !userInteracting && count > 0) {
+                    applyScrollToEnd(false)
                 }
 
             }
 
             onContentHeightChanged: {
                 if (historyLoading) return
-                if (batchReloading) {
-                    settleTimer.restart()
-                    return
+                if (autoFollow && !userInteracting && count > 0) {
+                    applyScrollToEnd(false)
                 }
-                // If model just changed and autoFollow is true, ensure we're at the end
-                if (_modelJustChanged && autoFollow && count > 0) {
-                    animateProgrammaticScroll = false
-                    contentY = maxContentY()
-                    _modelJustChanged = false
-                    return
-                }
-                if (!userInteracting) clampContentY()
-            }
-
-            onHeightChanged: {
-                if (historyLoading) return
-                if (batchReloading) {
-                    settleTimer.restart()
-                    return
-                }
-                if (!userInteracting) clampContentY()
             }
 
             Connections {
@@ -249,40 +147,28 @@ Rectangle {
                         messageList.suspendEntranceAnimations = true
                         messageList.emptyBurstWatching = false
                         emptyBurstTimer.stop()
-                        messageList.pendingFollow = false
-                        messageList.pendingFollowAnimated = false
-                        messageList.savedWasFollowing = messageList.autoFollow
-                        messageList.savedDistanceToEnd = Math.max(
-                            0,
-                            messageList.maxContentY() - messageList.contentY
-                        )
                         return
                     }
 
                     messageList.suspendEntranceAnimations = false
-                    if (messageList.savedWasFollowing) {
-                        messageList.autoFollow = true
-                        // Only reposition if not already at end
-                        if (messageList.count > 0 && !messageList.atYEnd) {
-                            messageList.animateProgrammaticScroll = false
-                            messageList.contentY = messageList.maxContentY()
-                        }
-                    } else {
-                        messageList.autoFollow = false
-                        var targetY = messageList.maxContentY() - messageList.savedDistanceToEnd
-                        // Only reposition if position actually changed
-                        if (Math.abs(messageList.contentY - targetY) > 1) {
-                            messageList.contentY = targetY
-                            messageList.clampContentY()
-                        }
+                    messageList.autoFollow = true
+                    if (messageList.count > 0) {
+                        messageList.applyScrollToEnd(false)
+                    }
                 }
-            }
+
+                function onMessageAppended(_row) {
+                    if (messageList.historyLoading || messageList.userInteracting) return
+                    if (messageList.count <= 0) return
+                    messageList.autoFollow = true
+                    messageList.applyScrollToEnd(false)
+                }
             }
 
             Connections {
                 target: sessionService
                 function onActiveKeyChanged(_key) {
-                    // Session switch will trigger onModelChanged, which handles positioning
+                    messageList.autoFollow = true
                 }
             }
 
@@ -304,10 +190,37 @@ Rectangle {
             // ── Empty state — multi-state onboarding cards ──────────
             Item {
                 anchors.centerIn: parent
+                width: Math.min(320, messageList.width - 80)
+                height: loadingCol.implicitHeight
+                visible: messageList.count === 0 && messageList.historyLoading
+
+                Column {
+                    id: loadingCol
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    spacing: 12
+
+                    BusyIndicator {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: 40
+                        height: 40
+                        running: visible
+                        palette.dark: accent
+                    }
+
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: strings.chat_loading_history
+                        color: textTertiary
+                        font.pixelSize: 14
+                    }
+                }
+            }
+
+            Item {
+                anchors.centerIn: parent
                 width: Math.min(360, messageList.width - 80)
                 height: emptyCol.implicitHeight
                 visible: messageList.count === 0
-                         && !messageList.batchReloading
                          && !messageList.historyLoading
 
                 Column {
@@ -512,7 +425,7 @@ Rectangle {
         Rectangle {
             Layout.fillWidth: true
             visible: chatService && chatService.state === "running"
-            height: inputRow.implicitHeight + 24
+            Layout.preferredHeight: inputRow.implicitHeight + 24
             color: bgSidebar
             radius: 20
             antialiasing: true
@@ -534,7 +447,10 @@ Rectangle {
 
                 Rectangle {
                     Layout.fillWidth: true
-                    height: Math.min(messageInput.implicitHeight + 20, 140)
+                    Layout.preferredHeight: Math.min(
+                                              Math.max(messageInput.contentHeight + 24, root.composerMinHeight),
+                                              root.composerMaxHeight
+                                          )
                     radius: radiusMd
                     color: bgInput
                     border.color: messageInput.activeFocus ? borderFocus : borderSubtle
@@ -552,7 +468,9 @@ Rectangle {
                     }
 
                     ScrollView {
+                        id: inputScroll
                         anchors { fill: parent; topMargin: 6; bottomMargin: 6; leftMargin: 4; rightMargin: 4 }
+                        clip: true
                         ScrollBar.vertical.policy: ScrollBar.AsNeeded
                         TextArea {
                             id: messageInput
@@ -561,7 +479,17 @@ Rectangle {
                             color: textPrimary
                             background: null
                             wrapMode: TextArea.Wrap
+                            topPadding: 2
+                            bottomPadding: 6
+                            implicitHeight: Math.max(contentHeight, 24)
                             font.pixelSize: 15
+                            onCursorPositionChanged: {
+                                if (!activeFocus || cursorPosition !== length) return
+                                var flick = inputScroll.contentItem
+                                if (!flick) return
+                                if (flick.contentHeight > flick.height)
+                                    flick.contentY = flick.contentHeight - flick.height
+                            }
                             Keys.onReturnPressed: function(event) {
                                 if (event.modifiers & Qt.ShiftModifier) {
                                     event.accepted = false
@@ -610,7 +538,7 @@ Rectangle {
         var text = messageInput.text.trim()
         if (!text || !chatService) return
         messageList.autoFollow = true
-        messageList.requestFollow(true, false)
+        if (messageList.count > 0) messageList.applyScrollToEnd(false)
         chatService.sendMessage(text)
         messageInput.text = ""
     }

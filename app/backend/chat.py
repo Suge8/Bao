@@ -280,6 +280,13 @@ class ChatMessageModel(QAbstractListModel):
     def load_prepared(self, prepared_messages: list[dict[str, Any]]) -> None:
         if self._is_render_equivalent(prepared_messages):
             return
+        if self._can_prepend_without_reset(prepared_messages):
+            prepend_count = len(prepared_messages) - len(self._messages)
+            self.beginInsertRows(QModelIndex(), 0, prepend_count - 1)
+            self._messages = prepared_messages
+            self._next_id = len(prepared_messages) + 1
+            self.endInsertRows()
+            return
         self.beginResetModel()
         self._messages = prepared_messages
         self._next_id = len(prepared_messages) + 1
@@ -326,16 +333,31 @@ class ChatMessageModel(QAbstractListModel):
                 return False
         return True
 
+    def _can_prepend_without_reset(self, prepared_messages: list[dict[str, Any]]) -> bool:
+        if not self._messages:
+            return False
+        if len(prepared_messages) <= len(self._messages):
+            return False
+        tail = prepared_messages[-len(self._messages) :]
+        for left, right in zip(self._messages, tail):
+            if self._render_tuple(left) != self._render_tuple(right):
+                return False
+        return True
+
     @staticmethod
     def _render_tuple(message: dict[str, Any]) -> tuple[str, str, str, str]:
         role = message.get("role", "")
         content = message.get("content", "")
         fmt = message.get("format", "")
         status = message.get("status", "")
+        role_s = role if isinstance(role, str) else str(role)
+        fmt_s = fmt if isinstance(fmt, str) else str(fmt)
+        if role_s == "assistant" and fmt_s in ("plain", "markdown"):
+            fmt_s = "assistant_text"
         return (
-            role if isinstance(role, str) else str(role),
+            role_s,
             content if isinstance(content, str) else str(content),
-            fmt if isinstance(fmt, str) else str(fmt),
+            fmt_s,
             status if isinstance(status, str) else str(status),
         )
 

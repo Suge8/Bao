@@ -26,7 +26,9 @@ uv run python app/main.py
 
 首次运行自动创建 `~/.bao/config.jsonc`（包含 `config_version`）与默认 workspace（`~/.bao/workspace/`），无需手动初始化。若 `agents.defaults.model` 为空或 providers 中未配置 apiKey，App 自动跳转 Settings 页面引导完成配置（OpenAI 兼容端点无需额外 `apiMode` 设置）。`Save` 成功后会立即恢复有效状态（`isValid=true`）；若 JSONC patch 失败会返回可见错误（`Patch failed`），不会让界面调用崩溃。
 
-聊天渲染已做收口防闪：reply finalize 后的 history refresh 仅在 `role/content/format/status` 存在渲染差异时才会触发全量 reset；仅 `entrance` 元数据差异会被视为等价并跳过重载。delegate 的 `role` 兜底统一为 `assistant`，避免重建空窗误闪 user 样式大气泡。
+聊天渲染已做收口防闪：reply finalize 后的 history refresh 仅在 `role/content/format/status` 存在渲染差异时才会触发全量 reset；仅 `entrance` 元数据差异会被视为等价并跳过重载。delegate 的 `role` 兜底统一为 `assistant`，避免重建空窗误闪 user 样式大气泡。消息格式渲染固定按 `format` 字段，不再按可见性动态切换 markdown/plain，避免滚动中气泡高度抖动。
+
+Provider 返回错误（如 403）会在聊天中保留为 assistant `status=error` 气泡（红色），并随会话历史持久化，不会再因 history sync 刷新后消失。
 
 会话切换已采用分层预加载：启动后优先预热 desktop 会话（hot 16 条，depth 20），随后延迟补 warm 预热（最多 64 条，depth 12，默认延迟 150ms）；切换时命中缓存会直接秒开，未命中再走两阶段历史加载（先 8 条、再补 200 条）。
 

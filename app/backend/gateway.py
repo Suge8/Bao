@@ -30,6 +30,8 @@ _PREFETCH_WARM_SESSIONS = 64
 _PREFETCH_HOT_DEPTH = 20
 _PREFETCH_WARM_DEPTH = 12
 _PREFETCH_WARM_DELAY_MS = 150
+_HISTORY_PHASE1_LIMIT = 8
+_HISTORY_FULL_LIMIT = 200
 
 
 class ChatService(QObject):
@@ -70,8 +72,12 @@ class ChatService(QObject):
         self._history_fingerprint: tuple[int, str] | None = None
         self._history_loading = False
         self._history_cache: dict[str, tuple[tuple[int, str], list[dict[str, Any]]]] = {}
+        self._history_cache_complete: dict[str, bool] = {}
         self._history_request_seq = 0
         self._history_latest_seq = 0
+        self._history_request_full: dict[int, bool] = {}
+        self._prefetch_requested_depth: dict[str, int] = {}
+        self._pending_anchor_prefetch_key: str | None = None
         self._initial_prefetch_done = False
         self._send_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self._processing = False
@@ -209,19 +215,27 @@ class ChatService(QObject):
             self._active_has_content = False
             self._pending_split = False
 
+        if self._session_manager is not None:
+            self._set_history_loading(True)
+
         if cached_history is not None:
             cached_fingerprint, cached_prepared = cached_history
-            self._history_initialized = True
-            self._history_fingerprint = cached_fingerprint
+            cached_complete = self._history_cache_complete.get(key)
+            if cached_complete is None:
+                cached_complete = len(cached_prepared) >= _HISTORY_FULL_LIMIT
+            self._history_initialized = cached_complete
+            self._history_fingerprint = cached_fingerprint if cached_complete else None
             self._model.load_prepared([dict(msg) for msg in cached_prepared])
             self._set_history_loading(False)
+            if not cached_complete and self._session_manager is not None:
+                self._request_history_load(key, show_loading=False, phased=False)
         else:
             self._history_initialized = False
             self._history_fingerprint = None
             self._model.clear()
             if self._session_manager is not None:
-                self._schedule_anchor_prefetch(key)
-                self._request_history_load(key)
+                self._pending_anchor_prefetch_key = key
+                self._request_history_load(key, show_loading=False)
 
     @Slot(list)
     def prefetchSessions(self, keys: list[str], depth: int | None = None) -> None:
@@ -239,6 +253,7 @@ class ChatService(QObject):
         for key in prefetch_keys:
             if key in self._history_cache:
                 continue
+            self._prefetch_requested_depth[key] = load_depth
             fut = self._runner.submit(self._load_history(key, 0, load_depth, 0))
             fut.add_done_callback(self._on_prefetch_done)
 
@@ -262,10 +277,11 @@ class ChatService(QObject):
         self._history_request_seq += 1
         seq = self._history_request_seq
         self._history_latest_seq = seq
+        self._history_request_full[seq] = not phased
         gen = self._switch_gen
         if _DEBUG_SWITCH:
             logger.debug("history_load key={} seq={} gen={}", key, seq, gen)
-        limit = 8 if phased else 200
+        limit = _HISTORY_PHASE1_LIMIT if phased else _HISTORY_FULL_LIMIT
         fut = self._runner.submit(self._load_history(key, seq, limit, gen))
         fut.add_done_callback(self._on_history_done)
         if phased:
@@ -279,8 +295,9 @@ class ChatService(QObject):
         self._history_request_seq += 1
         seq = self._history_request_seq
         self._history_latest_seq = seq
+        self._history_request_full[seq] = True
         gen = self._switch_gen
-        fut = self._runner.submit(self._load_history(key, seq, 200, gen))
+        fut = self._runner.submit(self._load_history(key, seq, _HISTORY_FULL_LIMIT, gen))
         fut.add_done_callback(self._on_history_done)
 
     async def _load_history(
@@ -334,22 +351,27 @@ class ChatService(QObject):
     def _on_prefetch_done(self, future: Any) -> None:
         try:
             result = future.result()
-            if isinstance(result, tuple) and len(result) == 5:
+            if isinstance(result, tuple) and len(result) >= 5:
                 self._prefetchResult.emit(result)
         except Exception as e:
             logger.warning("⚠️ 预加载失败 / prefetch failed: {}", e)
 
     @Slot(object)
     def _handle_prefetch_result(self, result: Any) -> None:
-        if not isinstance(result, tuple) or len(result) != 5:
+        if not isinstance(result, tuple) or len(result) < 5:
             return
-        key, _seq, _gen, fingerprint, prepared_messages = result
+        key, _seq, _gen, fingerprint, prepared_messages = result[:5]
         if not prepared_messages:
             return
+        requested_depth = self._prefetch_requested_depth.pop(key, 0)
+        cache_complete = requested_depth >= _HISTORY_FULL_LIMIT or (
+            requested_depth > 0 and len(prepared_messages) < requested_depth
+        )
         self._history_cache[key] = (
             fingerprint,
             [dict(msg) for msg in prepared_messages],
         )
+        self._history_cache_complete[key] = cache_complete
         logger.info("✅ 预加载完成 / prefetch done: {}", key)
 
     async def _collect_prefetch_keys(self, anchor: str | None = None) -> list[str]:
@@ -427,6 +449,7 @@ class ChatService(QObject):
         loaded_messages = messages or []
         loaded_fingerprint: tuple[int, str] | None = None
         loaded_prepared = False
+        loaded_full = True
         if isinstance(messages, tuple) and len(messages) == 5:
             loaded_key, loaded_seq, loaded_gen, loaded_fingerprint, loaded_messages = messages
             loaded_messages = loaded_messages or []
@@ -442,11 +465,14 @@ class ChatService(QObject):
             loaded_key, loaded_messages = messages
             loaded_messages = loaded_messages or []
         if loaded_seq and loaded_seq != self._history_latest_seq:
+            self._history_request_full.pop(loaded_seq, None)
             if _DEBUG_SWITCH:
                 logger.debug(
                     f"history_gating loaded_seq={loaded_seq} latest={self._history_latest_seq}"
                 )
             return
+        if loaded_seq:
+            loaded_full = self._history_request_full.pop(loaded_seq, True)
         if loaded_key != self._desired_session_key:
             return
         if loaded_gen != self._switch_gen:
@@ -461,8 +487,8 @@ class ChatService(QObject):
         if self._history_initialized and fingerprint == self._history_fingerprint:
             self._set_history_loading(False)
             return
-        self._history_initialized = True
-        self._history_fingerprint = fingerprint
+        self._history_initialized = loaded_full
+        self._history_fingerprint = fingerprint if loaded_full else None
         self._committed_session_key = loaded_key
         self._session_key = loaded_key
         if loaded_prepared:
@@ -471,10 +497,14 @@ class ChatService(QObject):
                 fingerprint,
                 [dict(msg) for msg in prepared_messages],
             )
+            self._history_cache_complete[loaded_key] = loaded_full
             self._model.load_prepared(prepared_messages)
         else:
             self._model.load_history(loaded_messages)
         self._set_history_loading(False)
+        if loaded_key == self._pending_anchor_prefetch_key:
+            self._pending_anchor_prefetch_key = None
+            self._schedule_anchor_prefetch(loaded_key)
 
     @staticmethod
     def _history_signature(messages: list[dict[str, Any]]) -> tuple[int, str]:
@@ -617,6 +647,7 @@ class ChatService(QObject):
 
     def _handle_send_result(self, _row: int, ok: bool, content: str) -> None:
         """Runs on Qt main thread. Finalizes the active streaming bubble."""
+        is_provider_error = ok and isinstance(content, str) and content.startswith("Error calling ")
         should_render_in_ui = self._active_streaming_session_key in (
             None,
             self._committed_session_key,
@@ -624,7 +655,13 @@ class ChatService(QObject):
         active = self._active_streaming_row
         if active < 0 and should_render_in_ui:
             active = _row
-        if ok and self._pending_split and self._active_has_content and content:
+        if (
+            ok
+            and not is_provider_error
+            and self._pending_split
+            and self._active_has_content
+            and content
+        ):
             if active >= 0:
                 self._model.set_status(active, "done")
                 active = self._model.append_assistant("", status="typing")
@@ -641,7 +678,7 @@ class ChatService(QObject):
                     self._model.update_content(active, content)
                 self._active_has_content = active >= 0
             if active >= 0:
-                self._model.set_status(active, "done")
+                self._model.set_status(active, "error" if is_provider_error else "done")
         self._active_streaming_row = -1
         self._active_streaming_session_key = None
         self._active_has_content = False
