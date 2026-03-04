@@ -182,6 +182,13 @@ class ChatMessageModel(QAbstractListModel):
         idx = self.index(row)
         self.dataChanged.emit(idx, idx, [int(_Role.Status)])
 
+    def set_format(self, row: int, fmt: str) -> None:
+        if not (0 <= row < len(self._messages)):
+            return
+        self._messages[row]["format"] = fmt
+        idx = self.index(row)
+        self.dataChanged.emit(idx, idx, [int(_Role.Format)])
+
     def clear(self) -> None:
         """Remove all messages without emitting reset (uses removeRows)."""
         if not self._messages:

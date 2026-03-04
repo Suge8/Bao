@@ -294,6 +294,30 @@ def test_send_result_pending_split_without_final_content_no_empty_done_bubble():
     assert model._messages[0]["status"] == "done"
 
 
+def test_send_result_provider_error_switches_active_bubble_to_plain_text():
+    svc, model = make_service()
+    row = model.append_assistant("", status="typing")
+    svc._active_streaming_row = row
+
+    svc._handle_send_result(row, True, "Error calling LLM: <b>forbidden</b>")
+
+    assert model._messages[0]["format"] == "plain"
+    assert model._messages[0]["status"] == "error"
+    assert model._messages[0]["content"] == "Error calling LLM: <b>forbidden</b>"
+
+
+def test_send_result_transport_error_switches_active_bubble_to_plain_text():
+    svc, model = make_service()
+    row = model.append_assistant("", status="typing")
+    svc._active_streaming_row = row
+
+    svc._handle_send_result(row, False, "Error: network down")
+
+    assert model._messages[0]["format"] == "plain"
+    assert model._messages[0]["status"] == "error"
+    assert model._messages[0]["content"] == "Error: network down"
+
+
 def test_sync_active_history_requests_reload_when_idle():
     svc, _ = make_service()
     svc._session_manager = object()
