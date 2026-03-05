@@ -6,6 +6,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-03-06
+
+### Changed
+
+- **Desktop 打包并行编译** — macOS/Windows 的 Nuitka 构建启用 `--jobs` 并行编译（默认按 CPU 核心数；可通过 `NUITKA_JOBS` 覆盖），减少 CI 构建耗时。
+
+### Fixed
+
+- **macOS CI ccache 编译器探测失败** — 通过 `ccache` 的 libexec wrapper 启用编译缓存，避免 `CC="ccache clang"` 触发 Nuitka/Scons 无法识别 clang 版本的致命错误。
+- **Windows 打包脚本解释器不一致** — 构建与打包脚本统一使用 `uv run python`，避免 CI 中系统 `python` 找不到 Nuitka/PySide6。
+- **workspace 模板资源打包缺失/告警** — 仅打包 `bao/templates/workspace` 到分发包内路径，避免 `bao/templates` 空目录告警并确保 onboarding 模板可用。
+- **Windows 文件描述编码异常** — `--windows-file-description` 改为 ASCII（`Bao - ...`），避免控制台/元数据出现乱码。
+
 ## [0.3.6] - 2026-03-06
 
 ### Added
@@ -268,6 +281,7 @@ Bao 首个正式版本。
 - **Docker** — `docker-compose.yml` + `Dockerfile`（Python + Node 混合构建）
 - **测试** — 54 个测试文件，pytest + asyncio_mode=auto
 
+[0.3.7]: https://github.com/Suge8/Bao/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/Suge8/Bao/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/Suge8/Bao/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/Suge8/Bao/compare/v0.3.3...v0.3.4
@@ -278,4 +292,4 @@ Bao 首个正式版本。
 [0.2.1]: https://github.com/Suge8/Bao/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Suge8/Bao/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Suge8/Bao/releases/tag/v0.1.0
-[Unreleased]: https://github.com/Suge8/Bao/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/Suge8/Bao/compare/v0.3.7...HEAD
