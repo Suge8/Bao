@@ -90,12 +90,28 @@ echo "▸ Cleaning previous build..."
 rm -rf "$BUILD_DIR" "$OUTPUT_APP"
 mkdir -p "$DIST_DIR"
 
+# ── Parallelism ──
+# Nuitka compilation is CPU-bound; allow parallel compilation to reduce CI time.
+JOBS="${NUITKA_JOBS:-}"
+if [[ -z "$JOBS" ]]; then
+    if command -v sysctl >/dev/null 2>&1; then
+        JOBS="$(sysctl -n hw.ncpu 2>/dev/null || true)"
+    fi
+    if [[ -z "$JOBS" ]] && command -v getconf >/dev/null 2>&1; then
+        JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+    fi
+fi
+if [[ -z "$JOBS" || ! "$JOBS" =~ ^[0-9]+$ || "$JOBS" -lt 1 ]]; then
+    JOBS=4
+fi
+
 # ── Build with Nuitka ──
 echo "▸ Building with Nuitka (this may take several minutes)..."
 echo ""
 
 uv run python -m nuitka \
     --standalone \
+    --jobs="$JOBS" \
     --macos-create-app-bundle \
     --macos-app-icon="$PROJECT_ROOT/assets/logo.icns" \
     --macos-app-name="$APP_NAME" \

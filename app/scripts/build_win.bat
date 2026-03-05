@@ -43,8 +43,14 @@ REM ── Build ──
 echo ^> Building with Nuitka (this may take several minutes)...
 echo.
 
+REM ── Parallelism ──
+set "JOBS=%NUITKA_JOBS%"
+if "%JOBS%"=="" set "JOBS=%NUMBER_OF_PROCESSORS%"
+if "%JOBS%"=="" set "JOBS=4"
+
 uv run python -m nuitka ^
     --standalone ^
+    --jobs=%JOBS% ^
     --windows-icon-from-ico="%PROJECT_ROOT%\assets\logo.ico" ^
     --windows-company-name="Bao" ^
     --windows-product-name="Bao" ^

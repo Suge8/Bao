@@ -72,7 +72,7 @@ jobs:
       - name: Build with Nuitka
         env:
           NUITKA_CACHE_DIR: ${{ github.workspace }}/.nuitka-cache
-        run: CC=clang CXX=clang++ bash app/scripts/build_mac.sh --arch ${{ matrix.arch }}
+        run: CC="ccache clang" CXX="ccache clang++" CCACHE_DIR="$HOME/.cache/ccache" CCACHE_BASEDIR="$GITHUB_WORKSPACE" CCACHE_COMPILERCHECK=content bash app/scripts/build_mac.sh --arch ${{ matrix.arch }}
 
       - name: Show ccache stats
         run: ccache -s
