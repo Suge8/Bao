@@ -1,6 +1,8 @@
 import json
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,24 @@ def _escape(val: str) -> str:
     return val.replace("'", "''")
 
 
+def _synchronized(method: Any) -> Any:
+    @wraps(method)
+    def _wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
+        method_name = method.__name__
+        lock = self._meta_lock
+        key_lock_methods = {"save", "invalidate", "delete_session"}
+        if method_name in key_lock_methods and args:
+            first = args[0]
+            if isinstance(first, Session):
+                lock = self._lock_for(first.key)
+            elif isinstance(first, str) and first and not first.startswith("_active:"):
+                lock = self._lock_for(first)
+        with lock:
+            return method(self, *args, **kwargs)
+
+    return _wrapped
+
+
 @dataclass
 class Session:
     key: str
@@ -70,7 +90,9 @@ class Session:
         # to avoid orphaned tool_result / assistant(tool_calls) at start
         start = 0
         for i, m in enumerate(sliced):
-            if m.get("role") == "user":
+            role = m.get("role")
+            source = m.get("_source")
+            if role == "user" and (not source or source == "system-event"):
                 start = i
                 break
         else:
@@ -78,18 +100,29 @@ class Session:
             return []
         out: list[dict[str, Any]] = []
         for m in sliced[start:]:
+            role = m.get("role")
+            source = m.get("_source")
             content = m.get("content", "")
+
+            if role == "system":
+                role = "user"
+                source = source or "system"
+
+            if role == "user" and source == "desktop-system":
+                continue
             # legacy safety net: filter old runtime context user messages
             if (
-                m.get("role") == "user"
+                role == "user"
                 and isinstance(content, str)
                 and content.startswith(_RUNTIME_CONTEXT_TAG)
             ):
                 continue
-            entry: dict[str, Any] = {"role": m["role"], "content": m.get("content", "")}
+            entry: dict[str, Any] = {"role": role or "user", "content": content}
             for k in ("tool_calls", "tool_call_id", "name", "_source", "status"):
                 if k in m:
                     entry[k] = m[k]
+            if source and "_source" not in entry:
+                entry["_source"] = source
             out.append(entry)
         return out
 
@@ -127,8 +160,19 @@ class SessionManager:
         self._msg_tbl = ensure_table(self._db, "session_messages", _MSG_SAMPLE)
         self._cache: dict[str, Session] = {}
         self._active_cache: dict[str, str] = {}
+        self._meta_lock = threading.RLock()
+        self._session_locks_lock = threading.Lock()
+        self._session_locks: dict[str, threading.RLock] = {}
         self._migrate_legacy(workspace)
         self._ensure_indexes()
+
+    def _lock_for(self, key: str) -> threading.RLock:
+        with self._session_locks_lock:
+            lock = self._session_locks.get(key)
+            if lock is None:
+                lock = threading.RLock()
+                self._session_locks[key] = lock
+            return lock
 
     def _ensure_indexes(self) -> None:
         """Create scalar indexes for frequently filtered columns."""
@@ -197,19 +241,53 @@ class SessionManager:
             return None
 
     def get_or_create(self, key: str) -> Session:
-        if key in self._cache:
-            return self._cache[key]
-        session = self._load(key)
-        if session is None:
-            session = Session(key=key)
+        with self._lock_for(key):
+            if key in self._cache:
+                return self._cache[key]
+            session = self._load(key)
+            if session is None:
+                session = Session(key=key)
+            self._cache[key] = session
+            return session
+
+    @_synchronized
+    def ensure_session_meta(self, key: str) -> None:
+        safe = _escape(key)
+        try:
+            rows = self._meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
+            if rows:
+                return
+        except Exception:
+            session = self.get_or_create(key)
+            self.save(session)
+            return
+
+        now = datetime.now()
+        session = Session(key=key, created_at=now, updated_at=now)
+        try:
+            self._meta_tbl.add(
+                [
+                    {
+                        "session_key": key,
+                        "created_at": now.isoformat(),
+                        "updated_at": now.isoformat(),
+                        "metadata_json": "{}",
+                        "last_consolidated": 0,
+                    }
+                ]
+            )
+        except Exception:
+            self.save(session)
+            return
+
         self._cache[key] = session
-        return session
 
     def session_exists(self, key: str) -> bool:
         """Check if a session exists (cache-first, then DB)."""
-        if key in self._cache:
-            return True
-        return self._load(key) is not None
+        with self._lock_for(key):
+            if key in self._cache:
+                return True
+            return self._load(key) is not None
 
     def _load(self, key: str) -> "Session | None":
         import os
@@ -218,112 +296,118 @@ class SessionManager:
         _profile = os.getenv("BAO_DESKTOP_PROFILE") == "1"
         t0 = time.perf_counter() if _profile else 0
         safe = _escape(key)
-        try:
-            meta_rows = self._meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
-            if not meta_rows:
-                return None
-            meta = meta_rows[0]
-            t1 = time.perf_counter() if _profile else 0
-
-            msg_rows = self._msg_tbl.search().where(f"session_key = '{safe}'").to_list()
-            msg_rows.sort(key=lambda r: r["idx"])
-            t2 = time.perf_counter() if _profile else 0
-
-            messages = []
-            for r in msg_rows:
-                m: dict[str, Any] = {
-                    "role": r["role"],
-                    "content": r["content"],
-                    "timestamp": r["timestamp"],
-                }
-                extra_json = r.get("extra_json") or "{}"
-                if extra_json != "{}":
-                    m.update(json.loads(extra_json))
-                messages.append(m)
-            t3 = time.perf_counter() if _profile else 0
-
-            if _profile:
-                logger.debug(
-                    "📊 Session._load: meta={:.3f}s, msgs={:.3f}s, parse={:.3f}s, total_msgs={}",
-                    t1 - t0,
-                    t2 - t1,
-                    t3 - t2,
-                    len(messages),
+        with self._lock_for(key):
+            try:
+                meta_rows = (
+                    self._meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
                 )
+                if not meta_rows:
+                    return None
+                meta = meta_rows[0]
+                t1 = time.perf_counter() if _profile else 0
 
-            return Session(
-                key=key,
-                messages=messages,
-                created_at=(
-                    datetime.fromisoformat(meta["created_at"])
-                    if meta.get("created_at")
-                    else datetime.now()
-                ),
-                updated_at=(
-                    datetime.fromisoformat(meta["updated_at"])
-                    if meta.get("updated_at")
-                    else datetime.now()
-                ),
-                metadata=json.loads(meta.get("metadata_json") or "{}"),
-                last_consolidated=meta.get("last_consolidated", 0),
-            )
-        except Exception as e:
-            logger.warning("⚠️ 会话加载失败 / load failed: {} — {}", key, e)
-            return None
+                msg_rows = self._msg_tbl.search().where(f"session_key = '{safe}'").to_list()
+                msg_rows.sort(key=lambda r: r["idx"])
+                t2 = time.perf_counter() if _profile else 0
+
+                messages = []
+                for r in msg_rows:
+                    m: dict[str, Any] = {
+                        "role": r["role"],
+                        "content": r["content"],
+                        "timestamp": r["timestamp"],
+                    }
+                    extra_json = r.get("extra_json") or "{}"
+                    if extra_json != "{}":
+                        m.update(json.loads(extra_json))
+                    messages.append(m)
+                t3 = time.perf_counter() if _profile else 0
+
+                if _profile:
+                    logger.debug(
+                        "📊 Session._load: meta={:.3f}s, msgs={:.3f}s, parse={:.3f}s, total_msgs={}",
+                        t1 - t0,
+                        t2 - t1,
+                        t3 - t2,
+                        len(messages),
+                    )
+
+                return Session(
+                    key=key,
+                    messages=messages,
+                    created_at=(
+                        datetime.fromisoformat(meta["created_at"])
+                        if meta.get("created_at")
+                        else datetime.now()
+                    ),
+                    updated_at=(
+                        datetime.fromisoformat(meta["updated_at"])
+                        if meta.get("updated_at")
+                        else datetime.now()
+                    ),
+                    metadata=json.loads(meta.get("metadata_json") or "{}"),
+                    last_consolidated=meta.get("last_consolidated", 0),
+                )
+            except Exception as e:
+                logger.warning("⚠️ 会话加载失败 / load failed: {} — {}", key, e)
+                return None
 
     def get_tail_messages(self, key: str, limit: int) -> list[dict[str, Any]]:
         """Get last N messages without loading full session (fast path for display)."""
         import os
         import time
 
-        cached = self._cache.get(key)
-        if cached is not None:
-            max_messages = limit if limit > 0 else 500
-            return cached.get_display_history(max_messages=max_messages)
+        with self._lock_for(key):
+            cached = self._cache.get(key)
+            if cached is not None:
+                max_messages = limit if limit > 0 else 500
+                return cached.get_display_history(max_messages=max_messages)
 
         _profile = os.getenv("BAO_DESKTOP_PROFILE") == "1"
         t0 = time.perf_counter() if _profile else 0
         safe = _escape(key)
         where_clause = f"session_key = '{safe}'"
-        try:
-            if limit > 0:
-                total = self._msg_tbl.count_rows(filter=where_clause)
-                if total <= 0:
+        with self._lock_for(key):
+            try:
+                if limit > 0:
+                    total = self._msg_tbl.count_rows(filter=where_clause)
+                    if total <= 0:
+                        return []
+                    start_idx = max(total - limit, 0)
+                    where_clause = f"{where_clause} AND idx >= {start_idx}"
+
+                msg_rows = self._msg_tbl.search().where(where_clause).to_list()
+                if not msg_rows:
                     return []
-                start_idx = max(total - limit, 0)
-                where_clause = f"{where_clause} AND idx >= {start_idx}"
-
-            msg_rows = self._msg_tbl.search().where(where_clause).to_list()
-            if not msg_rows:
+                msg_rows.sort(key=lambda r: r["idx"])
+                if limit > 0:
+                    msg_rows = msg_rows[-limit:]
+                t1 = time.perf_counter() if _profile else 0
+                messages = []
+                for r in msg_rows:
+                    m: dict[str, Any] = {
+                        "role": r["role"],
+                        "content": r["content"],
+                        "timestamp": r["timestamp"],
+                    }
+                    extra_json = r.get("extra_json") or "{}"
+                    if extra_json != "{}":
+                        m.update(json.loads(extra_json))
+                    messages.append(m)
+                t2 = time.perf_counter() if _profile else 0
+                if _profile:
+                    logger.debug(
+                        "📊 get_tail_messages: fetch={:.3f}s, parse={:.3f}s, count={}",
+                        t1 - t0,
+                        t2 - t1,
+                        len(messages),
+                    )
+                return messages
+            except Exception as e:
+                logger.warning("⚠️ get_tail_messages failed: {} — {}", key, e)
                 return []
-            msg_rows.sort(key=lambda r: r["idx"])
-            if limit > 0:
-                msg_rows = msg_rows[-limit:]
-            t1 = time.perf_counter() if _profile else 0
-            messages = []
-            for r in msg_rows:
-                m: dict[str, Any] = {
-                    "role": r["role"],
-                    "content": r["content"],
-                    "timestamp": r["timestamp"],
-                }
-                extra_json = r.get("extra_json") or "{}"
-                if extra_json != "{}":
-                    m.update(json.loads(extra_json))
-                messages.append(m)
-            t2 = time.perf_counter() if _profile else 0
-            if _profile:
-                logger.debug(
-                    "📊 get_tail_messages: fetch={:.3f}s, parse={:.3f}s, count={}",
-                    t1 - t0,
-                    t2 - t1,
-                    len(messages),
-                )
-            return messages
-        except Exception as e:
-            logger.warning("⚠️ get_tail_messages failed: {} — {}", key, e)
-            return []
 
+    @_synchronized
     def save(self, session: Session) -> None:
         safe = _escape(session.key)
         prev_meta: list[dict[str, Any]] = []
@@ -337,13 +421,44 @@ class SessionManager:
         except Exception:
             prev_msgs = []
 
+        def _row_from_message(idx: int, msg: dict[str, Any]) -> dict[str, Any]:
+            extra = {k: v for k, v in msg.items() if k not in ("role", "content", "timestamp")}
+            return {
+                "session_key": session.key,
+                "idx": idx,
+                "role": msg["role"],
+                "content": msg.get("content", ""),
+                "timestamp": msg.get("timestamp", ""),
+                "extra_json": json.dumps(extra, ensure_ascii=False) if extra else "{}",
+            }
+
+        def _row_matches_message(row: dict[str, Any] | None, idx: int, msg: dict[str, Any]) -> bool:
+            if row is None:
+                return False
+            if int(row.get("idx", -1)) != idx:
+                return False
+            if row.get("role") != msg.get("role"):
+                return False
+            if row.get("content", "") != msg.get("content", ""):
+                return False
+            if row.get("timestamp", "") != msg.get("timestamp", ""):
+                return False
+            extra = {k: v for k, v in msg.items() if k not in ("role", "content", "timestamp")}
+            row_extra_json = row.get("extra_json") or "{}"
+            if not extra:
+                return row_extra_json == "{}"
+            return row_extra_json == json.dumps(extra, ensure_ascii=False)
+
         try:
+            existing_count = 0
+            try:
+                existing_count = int(self._msg_tbl.count_rows(filter=f"session_key = '{safe}'"))
+            except Exception:
+                existing_count = len(prev_msgs)
+            existing_count = max(existing_count, 0)
+
             try:
                 self._meta_tbl.delete(f"session_key = '{safe}'")
-            except Exception:
-                pass
-            try:
-                self._msg_tbl.delete(f"session_key = '{safe}'")
             except Exception:
                 pass
 
@@ -359,23 +474,47 @@ class SessionManager:
                 ]
             )
 
-            if session.messages:
-                rows = []
-                for i, msg in enumerate(session.messages):
-                    extra = {
-                        k: v for k, v in msg.items() if k not in ("role", "content", "timestamp")
-                    }
-                    rows.append(
-                        {
-                            "session_key": session.key,
-                            "idx": i,
-                            "role": msg["role"],
-                            "content": msg.get("content", ""),
-                            "timestamp": msg.get("timestamp", ""),
-                            "extra_json": json.dumps(extra, ensure_ascii=False) if extra else "{}",
-                        }
+            message_count = len(session.messages)
+            if message_count == 0:
+                if existing_count > 0:
+                    self._msg_tbl.delete(f"session_key = '{safe}'")
+            elif existing_count == 0:
+                self._msg_tbl.add(
+                    [_row_from_message(i, msg) for i, msg in enumerate(session.messages)]
+                )
+            elif existing_count < message_count:
+                append_rows = [
+                    _row_from_message(i, session.messages[i])
+                    for i in range(existing_count, message_count)
+                ]
+                if append_rows:
+                    self._msg_tbl.add(append_rows)
+            else:
+                requires_rewrite = existing_count > message_count
+                if not requires_rewrite and message_count > 0:
+                    last_row: dict[str, Any] | None = None
+                    try:
+                        rows = (
+                            self._msg_tbl.search()
+                            .where(f"session_key = '{safe}' AND idx = {message_count - 1}")
+                            .limit(1)
+                            .to_list()
+                        )
+                        if rows:
+                            last_row = rows[0]
+                    except Exception:
+                        last_row = None
+                    requires_rewrite = not _row_matches_message(
+                        last_row,
+                        message_count - 1,
+                        session.messages[-1],
                     )
-                self._msg_tbl.add(rows)
+
+                if requires_rewrite:
+                    self._msg_tbl.delete(f"session_key = '{safe}'")
+                    self._msg_tbl.add(
+                        [_row_from_message(i, msg) for i, msg in enumerate(session.messages)]
+                    )
         except Exception:
             try:
                 self._meta_tbl.delete(f"session_key = '{safe}'")
@@ -393,6 +532,7 @@ class SessionManager:
 
         self._cache[session.key] = session
 
+    @_synchronized
     def update_metadata_only(self, key: str, metadata_updates: dict[str, Any]) -> None:
         """Update session metadata without loading/saving messages (lightweight)."""
         safe = _escape(key)
@@ -420,9 +560,11 @@ class SessionManager:
         except Exception as e:
             logger.warning("⚠️ metadata update failed: {} — {}", key, e)
 
+    @_synchronized
     def invalidate(self, key: str) -> None:
         self._cache.pop(key, None)
 
+    @_synchronized
     def _delete_meta_row(self, key: str) -> bool:
         try:
             self._meta_tbl.delete(f"session_key = '{_escape(key)}'")
@@ -430,6 +572,7 @@ class SessionManager:
         except Exception:
             return False
 
+    @_synchronized
     def delete_session(self, key: str) -> bool:
         safe = _escape(key)
         prev_meta: list[dict[str, Any]] = []
@@ -496,6 +639,7 @@ class SessionManager:
             pass
         return ok
 
+    @_synchronized
     def get_active_session_key(self, natural_key: str) -> str | None:
         if natural_key in self._active_cache:
             return self._active_cache[natural_key]
@@ -516,6 +660,7 @@ class SessionManager:
             pass
         return None
 
+    @_synchronized
     def set_active_session_key(self, natural_key: str, session_key: str) -> None:
         self._active_cache[natural_key] = session_key
         marker = f"_active:{natural_key}"
@@ -533,10 +678,12 @@ class SessionManager:
             ]
         )
 
+    @_synchronized
     def clear_active_session_key(self, natural_key: str) -> None:
         self._active_cache.pop(natural_key, None)
         self._delete_meta_row(f"_active:{natural_key}")
 
+    @_synchronized
     def list_sessions(self) -> list[dict[str, Any]]:
         try:
             rows = self._meta_tbl.search().where("session_key != '_init_'").to_list()
