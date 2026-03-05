@@ -55,8 +55,8 @@ _TOOL_BUNDLE_CODE = "code"
 _TOOL_BUNDLES = frozenset(
     {_TOOL_BUNDLE_CORE, _TOOL_BUNDLE_WEB, _TOOL_BUNDLE_DESKTOP, _TOOL_BUNDLE_CODE}
 )
-_TOOL_ROUTE_TOPK_TIER0 = 12
-_TOOL_ROUTE_TOPK_TIER1 = 28
+_TOOL_ROUTE_TOPK_TIER0 = 8
+_TOOL_ROUTE_TOPK_TIER1 = 16
 _TOOL_ROUTE_MAX_ESCALATIONS = 2
 _TOOL_ROUTE_INTENT_THRESHOLD = 0.65
 _ROUTE_RESCUE_TOOLS = frozenset(
@@ -118,6 +118,10 @@ _CORE_TOOL_NAMES = frozenset(
     {
         "message",
         "exec",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_dir",
         "create_plan",
         "update_plan_step",
         "clear_plan",
@@ -146,10 +150,6 @@ _DESKTOP_TOOL_NAMES = frozenset(
 )
 _CODE_TOOL_NAMES = frozenset(
     {
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list_dir",
         "coding_agent",
         "coding_agent_details",
     }
@@ -2202,7 +2202,7 @@ class AgentLoop:
         logger.debug(log_message, generation_key)
         return True
 
-    def _persist_assistant_turn(
+    async def _persist_assistant_turn(
         self,
         *,
         session: Session,
@@ -2223,7 +2223,7 @@ class AgentLoop:
                 status=assistant_status,
             )
 
-        self.sessions.save(session)
+        await asyncio.to_thread(self.sessions.save, session)
 
         if not session.metadata.get("title") and session.key not in self._title_generation_inflight:
             self._title_generation_inflight.add(session.key)
@@ -2503,7 +2503,7 @@ class AgentLoop:
             session, _extract_text(msg.content)
         )
         if lang_changed and not msg.metadata.get("_ephemeral"):
-            self.sessions.save(session)
+            await asyncio.to_thread(self.sessions.save, session)
 
         self._set_tool_context(
             msg.channel,
@@ -2531,7 +2531,7 @@ class AgentLoop:
 
         if not msg.metadata.get("_pre_saved") and not msg.metadata.get("_ephemeral"):
             session.add_message("user", msg.content)
-            self.sessions.save(session)
+            await asyncio.to_thread(self.sessions.save, session)
 
         async def _bus_publish(content: str, *, is_tool_hint: bool = False) -> None:
             if content == PROGRESS_RESET and not is_tool_hint:
@@ -2606,7 +2606,7 @@ class AgentLoop:
         )
         self._persist_tool_observability(session, channel=msg.channel, session_key=key)
 
-        if self._persist_assistant_turn(
+        if await self._persist_assistant_turn(
             session=session,
             key=key,
             final_content=final_content,
@@ -2642,7 +2642,7 @@ class AgentLoop:
         session = self.sessions.get_or_create(session_key)
         session_lang, lang_changed = self._resolve_session_language(session)
         if lang_changed:
-            self.sessions.save(session)
+            await asyncio.to_thread(self.sessions.save, session)
         self._set_tool_context(
             origin_channel,
             origin_chat_id,
@@ -2828,7 +2828,7 @@ class AgentLoop:
         entries = await asyncio.to_thread(self.context.memory.list_long_term_entries)
         if not entries:
             self._clear_memory_state(session)
-            self.sessions.save(session)
+            await asyncio.to_thread(self.sessions.save, session)
             return self._reply(msg, "暂无记忆 📭")
 
         self._clear_memory_state(session)
@@ -2853,7 +2853,7 @@ class AgentLoop:
 
         session.metadata["_pending_memory_list"] = True
         session.metadata["_memory_entries"] = entries
-        self.sessions.save(session)
+        await asyncio.to_thread(self.sessions.save, session)
 
         return self._reply(msg, "\n".join(lines))
 
