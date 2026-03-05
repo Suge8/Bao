@@ -40,6 +40,8 @@ _ENV_BASE = "BAO_EMBEDDING_BASE_URL"
 _DEFAULT_EMBED_TIMEOUT_S = 15
 _DEFAULT_EMBED_RETRY_ATTEMPTS = 2
 _DEFAULT_EMBED_RETRY_BACKOFF_MS = 200
+_QUERY_EMBED_CACHE_TTL_S = 120.0
+_QUERY_EMBED_CACHE_MAX = 256
 _BACKFILL_SCAN_LIMIT = 20000
 _MIGRATION_CHUNK_SIZE = 1000
 
@@ -104,6 +106,8 @@ class MemoryStore:
         self._embed_timeout_s = _DEFAULT_EMBED_TIMEOUT_S
         self._embed_retry_attempts = _DEFAULT_EMBED_RETRY_ATTEMPTS
         self._embed_retry_backoff_ms = _DEFAULT_EMBED_RETRY_BACKOFF_MS
+        self._query_embed_cache: dict[str, tuple[float, list[list[float]]]] = {}
+        self._query_embed_cache_lock = threading.Lock()
         if embedding_config and getattr(embedding_config, "enabled", False):
             self._init_embedding(embedding_config)
         self._migrate_legacy(workspace)
@@ -347,15 +351,49 @@ class MemoryStore:
             op="source",
         )
 
+    def _ensure_query_embed_cache(self) -> None:
+        if not hasattr(self, "_query_embed_cache"):
+            self._query_embed_cache = {}
+        if not hasattr(self, "_query_embed_cache_lock"):
+            self._query_embed_cache_lock = threading.Lock()
+
     def _compute_query_embeddings(self, query: str) -> list[list[float]]:
         embed_fn = self._embed_fn
         if not embed_fn:
             return []
         assert embed_fn is not None
-        return self._call_embedding_with_retry(
+        self._ensure_query_embed_cache()
+        now = time.monotonic()
+        with self._query_embed_cache_lock:
+            cached = self._query_embed_cache.get(query)
+            if cached and cached[0] > now:
+                return cached[1]
+            if cached:
+                self._query_embed_cache.pop(query, None)
+
+        vectors = self._call_embedding_with_retry(
             lambda: embed_fn.compute_query_embeddings(query),
             op="query",
         )
+        with self._query_embed_cache_lock:
+            self._query_embed_cache[query] = (now + _QUERY_EMBED_CACHE_TTL_S, vectors)
+            while len(self._query_embed_cache) > _QUERY_EMBED_CACHE_MAX:
+                self._query_embed_cache.pop(next(iter(self._query_embed_cache)))
+        return vectors
+
+    @staticmethod
+    def _log_background_exception(fut: Any) -> None:
+        try:
+            fut.result()
+        except Exception as e:
+            logger.debug("memory background task skipped: {}", e)
+
+    def _schedule_hit_stats_update(self, rows: list[dict[str, Any]]) -> None:
+        snapshot = [dict(r) for r in rows if r.get("key")]
+        if not snapshot:
+            return
+        fut = self._MEMORY_BG_EXECUTOR.submit(self._update_hit_stats, snapshot)
+        fut.add_done_callback(self._log_background_exception)
 
     def _vector_table_needs_rebuild(self, *, expected_dim: int) -> bool:
         if not self._vec_tbl:
@@ -1068,7 +1106,7 @@ class MemoryStore:
             final = results[:limit]
         # Update hit stats outside the main lock (best-effort)
         if hit_rows:
-            self._update_hit_stats(hit_rows)
+            self._schedule_hit_stats_update(hit_rows)
         return final
 
     def _fetch_experience_candidates(self, query: str, fetch: int) -> list[dict[str, Any]]:
