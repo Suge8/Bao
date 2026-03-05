@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-03-05
+
 ### Added
 
 - **Desktop 推理强度设置项** — Settings 的 Agent Defaults 新增 `reasoningEffort` 选项（`Auto/off/low/medium/high`），可直接通过界面保存到配置
@@ -15,10 +17,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 - **记忆检索延迟优化** — 低信息输入（如确认/寒暄短句）跳过重检索，重复查询复用检索缓存；记忆/经验发生变更时自动失效缓存并按修订号隔离
 - **无 token 记忆注入语义调整** — `get_relevant_memory_context` 在 query 无有效 token 时返回空注入路径，不再回退整段全量长期记忆
 - **推理强度 `off` 语义打通** — OpenAI/OpenAI Codex/Anthropic/Gemini 统一支持 `reasoningEffort=off`，`off` 时不再发送对应 reasoning/thinking 配置
+- **Desktop 会话列表刷新改为事件驱动** — `SessionService` 移除独立轮询，改由 `ChatService.statusUpdated` 在消息收口时触发 `refresh()`，排序更新时间与回复完成时机对齐
+- **Desktop 历史加载线程化** — 会话历史读取与 `prepare_history` 改为 `asyncio.to_thread(...)` 执行，降低共享 asyncio loop 被同步 I/O 阻塞的概率
+- **Desktop 预加载触发策略收敛** — 取消 `setSessionManager()` 自动 initial prefetch；切换会话后仅在当前会话 full load 完成时触发 anchor prefetch，优先保障首屏加载
 
 ### Fixed
 
 - **Desktop finalize 气泡瞬闪** — `ChatMessageModel.load_prepared()` 的渲染等价判定改为仅比较 `role/content/format/status`（忽略 `entrance*` 差异），避免回复收口后因 history refresh 触发不必要 reset；同时将 `ChatView/MessageBubble` 的 `role` fallback 统一为 `assistant`，消除 delegate 重建空窗误闪 user 大气泡
+- **Desktop 会话标题可读性** — 无 `metadata.title` 时，`desktop:local` 显示为 `default`，`desktop:local::name` 显示为 `name`，避免 UI 直接暴露内部会话 key
+- **标题生成长期空缺** — 移除标题生成固定轮次窗口；会话无标题时持续尝试异步生成，并维持 `_title_generation_inflight` 单点防重
+- **Desktop 新消息红点残留** — 未读判定收敛为 AI 时间戳单一路径（`desktop_last_ai_at` vs `desktop_last_seen_ai_at`），移除 `updated_at` 比较、模型层 `clear_unread` 与刷新合并补丁；修复“已查看后重启仍出现红点”问题，并保持跨渠道新 AI 消息提示一致
+- **Desktop 启动期 pointer 偶发丢失** — `Sidebar` 会话分组重建改为单触发直连（`onSessionsChanged` 直接重建），移除延迟 `Timer` 与 `sessionList.model = null` detach/reattach 路径，降低启动中间态导致的 hover/cursor 空窗
+- **Desktop 删除反馈延迟** — 会话删除成功提示改为点击即显；失败仍由异步回包覆盖提示，避免“删除成功 toast 明显滞后”
+- **Desktop 删除后侧栏位移** — Sidebar 在 `sessionsChanged` 重建前后恢复 `contentY`（边界夹取），删除会话后视口保持原地，减少列表跳动
+- **Desktop 输入框首击偶发无效** — 移除输入容器覆盖层 `MouseArea`，点击焦点收敛到 `TextArea` 原生路径
+- **Desktop 输入框垂直偏移** — 调整 `TextArea` 内边距为 `topPadding=6 / bottomPadding=2`，对齐 ring 视觉中心
 
 ## [0.3.4] - 2026-03-04
 
@@ -234,6 +247,7 @@ Bao 首个正式版本。
 - **Docker** — `docker-compose.yml` + `Dockerfile`（Python + Node 混合构建）
 - **测试** — 54 个测试文件，pytest + asyncio_mode=auto
 
+[0.3.5]: https://github.com/Suge8/Bao/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/Suge8/Bao/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/Suge8/Bao/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/Suge8/Bao/compare/v0.3.1...v0.3.2
@@ -242,4 +256,4 @@ Bao 首个正式版本。
 [0.2.1]: https://github.com/Suge8/Bao/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Suge8/Bao/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Suge8/Bao/releases/tag/v0.1.0
-[Unreleased]: https://github.com/Suge8/Bao/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/Suge8/Bao/compare/v0.3.5...HEAD

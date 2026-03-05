@@ -90,7 +90,7 @@ app\scripts\package_win_installer.bat
 
 推送 `v*` tag 自动触发 GitHub Actions 构建双平台安装包（`desktop-release.yml`）；PR/非 tag push 使用轻量流水线 `desktop-ci-lite.yml` 做依赖可安装性与脚本校验。
 
-`v0.3.0` 为当前发布版本，详见 [`../CHANGELOG.md`](../CHANGELOG.md)。
+`v0.3.5` 为当前发布版本，详见 [`../CHANGELOG.md`](../CHANGELOG.md)。
 
 完整打包指南见 [`docs/desktop-packaging.md`](../docs/desktop-packaging.md)。
 

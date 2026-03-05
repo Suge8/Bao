@@ -262,7 +262,7 @@ bao
 
 ## 📝 Changelog
 
-`v0.3.2` 为当前发布版本，详见 [`CHANGELOG.md`](CHANGELOG.md)。
+`v0.3.5` 为当前发布版本，详见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 💬 9 大聊天平台
 
@@ -682,7 +682,7 @@ Optional: configure a **Utility Model** for background tasks (experience extract
 
 ### 📝 Changelog
 
-`v0.3.2` is the current release; see [`CHANGELOG.md`](CHANGELOG.md).
+`v0.3.5` is the current release; see [`CHANGELOG.md`](CHANGELOG.md).
 
 ### 💬 9 Chat Platforms
 
