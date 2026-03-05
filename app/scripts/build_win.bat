@@ -55,7 +55,7 @@ uv run python -m nuitka ^
     --windows-company-name="Bao" ^
     --windows-product-name="Bao" ^
     --windows-product-version="%VERSION%" ^
-    --windows-file-description="Bao — Your Personal AI Assistant" ^
+    --windows-file-description="Bao - Your Personal AI Assistant" ^
     --enable-plugin=pyside6 ^
     --include-qt-plugins=qml ^
     --include-data-dir="%PROJECT_ROOT%\app\qml=qml" ^
