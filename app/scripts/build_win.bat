@@ -61,7 +61,7 @@ uv run python -m nuitka ^
     --include-data-dir="%PROJECT_ROOT%\app\qml=qml" ^
     --include-data-dir="%PROJECT_ROOT%\app\resources=resources" ^
     --include-data-dir="%PROJECT_ROOT%\bao\skills=data\skills" ^
-    --include-data-dir="%PROJECT_ROOT%\bao\templates=data\templates" ^
+    --include-data-dir="%PROJECT_ROOT%\bao\templates\workspace=bao\templates\workspace" ^
     --nofollow-import-to=tkinter ^
     --nofollow-import-to=unittest ^
     --nofollow-import-to=doctest ^

@@ -90,8 +90,6 @@ echo "▸ Cleaning previous build..."
 rm -rf "$BUILD_DIR" "$OUTPUT_APP"
 mkdir -p "$DIST_DIR"
 
-# ── Parallelism ──
-# Nuitka compilation is CPU-bound; allow parallel compilation to reduce CI time.
 JOBS="${NUITKA_JOBS:-}"
 if [[ -z "$JOBS" ]]; then
     if command -v sysctl >/dev/null 2>&1; then
@@ -122,7 +120,7 @@ uv run python -m nuitka \
     --include-data-dir="$PROJECT_ROOT/app/qml=qml" \
     --include-data-dir="$PROJECT_ROOT/app/resources=resources" \
     --include-data-dir="$PROJECT_ROOT/bao/skills=data/skills" \
-    --include-data-dir="$PROJECT_ROOT/bao/templates=data/templates" \
+    --include-data-dir="$PROJECT_ROOT/bao/templates/workspace=bao/templates/workspace" \
     --nofollow-import-to=tkinter \
     --nofollow-import-to=unittest \
     --nofollow-import-to=doctest \
