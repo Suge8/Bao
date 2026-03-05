@@ -14,7 +14,7 @@ Rectangle {
     border.color: borderSubtle
     border.width: 1
 
-    Behavior on color { ColorAnimation { duration: 200 } }
+    Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
 
     ColumnLayout {
         anchors { fill: parent; margins: 24 }

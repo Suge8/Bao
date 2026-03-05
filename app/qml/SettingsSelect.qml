@@ -15,7 +15,7 @@ Item {
     // For SettingsView.collectFields()
     property var currentValue: _loaded ? valueForIndex(combo.currentIndex) : undefined
     property bool _loaded: false
-    property int popupMaxHeight: 240
+    property int popupMaxHeight: sizeDropdownMaxHeight
 
     signal valueChanged(var value)
 
@@ -54,20 +54,20 @@ Item {
         id: col
         anchors.left: parent.left
         anchors.right: parent.right
-        spacing: 6
+        spacing: spacingSm
 
         Text {
             text: root.label
             color: textSecondary
-            font.pixelSize: 13
-            font.weight: Font.Medium
-            font.letterSpacing: 0.2
+            font.pixelSize: typeLabel
+            font.weight: weightMedium
+            font.letterSpacing: letterTight
         }
         Text {
             visible: root.description !== ""
             text: root.description
             color: textTertiary
-            font.pixelSize: 11
+            font.pixelSize: typeCaption
             font.italic: true
             wrapMode: Text.Wrap
             width: parent.width
@@ -75,7 +75,7 @@ Item {
 
         Rectangle {
             width: parent.width
-            height: 42
+            height: sizeControlHeight
             radius: radiusSm
             color: combo.activeFocus
                    ? bgInputFocus
@@ -83,15 +83,15 @@ Item {
             border.color: combo.activeFocus ? borderFocus : borderSubtle
             border.width: combo.activeFocus ? 1.5 : 1
 
-            Behavior on border.color { ColorAnimation { duration: 180 } }
-            Behavior on color { ColorAnimation { duration: 180 } }
+            Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
+            Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
 
             ComboBox {
                 id: combo
                 anchors.fill: parent
-                leftPadding: 14
+                leftPadding: sizeFieldPaddingX
                 rightPadding: 32
-                font.pixelSize: 14
+                font.pixelSize: typeButton
                 hoverEnabled: true
 
                 model: {
@@ -105,7 +105,7 @@ Item {
                 contentItem: Text {
                     text: combo.displayText
                     color: textPrimary
-                    font.pixelSize: 14
+                    font.pixelSize: typeButton
                     verticalAlignment: Text.AlignVCenter
                     elide: Text.ElideRight
                 }
@@ -116,22 +116,22 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     text: "▾"
                     color: textTertiary
-                    font.pixelSize: 14
+                    font.pixelSize: typeButton
                     rotation: combo.popup.visible ? 180 : 0
 
-                    Behavior on rotation { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+                    Behavior on rotation { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
                 }
 
                 delegate: ItemDelegate {
                     id: optionDelegate
                     width: ListView.view ? ListView.view.width : combo.width
-                    height: 34
+                    height: sizeOptionHeight
                     highlighted: combo.highlightedIndex === index
 
                     contentItem: Text {
                         text: modelData
                         color: optionDelegate.highlighted ? textPrimary : textSecondary
-                        font.pixelSize: 13
+                        font.pixelSize: typeLabel
                         verticalAlignment: Text.AlignVCenter
                         elide: Text.ElideRight
                     }
@@ -144,7 +144,7 @@ Item {
                                   ? (isDark ? "#10FFFFFF" : "#08000000")
                                   : "transparent")
 
-                        Behavior on color { ColorAnimation { duration: 120 } }
+                        Behavior on color { ColorAnimation { duration: motionMicro; easing.type: easeStandard } }
                     }
                 }
 

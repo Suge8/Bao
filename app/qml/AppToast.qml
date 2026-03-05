@@ -5,7 +5,7 @@ Item {
 
     property string message: ""
     property bool success: true
-    property int duration: 2200
+    property int duration: toastDuration
     property color successBg: "#1F7A4D"
     property color errorBg: "#B63A3A"
     property color textColor: "#FFFFFF"
@@ -31,9 +31,9 @@ Item {
         anchors.bottomMargin: -2
         radius: bubble.radius + 2
         color: "#60000000"
-        opacity: root.shown ? 0.3 : 0
+        opacity: root.shown ? opacityShadowSoft : 0
         visible: opacity > 0.01
-        Behavior on opacity { NumberAnimation { duration: 180 } }
+        Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
     }
 
     Rectangle {
@@ -41,14 +41,15 @@ Item {
         radius: 11
         color: root.success ? root.successBg : root.errorBg
         opacity: root.shown ? 1 : 0
-        scale: root.shown ? 1.0 : 0.96
-        y: root.shown ? 0 : -8
+        scale: root.shown ? 1.0 : motionToastHiddenScale
+        property real lift: root.shown ? 0 : -12
+        transform: Translate { y: bubble.lift }
         implicitWidth: contentRow.implicitWidth + 22
         implicitHeight: 38
 
-        Behavior on opacity { NumberAnimation { duration: 160 } }
-        Behavior on scale { NumberAnimation { duration: 220; easing.type: Easing.OutBack } }
-        Behavior on y { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
+        Behavior on scale { NumberAnimation { duration: motionPanel; easing.type: easeEmphasis } }
+        Behavior on lift { NumberAnimation { duration: motionPanel; easing.type: easeEmphasis } }
 
         Row {
             id: contentRow
@@ -65,16 +66,16 @@ Item {
                     anchors.centerIn: parent
                     text: root.success ? "✓" : "!"
                     color: root.textColor
-                    font.pixelSize: 12
-                    font.weight: Font.Bold
+                    font.pixelSize: typeMeta
+                    font.weight: weightBold
                 }
             }
 
             Text {
                 text: root.message
                 color: root.textColor
-                font.pixelSize: 12
-                font.weight: Font.DemiBold
+                font.pixelSize: typeMeta
+                font.weight: weightDemiBold
             }
         }
     }

@@ -9,7 +9,7 @@ set "PROJECT_ROOT=%~dp0..\.."
 pushd "%PROJECT_ROOT%"
 
 REM ── Version ──
-for /f "tokens=*" %%i in ('python -c "import re; f=open('pyproject.toml'); m=re.search(r'version\s*=\s*\"([^\"]+)\"',f.read()); print(m.group(1) if m else '0.0.0')"') do set "VERSION=%%i"
+for /f "usebackq delims=" %%i in (`python "app\scripts\read_version.py"`) do set "VERSION=%%i"
 
 set "APP_NAME=Bao"
 set "DIST_DIR=%PROJECT_ROOT%\dist"

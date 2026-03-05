@@ -2,7 +2,7 @@
 
 基于 PySide6 + QML 的桌面客户端，**Bao 的 `bao` CLI 纯 UI 壳子**。
 
-所有核心逻辑（AgentLoop、Channels、Cron、Heartbeat、startup greeting、首次落盘）均来自 `bao/` core，Desktop 不重复实现任何业务逻辑。启动问候由 core 侧轻量 `provider.chat` 生成（PERSONA.md 置于 system prompt 最前面锚定语气 + CJK 本地化时间 + 原生语言 user trigger，不注入工具/技能上下文）；desktop 问候与外部渠道并发触发，减少跨渠道串行等待。发送成功会打印 `💬 启动问候 / out` 日志（60 字预览），轻量路径失败时自动回退到 `process_direct(ephemeral=True)` 保底发送。网关需用户手动启动（点击侧边栏网关胶囊），启动后桌面聊天窗口作为 `desktop` channel 与 Telegram、iMessage 等其他渠道共存运行。
+所有核心逻辑（AgentLoop、Channels、Cron、Heartbeat、startup greeting、首次落盘）均来自 `bao/` core，Desktop 不重复实现任何业务逻辑。启动问候由 core 侧轻量 `provider.chat` 生成；若配置了 `agents.defaults.utilityModel` 则优先使用 utility provider+model（PERSONA.md 置于 system prompt 最前面锚定语气 + CJK 本地化时间 + 原生语言 user trigger，不注入工具/技能上下文）；desktop 问候与外部渠道并发触发，外部渠道发送前会等待对应 channel ready；desktop 侧会先缓存问候，待会话 active 就绪事件发出后再按 active 会话落库/显示。发送成功会打印 `💬 启动问候 / out` 日志（60 字预览），轻量路径失败时回退到发送 presence 文本保底。网关需用户手动启动（点击侧边栏网关胶囊），启动后桌面聊天窗口作为 `desktop` channel 与 Telegram、iMessage 等其他渠道共存运行。
 
 当前窗口外观默认使用系统标题栏；在 Windows 上会尝试调用 DWM 请求原生圆角（Windows 11 效果最佳）。
 
@@ -30,15 +30,19 @@ uv run python app/main.py
 
 Provider 返回错误（如 403）会在聊天中保留为 assistant `status=error` 气泡（红色），并随会话历史持久化，不会再因 history sync 刷新后消失。错误气泡内容会强制按 plain 渲染，避免 markdown/html 片段在实时阶段被解释后出现显示不全，并减少二次布局抖动。
 
-会话切换采用“当前优先 + 锚点预热”路径：先加载当前会话（两阶段：先 8 条、再补 200 条），full load 完成后再以该会话为 anchor 预热邻近会话（hot/warm 分层）。`setSessionManager()` 阶段不再自动 initial prefetch，避免和首屏历史加载争用 runner。
+会话切换采用 latest-only 单路径：每次切换只保留最新一次历史加载请求（旧请求取消并丢弃结果），历史加载固定走单次 `tail(200)` 准备后提交，不再做会话预热（prefetch）。关键路径与后台路径已分池（会话历史读写走 user IO，渠道轮询走 bg IO），以降低切换抖动。
 
 聊天自动贴底采用非流式最小触发策略：仅在 `historyLoadingChanged(false)`（切会话完成）、`messageAppended`（assistant/system/typing 行）、`statusUpdated(done|error)`（AI 完成/报错瞬间）和用户发送瞬间触发贴底；不在 `contentUpdated` 或 `contentHeightChanged` 上连续跟随。
+
+桌面端流式显示路径为单一路径：`gateway.py` 通过 `_progressUpdate` 逐 delta 跨线程推送到 UI，不再使用进度合并定时器（coalescing timer），减少“整块落字”体感。
 
 未命中缓存且历史仍在加载时，聊天面板会显示显式 loading 提示，避免右侧出现长时间黑屏空窗。
 
 侧边栏快速连点切换时，当前激活会话以“用户最新选择的 session key”为事实源，异步列表刷新不会回滚到旧会话。
 
 会话列表刷新改为事件驱动：`statusUpdated`（消息收口）触发 `sessionService.refresh()`，不再使用独立轮询，排序更新时间与回复完成时机一致。
+
+Session 持久化层锁已按会话 key 收敛，且 metadata 更新与历史读取锁域分离，减少 default 会话在高频切换时的偶发等待。
 
 会话删除体验做了双收口：点击即显示成功 toast（失败由异步回包覆盖），同时 Sidebar 在重建前后恢复 `contentY`，删除后视口保持原地。`SessionItem` 点击命中也做了单一路径分区：删除按钮可见时主行点击区自动让出右侧区域，避免“选中会话”和“删除会话”争抢同一次 pointer 事件。
 
@@ -56,7 +60,7 @@ Provider 返回错误（如 403）会在聊天中保留为 assistant `status=err
 6. 左侧 Sidebar 的 Plan 面板会实时展示当前会话计划（目标、进度、步骤状态）；计划清空后自动收起并显示最近完成摘要
 7. 在 Settings 点击“+ 添加 LLM 提供商”后，新增项会自动展开并滚动到该卡片位置，方便直接填写
 8. Settings 的 Agent Defaults 新增推理强度选项：`Auto` / `off` / `low` / `medium` / `high`（保存后重启 Gateway 生效）
-9. 需要查看切换性能与缓存命中时，可用 `BAO_DESKTOP_PROFILE=1 uv run python app/main.py` 启动，终端会输出 `History load`、`Session switch cache`、`prefetch` 埋点日志
+9. 需要查看切换性能时，可用 `BAO_DESKTOP_PROFILE=1 uv run python app/main.py` 启动，终端会输出 `History load` 相关埋点与 `history_load/history_applied` 导航日志
 
 ## 命令行参数
 

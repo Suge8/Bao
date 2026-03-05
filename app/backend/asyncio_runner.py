@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import functools
 import logging
 import threading
 from collections.abc import Coroutine
@@ -35,6 +36,8 @@ class AsyncioRunner:
         self._started = threading.Event()
         self._state_lock = threading.Lock()
         self._stopped = False
+        self._user_executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
+        self._bg_executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -58,6 +61,7 @@ class AsyncioRunner:
         loop = asyncio.new_event_loop()
         self._loop = loop
         asyncio.set_event_loop(loop)
+        loop.set_default_executor(self._bg_executor)
         loop.set_exception_handler(self._handle_exception)
         loop.call_soon(self._started.set)
         try:
@@ -121,6 +125,11 @@ class AsyncioRunner:
             thread.join(timeout=timeout_s)
             if thread.is_alive():
                 logger.warning("AsyncioRunner thread did not stop within %.2fs", timeout_s)
+        self._user_executor.shutdown(wait=False, cancel_futures=True)
+        try:
+            self._bg_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            logger.debug("AsyncioRunner bg executor shutdown skipped", exc_info=True)
 
     # ------------------------------------------------------------------
     # Submission
@@ -133,6 +142,16 @@ class AsyncioRunner:
         if self._loop is None or not self._loop.is_running():
             raise RuntimeError("AsyncioRunner is not running — call start() first")
         return asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+    async def run_user_io(self, fn: Any, *args: Any) -> Any:
+        loop = asyncio.get_running_loop()
+        call = functools.partial(fn, *args)
+        return await loop.run_in_executor(self._user_executor, call)
+
+    async def run_bg_io(self, fn: Any, *args: Any) -> Any:
+        loop = asyncio.get_running_loop()
+        call = functools.partial(fn, *args)
+        return await loop.run_in_executor(self._bg_executor, call)
 
     # ------------------------------------------------------------------
     # Error handling

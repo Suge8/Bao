@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import importlib
 import sys
+from collections.abc import Coroutine
+from typing import Any, TypeVar, cast
 from unittest.mock import MagicMock, patch
 
 pytest = importlib.import_module("pytest")
 
 QtCore = pytest.importorskip("PySide6.QtCore")
 QCoreApplication = QtCore.QCoreApplication
+_T = TypeVar("_T")
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -43,7 +47,18 @@ def make_service():
     from app.backend.gateway import ChatService
 
     model = ChatMessageModel()
+
+    def _submit_and_close(coro: Coroutine[Any, Any, _T]) -> concurrent.futures.Future[_T]:
+        try:
+            coro.close()
+        except Exception:
+            pass
+        fut: concurrent.futures.Future[_T] = concurrent.futures.Future()
+        fut.set_result(cast(_T, None))
+        return fut
+
     runner = MagicMock()
+    runner.submit = MagicMock(side_effect=_submit_and_close)
     svc = ChatService(model, runner)
     _LIVE_CHAT_SERVICES.append(svc)
     return svc, model
@@ -89,11 +104,7 @@ def test_state_transitions_to_starting_on_start():
     states = []
     svc.stateChanged.connect(states.append)
 
-    # Patch _init_gateway to avoid real Bao init
-    async def fake_init():
-        pass
-
-    with patch.object(svc, "_init_gateway", return_value=fake_init()):
+    with patch.object(svc, "_init_gateway", return_value=None):
         svc.start()
 
     assert "starting" in states
@@ -104,10 +115,7 @@ def test_double_start_is_noop():
     states = []
     svc.stateChanged.connect(states.append)
 
-    async def fake_init():
-        pass
-
-    with patch.object(svc, "_init_gateway", return_value=fake_init()):
+    with patch.object(svc, "_init_gateway", return_value=None):
         svc.start()
         svc.start()  # second call should be ignored
 
@@ -174,11 +182,54 @@ def test_system_response_for_other_session_persisted_but_not_shown():
     assert model.rowCount() == 0
     sm.get_or_create.assert_called_once_with("desktop:other")
     session.add_message.assert_called_once_with(
-        "system",
+        "user",
         "Deferred",
         status="done",
         _source="desktop-system",
     )
+
+
+def test_system_response_persist_uses_async_runner_and_skips_sync_save():
+    from app.backend.asyncio_runner import AsyncioRunner
+    from app.backend.chat import ChatMessageModel
+    from app.backend.gateway import ChatService
+
+    class _FakeAsyncRunner(AsyncioRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.submitted: int = 0
+
+        def submit(self, coro: Coroutine[Any, Any, _T]) -> concurrent.futures.Future[_T]:
+            self.submitted += 1
+            coro.close()
+            fut: concurrent.futures.Future[_T] = concurrent.futures.Future()
+            fut.set_result(cast(_T, None))
+            return fut
+
+    model = ChatMessageModel()
+    runner = _FakeAsyncRunner()
+    svc = ChatService(model, runner)
+    _LIVE_CHAT_SERVICES.append(svc)
+
+    sm = MagicMock()
+    svc._session_manager = sm
+
+    svc._append_transient_system_message("Deferred", session_key="desktop:other", show_in_ui=False)
+
+    assert runner.submitted == 1
+    sm.get_or_create.assert_not_called()
+
+
+def test_desktop_startup_greeting_queued_until_startup_session_ready() -> None:
+    svc, _model = make_service()
+    captured: list[tuple[str, str]] = []
+    svc._systemResponse.connect(lambda content, key: captured.append((content, key)))
+
+    svc._startupGreeting.emit("Hello")
+    assert captured == []
+
+    svc.notifyStartupSessionReady("desktop:local::s1")
+    assert captured == [("Hello", "desktop:local::s1")]
 
 
 def test_system_response_empty_ignored():
@@ -318,29 +369,31 @@ def test_send_result_transport_error_switches_active_bubble_to_plain_text():
     assert model._messages[0]["content"] == "Error: network down"
 
 
-def test_sync_active_history_requests_reload_when_idle():
-    svc, _ = make_service()
+def test_send_result_does_not_mark_seen_for_background_session():
+    svc, model = make_service()
     svc._session_manager = object()
-    svc._history_initialized = True
-    called = []
-    svc._request_history_load = lambda key, **kwargs: called.append(key)
+    svc._committed_session_key = "desktop:new"
+    row = model.append_assistant("", status="typing")
+    svc._active_streaming_row = row
+    svc._active_streaming_session_key = "desktop:old"
 
-    svc._sync_active_history()
+    svc._handle_send_result(row, True, "ok")
 
-    assert called == [svc._session_key]
+    cast(MagicMock, svc._runner.submit).assert_not_called()
 
 
-def test_sync_active_history_skips_while_processing():
-    svc, _ = make_service()
-    svc._session_manager = object()
-    svc._history_initialized = True
-    svc._processing = True
-    called = []
-    svc._request_history_load = lambda key, **kwargs: called.append(key)
+def test_send_result_marks_seen_for_active_session():
+    svc, model = make_service()
+    sm = MagicMock()
+    svc._session_manager = sm
+    svc._committed_session_key = "desktop:active"
+    row = model.append_assistant("", status="typing")
+    svc._active_streaming_row = row
+    svc._active_streaming_session_key = "desktop:active"
 
-    svc._sync_active_history()
+    svc._handle_send_result(row, True, "ok")
 
-    assert called == []
+    sm.update_metadata_only.assert_called_once()
 
 
 def test_handle_history_result_ignores_stale_session_payload():
@@ -378,13 +431,13 @@ def test_set_session_key_switches_immediately_while_processing():
     svc._active_streaming_row = row
     svc._active_streaming_session_key = "imessage:active"
     called = []
-    svc._request_history_load = lambda key, **kwargs: called.append(key)
+    svc._request_history_load = lambda key, *_args, **kwargs: called.append(key)
 
     svc.setSessionKey("imessage:new")
 
     assert svc._desired_session_key == "imessage:new"
     assert svc._committed_session_key == "imessage:new"
-    assert svc._switch_gen == 1
+    assert svc._current_nav_id == 1
     assert svc._active_streaming_row == -1
     assert model.rowCount() == 0
     assert called == ["imessage:new"]
@@ -398,7 +451,7 @@ def test_handle_history_result_applies_while_streaming_when_generation_matches()
     row = model.append_assistant("", status="typing")
     svc._active_streaming_row = row
     svc._active_streaming_session_key = "imessage:active"
-    svc._history_latest_seq = 1
+    svc._current_nav_id = 1
 
     svc._handle_history_result(
         True,
@@ -410,12 +463,11 @@ def test_handle_history_result_applies_while_streaming_when_generation_matches()
     assert model._messages[0]["content"] == "hello"
 
 
-def test_handle_history_result_rejects_stale_generation_payload():
+def test_handle_history_result_rejects_stale_nav_payload():
     svc, model = make_service()
     svc._session_key = "imessage:active"
     svc._desired_session_key = "imessage:active"
-    svc._switch_gen = 3
-    svc._history_latest_seq = 1
+    svc._current_nav_id = 2
     prepared = [
         {
             "id": 1,
@@ -431,7 +483,7 @@ def test_handle_history_result_rejects_stale_generation_payload():
     ]
     sig = svc._history_signature(prepared)
 
-    svc._handle_history_result(True, "", ("imessage:active", 1, 2, sig, prepared))
+    svc._handle_history_result(True, "", ("imessage:active", 1, sig, prepared))
 
     assert model.rowCount() == 0
 
@@ -465,12 +517,29 @@ def test_set_session_key_same_key_still_loads_when_history_not_initialized():
     svc._processing = True
     svc._session_manager = object()
     called = []
-    svc._request_history_load = lambda key, **kwargs: called.append(key)
+    svc._request_history_load = lambda key, *_args, **kwargs: called.append(key)
 
     svc.setSessionKey("desktop:local")
 
     assert called == ["desktop:local"]
-    assert svc._switch_gen == 1
+    assert svc._current_nav_id == 1
+
+
+def test_set_session_key_same_key_ignored_when_history_inflight():
+    svc, _ = make_service()
+    svc._session_manager = object()
+    svc._session_key = "desktop:local"
+    svc._desired_session_key = "desktop:local"
+    svc._committed_session_key = "desktop:local"
+    svc._history_initialized = False
+    svc._history_future = object()
+    called = []
+    svc._request_history_load = lambda key, *_args, **kwargs: called.append(key)
+
+    svc.setSessionKey("desktop:local")
+
+    assert called == []
+    assert svc._current_nav_id == 0
 
 
 def test_load_history_uses_display_history_for_ui_model():
@@ -480,12 +549,11 @@ def test_load_history_uses_display_history_for_ui_model():
     svc._session_manager = MagicMock()
     svc._session_manager.get_or_create.return_value = session
 
-    payload = asyncio.run(svc._load_history("desktop:local", 3, 200, 7))
+    payload = asyncio.run(svc._load_history("desktop:local", 3, 200))
 
     assert payload[0] == "desktop:local"
     assert payload[1] == 3
-    assert payload[2] == 7
-    assert payload[4] == [
+    assert payload[3] == [
         {
             "id": 1,
             "createdat": 0,
@@ -525,7 +593,7 @@ def test_handle_history_result_does_not_reset_when_only_entrance_differs():
     model.modelReset.connect(lambda: resets.append(True))
     svc._history_initialized = True
     svc._history_fingerprint = (1, "stale")
-    svc._history_latest_seq = 1
+    svc._current_nav_id = 1
 
     svc._handle_history_result(True, "", ("desktop:local", 1, sig, prepared))
 

@@ -56,20 +56,20 @@ Item {
         id: col
         anchors.left: parent.left
         anchors.right: parent.right
-        spacing: 6
+        spacing: spacingSm
 
         Text {
             text: root.label
             color: textSecondary
-            font.pixelSize: 13
-            font.weight: Font.Medium
-            font.letterSpacing: 0.2
+            font.pixelSize: typeLabel
+            font.weight: weightMedium
+            font.letterSpacing: letterTight
         }
         Text {
             visible: root.description !== ""
             text: root.description
             color: textTertiary
-            font.pixelSize: 11
+            font.pixelSize: typeCaption
             font.italic: true
             wrapMode: Text.Wrap
             width: parent.width
@@ -77,7 +77,7 @@ Item {
 
         Rectangle {
             width: parent.width
-            height: 42
+            height: sizeControlHeight
             radius: radiusSm
             color: field.activeFocus
                    ? bgInputFocus
@@ -85,21 +85,23 @@ Item {
             border.color: field.activeFocus ? borderFocus : borderSubtle
             border.width: field.activeFocus ? 1.5 : 1
 
-            Behavior on border.color { ColorAnimation { duration: 180 } }
-            Behavior on color { ColorAnimation { duration: 180 } }
+            Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
+            Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
 
             TextField {
                 id: field
                 anchors.fill: parent
-                leftPadding: 14
-                rightPadding: 14
+                leftPadding: sizeFieldPaddingX
+                rightPadding: sizeFieldPaddingX
                 topPadding: 0
                 bottomPadding: 0
                 placeholderText: root.placeholder
                 placeholderTextColor: textPlaceholder
                 color: textPrimary
                 background: null
-                font.pixelSize: 14
+                font.pixelSize: typeButton
+                selectionColor: textSelectionBg
+                selectedTextColor: textSelectionFg
                 echoMode: root.isSecret ? TextInput.Password : TextInput.Normal
                 verticalAlignment: TextInput.AlignVCenter
                 onTextEdited: root._dirty = true

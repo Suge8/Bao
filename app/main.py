@@ -424,11 +424,17 @@ def main() -> int:
         set_gateway_ready()
         session_service.initialize(sm)
 
+    def _refresh_sessions_on_final_status(_row: int, status: str) -> None:
+        if status not in {"done", "error"}:
+            return
+        session_service.refresh()
+
     _ = chat_service.gatewayReady.connect(_on_gateway_ready)
-    _ = chat_service.statusUpdated.connect(lambda _row, _status: session_service.refresh())
+    _ = chat_service.statusUpdated.connect(_refresh_sessions_on_final_status)
     # Wire session → gateway: when active session changes, update gateway session key
     set_session_key = cast(Callable[[str], None], chat_service.setSessionKey)
     _ = session_service.activeKeyChanged.connect(set_session_key)
+    _ = session_service.activeReady.connect(chat_service.notifyStartupSessionReady)
     # Wire session deletion → gateway: cancel streaming if needed
     handle_deleted = cast(Callable[[str, bool, str], None], chat_service.handle_session_deleted)
     _ = session_service.deleteCompleted.connect(handle_deleted)

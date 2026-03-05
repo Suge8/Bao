@@ -31,7 +31,7 @@ Item {
             height: 44
             radius: radiusSm
             color: headerHover.containsMouse ? (isDark ? "#0AFFFFFF" : "#08000000") : "transparent"
-            Behavior on color { ColorAnimation { duration: 150 } }
+            Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
 
             RowLayout {
                 anchors.fill: parent
@@ -43,14 +43,14 @@ Item {
                 Text {
                     text: root.expanded ? "▾" : "▸"
                     color: textTertiary
-                    font.pixelSize: 12
+                    font.pixelSize: typeMeta
                 }
 
                 Text {
                     text: root.channelName
                     color: textPrimary
-                    font.pixelSize: 14
-                    font.weight: Font.Medium
+                    font.pixelSize: typeButton
+                    font.weight: weightMedium
                     Layout.fillWidth: true
                 }
 
@@ -59,7 +59,9 @@ Item {
                     id: toggle
                     width: 44; height: 24; radius: 12
                     color: toggleOn ? accent : (isDark ? "#252538" : "#D1D5DB")
-                    Behavior on color { ColorAnimation { duration: 200 } }
+                    scale: toggleOn ? motionHoverScaleSubtle : 1.0
+                    Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
+                    Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
 
                     property bool toggleOn: false
 
@@ -79,7 +81,7 @@ Item {
                         color: "#FFFFFF"
                         anchors.verticalCenter: parent.verticalCenter
                         x: parent.toggleOn ? parent.width - width - 3 : 3
-                        Behavior on x { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                        Behavior on x { SmoothedAnimation { velocity: motionTrackVelocity; duration: motionUi } }
                     }
 
                     MouseArea {

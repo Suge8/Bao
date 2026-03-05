@@ -201,9 +201,43 @@ def _make_mock_session_manager(
         state_sessions = [s for s in state_sessions if s["key"] != key]
         return True
 
+    def _get_or_create(key):
+        session = MagicMock()
+        session.key = key
+        session.metadata = {}
+        session.messages = []
+        session.created_at = datetime.now()
+        session.updated_at = datetime.now()
+        return session
+
+    def _save(session):
+        nonlocal state_sessions
+        key = str(getattr(session, "key", ""))
+        if not key:
+            return
+        updated_at = getattr(session, "updated_at", datetime.now())
+        updated_value = (
+            updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at)
+        )
+        metadata = dict(getattr(session, "metadata", {}))
+        existing = next((s for s in state_sessions if s["key"] == key), None)
+        if existing is None:
+            state_sessions.append(
+                {
+                    "key": key,
+                    "updated_at": updated_value,
+                    "metadata": metadata,
+                }
+            )
+            return
+        existing["updated_at"] = updated_value
+        existing["metadata"] = metadata
+
     sm.set_active_session_key.side_effect = _set_active
     sm.clear_active_session_key.side_effect = _clear_active
     sm.delete_session.side_effect = _delete_session
+    sm.get_or_create.side_effect = _get_or_create
+    sm.save.side_effect = _save
     return sm
 
 
@@ -381,7 +415,7 @@ def test_list_refresh_does_not_override_pending_selection():
         runner.shutdown(grace_s=1.0)
 
 
-def test_list_refresh_active_only_change_updates_active_without_rebuild():
+def test_list_refresh_active_only_change_keeps_local_active_source_of_truth():
     runner = AsyncioRunner()
     runner.start()
     try:
@@ -487,6 +521,25 @@ def test_list_refresh_emits_active_cleared_when_sessions_empty():
         runner.shutdown(grace_s=1.0)
 
 
+def test_list_refresh_autocreates_session_when_empty_and_manager_present():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(sessions=[], active_key="")
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        assert _sessions_model(svc).rowCount() == 1
+        assert str(svc.activeKey).startswith("desktop:local::session-")
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
 def test_unread_reappears_after_new_update_even_if_previously_cleared():
     runner = AsyncioRunner()
     runner.start()
@@ -582,7 +635,7 @@ def test_list_sessions_unread_uses_ai_timestamps_only():
         runner.shutdown(grace_s=1.0)
 
 
-def test_select_session_marks_seen_ai_metadata():
+def test_select_session_does_not_mark_seen_ai_in_session_service():
     runner = AsyncioRunner()
     runner.start()
     try:
@@ -607,13 +660,38 @@ def test_select_session_marks_seen_ai_metadata():
         QTimer.singleShot(300, loop2.quit)
         loop2.exec()
 
-        assert sm.update_metadata_only.call_count >= 1
-        assert any(
-            call.args[0] == "desktop:local::s2"
-            and isinstance(call.args[1], dict)
-            and "desktop_last_seen_ai_at" in call.args[1]
-            for call in sm.update_metadata_only.call_args_list
+        assert sm.update_metadata_only.call_count == 0
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_new_session_sets_active_key_before_list_refresh():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(
+            sessions=[{"key": "desktop:local::s1", "title": "Chat 1"}],
+            active_key="desktop:local::s1",
         )
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        emitted_keys: list[str] = []
+        svc.activeKeyChanged.connect(emitted_keys.append)
+
+        svc.newSession("")
+
+        loop2 = QEventLoop()
+        QTimer.singleShot(300, loop2.quit)
+        loop2.exec()
+
+        assert str(svc.activeKey).startswith("desktop:local::session-")
+        assert any(key.startswith("desktop:local::session-") for key in emitted_keys)
     finally:
         runner.shutdown(grace_s=1.0)
 
@@ -826,14 +904,14 @@ def test_service_delete_active_picks_adjacent_session_and_persists_active():
 
         svc.deleteSession("desktop:local::s2")
         assert _sessions_model(svc).rowCount() == 2
-        assert svc.activeKey == "desktop:local::s3"
+        assert svc.activeKey == "desktop:local::s1"
 
         loop2 = QEventLoop()
         QTimer.singleShot(300, loop2.quit)
         loop2.exec()
 
-        assert svc.activeKey == "desktop:local::s3"
-        assert sm.get_active_session_key("desktop:local") == "desktop:local::s3"
+        assert svc.activeKey == "desktop:local::s1"
+        assert sm.get_active_session_key("desktop:local") == "desktop:local::s1"
     finally:
         runner.shutdown(grace_s=1.0)
 

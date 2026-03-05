@@ -103,10 +103,12 @@ Rectangle {
     Connections {
         target: sessionService
         function onSessionsChanged() {
-            var savedY = sessionList.contentY
-            root.rebuildGroupModel()
-            var maxY = Math.max(0, sessionList.contentHeight - sessionList.height)
-            sessionList.contentY = Math.min(savedY, maxY)
+            Qt.callLater(function() {
+                var savedY = sessionList.contentY
+                root.rebuildGroupModel()
+                var maxY = Math.max(0, sessionList.contentHeight - sessionList.height)
+                sessionList.contentY = Math.min(savedY, maxY)
+            })
         }
         function onActiveKeyChanged(key) {
             var activeChannel = ""
@@ -146,7 +148,7 @@ Rectangle {
             Layout.fillWidth: true
             Layout.leftMargin: 10; Layout.rightMargin: 10
             Layout.topMargin: 16; Layout.bottomMargin: 2
-            height: 48
+            height: sizeCapsuleHeight
             radius: height / 2
             visible: chatService !== null
 
@@ -162,36 +164,33 @@ Rectangle {
             // ── State colors ──────────────────────────────────────────
             color: {
                 if (gwHover.containsMouse) {
-                    if (isRunning) return isDark ? "#5222C55E" : "#3A22C55E"
-                    if (isError)   return isDark ? "#28F05A5A" : "#18F05A5A"
-                    if (isStarting) return isDark ? "#52F59E0B" : "#3AF59E0B"
-                    // idle hover — stronger purple
-                    return isDark ? "#32FF951F" : "#20FF951F"
+                    if (isRunning) return gatewayBgRunningHover
+                    if (isError)   return gatewayBgErrorHover
+                    if (isStarting) return gatewayBgStartingHover
+                    return gatewayBgIdleHover
                 }
-                if (isRunning)  return isDark ? "#3A22C55E" : "#2822C55E"
-                if (isError)    return isDark ? "#1CF05A5A" : "#14F05A5A"
-                if (isStarting) return isDark ? "#34F59E0B" : "#24F59E0B"
-                // idle — soft purple tint as CTA invitation
-                return isDark ? "#24FF951F" : "#16FF951F"
+                if (isRunning)  return gatewayBgRunning
+                if (isError)    return gatewayBgError
+                if (isStarting) return gatewayBgStarting
+                return gatewayBgIdle
             }
             border.width: 1
             border.color: {
-                if (isRunning)  return isDark ? "#7A22C55E" : "#6022C55E"
-                if (isError)    return isDark ? "#30F05A5A" : "#24F05A5A"
-                if (isStarting) return isDark ? "#68F59E0B" : "#54F59E0B"
-                if (gwHover.containsMouse) return isDark ? "#4AFF951F" : "#35FF951F"
-                // idle — visible purple border
-                return isDark ? "#30FF951F" : "#1EFF951F"
+                if (isRunning)  return gatewayBorderRunning
+                if (isError)    return gatewayBorderError
+                if (isStarting) return gatewayBorderStarting
+                if (gwHover.containsMouse) return gatewayBorderIdleHover
+                return gatewayBorderIdle
             }
 
             // ── State transition animations ──────────────────────────
-            Behavior on color { ColorAnimation { duration: 280; easing.type: Easing.OutCubic } }
-            Behavior on border.color { ColorAnimation { duration: 280; easing.type: Easing.OutCubic } }
+            Behavior on color { ColorAnimation { duration: motionPanel; easing.type: easeStandard } }
+            Behavior on border.color { ColorAnimation { duration: motionPanel; easing.type: easeStandard } }
 
             // Scale bounce on state change
             property string _prevState: chatService ? chatService.state : "idle"
             scale: 1.0
-            Behavior on scale { NumberAnimation { duration: 300; easing.type: Easing.OutBack } }
+            Behavior on scale { NumberAnimation { duration: motionPanel; easing.type: easeEmphasis } }
             Connections {
                 target: chatService
                 function onStateChanged() {
@@ -199,14 +198,14 @@ Rectangle {
                     var s = chatService.state
                     if (s !== gwCapsule._prevState) {
                         gwCapsule._prevState = s
-                        gwCapsule.scale = 0.96
+                        gwCapsule.scale = 0.93
                         scaleBounceTimer.restart()
                     }
                 }
             }
             Timer {
                 id: scaleBounceTimer
-                interval: 80; repeat: false
+                interval: motionStagger; repeat: false
                 onTriggered: gwCapsule.scale = 1.0
             }
 
@@ -215,16 +214,16 @@ Rectangle {
                 id: startingPulse
                 running: gwCapsule.isStarting
                 loops: Animation.Infinite
-                NumberAnimation { target: gwCapsule; property: "opacity"; from: 1.0; to: 0.78; duration: 800; easing.type: Easing.InOutSine }
-                NumberAnimation { target: gwCapsule; property: "opacity"; from: 0.78; to: 1.0; duration: 800; easing.type: Easing.InOutSine }
+                NumberAnimation { target: gwCapsule; property: "opacity"; from: 1.0; to: motionStatusMinOpacityStarting; duration: motionAmbient; easing.type: easeSoft }
+                NumberAnimation { target: gwCapsule; property: "opacity"; from: motionStatusMinOpacityStarting; to: 1.0; duration: motionAmbient; easing.type: easeSoft }
             }
             // Error subtle pulse
             SequentialAnimation {
                 id: errorPulse
                 running: gwCapsule.isError
                 loops: Animation.Infinite
-                NumberAnimation { target: gwCapsule; property: "opacity"; from: 1.0; to: 0.7; duration: 1200; easing.type: Easing.InOutSine }
-                NumberAnimation { target: gwCapsule; property: "opacity"; from: 0.7; to: 1.0; duration: 1200; easing.type: Easing.InOutSine }
+                NumberAnimation { target: gwCapsule; property: "opacity"; from: 1.0; to: motionStatusMinOpacityError; duration: motionBreath; easing.type: easeSoft }
+                NumberAnimation { target: gwCapsule; property: "opacity"; from: motionStatusMinOpacityError; to: 1.0; duration: motionBreath; easing.type: easeSoft }
             }
             // Reset opacity when not animating
             onIsStartingChanged: if (!isStarting && !isError) opacity = 1.0
@@ -238,15 +237,15 @@ Rectangle {
                 radius: parent.radius + 1.5
                 color: "transparent"
                 border.width: 1.5
-                border.color: gwCapsule.isRunning ? (isDark ? "#8A22C55E" : "#6A22C55E") : "transparent"
+                border.color: gwCapsule.isRunning ? gatewayGlowRunning : "transparent"
                 opacity: 0
                 visible: gwCapsule.isRunning
-                Behavior on border.color { ColorAnimation { duration: 300 } }
+                Behavior on border.color { ColorAnimation { duration: motionPanel; easing.type: easeStandard } }
                 SequentialAnimation {
                     running: gwCapsule.isRunning
                     loops: Animation.Infinite
-                    NumberAnimation { target: gwGlow; property: "opacity"; from: 0; to: 0.8; duration: 1200; easing.type: Easing.InOutSine }
-                    NumberAnimation { target: gwGlow; property: "opacity"; from: 0.8; to: 0; duration: 1200; easing.type: Easing.InOutSine }
+                    NumberAnimation { target: gwGlow; property: "opacity"; from: 0; to: motionGlowPeakOpacity; duration: motionBreath; easing.type: easeSoft }
+                    NumberAnimation { target: gwGlow; property: "opacity"; from: motionGlowPeakOpacity; to: 0; duration: motionBreath; easing.type: easeSoft }
                 }
             }
 
@@ -273,29 +272,29 @@ Rectangle {
                                 default:         return accent
                             }
                         }
-                        Behavior on color { ColorAnimation { duration: 250 } }
+                        Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
 
                         // Running: breathing scale
                         SequentialAnimation on scale {
                             running: gwCapsule.isRunning
                             loops: Animation.Infinite
-                            NumberAnimation { to: 1.4; duration: 900; easing.type: Easing.InOutSine }
-                            NumberAnimation { to: 1.0; duration: 900; easing.type: Easing.InOutSine }
+                            NumberAnimation { to: motionDotPulseScaleMax; duration: motionBreath - motionFast; easing.type: easeSoft }
+                            NumberAnimation { to: 1.0; duration: motionBreath - motionFast; easing.type: easeSoft }
                         }
 
                         // Starting: rotation spin
                         SequentialAnimation on rotation {
                             running: gwCapsule.isStarting
                             loops: Animation.Infinite
-                            NumberAnimation { from: 0; to: 360; duration: 1600; easing.type: Easing.Linear }
+                            NumberAnimation { from: 0; to: 360; duration: motionFloat - motionUi; easing.type: easeLinear }
                         }
 
                         // Error: opacity pulse
                         SequentialAnimation {
                             running: gwCapsule.isError
                             loops: Animation.Infinite
-                            NumberAnimation { target: gwDot; property: "opacity"; from: 1.0; to: 0.3; duration: 600; easing.type: Easing.InOutSine }
-                            NumberAnimation { target: gwDot; property: "opacity"; from: 0.3; to: 1.0; duration: 600; easing.type: Easing.InOutSine }
+                            NumberAnimation { target: gwDot; property: "opacity"; from: 1.0; to: motionDotPulseMinOpacity; duration: motionStatusPulse; easing.type: easeSoft }
+                            NumberAnimation { target: gwDot; property: "opacity"; from: motionDotPulseMinOpacity; to: 1.0; duration: motionStatusPulse; easing.type: easeSoft }
                         }
                     }
                 }
@@ -314,16 +313,15 @@ Rectangle {
                         }
                     }
                     color: {
-                        if (gwCapsule.isRunning)  return isDark ? "#A8EAC3" : "#177C43"
+                        if (gwCapsule.isRunning)  return gatewayTextRunning
                         if (gwCapsule.isError)    return statusError
-                        if (gwCapsule.isStarting) return isDark ? "#FFD484" : "#B56800"
-                        // idle — purple accent text
-                        return isDark ? "#FFC58A" : "#B86A12"
+                        if (gwCapsule.isStarting) return gatewayTextStarting
+                        return gatewayTextIdle
                     }
-                    font.pixelSize: 14
-                    font.weight: Font.DemiBold
-                    font.letterSpacing: 0.3
-                    Behavior on color { ColorAnimation { duration: 250 } }
+                    font.pixelSize: typeButton
+                    font.weight: weightDemiBold
+                    font.letterSpacing: letterTight
+                    Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
                 }
 
                 // Action icon
@@ -334,8 +332,8 @@ Rectangle {
                             : "../resources/icons/power.svg"
                     sourceSize: Qt.size(16, 16)
                     width: 16; height: 16
-                    opacity: gwHover.containsMouse ? 0.95 : 0.65
-                    Behavior on opacity { NumberAnimation { duration: 150 } }
+                    opacity: gwHover.containsMouse ? opacityInteractionHover : opacityInteractionIdle
+                    Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
                 }
             }
 
@@ -365,7 +363,7 @@ Rectangle {
             Text {
                 text: strings.sidebar_sessions
                 color: textSecondary
-                font.pixelSize: 15
+                font.pixelSize: typeBody
                 font.weight: Font.DemiBold
                 font.letterSpacing: 0.5
                 textFormat: Text.PlainText
@@ -373,22 +371,22 @@ Rectangle {
             }
 
             Rectangle {
-                width: 36
-                height: 36
+                width: sizeControlHeight - 6
+                height: sizeControlHeight - 6
                 radius: 18
                 color: newSessionHover.containsMouse ? accent : accentMuted
                 border.width: 1
                 border.color: newSessionHover.containsMouse ? accent : borderSubtle
-                scale: newSessionHover.containsMouse ? 1.04 : 1.0
-                Behavior on color { ColorAnimation { duration: 140 } }
-                Behavior on scale { NumberAnimation { duration: 140 } }
+                scale: newSessionHover.containsMouse ? motionHoverScaleMedium : 1.0
+                Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
 
                 Text {
                     anchors.centerIn: parent
                     text: "+"
-                    color: "#FFFFFF"
-                    font.pixelSize: 22
-                    font.weight: Font.DemiBold
+                    color: textPrimary
+                    font.pixelSize: typeTitle
+                    font.weight: weightDemiBold
                 }
 
                 MouseArea {
@@ -414,13 +412,13 @@ Rectangle {
 
             delegate: Item {
                 width: sessionList.width
-                height: model.isHeader ? 38 : sessionRow.height
+                height: model.isHeader ? sizeSidebarHeader : sessionRow.height
 
                 // ── Group header row ──────────────────────────────────────
                 Rectangle {
                     visible: model.isHeader
                     anchors { left: parent.left; right: parent.right; top: parent.top }
-                    height: 38
+                    height: sizeSidebarHeader
                     color: "transparent"
 
                     RowLayout {
@@ -430,15 +428,15 @@ Rectangle {
                         Text {
                             text: model.expanded ? "▾" : "▸"
                             color: textPrimary
-                            font.pixelSize: 15
-                            font.weight: Font.DemiBold
+                            font.pixelSize: typeBody
+                            font.weight: weightDemiBold
                         }
                         Text {
                             text: strings["channel_" + (model.channel || "other")] || model.channel || "other"
                             color: textPrimary
-                            font.pixelSize: 15
-                            font.weight: Font.DemiBold
-                            font.letterSpacing: 0.4
+                            font.pixelSize: typeBody
+                            font.weight: weightDemiBold
+                            font.letterSpacing: letterTight
                             textFormat: Text.PlainText
                             Layout.fillWidth: true
                         }
@@ -447,6 +445,8 @@ Rectangle {
                     MouseArea {
                         anchors.fill: parent
                         hoverEnabled: true
+                        acceptedButtons: Qt.LeftButton
+                        preventStealing: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.toggleGroup(model.channel)
                     }
@@ -459,11 +459,14 @@ Rectangle {
                     anchors { left: parent.left; right: parent.right; top: parent.top }
                     height: model.itemVisible ? (inner.height + 4) : 0
                     clip: true
+                    Behavior on height { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
 
                     SessionItem {
                         id: inner
                         width: parent.width - 20
                         x: 10
+                        opacity: model.itemVisible ? 1.0 : 0.0
+                        Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
                         sessionKey:   model.itemKey   ?? ""
                         sessionTitle: model.itemTitle ?? model.itemKey ?? ""
                         isActive:     model.isActive  ?? false
@@ -481,7 +484,7 @@ Rectangle {
                 visible: groupModel.count === 0
                 text: strings.sidebar_no_sessions
                 color: textTertiary
-                font.pixelSize: 13
+                font.pixelSize: typeLabel
             }
         }
 
@@ -495,7 +498,7 @@ Rectangle {
             Rectangle {
                 id: glowRing
                 anchors.centerIn: appIconBtn
-                width: appIconBtn.width + 14; height: appIconBtn.height + 14
+                width: appIconBtn.width + spacingMd + 2; height: appIconBtn.height + spacingMd + 2
                 radius: width / 2
                 color: "transparent"
                 border.width: 1.5
@@ -511,24 +514,24 @@ Rectangle {
                     loops: Animation.Infinite
                     NumberAnimation {
                         target: glowRing; property: "opacity"
-                        from: 0; to: 0.35; duration: 2400
-                        easing.type: Easing.InOutSine
+                        from: 0; to: motionRingIdlePeakOpacity; duration: motionFloat + motionPanel
+                        easing.type: easeSoft
                     }
                     NumberAnimation {
                         target: glowRing; property: "opacity"
-                        from: 0.35; to: 0; duration: 2400
-                        easing.type: Easing.InOutSine
+                        from: motionRingIdlePeakOpacity; to: 0; duration: motionFloat + motionPanel
+                        easing.type: easeSoft
                     }
                 }
 
                 states: State {
                     name: "hovered"; when: appIconArea.containsMouse
-                    PropertyChanges { target: glowRing; opacity: 0.6 }
+                    PropertyChanges { target: glowRing; opacity: motionRingHoverOpacity }
                 }
                 transitions: Transition {
                     NumberAnimation {
-                        property: "opacity"; duration: 280
-                        easing.type: Easing.OutCubic
+                        property: "opacity"; duration: motionPanel
+                        easing.type: easeStandard
                     }
                 }
             }
@@ -537,7 +540,7 @@ Rectangle {
             Rectangle {
                 id: glowRingOuter
                 anchors.centerIn: appIconBtn
-                width: appIconBtn.width + 24; height: appIconBtn.height + 24
+                width: appIconBtn.width + spacingXl; height: appIconBtn.height + spacingXl
                 radius: width / 2
                 color: "transparent"
                 border.width: 1
@@ -547,14 +550,14 @@ Rectangle {
                 scale: appIconBtn.scale
                 rotation: appIconBtn.rotation
                 Behavior on opacity {
-                    NumberAnimation { duration: 400; easing.type: Easing.OutCubic }
+                    NumberAnimation { duration: motionAmbient; easing.type: easeStandard }
                 }
             }
 
             // Icon body
             Rectangle {
                 id: appIconBtn
-                width: 44; height: 44; radius: 22
+                width: sizeAppIcon; height: sizeAppIcon; radius: sizeAppIcon / 2
                 anchors.left: parent.left
                 anchors.leftMargin: 14
                 anchors.verticalCenter: parent.verticalCenter
@@ -567,23 +570,23 @@ Rectangle {
                 property real floatY: 0
                 SequentialAnimation on floatY {
                     loops: Animation.Infinite
-                    NumberAnimation { from: 0; to: -2.5; duration: 1800; easing.type: Easing.InOutQuad }
-                    NumberAnimation { from: -2.5; to: 0; duration: 1800; easing.type: Easing.InOutQuad }
+                    NumberAnimation { from: 0; to: -motionFloatOffset; duration: motionFloat; easing.type: easeSoft }
+                    NumberAnimation { from: -motionFloatOffset; to: 0; duration: motionFloat; easing.type: easeSoft }
                 }
                 transform: Translate { y: appIconBtn.floatY }
 
-                scale: appIconArea.pressed ? 0.90
-                       : (appIconArea.containsMouse ? 1.12 : 1.0)
+                scale: appIconArea.pressed ? motionPressScaleStrong
+                       : (appIconArea.containsMouse ? motionHoverScaleStrong : 1.0)
                 rotation: appIconArea.containsMouse ? -10 : 0
 
                 Behavior on scale {
-                    NumberAnimation { duration: 240; easing.type: Easing.OutBack }
+                    NumberAnimation { duration: motionUi; easing.type: easeEmphasis }
                 }
                 Behavior on border.color {
-                    ColorAnimation { duration: 200 }
+                    ColorAnimation { duration: motionUi; easing.type: easeStandard }
                 }
                 Behavior on rotation {
-                    NumberAnimation { duration: 350; easing.type: Easing.OutBack }
+                    NumberAnimation { duration: motionPanel; easing.type: easeEmphasis }
                 }
 
                 // Circular logo (pre-clipped PNG)
@@ -630,21 +633,21 @@ Rectangle {
 
                 width: bubbleText.implicitWidth + 24
                 height: bubbleText.implicitHeight + 16
-                radius: 12
-                color: isDark ? "#2A1A11" : "#FFFFFF"
+                radius: radiusMd
+                color: bgElevated
                 border.width: 1
-                border.color: isDark ? "#4A2A1A" : "#F0DED1"
+                border.color: borderDefault
 
                 opacity: 0
-                scale: 0.8
+                scale: motionBubbleHiddenScale
                 transformOrigin: Item.Left
                 visible: opacity > 0
 
                 Behavior on opacity {
-                    NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+                    NumberAnimation { duration: motionUi; easing.type: easeStandard }
                 }
                 Behavior on scale {
-                    NumberAnimation { duration: 220; easing.type: Easing.OutBack }
+                    NumberAnimation { duration: motionUi; easing.type: easeEmphasis }
                 }
 
                 states: State {
@@ -665,7 +668,7 @@ Rectangle {
                         ctx.lineTo(0, height / 2)
                         ctx.lineTo(width, height)
                         ctx.closePath()
-                        ctx.fillStyle = isDark ? "#2A1A11" : "#FFFFFF"
+                        ctx.fillStyle = bgElevated
                         ctx.fill()
                     }
                 }
@@ -674,9 +677,9 @@ Rectangle {
                 Text {
                     id: bubbleText
                     anchors.centerIn: parent
-                    font.pixelSize: 12
-                    font.weight: Font.Medium
-                    color: isDark ? "#EBCDB3" : "#5D4738"
+                    font.pixelSize: typeMeta
+                    font.weight: weightMedium
+                    color: textSecondary
                     text: ""
                 }
             }

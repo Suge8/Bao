@@ -6,9 +6,9 @@ Internal signals marshal results back to the Qt main thread.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Coroutine
-from datetime import datetime
 from typing import Any
 
 from loguru import logger
@@ -126,13 +126,14 @@ class SessionListModel(QAbstractListModel):
 class SessionService(QObject):
     sessionsChanged = Signal()
     activeKeyChanged = Signal(str)
+    activeReady = Signal(str)
     errorOccurred = Signal(str)
     deleteCompleted = Signal(str, bool, str)
 
     # Internal signals: asyncio thread → Qt main thread
     _listResult = Signal(bool, str, object)  # ok, error, (sessions, active)
     _selectResult = Signal(bool, str, str)  # ok, error, key
-    _mutateResult = Signal(bool, str)  # ok, error (for create/delete)
+    _createResult = Signal(bool, str, str)  # ok, error, key
     _deleteResult = Signal(str, bool, str)
 
     def __init__(self, runner: AsyncioRunner, parent: Any = None) -> None:
@@ -140,18 +141,21 @@ class SessionService(QObject):
         self._runner = runner
         self._session_manager: Any = None
         self._natural_key = "desktop:local"
-        self._allow_active_selection = False
+        self._gateway_ready = False
         self._active_key = ""
         self._pending_select_key: str | None = None
         self._last_emitted_active_key = ""
         self._model = SessionListModel()
         self._pending_deletes: dict[str, tuple[list[dict[str, Any]], str, str]] = {}
+        self._pending_creates: set[str] = set()
         self._list_fp: tuple[tuple[Any, ...], ...] | None = None
+        self._list_request_seq = 0
+        self._list_latest_seq = 0
         self._disposed = False
 
         self._listResult.connect(self._handle_list_result)
         self._selectResult.connect(self._handle_select_result)
-        self._mutateResult.connect(self._handle_mutate_result)
+        self._createResult.connect(self._handle_create_result)
         self._deleteResult.connect(self._handle_delete_result)
 
     @Property(QObject, constant=True)
@@ -176,6 +180,7 @@ class SessionService(QObject):
         self._disposed = True
         self._pending_select_key = None
         self._pending_deletes.clear()
+        self._pending_creates.clear()
         self._session_manager = None
 
     def _submit_safe(self, coro: Coroutine[Any, Any, Any]) -> Any:
@@ -185,13 +190,51 @@ class SessionService(QObject):
             coro.close()
             return None
 
+    async def _run_user_io(self, fn: Any, *args: Any) -> Any:
+        if isinstance(self._runner, AsyncioRunner):
+            return await self._runner.run_user_io(fn, *args)
+        return await asyncio.to_thread(fn, *args)
+
     def _emit_active_key_if_changed(self, new_key: str) -> None:
         """Emit activeKeyChanged only if key actually changed."""
         if new_key != self._last_emitted_active_key:
             self._last_emitted_active_key = new_key
             self.activeKeyChanged.emit(new_key)
-            if new_key:
-                self._submit_safe(self._mark_seen_ai(new_key))
+            self._emit_active_ready_if_applicable(new_key)
+
+    def _emit_active_ready_if_applicable(self, key: str) -> None:
+        if self._gateway_ready and key:
+            self.activeReady.emit(key)
+
+    @staticmethod
+    def _pick_latest_key(sessions: list[dict[str, Any]], *, preferred_channel: str) -> str:
+        def _updated_at_sort_value(item: dict[str, Any]) -> tuple[int, float | str]:
+            v = item.get("updated_at", "")
+            if isinstance(v, (int, float)):
+                return (2, float(v))
+            if isinstance(v, str) and v:
+                return (1, v)
+            return (0, "")
+
+        def _key_value(item: dict[str, Any]) -> str:
+            v = item.get("key", "")
+            return str(v) if v is not None else ""
+
+        preferred = [s for s in sessions if str(s.get("channel", "")) == preferred_channel]
+        candidates = preferred if preferred else sessions
+        if not candidates:
+            return ""
+        sort_values = [_updated_at_sort_value(s) for s in candidates]
+        if not any(v[0] > 0 for v in sort_values):
+            return _key_value(candidates[0])
+        if len(set(sort_values)) == 1:
+            return _key_value(candidates[0])
+        best = max(candidates, key=lambda s: (_updated_at_sort_value(s), _key_value(s)))
+        return _key_value(best)
+
+    def _clear_pending_select_if_resolved(self, active_key: str) -> None:
+        if self._pending_select_key is not None and active_key == self._pending_select_key:
+            self._pending_select_key = None
 
     # ------------------------------------------------------------------
     # Public slots
@@ -203,39 +246,81 @@ class SessionService(QObject):
             return
         if self._session_manager is None:
             return
-        fut = self._submit_safe(self._list_sessions())
+        self._list_request_seq += 1
+        seq = self._list_request_seq
+        self._list_latest_seq = seq
+        fut = self._submit_safe(self._list_sessions(seq))
         if fut is None:
             return
         fut.add_done_callback(self._on_list_done)
 
     @Slot()
     def setGatewayReady(self) -> None:
-        self._allow_active_selection = True
+        self._gateway_ready = True
+        if self._active_key:
+            self._emit_active_ready_if_applicable(self._active_key)
 
     @Slot(str)
     def newSession(self, name: str = "") -> None:
         if self._disposed:
             return
-        fut = self._submit_safe(self._create_session(name))
+
+        if self._session_manager is None:
+            return
+
+        key = self._build_new_session_key(name)
+
+        if any(str(s.get("key", "")) == key for s in self._model._sessions):
+            self.selectSession(key)
+            return
+
+        sessions_before = [dict(s) for s in self._model._sessions]
+        self._pending_creates.add(key)
+
+        sessions_after = [
+            {
+                "key": key,
+                "title": _format_display_title(key, None, natural_key=self._natural_key),
+                "updated_at": "",
+                "channel": "desktop",
+                "has_unread": False,
+            },
+            *sessions_before,
+        ]
+
+        self._gateway_ready = True
+        self._pending_select_key = key
+        if self._active_key != key:
+            self._active_key = key
+            self._model.set_active(key)
+            if _DEBUG_SWITCH:
+                logger.debug("session_select_commit key={}", key)
+            self._emit_active_key_if_changed(key)
+        self._model.reset_sessions(sessions_after, key)
+        self.sessionsChanged.emit()
+
+        fut = self._submit_safe(self._create_session(key))
         if fut is None:
             return
-        fut.add_done_callback(self._on_mutate_done)
+        fut.add_done_callback(lambda future, k=key: self._on_create_done(k, future))
 
     @Slot(str)
     def selectSession(self, key: str) -> None:
         if self._disposed:
             return
         if _DEBUG_SWITCH:
-            logger.debug(f"session_select_request key={key}")
+            logger.debug("session_select_request key={}", key)
         if not key:
+            return
+        self._gateway_ready = True
+        if self._pending_select_key == key:
             return
         self._pending_select_key = key
         if self._active_key != key:
-            self._allow_active_selection = True
             self._active_key = key
             self._model.set_active(key)
             if _DEBUG_SWITCH:
-                logger.debug(f"session_select_commit key={key}")
+                logger.debug("session_select_commit key={}", key)
             self._emit_active_key_if_changed(key)
         fut = self._submit_safe(self._select_session(key))
         if fut is None:
@@ -259,31 +344,29 @@ class SessionService(QObject):
             return
 
         new_active = active_before
-        if active_before == key:
-            if sessions_after:
-                removed_channel = sessions_before[removed_index].get("channel")
-                pick = None
-                left = removed_index - 1
-                right = removed_index
-                while left >= 0 or right < len(sessions_after):
-                    if right < len(sessions_after):
-                        candidate = sessions_after[right]
-                        if candidate.get("channel") == removed_channel:
-                            pick = candidate
-                            break
-                    if left >= 0:
-                        candidate = sessions_after[left]
-                        if candidate.get("channel") == removed_channel:
-                            pick = candidate
-                            break
-                    right += 1
-                    left -= 1
-                if pick is None:
-                    pick_index = min(removed_index, len(sessions_after) - 1)
-                    pick = sessions_after[pick_index]
-                new_active = str(pick.get("key", ""))
-            else:
-                new_active = ""
+        removed_channel = str(sessions_before[removed_index].get("channel") or "")
+        if not sessions_after:
+            new_active = self._build_new_session_key("")
+            self._pending_creates.add(new_active)
+            sessions_after = [
+                {
+                    "key": new_active,
+                    "title": _format_display_title(new_active, None, natural_key=self._natural_key),
+                    "updated_at": "",
+                    "channel": "desktop",
+                    "has_unread": False,
+                }
+            ]
+            fut_create = self._submit_safe(self._create_session(new_active))
+            if fut_create is not None:
+                fut_create.add_done_callback(
+                    lambda future, k=new_active: self._on_create_done(k, future)
+                )
+        elif active_before == key:
+            new_active = self._pick_latest_key(
+                sessions_after,
+                preferred_channel=(removed_channel or "desktop"),
+            )
 
         for item in sessions_after:
             if str(item.get("key", "")) == new_active:
@@ -305,10 +388,11 @@ class SessionService(QObject):
     # Async helpers (run on asyncio thread)
     # ------------------------------------------------------------------
 
-    async def _list_sessions(self) -> tuple[list[dict[str, Any]], str]:
+    async def _list_sessions(self, seq: int) -> tuple[int, list[dict[str, Any]], str]:
         sm = self._session_manager
-        sessions = sm.list_sessions()
-        active = sm.get_active_session_key(self._natural_key) or ""
+        sessions = await self._run_user_io(sm.list_sessions)
+        active_raw = await self._run_user_io(sm.get_active_session_key, self._natural_key)
+        active = active_raw or ""
         result = []
         for s in sessions:
             key = s["key"]
@@ -333,49 +417,53 @@ class SessionService(QObject):
                     "has_unread": has_unread,
                 }
             )
-        return result, active
+        return seq, result, active
 
-    async def _create_session(self, name: str) -> str:
-        sm = self._session_manager
+    def _build_new_session_key(self, name: str) -> str:
         if name:
-            key = f"{self._natural_key}::{name}"
-        else:
-            import time
+            return f"{self._natural_key}::{name}"
+        import time
 
-            key = f"{self._natural_key}::session-{int(time.time())}"
-        # Create session in storage so it appears in list_sessions immediately
-        session = sm.get_or_create(key)
-        sm.save(session)
-        sm.set_active_session_key(self._natural_key, key)
+        return f"{self._natural_key}::session-{int(time.time())}"
+
+    async def _create_session(self, key: str) -> str:
+        sm = self._session_manager
+
+        def _create() -> None:
+            session = sm.get_or_create(key)
+            sm.save(session)
+            sm.set_active_session_key(self._natural_key, key)
+
+        await self._run_user_io(_create)
         return key
 
     async def _select_session(self, key: str) -> str:
-        self._session_manager.set_active_session_key(self._natural_key, key)
+        await self._run_user_io(
+            self._session_manager.set_active_session_key, self._natural_key, key
+        )
         return key
 
-    async def _mark_seen_ai(self, key: str) -> None:
-        self._session_manager.update_metadata_only(
-            key, {"desktop_last_seen_ai_at": datetime.now().isoformat()}
-        )
-
     async def _delete_session(self, key: str, new_active: str) -> None:
-        was_active = self._session_manager.get_active_session_key(self._natural_key) == key
-        deleted = self._session_manager.delete_session(key)
-        if not deleted:
-            still_exists = True
-            try:
-                still_exists = any(
-                    s.get("key") == key for s in self._session_manager.list_sessions()
-                )
-            except Exception:
+        sm = self._session_manager
+
+        def _delete() -> None:
+            was_active = sm.get_active_session_key(self._natural_key) == key
+            deleted = sm.delete_session(key)
+            if not deleted:
                 still_exists = True
-            if still_exists:
-                raise RuntimeError(f"delete session failed: {key}")
-        if was_active:
-            if new_active:
-                self._session_manager.set_active_session_key(self._natural_key, new_active)
-            else:
-                self._session_manager.clear_active_session_key(self._natural_key)
+                try:
+                    still_exists = any(s.get("key") == key for s in sm.list_sessions())
+                except Exception:
+                    still_exists = True
+                if still_exists:
+                    raise RuntimeError(f"delete session failed: {key}")
+            if was_active:
+                if new_active:
+                    sm.set_active_session_key(self._natural_key, new_active)
+                else:
+                    sm.clear_active_session_key(self._natural_key)
+
+        await self._run_user_io(_delete)
 
     # ------------------------------------------------------------------
     # Callbacks (asyncio thread — emit signals only, no Qt ops)
@@ -399,14 +487,14 @@ class SessionService(QObject):
         else:
             self._selectResult.emit(True, "", future.result())
 
-    def _on_mutate_done(self, future: Any) -> None:
+    def _on_create_done(self, key: str, future: Any) -> None:
         if self._disposed:
             return
         exc = future.exception()
         if exc:
-            self._mutateResult.emit(False, str(exc))
+            self._createResult.emit(False, str(exc), key)
         else:
-            self._mutateResult.emit(True, "")
+            self._createResult.emit(True, "", str(future.result() or key))
 
     def _on_delete_done(self, key: str, future: Any) -> None:
         if self._disposed:
@@ -427,27 +515,77 @@ class SessionService(QObject):
         if not ok:
             self.errorOccurred.emit(error)
             return
-        sessions, active = data
-        if self._pending_select_key is not None:
-            active = self._pending_select_key
+        seq = 0
+        sessions: list[dict[str, Any]]
+        if isinstance(data, tuple) and len(data) == 3 and isinstance(data[0], int):
+            seq, sessions, _active = data
+            if seq != self._list_latest_seq:
+                return
+        else:
+            if not (isinstance(data, tuple) and len(data) == 2):
+                return
+            raw_sessions, _raw_active = data
+            if not isinstance(raw_sessions, list):
+                return
+            sessions = [s for s in raw_sessions if isinstance(s, dict)]
+        active_for_view = self._pending_select_key or self._active_key
+
         pending_keys = set(self._pending_deletes.keys())
         if pending_keys:
             sessions = [s for s in sessions if s.get("key") not in pending_keys]
-            if active in pending_keys:
-                active = self._active_key if self._active_key not in pending_keys else ""
+            if active_for_view in pending_keys:
+                active_for_view = ""
 
-        if active and not any(s.get("key") == active for s in sessions):
-            active = ""
-        if not self._allow_active_selection:
-            active = ""
-        elif not active and sessions:
-            desktop = [s for s in sessions if s.get("channel") == "desktop"]
-            pick = desktop[0] if desktop else sessions[0]
-            active = pick["key"]
-            if self._session_manager:
-                self._session_manager.set_active_session_key(self._natural_key, active)
+        pending_create_keys = set(self._pending_creates)
+        if pending_create_keys:
+            existing_keys = {str(s.get("key", "")) for s in sessions}
+            for key in pending_create_keys:
+                if key in existing_keys:
+                    continue
+                sessions.insert(
+                    0,
+                    {
+                        "key": key,
+                        "title": _format_display_title(key, None, natural_key=self._natural_key),
+                        "updated_at": "",
+                        "channel": "desktop",
+                        "has_unread": False,
+                    },
+                )
+                existing_keys.add(key)
+
+        if self._gateway_ready and not sessions and not pending_create_keys:
+            if self._session_manager is not None:
+                self.newSession("")
+                return
+
+        if self._gateway_ready and not self._pending_select_key and not active_for_view:
+            if sessions:
+                active_for_view = self._pick_latest_key(sessions, preferred_channel="desktop")
+                if active_for_view:
+                    self._active_key = active_for_view
+                    self._model.set_active(active_for_view)
+                    self._emit_active_key_if_changed(active_for_view)
+            else:
+                if self._session_manager is not None:
+                    self.newSession("")
+                    return
+
+        if (
+            active_for_view
+            and active_for_view not in pending_create_keys
+            and not any(str(s.get("key", "")) == active_for_view for s in sessions)
+        ):
+            active_for_view = ""
+        if not self._gateway_ready:
+            active_for_view = ""
+
+        if not sessions and self._active_key:
+            self._active_key = ""
+            self._emit_active_key_if_changed("")
+
         for item in sessions:
-            if str(item.get("key", "")) == active:
+            if str(item.get("key", "")) == active_for_view:
                 item["has_unread"] = False
         fp = tuple(
             (
@@ -458,23 +596,18 @@ class SessionService(QObject):
             for s in sessions
         )
         if self._list_fp == fp:
-            if active == self._active_key:
-                if self._pending_select_key is not None and active == self._pending_select_key:
-                    self._pending_select_key = None
+            if active_for_view == self._active_key:
+                self._clear_pending_select_if_resolved(active_for_view)
                 return
-            self._active_key = active
-            self._model.set_active(active)
-            self._emit_active_key_if_changed(active)
-            if self._pending_select_key is not None and active == self._pending_select_key:
-                self._pending_select_key = None
+            self._active_key = active_for_view
+            self._model.set_active(active_for_view)
+            self._clear_pending_select_if_resolved(active_for_view)
             return
         self._list_fp = fp
-        self._active_key = active
-        self._model.reset_sessions(sessions, active)
+        self._active_key = active_for_view
+        self._model.reset_sessions(sessions, active_for_view)
         self.sessionsChanged.emit()
-        self._emit_active_key_if_changed(active)
-        if self._pending_select_key is not None and active == self._pending_select_key:
-            self._pending_select_key = None
+        self._clear_pending_select_if_resolved(active_for_view)
 
     def _handle_select_result(self, ok: bool, error: str, key: str) -> None:
         if self._disposed:
@@ -486,19 +619,18 @@ class SessionService(QObject):
             self.errorOccurred.emit(error)
             self.refresh()
             return
-        self._allow_active_selection = True
         if self._active_key != key:
             self._active_key = key
             self._model.set_active(key)
             self._emit_active_key_if_changed(key)
 
-    def _handle_mutate_result(self, ok: bool, error: str) -> None:
+    def _handle_create_result(self, ok: bool, error: str, key: str) -> None:
         if self._disposed:
             return
+        self._pending_creates.discard(key)
+        self.refresh()
         if not ok:
             self.errorOccurred.emit(error)
-            return
-        self.refresh()
 
     def _handle_delete_result(self, key: str, ok: bool, error: str) -> None:
         if self._disposed:

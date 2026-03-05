@@ -23,8 +23,8 @@ Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
-            spacing: 14
-            topMargin: 20
+            spacing: spacingLg
+            topMargin: spacingXl - 4
             bottomMargin: 0
             boundsBehavior: Flickable.StopAtBounds
             cacheBuffer: 20000
@@ -129,7 +129,7 @@ Rectangle {
                         anchors.horizontalCenter: parent.horizontalCenter
                         text: strings.chat_loading_history
                         color: textTertiary
-                        font.pixelSize: 14
+                        font.pixelSize: typeButton
                     }
                 }
             }
@@ -157,7 +157,7 @@ Rectangle {
                         Rectangle {
                             anchors.horizontalCenter: parent.horizontalCenter
                             width: 72; height: 72; radius: 36
-                            color: isDark ? "#10FFFFFF" : "#08000000"
+                            color: chatEmptyIconBg
                             Image {
                                 anchors.centerIn: parent
                                 source: "../resources/icons/settings.svg"
@@ -170,15 +170,15 @@ Rectangle {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: strings.empty_setup_title
                             color: textPrimary
-                            font.pixelSize: 20
-                            font.weight: Font.DemiBold
+                            font.pixelSize: typeTitle
+                            font.weight: weightDemiBold
                             font.letterSpacing: 0.3
                         }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: strings.empty_setup_hint
                             color: textTertiary
-                            font.pixelSize: 14
+                            font.pixelSize: typeButton
                             horizontalAlignment: Text.AlignHCenter
                             width: parent.width
                             wrapMode: Text.WordWrap
@@ -202,8 +202,8 @@ Rectangle {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: strings.empty_starting_hint
                             color: textTertiary
-                            font.pixelSize: 15
-                            font.weight: Font.Medium
+                            font.pixelSize: typeBody
+                            font.weight: weightMedium
                         }
                     }
 
@@ -218,7 +218,7 @@ Rectangle {
                         Rectangle {
                             anchors.horizontalCenter: parent.horizontalCenter
                             width: 72; height: 72; radius: 36
-                            color: isDark ? "#18F87171" : "#10F87171"
+                            color: chatErrorBadgeBg
                             Text {
                                 anchors.centerIn: parent
                                 text: "!"
@@ -231,14 +231,14 @@ Rectangle {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: strings.empty_error_hint
                             color: textPrimary
-                            font.pixelSize: 18
-                            font.weight: Font.DemiBold
+                            font.pixelSize: typeTitle
+                            font.weight: weightDemiBold
                         }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: chatService ? (chatService.lastError || "") : ""
                             color: textTertiary
-                            font.pixelSize: 13
+                            font.pixelSize: typeLabel
                             horizontalAlignment: Text.AlignHCenter
                             width: parent.width
                             wrapMode: Text.WordWrap
@@ -248,13 +248,13 @@ Rectangle {
                             anchors.horizontalCenter: parent.horizontalCenter
                             width: 120; height: 38; radius: radiusMd
                             color: retryBtnHover.containsMouse ? accentHover : accent
-                            Behavior on color { ColorAnimation { duration: 150 } }
+                            Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
                             Text {
                                 anchors.centerIn: parent
                                 text: strings.empty_error_btn
                                 color: "#FFFFFF"
-                                font.pixelSize: 14
-                                font.weight: Font.DemiBold
+                                font.pixelSize: typeButton
+                                font.weight: weightDemiBold
                             }
                             MouseArea {
                                 id: retryBtnHover
@@ -275,7 +275,7 @@ Rectangle {
                         Rectangle {
                             anchors.horizontalCenter: parent.horizontalCenter
                             width: 72; height: 72; radius: 36
-                            color: isDark ? "#10FFFFFF" : "#08000000"
+                            color: chatEmptyIconBg
                             Image {
                                 anchors.centerIn: parent
                                 source: "../resources/icons/chat.svg"
@@ -288,15 +288,15 @@ Rectangle {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: strings.empty_chat_title
                             color: textPrimary
-                            font.pixelSize: 20
-                            font.weight: Font.DemiBold
+                            font.pixelSize: typeTitle
+                            font.weight: weightDemiBold
                             font.letterSpacing: 0.3
                         }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: strings.empty_chat_hint
                             color: textTertiary
-                            font.pixelSize: 14
+                            font.pixelSize: typeButton
                         }
                     }
                     // ── State 5: Idle/Stopped (gateway not started) ──
@@ -312,7 +312,7 @@ Rectangle {
                         Rectangle {
                             anchors.horizontalCenter: parent.horizontalCenter
                             width: 72; height: 72; radius: 36
-                            color: isDark ? "#10FFFFFF" : "#08000000"
+                            color: chatEmptyIconBg
                             Image {
                                 anchors.centerIn: parent
                                 source: "../resources/icons/zap.svg"
@@ -325,15 +325,15 @@ Rectangle {
                             anchors.horizontalCenter: parent.horizontalCenter
             text: strings.empty_idle_title
                             color: textPrimary
-                            font.pixelSize: 20
-                            font.weight: Font.DemiBold
+                            font.pixelSize: typeTitle
+                            font.weight: weightDemiBold
                             font.letterSpacing: 0.3
                         }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
             text: strings.empty_idle_hint
                             color: textTertiary
-                            font.pixelSize: 14
+                            font.pixelSize: typeButton
                     }
                 }
             }
@@ -379,7 +379,7 @@ Rectangle {
                     color: bgInput
                     border.color: messageInput.activeFocus ? borderFocus : borderSubtle
                     border.width: messageInput.activeFocus ? 1.5 : 1
-                    Behavior on border.color { ColorAnimation { duration: 150 } }
+                    Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
 
                     ScrollView {
                         id: inputScroll
@@ -395,7 +395,9 @@ Rectangle {
                             wrapMode: TextArea.Wrap
                             topPadding: 6
                             bottomPadding: 2
-                            font.pixelSize: 15
+                            font.pixelSize: typeBody
+                            selectionColor: textSelectionBg
+                            selectedTextColor: textSelectionFg
                             onCursorPositionChanged: {
                                 if (!activeFocus || cursorPosition !== length) return
                                 var flick = inputScroll.contentItem
@@ -422,8 +424,8 @@ Rectangle {
                                           && chatService.state === "running"
                     color: sendHover.containsMouse && canSend
                            ? accentHover
-                           : (canSend ? accent : (isDark ? "#1A1A26" : "#E5E7EB"))
-                    Behavior on color { ColorAnimation { duration: 150 } }
+                           : (canSend ? accent : chatComposerSendDisabled)
+                    Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
 
                     Image {
                         anchors.centerIn: parent
@@ -431,7 +433,7 @@ Rectangle {
                         width: 18; height: 18
                         sourceSize: Qt.size(18, 18)
                         opacity: parent.canSend ? 1.0 : 0.3
-                        Behavior on opacity { NumberAnimation { duration: 150 } }
+                        Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
                     }
 
                     MouseArea {

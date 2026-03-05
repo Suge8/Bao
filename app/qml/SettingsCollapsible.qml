@@ -7,11 +7,13 @@ Item {
 
     property string title: ""
     property bool expanded: false
+    property real reveal: expanded ? 1 : 0
     default property alias content: contentArea.data
 
     Layout.fillWidth: true
     clip: true
     implicitHeight: header.height + contentArea.height
+    Behavior on reveal { NumberAnimation { duration: motionPanel; easing.type: easeEmphasis } }
 
     Column {
         id: col
@@ -26,7 +28,7 @@ Item {
             radius: radiusSm
             color: headerHover.containsMouse ? (isDark ? "#0AFFFFFF" : "#08000000") : "transparent"
 
-            Behavior on color { ColorAnimation { duration: 150 } }
+            Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
 
             RowLayout {
                 anchors.fill: parent
@@ -37,15 +39,15 @@ Item {
                 Text {
                     text: root.expanded ? "▾" : "▸"
                     color: textTertiary
-                    font.pixelSize: 12
+                    font.pixelSize: typeMeta
                 }
 
                 Text {
                     text: root.title
                     color: textSecondary
-                    font.pixelSize: 13
-                    font.weight: Font.Medium
-                    font.letterSpacing: 0.2
+                    font.pixelSize: typeLabel
+                    font.weight: weightMedium
+                    font.letterSpacing: letterTight
                     Layout.fillWidth: true
                 }
             }
@@ -65,8 +67,11 @@ Item {
         Item {
             id: contentArea
             width: parent.width
-            visible: root.expanded
-            height: root.expanded ? childrenRect.height + 8 : 0
+            visible: height > 0.5
+            height: (childrenRect.height + spacingSm) * root.reveal
+            opacity: root.reveal
+            scale: 0.985 + (0.015 * root.reveal)
+            transformOrigin: Item.Top
         }
     }
 }

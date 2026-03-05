@@ -15,6 +15,7 @@ import os
 import queue
 import threading
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -26,11 +27,6 @@ from app.backend.chat import ChatMessageModel
 _DEBUG_SWITCH = os.getenv("BAO_DESKTOP_DEBUG_SWITCH") == "1"
 _PROFILE = os.getenv("BAO_DESKTOP_PROFILE") == "1"
 
-_PREFETCH_HOT_SESSIONS = 16
-_PREFETCH_WARM_SESSIONS = 64
-_PREFETCH_HOT_DEPTH = 15
-_PREFETCH_WARM_DEPTH = 12
-_PREFETCH_WARM_DELAY_MS = 150
 _HISTORY_FULL_LIMIT = 200
 
 
@@ -50,8 +46,7 @@ class ChatService(QObject):
     _progressUpdate = Signal(int, str)  # row, accumulated_content (asyncio → Qt)
     _toolHintUpdate = Signal(str)
     _systemResponse = Signal(str, str)
-    _prefetchKeysReady = Signal(object)
-    _prefetchResult = Signal(object)
+    _startupGreeting = Signal(str)
 
     def __init__(self, model: ChatMessageModel, runner: AsyncioRunner, parent: Any = None) -> None:
         super().__init__(parent)
@@ -67,16 +62,13 @@ class ChatService(QObject):
         self._session_key = "desktop:local"
         self._desired_session_key = self._session_key
         self._committed_session_key = self._session_key
-        self._switch_gen = 0
+        self._startup_target_key = ""
+        self._startup_pending: list[str] = []
         self._history_initialized = False
         self._history_fingerprint: tuple[int, str] | None = None
         self._history_loading = False
-        self._history_cache: dict[str, tuple[tuple[int, str], list[dict[str, Any]]]] = {}
-        self._history_cache_complete: dict[str, bool] = {}
-        self._history_request_seq = 0
-        self._history_latest_seq = 0
-        self._prefetch_requested_depth: dict[str, int] = {}
-        self._pending_anchor_prefetch_key: str | None = None
+        self._current_nav_id = 0
+        self._history_future: Any = None
         self._send_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self._processing = False
         self._lang = "en"
@@ -89,8 +81,6 @@ class ChatService(QObject):
         self._active_send_future: Any = None
         self._active_has_content = False
         self._pending_split = False
-        self._progress_buffer = ""
-        self._progress_pending = False
 
         self._initResult.connect(self._handle_init_result)
         self._sendResult.connect(self._handle_send_result)
@@ -98,12 +88,7 @@ class ChatService(QObject):
         self._progressUpdate.connect(self._handle_progress_update)
         self._toolHintUpdate.connect(self._handle_tool_hint_update)
         self._systemResponse.connect(self._handle_system_response)
-        self._prefetchKeysReady.connect(self._handle_prefetch_keys_ready)
-        self._prefetchResult.connect(self._handle_prefetch_result)
-
-        self._progress_coalesce_timer = QTimer(self)
-        self._progress_coalesce_timer.setInterval(33)
-        self._progress_coalesce_timer.timeout.connect(self._flush_progress_buffer)
+        self._startupGreeting.connect(self._handle_startup_greeting)
 
     # ------------------------------------------------------------------
     # Qt properties
@@ -179,28 +164,50 @@ class ChatService(QObject):
         """Called when SessionService switches active session. Loads history."""
         if not key:
             return
-        if key == self._desired_session_key and self._history_initialized:
+        if key == self._desired_session_key and (
+            self._history_initialized or self._history_future is not None
+        ):
             return
-        self._apply_session_key(key)
+        self._cancel_history_future()
+        self._current_nav_id += 1
+        self._apply_session_key(key, self._current_nav_id)
 
-    def _apply_session_key(self, key: str) -> None:
+    @Slot(str)
+    def notifyStartupSessionReady(self, key: str) -> None:
+        if not key:
+            return
+        self._startup_target_key = key
+        if not self._startup_pending:
+            return
+        pending, self._startup_pending = self._startup_pending, []
+        for content in pending:
+            self._systemResponse.emit(content, key)
+
+    def _handle_startup_greeting(self, content: str) -> None:
+        if not content:
+            return
+        key = self._startup_target_key
+        if not key and self._session_key and self._session_key != "desktop:local":
+            key = self._session_key
+        if not key:
+            self._startup_pending.append(content)
+            return
+        self._systemResponse.emit(content, key)
+
+    def _apply_session_key(self, key: str, nav_id: int) -> None:
         previous_committed = self._committed_session_key
-        self._switch_gen += 1
         self._desired_session_key = key
         self._committed_session_key = key
         self._session_key = key
         if _DEBUG_SWITCH:
             logger.debug(
-                "switch_request desired={} committed={} gen={}",
+                "switch_request desired={} committed={} nav_id={}",
                 self._desired_session_key,
                 self._committed_session_key,
-                self._switch_gen,
+                nav_id,
             )
 
-        cached_history = self._history_cache.get(key)
-        if _PROFILE:
-            logger.debug("📊 Session switch cache: key={} hit={}", key, cached_history is not None)
-        if previous_committed != key or cached_history is None:
+        if previous_committed != key:
             self._active_streaming_row = -1
             self._active_has_content = False
             self._pending_split = False
@@ -208,74 +215,28 @@ class ChatService(QObject):
         if self._session_manager is not None:
             self._set_history_loading(True)
 
-        if cached_history is not None:
-            cached_fingerprint, cached_prepared = cached_history
-            cached_complete = self._history_cache_complete.get(key)
-            if cached_complete is None:
-                cached_complete = len(cached_prepared) >= _HISTORY_FULL_LIMIT
-            if cached_complete:
-                self._history_initialized = True
-                self._history_fingerprint = cached_fingerprint
-                self._model.load_prepared([dict(msg) for msg in cached_prepared])
-                self._set_history_loading(False)
-                return
-            self._history_initialized = False
-            self._history_fingerprint = None
-            self._model.clear()
-            self._request_history_load(key, show_loading=False)
-        else:
-            self._history_initialized = False
-            self._history_fingerprint = None
-            self._model.clear()
-            if self._session_manager is not None:
-                self._pending_anchor_prefetch_key = key
-                self._request_history_load(key, show_loading=False)
+        self._history_initialized = False
+        self._history_fingerprint = None
+        self._model.clear()
+        if self._session_manager is not None:
+            self._request_history_load(key, nav_id, show_loading=False)
 
-    @Slot(list)
-    def prefetchSessions(self, keys: list[str], depth: int | None = None) -> None:
-        if self._session_manager is None:
-            return
-        load_depth = depth if isinstance(depth, int) and depth > 0 else _PREFETCH_HOT_DEPTH
-        prefetch_keys = [k for k in keys if k and k != self._session_key]
-        if not prefetch_keys:
-            return
-        logger.info(
-            "🔄 预加载会话 / prefetching {} sessions (depth={})",
-            len(prefetch_keys),
-            load_depth,
-        )
-        for key in prefetch_keys:
-            if key in self._history_cache:
-                continue
-            self._prefetch_requested_depth[key] = load_depth
-            fut = self._runner.submit(self._load_history(key, 0, load_depth, 0))
-            fut.add_done_callback(self._on_prefetch_done)
-
-    @Slot()
-    def _sync_active_history(self) -> None:
-        if self._session_manager is None or not self._history_initialized:
-            return
-        if self._processing or self._active_streaming_row >= 0:
-            return
-        self._request_history_load(self._session_key)
-
-    def _request_history_load(self, key: str, *, show_loading: bool | None = None) -> None:
+    def _request_history_load(
+        self, key: str, nav_id: int, *, show_loading: bool | None = None
+    ) -> None:
         if show_loading is None:
             show_loading = not self._history_initialized
         if show_loading:
             self._set_history_loading(True)
-        self._history_request_seq += 1
-        seq = self._history_request_seq
-        self._history_latest_seq = seq
-        gen = self._switch_gen
         if _DEBUG_SWITCH:
-            logger.debug("history_load key={} seq={} gen={}", key, seq, gen)
-        fut = self._runner.submit(self._load_history(key, seq, _HISTORY_FULL_LIMIT, gen))
+            logger.debug("history_load key={} nav_id={}", key, nav_id)
+        fut = self._runner.submit(self._load_history(key, nav_id, _HISTORY_FULL_LIMIT))
+        self._history_future = fut
         fut.add_done_callback(self._on_history_done)
 
     async def _load_history(
-        self, key: str, seq: int, limit: int, gen: int
-    ) -> tuple[str, int, int, tuple[int, str], list[dict[str, Any]]]:
+        self, key: str, nav_id: int, limit: int
+    ) -> tuple[str, int, tuple[int, str], list[dict[str, Any]]]:
         """Load session message history from SessionManager (runs on asyncio thread)."""
         import time
 
@@ -300,114 +261,29 @@ class ChatService(QObject):
                     fallback = fallback[-limit:]
                 return fallback
 
-        raw_messages: list[dict[str, Any]] = await asyncio.to_thread(_read_raw_messages)
+        raw_messages: list[dict[str, Any]] = await self._run_user_io(_read_raw_messages)
         t1 = time.perf_counter() if _PROFILE else 0
         if _PROFILE:
             logger.debug("📊 History load: read_raw={:.3f}s", t1 - t0)
         fingerprint = self._history_signature(raw_messages)
-        prepared_messages = await asyncio.to_thread(ChatMessageModel.prepare_history, raw_messages)
+        prepared_messages = await self._run_user_io(ChatMessageModel.prepare_history, raw_messages)
         t_end = time.perf_counter() if _PROFILE else 0
         if _PROFILE:
             logger.debug("📊 History prepare: {:.3f}s", t_end - t1)
-        return key, seq, gen, fingerprint, prepared_messages
+        return key, nav_id, fingerprint, prepared_messages
 
     def _on_history_done(self, future: Any) -> None:
         """Runs on asyncio thread — only emits signal."""
+        if future is not self._history_future:
+            return
+        self._history_future = None
+        if future.cancelled():
+            return
         exc = future.exception()
         if exc:
             self._historyResult.emit(False, str(exc), None)
         else:
             self._historyResult.emit(True, "", future.result())
-
-    def _on_prefetch_done(self, future: Any) -> None:
-        try:
-            result = future.result()
-            if isinstance(result, tuple) and len(result) >= 5:
-                self._prefetchResult.emit(result)
-        except Exception as e:
-            logger.warning("⚠️ 预加载失败 / prefetch failed: {}", e)
-
-    @Slot(object)
-    def _handle_prefetch_result(self, result: Any) -> None:
-        if not isinstance(result, tuple) or len(result) < 5:
-            return
-        key, _seq, _gen, fingerprint, prepared_messages = result[:5]
-        if not prepared_messages:
-            return
-        requested_depth = self._prefetch_requested_depth.pop(key, 0)
-        cache_complete = requested_depth >= _HISTORY_FULL_LIMIT or (
-            requested_depth > 0 and len(prepared_messages) < requested_depth
-        )
-        self._history_cache[key] = (
-            fingerprint,
-            [dict(msg) for msg in prepared_messages],
-        )
-        self._history_cache_complete[key] = cache_complete
-        logger.info("✅ 预加载完成 / prefetch done: {}", key)
-
-    async def _collect_prefetch_keys(self, anchor: str | None = None) -> list[str]:
-        if self._session_manager is None:
-            return []
-        try:
-            sessions = self._session_manager.list_sessions_for("desktop:local")
-            keys = [
-                s.get("key", "")
-                for s in sessions
-                if s.get("key") and s.get("key") != "desktop:local"
-            ]
-            if anchor and anchor in keys:
-                idx = keys.index(anchor)
-                ordered: list[str] = [anchor]
-                step = 1
-                while len(ordered) < len(keys):
-                    right = idx + step
-                    left = idx - step
-                    if right < len(keys):
-                        ordered.append(keys[right])
-                    if left >= 0:
-                        ordered.append(keys[left])
-                    step += 1
-                keys = ordered
-            return keys[:_PREFETCH_WARM_SESSIONS]
-        except Exception as e:
-            logger.warning("⚠️ 预加载键收集失败 / prefetch key collect failed: {}", e)
-            return []
-
-    def _on_prefetch_keys_done(self, future: Any) -> None:
-        try:
-            keys = future.result()
-            if keys:
-                self._prefetchKeysReady.emit(keys)
-        except Exception as e:
-            logger.warning("⚠️ 预加载触发失败 / prefetch trigger failed: {}", e)
-
-    @Slot(object)
-    def _handle_prefetch_keys_ready(self, keys_obj: Any) -> None:
-        if not isinstance(keys_obj, list):
-            return
-        keys = [str(k) for k in keys_obj if k]
-        if not keys:
-            return
-        hot_keys = keys[:_PREFETCH_HOT_SESSIONS]
-        warm_keys = keys[_PREFETCH_HOT_SESSIONS:_PREFETCH_WARM_SESSIONS]
-        self.prefetchSessions(hot_keys, _PREFETCH_HOT_DEPTH)
-        if warm_keys:
-            QTimer.singleShot(
-                _PREFETCH_WARM_DELAY_MS,
-                lambda: self.prefetchSessions(warm_keys, _PREFETCH_WARM_DEPTH),
-            )
-
-    def _schedule_initial_prefetch(self) -> None:
-        if self._session_manager is None:
-            return
-        fut = self._runner.submit(self._collect_prefetch_keys())
-        fut.add_done_callback(self._on_prefetch_keys_done)
-
-    def _schedule_anchor_prefetch(self, anchor: str) -> None:
-        if self._session_manager is None or not anchor:
-            return
-        fut = self._runner.submit(self._collect_prefetch_keys(anchor))
-        fut.add_done_callback(self._on_prefetch_keys_done)
 
     def _handle_history_result(self, ok: bool, error: str, messages: Any) -> None:
         """Runs on Qt main thread — fills ChatMessageModel with history."""
@@ -415,40 +291,29 @@ class ChatService(QObject):
             self._set_history_loading(False)
             return
         loaded_key = self._session_key
-        loaded_seq = 0
-        loaded_gen = self._switch_gen
+        loaded_nav_id = 0
         loaded_messages = messages or []
         loaded_fingerprint: tuple[int, str] | None = None
         loaded_prepared = False
-        if isinstance(messages, tuple) and len(messages) == 5:
-            loaded_key, loaded_seq, loaded_gen, loaded_fingerprint, loaded_messages = messages
-            loaded_messages = loaded_messages or []
-            loaded_prepared = True
-        elif isinstance(messages, tuple) and len(messages) == 4:
-            loaded_key, loaded_seq, loaded_fingerprint, loaded_messages = messages
+        if isinstance(messages, tuple) and len(messages) == 4:
+            loaded_key, loaded_nav_id, loaded_fingerprint, loaded_messages = messages
             loaded_messages = loaded_messages or []
             loaded_prepared = True
         elif isinstance(messages, tuple) and len(messages) == 3:
-            loaded_key, loaded_seq, loaded_messages = messages
+            loaded_key, loaded_nav_id, loaded_messages = messages
             loaded_messages = loaded_messages or []
         elif isinstance(messages, tuple) and len(messages) == 2:
             loaded_key, loaded_messages = messages
             loaded_messages = loaded_messages or []
-        if loaded_seq and loaded_seq != self._history_latest_seq:
+        if loaded_nav_id and loaded_nav_id != self._current_nav_id:
             if _DEBUG_SWITCH:
                 logger.debug(
-                    f"history_gating loaded_seq={loaded_seq} latest={self._history_latest_seq}"
+                    "history_gating loaded_nav_id={} current_nav_id={}",
+                    loaded_nav_id,
+                    self._current_nav_id,
                 )
             return
         if loaded_key != self._desired_session_key:
-            return
-        if loaded_gen != self._switch_gen:
-            if _DEBUG_SWITCH:
-                logger.debug(
-                    "history_gating loaded_gen={} current_gen={}",
-                    loaded_gen,
-                    self._switch_gen,
-                )
             return
         fingerprint = loaded_fingerprint or self._history_signature(loaded_messages)
         if self._history_initialized and fingerprint == self._history_fingerprint:
@@ -460,28 +325,20 @@ class ChatService(QObject):
         self._session_key = loaded_key
         if loaded_prepared:
             prepared_messages = [dict(msg) for msg in loaded_messages]
-            self._history_cache[loaded_key] = (
-                fingerprint,
-                [dict(msg) for msg in prepared_messages],
-            )
-            self._history_cache_complete[loaded_key] = True
             self._model.load_prepared(prepared_messages)
         else:
             self._model.load_history(loaded_messages)
         if _DEBUG_SWITCH:
             logger.debug(
-                "history_applied key={} rows={} seq={} gen={}",
+                "history_applied key={} rows={} nav_id={}",
                 loaded_key,
                 self._model.rowCount(),
-                loaded_seq,
-                loaded_gen,
+                loaded_nav_id,
             )
-        if loaded_key == self._committed_session_key:
-            self._mark_session_seen_ai(loaded_key)
+        should_mark_seen = loaded_key == self._committed_session_key
         self._set_history_loading(False)
-        if loaded_key == self._pending_anchor_prefetch_key:
-            self._pending_anchor_prefetch_key = None
-            self._schedule_anchor_prefetch(loaded_key)
+        if should_mark_seen:
+            self._mark_session_seen_ai(loaded_key)
 
     @staticmethod
     def _history_signature(messages: list[dict[str, Any]]) -> tuple[int, str]:
@@ -510,7 +367,18 @@ class ChatService(QObject):
 
         # --- build shared gateway stack ---
         provider = make_provider(config)
-        stack = build_gateway_stack(config, provider)
+        reuse_sm = None
+        try:
+            existing = self._session_manager
+            if existing is not None:
+                existing_ws = getattr(existing, "workspace", None)
+                if existing_ws and str(Path(str(existing_ws)).expanduser()) == str(
+                    Path(str(config.workspace_path)).expanduser()
+                ):
+                    reuse_sm = existing
+        except Exception:
+            reuse_sm = None
+        stack = build_gateway_stack(config, provider, reuse_sm)
 
         # Store references for shutdown
         self._agent = stack.agent
@@ -543,7 +411,8 @@ class ChatService(QObject):
                     stack.agent,
                     stack.bus,
                     stack.config,
-                    on_desktop_greeting=lambda t: self._systemResponse.emit(t, self._session_key),
+                    on_desktop_greeting=lambda t: self._startupGreeting.emit(t),
+                    channels=stack.channels,
                 )
             ),
         ]
@@ -626,10 +495,7 @@ class ChatService(QObject):
         """Runs on Qt main thread. Finalizes the active streaming bubble."""
         is_provider_error = ok and isinstance(content, str) and content.startswith("Error calling ")
         final_status = "error" if (not ok or is_provider_error) else "done"
-        should_render_in_ui = self._active_streaming_session_key in (
-            None,
-            self._committed_session_key,
-        )
+        should_render_in_ui = self._should_render_active_stream()
         active = self._active_streaming_row
         if active < 0 and should_render_in_ui:
             active = _row
@@ -667,7 +533,12 @@ class ChatService(QObject):
         self._active_streaming_session_key = None
         self._active_has_content = False
         self._pending_split = False
-        if ok and not is_provider_error and completed_session_key:
+        if (
+            ok
+            and not is_provider_error
+            and completed_session_key
+            and completed_session_key == self._committed_session_key
+        ):
             self._mark_session_seen_ai(completed_session_key)
         self.statusUpdated.emit(active, final_status)
         # Drain pending system responses before releasing lock
@@ -690,18 +561,16 @@ class ChatService(QObject):
         from bao.agent.protocol import StreamEventType
         from bao.providers.retry import PROGRESS_RESET
 
-        accumulated = [""]
+        accumulated = ""
 
         async def _on_progress(delta: str) -> None:
+            nonlocal accumulated
             if delta == PROGRESS_RESET:
                 self._progressUpdate.emit(-2, "")
-                accumulated[0] = ""
+                accumulated = ""
                 return
-            accumulated[0] += delta
-            self._progress_buffer = accumulated[0]
-            if not self._progress_pending:
-                self._progress_pending = True
-                self._progress_coalesce_timer.start()
+            accumulated += delta
+            self._progressUpdate.emit(-1, accumulated)
 
         async def _on_event(event: Any) -> None:
             if getattr(event, "type", "") == StreamEventType.TOOL_HINT:
@@ -721,10 +590,7 @@ class ChatService(QObject):
 
     def _handle_progress_update(self, row: int, content: str) -> None:
         """Runs on Qt main thread. Routes streaming content to active bubble."""
-        should_render_in_ui = self._active_streaming_session_key in (
-            None,
-            self._committed_session_key,
-        )
+        should_render_in_ui = self._should_render_active_stream()
         if row == -2:
             self._pending_split = True
             return
@@ -754,10 +620,7 @@ class ChatService(QObject):
             return
         if self._pending_split:
             return
-        should_render_in_ui = self._active_streaming_session_key in (
-            None,
-            self._committed_session_key,
-        )
+        should_render_in_ui = self._should_render_active_stream()
         current_row = self._active_streaming_row
         if should_render_in_ui:
             self._model.set_status(current_row, "done")
@@ -825,13 +688,7 @@ class ChatService(QObject):
         if not content:
             return
         target_session_key = session_key or self._session_key
-        if self._session_manager is not None:
-            try:
-                session = self._session_manager.get_or_create(target_session_key)
-                session.add_message("system", content, status=status, _source="desktop-system")
-                self._session_manager.save(session)
-            except Exception as exc:
-                logger.warning("Failed to persist desktop system message: {}", exc)
+        self._schedule_system_message_persist(target_session_key, content, status)
         if not show_in_ui:
             return
         row = self._model.append_system(
@@ -842,6 +699,63 @@ class ChatService(QObject):
         )
         self.messageAppended.emit(row)
 
+    @staticmethod
+    def _persist_system_message_with_manager(
+        session_manager: Any,
+        session_key: str,
+        content: str,
+        status: str,
+    ) -> None:
+        session = session_manager.get_or_create(session_key)
+        session.add_message("user", content, status=status, _source="desktop-system")
+        session_manager.save(session)
+
+    async def _persist_system_message_async(
+        self,
+        session_manager: Any,
+        session_key: str,
+        content: str,
+        status: str,
+    ) -> None:
+        await self._run_bg_io(
+            self._persist_system_message_with_manager,
+            session_manager,
+            session_key,
+            content,
+            status,
+        )
+
+    def _on_system_persist_done(self, future: Any) -> None:
+        try:
+            future.result()
+        except Exception as exc:
+            logger.warning("Failed to persist desktop system message: {}", exc)
+
+    def _schedule_system_message_persist(self, session_key: str, content: str, status: str) -> None:
+        session_manager = self._session_manager
+        if session_manager is None:
+            return
+
+        if isinstance(self._runner, AsyncioRunner):
+            try:
+                future = self._runner.submit(
+                    self._persist_system_message_async(
+                        session_manager, session_key, content, status
+                    )
+                )
+                future.add_done_callback(self._on_system_persist_done)
+                return
+            except RuntimeError:
+                pass
+
+        try:
+            self._persist_system_message_with_manager(session_manager, session_key, content, status)
+        except Exception as exc:
+            logger.warning("Failed to persist desktop system message: {}", exc)
+
+    def _should_render_active_stream(self) -> bool:
+        return self._active_streaming_session_key in (None, self._committed_session_key)
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -850,6 +764,26 @@ class ChatService(QObject):
         if self._state != state:
             self._state = state
             self.stateChanged.emit(state)
+
+    def _cancel_history_future(self) -> None:
+        future = self._history_future
+        self._history_future = None
+        if future is None:
+            return
+        try:
+            future.cancel()
+        except Exception:
+            pass
+
+    async def _run_user_io(self, fn: Any, *args: Any) -> Any:
+        if isinstance(self._runner, AsyncioRunner):
+            return await self._runner.run_user_io(fn, *args)
+        return await asyncio.to_thread(fn, *args)
+
+    async def _run_bg_io(self, fn: Any, *args: Any) -> Any:
+        if isinstance(self._runner, AsyncioRunner):
+            return await self._runner.run_bg_io(fn, *args)
+        return await asyncio.to_thread(fn, *args)
 
     def _set_history_loading(self, loading: bool) -> None:
         if self._history_loading != loading:
@@ -873,15 +807,37 @@ class ChatService(QObject):
     def _mark_session_seen_ai(self, key: str) -> None:
         if not key or self._session_manager is None:
             return
+
+        session_manager = self._session_manager
+        payload = {"desktop_last_seen_ai_at": datetime.now().isoformat()}
+
+        if isinstance(self._runner, AsyncioRunner):
+            try:
+                future = self._runner.submit(
+                    self._run_bg_io(session_manager.update_metadata_only, key, payload)
+                )
+                future.add_done_callback(self._on_mark_session_seen_ai_done)
+                return
+            except RuntimeError:
+                pass
+            except Exception as exc:
+                logger.debug("Skip mark seen ai {}: {}", key, exc)
+
         try:
-            self._session_manager.update_metadata_only(
-                key, {"desktop_last_seen_ai_at": datetime.now().isoformat()}
-            )
+            session_manager.update_metadata_only(key, payload)
         except Exception as exc:
             logger.debug("Skip mark seen ai {}: {}", key, exc)
 
+    @staticmethod
+    def _on_mark_session_seen_ai_done(future: Any) -> None:
+        try:
+            future.result()
+        except Exception as exc:
+            logger.debug("Skip mark seen ai: {}", exc)
+
     async def _shutdown_gateway(self) -> None:
         """Full shutdown mirroring CLI finally block."""
+        self._cancel_history_future()
         for t in self._background_tasks:
             t.cancel()
         if self._agent:
@@ -906,12 +862,3 @@ class ChatService(QObject):
                 pass
             self._active_streaming_session_key = None
             self._active_send_future = None
-        if key in self._history_cache:
-            del self._history_cache[key]
-
-    def _flush_progress_buffer(self) -> None:
-        """Flush buffered progress updates to UI (runs on Qt thread)."""
-        if self._progress_pending:
-            self._progressUpdate.emit(-1, self._progress_buffer)
-            self._progress_pending = False
-            self._progress_coalesce_timer.stop()

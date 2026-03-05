@@ -12,17 +12,17 @@ Rectangle {
     signal selected()
     signal deleteRequested()
 
-    height: 38
+    height: sizeSessionRow
     radius: radiusSm
     color: isActive
-           ? (isDark ? "#4AFF951F" : "#30FF951F")
-           : (hoverArea.containsMouse ? (isDark ? "#08FFFFFF" : "#06000000") : "transparent")
+           ? sessionRowActiveBg
+           : (hoverArea.containsMouse ? sessionRowHoverBg : "transparent")
     border.width: isActive ? 1 : 0
-    border.color: isActive ? (isDark ? "#A0FF951F" : "#85FF951F") : "transparent"
-    opacity: dimmed ? (isActive ? 0.9 : 0.6) : 1.0
+    border.color: isActive ? sessionRowActiveBorder : "transparent"
+    opacity: dimmed ? (isActive ? opacityDimmedActive : opacityDimmedIdle) : 1.0
 
-    Behavior on color { ColorAnimation { duration: 150 } }
-    Behavior on opacity { NumberAnimation { duration: 150 } }
+    Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+    Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
 
     HoverHandler { id: rowHover }
 
@@ -41,7 +41,7 @@ Rectangle {
             width: 20
             height: 20
             radius: 10
-            color: root.isActive ? (isDark ? "#5AFF951F" : "#3DFF951F") : (isDark ? "#10FFFFFF" : "#12000000")
+            color: root.isActive ? sessionLeadingActiveBg : sessionLeadingIdleBg
             border.width: 1
             border.color: root.isActive ? accentGlow : borderSubtle
             anchors.verticalCenter: parent.verticalCenter
@@ -52,20 +52,20 @@ Rectangle {
                 sourceSize: Qt.size(12, 12)
                 width: 12
                 height: 12
-                opacity: root.isActive ? 1.0 : 0.85
+                opacity: root.isActive ? 1.0 : opacityInactive
             }
         }
 
         Text {
             text: root.sessionTitle
             color: root.isActive ? textPrimary : textSecondary
-            font.pixelSize: 13
-            font.weight: root.isActive ? Font.Medium : Font.Normal
+            font.pixelSize: typeLabel
+            font.weight: root.isActive ? weightMedium : weightRegular
             elide: Text.ElideRight
             width: Math.max(0, parent.width - leadingIcon.width - 12)
             anchors.verticalCenter: parent.verticalCenter
 
-            Behavior on color { ColorAnimation { duration: 150 } }
+            Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
         }
     }
 
@@ -78,20 +78,20 @@ Rectangle {
         width: 30
         height: 30
         radius: 9
-        color: deleteHover.containsMouse ? (isDark ? "#28F87171" : "#22F87171") : (isDark ? "#14FFFFFF" : "#10000000")
+        color: deleteHover.containsMouse ? sessionDeleteHoverBg : sessionDeleteIdleBg
         border.width: 1
-        border.color: deleteHover.containsMouse ? "#66F87171" : (isDark ? "#2AFFFFFF" : "#23000000")
-        scale: deleteHover.containsMouse ? 1.04 : 1.0
+        border.color: deleteHover.containsMouse ? sessionDeleteHoverBorder : sessionDeleteIdleBorder
+        scale: deleteHover.containsMouse ? motionHoverScaleSubtle : 1.0
         visible: rowHover.hovered || deleteHover.containsMouse
-        Behavior on color { ColorAnimation { duration: 120 } }
-        Behavior on scale { NumberAnimation { duration: 120 } }
+        Behavior on color { ColorAnimation { duration: motionMicro; easing.type: easeStandard } }
+        Behavior on scale { NumberAnimation { duration: motionMicro; easing.type: easeStandard } }
 
         Text {
             anchors.centerIn: parent
             text: "✕"
-            color: isDark ? "#F87171" : "#DC2626"
-            font.pixelSize: 12
-            font.weight: Font.Medium
+            color: sessionDeleteIcon
+            font.pixelSize: typeMeta
+            font.weight: weightMedium
         }
 
         MouseArea {
@@ -114,10 +114,10 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         anchors.rightMargin: 14
         width: 7; height: 7; radius: 3.5
-        color: isDark ? "#F87171" : "#DC2626"
+        color: sessionUnreadDot
         opacity: (root.hasUnread && !root.isActive && !hoverArea.containsMouse) ? 1.0 : 0.0
         visible: opacity > 0
-        Behavior on opacity { NumberAnimation { duration: 200 } }
+        Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
     }
 
     MouseArea {
@@ -127,11 +127,11 @@ Rectangle {
             left: parent.left
             top: parent.top
             bottom: parent.bottom
-            right: deleteBtn.visible ? deleteBtn.left : parent.right
+            right: parent.right
             leftMargin: -2
             topMargin: -2
             bottomMargin: -2
-            rightMargin: deleteBtn.visible ? 4 : -2
+            rightMargin: -2
         }
         hoverEnabled: true
         acceptedButtons: Qt.LeftButton

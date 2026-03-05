@@ -215,20 +215,22 @@ ApplicationWindow {
 
     // Border colors
     // NOTE: QML 8-digit hex uses #AARRGGBB (NOT #RRGGBBAA like CSS).
-    readonly property color borderSubtle:    isDark ? "#1FFF951F" : "#14000000"
-    readonly property color borderDefault:   isDark ? "#38FF951F" : "#24000000"
+    readonly property color borderSubtle:    isDark ? "#20FFA11A" : "#14000000"
+    readonly property color borderDefault:   isDark ? "#40FFA11A" : "#24000000"
     readonly property color borderFocus:     "#FF9A2E"
 
     // Accent
-    readonly property color accent:          "#FF951F"
-    readonly property color accentHover:     "#FF7F00"
-    readonly property color accentMuted:     isDark ? "#36FF951F" : "#22FF951F"
-    readonly property color accentGlow:      "#70FF951F"
+    readonly property color accent:          "#FFA11A"
+    readonly property color accentHover:     "#FF8600"
+    readonly property color accentMuted:     isDark ? "#48FFA11A" : "#30FFA11A"
+    readonly property color accentGlow:      "#95FFA11A"
 
     // Status
     readonly property color statusSuccess:   "#22C55E"
     readonly property color statusWarning:   "#F59E0B"
     readonly property color statusError:     "#F05A5A"
+    readonly property color textSelectionBg: isDark ? "#80FFA11A" : "#66FFA11A"
+    readonly property color textSelectionFg: "#1E140E"
 
     // Spacing
     readonly property int spacingXs: 4
@@ -242,6 +244,127 @@ ApplicationWindow {
     readonly property int radiusSm: 8
     readonly property int radiusMd: 12
     readonly property int radiusLg: 16
+
+    // Typography
+    readonly property int typeDisplay: 30
+    readonly property int typeTitle: 22
+    readonly property int typeBody: 15
+    readonly property int typeButton: 14
+    readonly property int typeLabel: 13
+    readonly property int typeMeta: 12
+    readonly property int typeCaption: 11
+    readonly property real lineHeightBody: 1.4
+    readonly property real letterTight: 0.2
+    readonly property real letterWide: 0.5
+    readonly property int weightRegular: Font.Normal
+    readonly property int weightMedium: Font.Medium
+    readonly property int weightDemiBold: Font.DemiBold
+    readonly property int weightBold: Font.Bold
+
+    // Motion
+    readonly property int motionMicro: 120
+    readonly property int motionFast: 180
+    readonly property int motionUi: 220
+    readonly property int motionPanel: 320
+    readonly property int motionAmbient: 500
+    readonly property int motionBreath: 1100
+    readonly property int motionFloat: 1700
+    readonly property int motionStagger: 80
+    readonly property int motionStatusPulse: 600
+    readonly property int motionTrackVelocity: 220
+    readonly property int toastDuration: 2200
+    readonly property int toastDurationLong: 2600
+    readonly property int easeStandard: Easing.OutCubic
+    readonly property int easeEmphasis: Easing.OutBack
+    readonly property int easeSoft: Easing.InOutSine
+    readonly property int easeLinear: Easing.Linear
+    readonly property real motionStatusMinOpacityStarting: 0.78
+    readonly property real motionStatusMinOpacityError: 0.74
+    readonly property real motionGlowPeakOpacity: 0.8
+    readonly property real motionDotPulseMinOpacity: 0.3
+    readonly property real motionDotPulseScaleMax: 1.4
+    readonly property real motionRingIdlePeakOpacity: 0.35
+    readonly property real motionRingHoverOpacity: 0.6
+    readonly property real motionFloatOffset: 2.5
+    readonly property real motionPressScaleStrong: 0.88
+    readonly property real motionHoverScaleStrong: 1.15
+    readonly property real motionHoverScaleMedium: 1.08
+    readonly property real motionHoverScaleSubtle: 1.04
+    readonly property real motionBubbleHiddenScale: 0.8
+    readonly property real motionToastHiddenScale: 0.92
+    readonly property real motionCopyFlashPeak: 0.42
+    readonly property real motionAuraNearPeak: 0.34
+    readonly property real motionAuraFarPeak: 0.2
+    readonly property real motionTypingPulseMinOpacity: 0.28
+    readonly property int motionEnterOffsetY: 10
+    readonly property real opacityShadowSoft: 0.3
+    readonly property real opacityInteractionIdle: 0.65
+    readonly property real opacityInteractionHover: 0.95
+    readonly property real opacityInactive: 0.85
+    readonly property real opacityDimmedActive: 0.9
+    readonly property real opacityDimmedIdle: 0.6
+
+    // Component size tokens
+    readonly property int sizeControlHeight: 42
+    readonly property int sizeControlHeightLg: 48
+    readonly property int sizeButton: 40
+    readonly property int sizeFieldPaddingX: 14
+    readonly property int sizeOptionHeight: 34
+    readonly property int sizeDropdownMaxHeight: 240
+    readonly property int sizeSidebarHeader: 38
+    readonly property int sizeSessionRow: 38
+    readonly property int sizeCapsuleHeight: 48
+    readonly property int sizeBubbleRadius: 18
+    readonly property int sizeSystemBubbleRadius: 11
+    readonly property int sizeAppIcon: 44
+
+    // Gateway emphasis tokens
+    readonly property color gatewayBgRunningHover: isDark ? "#6622C55E" : "#4A22C55E"
+    readonly property color gatewayBgErrorHover: isDark ? "#40F05A5A" : "#2AF05A5A"
+    readonly property color gatewayBgStartingHover: isDark ? "#68F59E0B" : "#4CF59E0B"
+    readonly property color gatewayBgIdleHover: isDark ? "#52FFA11A" : "#3CFFA11A"
+    readonly property color gatewayBgRunning: isDark ? "#5222C55E" : "#3A22C55E"
+    readonly property color gatewayBgError: isDark ? "#30F05A5A" : "#20F05A5A"
+    readonly property color gatewayBgStarting: isDark ? "#48F59E0B" : "#36F59E0B"
+    readonly property color gatewayBgIdle: isDark ? "#3AFFA11A" : "#2AFFA11A"
+    readonly property color gatewayBorderRunning: isDark ? "#A022C55E" : "#7A22C55E"
+    readonly property color gatewayBorderError: isDark ? "#54F05A5A" : "#3AF05A5A"
+    readonly property color gatewayBorderStarting: isDark ? "#8AF59E0B" : "#70F59E0B"
+    readonly property color gatewayBorderIdleHover: isDark ? "#78FFA11A" : "#56FFA11A"
+    readonly property color gatewayBorderIdle: isDark ? "#58FFA11A" : "#3AFFA11A"
+    readonly property color gatewayGlowRunning: isDark ? "#B022C55E" : "#8A22C55E"
+    readonly property color gatewayTextRunning: isDark ? "#A8EAC3" : "#177C43"
+    readonly property color gatewayTextStarting: isDark ? "#FFD484" : "#B56800"
+    readonly property color gatewayTextIdle: isDark ? "#FFC58A" : "#B86A12"
+
+    // Session emphasis tokens
+    readonly property color sessionRowActiveBg: isDark ? "#68FFA11A" : "#48FFA11A"
+    readonly property color sessionRowHoverBg: isDark ? "#08FFFFFF" : "#06000000"
+    readonly property color sessionRowActiveBorder: isDark ? "#C0FFA11A" : "#A6FFA11A"
+    readonly property color sessionLeadingActiveBg: isDark ? "#78FFA11A" : "#58FFA11A"
+    readonly property color sessionLeadingIdleBg: isDark ? "#10FFFFFF" : "#12000000"
+    readonly property color sessionDeleteHoverBg: isDark ? "#28F87171" : "#22F87171"
+    readonly property color sessionDeleteIdleBg: isDark ? "#14FFFFFF" : "#10000000"
+    readonly property color sessionDeleteHoverBorder: "#66F87171"
+    readonly property color sessionDeleteIdleBorder: isDark ? "#2AFFFFFF" : "#23000000"
+    readonly property color sessionDeleteIcon: isDark ? "#F87171" : "#DC2626"
+    readonly property color sessionUnreadDot: isDark ? "#F87171" : "#DC2626"
+
+    // Chat emphasis tokens
+    readonly property color chatSystemAuraFar: isDark ? "#46FFA11A" : "#36FFA11A"
+    readonly property color chatSystemAuraNear: isDark ? "#36FFA11A" : "#2AFFA11A"
+    readonly property color chatSystemAuraErrorFar: "#2EF05A5A"
+    readonly property color chatSystemAuraErrorNear: "#44F05A5A"
+    readonly property color chatSystemBubbleBg: isDark ? "#24FFA11A" : "#15000000"
+    readonly property color chatSystemBubbleErrorBg: isDark ? "#20F05A5A" : "#14F05A5A"
+    readonly property color chatSystemBubbleErrorBorder: isDark ? "#58F05A5A" : "#42F05A5A"
+    readonly property color chatSystemBubbleOverlay: isDark ? "#22FFA11A" : "#18FFA11A"
+    readonly property color chatSystemBubbleErrorOverlay: "#08F05A5A"
+    readonly property color chatBubbleCopyFlashUser: "#40FFFFFF"
+    readonly property color chatBubbleErrorTint: "#15F05A5A"
+    readonly property color chatEmptyIconBg: isDark ? "#10FFFFFF" : "#08000000"
+    readonly property color chatErrorBadgeBg: isDark ? "#18F87171" : "#10F87171"
+    readonly property color chatComposerSendDisabled: isDark ? "#1A1A26" : "#E5E7EB"
 
 
 
@@ -307,9 +430,9 @@ ApplicationWindow {
                             height: 14
                             radius: 7
                             color: tlHover.containsMouse ? modelData.hoverColor : modelData.color
-                            opacity: tlHover.containsMouse ? 1.0 : 0.85
-                            Behavior on color { ColorAnimation { duration: 120 } }
-                            Behavior on opacity { NumberAnimation { duration: 120 } }
+                            opacity: tlHover.containsMouse ? 1.0 : opacityInactive
+                            Behavior on color { ColorAnimation { duration: motionMicro; easing.type: easeStandard } }
+                            Behavior on opacity { NumberAnimation { duration: motionMicro; easing.type: easeStandard } }
 
                             Text {
                                 anchors.centerIn: parent
@@ -436,6 +559,6 @@ ApplicationWindow {
         successBg: isDark ? "#1F7A4D" : "#16A34A"
         errorBg: isDark ? "#B84040" : "#DC2626"
         textColor: "#FFFFFF"
-        duration: 2200
+        duration: toastDuration
     }
 }

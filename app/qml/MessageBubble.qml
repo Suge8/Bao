@@ -20,9 +20,9 @@ Item {
     property bool _entranceStarted: false
     property bool _entranceQueued: false
     readonly property bool shouldAnimateEntrance: entranceStyle !== "none" && entrancePending && !entranceConsumed
-    readonly property int entranceOpacityDuration: entranceStyle === "greeting" ? 240 : (isSystem ? 260 : (isUser ? 160 : 200))
-    readonly property int entranceScaleDuration: entranceStyle === "greeting" ? 260 : (isSystem ? 320 : (isUser ? 200 : 220))
-    readonly property real entranceStartScale: entranceStyle === "greeting" ? 0.965 : (isSystem ? 0.94 : (isUser ? 0.976 : 0.972))
+    readonly property int entranceOpacityDuration: entranceStyle === "greeting" ? motionUi : (isSystem ? motionPanel : (isUser ? motionFast : motionUi))
+    readonly property int entranceScaleDuration: entranceStyle === "greeting" ? (motionPanel + 20) : (isSystem ? (motionPanel + 40) : (isUser ? motionUi : (motionUi + 20)))
+    readonly property real entranceStartScale: entranceStyle === "greeting" ? 0.955 : (isSystem ? 0.9 : (isUser ? 0.968 : 0.964))
     readonly property real entranceStartY: isSystem ? -18 : 0
 
     height: isSystem ? systemBubble.height + 7 : bubble.height + 5
@@ -90,7 +90,7 @@ Item {
         anchors.topMargin: -12
         anchors.bottomMargin: 0
         radius: systemBubble.radius + 12
-        color: root.status === "error" ? "#2EF05A5A" : (isDark ? "#2CFF951F" : "#24FF951F")
+        color: root.status === "error" ? chatSystemAuraErrorFar : chatSystemAuraFar
         opacity: 0.0
     }
 
@@ -103,7 +103,7 @@ Item {
         anchors.topMargin: -6
         anchors.bottomMargin: 0
         radius: systemBubble.radius + 6
-        color: root.status === "error" ? "#44F05A5A" : (isDark ? "#24FF951F" : "#1EFF951F")
+        color: root.status === "error" ? chatSystemAuraErrorNear : chatSystemAuraNear
         opacity: 0.0
     }
 
@@ -114,23 +114,23 @@ Item {
         anchors.top: parent.top
         anchors.topMargin: 7
         width: Math.max(60, Math.min(root.width * 0.9, systemText.implicitWidth + 34))
-        height: systemText.contentHeight + 14
-        radius: 11
-        color: root.status === "error" ? (isDark ? "#20F05A5A" : "#14F05A5A") : (isDark ? "#18FF951F" : "#12000000")
+        height: systemText.contentHeight + spacingMd + 2
+        radius: sizeSystemBubbleRadius
+        color: root.status === "error" ? chatSystemBubbleErrorBg : chatSystemBubbleBg
         border.width: 1
-        border.color: root.status === "error" ? (isDark ? "#58F05A5A" : "#42F05A5A") : borderSubtle
+        border.color: root.status === "error" ? chatSystemBubbleErrorBorder : borderSubtle
         opacity: shouldAnimateEntrance && !_entranceStarted ? 0.0 : 1.0
         scale: shouldAnimateEntrance && !_entranceStarted ? entranceStartScale : 1.0
         transformOrigin: Item.Center
         transform: Translate { id: systemShift; y: 0 }
 
-        Behavior on color { ColorAnimation { duration: 180; easing.type: Easing.OutCubic } }
-        Behavior on border.color { ColorAnimation { duration: 180; easing.type: Easing.OutCubic } }
+        Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
+        Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
 
         Rectangle {
             anchors.fill: parent
             radius: parent.radius
-            color: root.status === "error" ? "#08F05A5A" : (isDark ? "#16FF951F" : "#0DFF951F")
+            color: root.status === "error" ? chatSystemBubbleErrorOverlay : chatSystemBubbleOverlay
         }
 
         Rectangle {
@@ -153,9 +153,9 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: root.content
             color: root.status === "error" ? statusError : textSecondary
-            font.pixelSize: 12
-            font.weight: Font.Medium
-            font.letterSpacing: 0.2
+            font.pixelSize: typeMeta
+            font.weight: weightMedium
+            font.letterSpacing: letterTight
             wrapMode: Text.Wrap
             horizontalAlignment: Text.AlignHCenter
             lineHeight: 1.35
@@ -174,16 +174,16 @@ Item {
 
     ParallelAnimation {
         id: systemEntranceAnim
-        NumberAnimation { target: systemBubble; property: "opacity"; from: 0.0; to: 1.0; duration: entranceOpacityDuration; easing.type: Easing.OutCubic }
-        NumberAnimation { target: systemBubble; property: "scale"; from: entranceStartScale; to: 1.0; duration: entranceScaleDuration; easing.type: Easing.OutCubic }
-        NumberAnimation { target: systemShift; property: "y"; from: entranceStartY; to: 0; duration: entranceScaleDuration; easing.type: Easing.OutCubic }
+        NumberAnimation { target: systemBubble; property: "opacity"; from: 0.0; to: 1.0; duration: entranceOpacityDuration; easing.type: easeStandard }
+        NumberAnimation { target: systemBubble; property: "scale"; from: entranceStartScale; to: 1.0; duration: entranceScaleDuration; easing.type: easeEmphasis }
+        NumberAnimation { target: systemShift; property: "y"; from: entranceStartY; to: 0; duration: entranceScaleDuration; easing.type: easeEmphasis }
         SequentialAnimation {
-            NumberAnimation { target: systemAuraNear; property: "opacity"; from: 0.0; to: 0.24; duration: 170; easing.type: Easing.OutCubic }
-            NumberAnimation { target: systemAuraNear; property: "opacity"; to: 0.0; duration: 520; easing.type: Easing.OutCubic }
+            NumberAnimation { target: systemAuraNear; property: "opacity"; from: 0.0; to: motionAuraNearPeak; duration: motionFast; easing.type: easeStandard }
+            NumberAnimation { target: systemAuraNear; property: "opacity"; to: 0.0; duration: motionAmbient; easing.type: easeStandard }
         }
         SequentialAnimation {
-            NumberAnimation { target: systemAuraFar; property: "opacity"; from: 0.0; to: 0.14; duration: 220; easing.type: Easing.OutCubic }
-            NumberAnimation { target: systemAuraFar; property: "opacity"; to: 0.0; duration: 700; easing.type: Easing.OutCubic }
+            NumberAnimation { target: systemAuraFar; property: "opacity"; from: 0.0; to: motionAuraFarPeak; duration: motionUi; easing.type: easeStandard }
+            NumberAnimation { target: systemAuraFar; property: "opacity"; to: 0.0; duration: motionAmbient + 120; easing.type: easeStandard }
         }
     }
 
@@ -192,7 +192,7 @@ Item {
     Text {
         id: contentMetrics
         text: root.content
-        font.pixelSize: 15
+        font.pixelSize: typeBody
         textFormat: Text.PlainText
         visible: false
     }
@@ -211,7 +211,7 @@ Item {
         property bool isTyping: root.status === "typing" && root.content === ""
         width: isTyping ? 72 : Math.min(contentMetrics.implicitWidth + 32, root.width * 0.75)
         height: isTyping ? 42 : contentText.contentHeight + 28
-        radius: 18
+        radius: sizeBubbleRadius
         opacity: shouldAnimateEntrance && !_entranceStarted ? 0.0 : 1.0
         scale: shouldAnimateEntrance && !_entranceStarted ? entranceStartScale : 1.0
         transformOrigin: Item.Center
@@ -220,7 +220,7 @@ Item {
         color: isUser ? (hoverHandler.hovered ? accentHover : accent) : (hoverHandler.hovered ? bgCardHover : bgCard)
         border.color: isUser ? "transparent" : borderSubtle
         border.width: isUser ? 0 : 1
-        Behavior on color { ColorAnimation { duration: 150 } }
+        Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
 
         HoverHandler { id: hoverHandler; cursorShape: Qt.PointingHandCursor }
         MouseArea {
@@ -245,18 +245,18 @@ Item {
             }
         }
 
-        Rectangle { id: copyFlash; anchors.fill: parent; radius: parent.radius; z: 1; color: root.isUser ? "#40FFFFFF" : accentGlow; opacity: 0.0 }
+        Rectangle { id: copyFlash; anchors.fill: parent; radius: parent.radius; z: 1; color: root.isUser ? chatBubbleCopyFlashUser : accentGlow; opacity: 0.0 }
         SequentialAnimation {
             id: copyFlashAnim
-            NumberAnimation { target: copyFlash; property: "opacity"; from: 0.0; to: 0.32; duration: 90; easing.type: Easing.OutCubic }
-            NumberAnimation { target: copyFlash; property: "opacity"; to: 0.0; duration: 180; easing.type: Easing.OutCubic }
+            NumberAnimation { target: copyFlash; property: "opacity"; from: 0.0; to: motionCopyFlashPeak; duration: motionMicro; easing.type: easeStandard }
+            NumberAnimation { target: copyFlash; property: "opacity"; to: 0.0; duration: motionUi; easing.type: easeStandard }
         }
 
         ParallelAnimation {
             id: entranceAnim
-            NumberAnimation { target: bubble; property: "opacity"; from: 0.0; to: 1.0; duration: entranceOpacityDuration; easing.type: Easing.OutCubic }
-            NumberAnimation { target: bubble; property: "scale"; from: entranceStartScale; to: 1.0; duration: entranceScaleDuration; easing.type: Easing.OutCubic }
-            NumberAnimation { target: enterTranslate; property: "y"; from: -10; to: 0; duration: entranceScaleDuration; easing.type: Easing.OutCubic }
+            NumberAnimation { target: bubble; property: "opacity"; from: 0.0; to: 1.0; duration: entranceOpacityDuration; easing.type: easeStandard }
+            NumberAnimation { target: bubble; property: "scale"; from: entranceStartScale; to: 1.0; duration: entranceScaleDuration; easing.type: easeEmphasis }
+            NumberAnimation { target: enterTranslate; property: "y"; from: -motionEnterOffsetY; to: 0; duration: entranceScaleDuration; easing.type: easeEmphasis }
         }
 
         Text {
@@ -265,10 +265,10 @@ Item {
             text: root.content
             visible: root.content !== ""
             color: root.isUser ? "#FFFFFF" : textPrimary
-            font.pixelSize: 15
+            font.pixelSize: typeBody
             wrapMode: Text.Wrap
             textFormat: root.isMarkdown ? Text.MarkdownText : Text.PlainText
-            lineHeight: 1.4
+            lineHeight: lineHeightBody
         }
 
         Item {
@@ -290,21 +290,21 @@ Item {
                         height: 6
                         radius: 3
                         color: root.isUser ? "#FFFFFF" : textSecondary
-                        opacity: 0.28
+                        opacity: motionTypingPulseMinOpacity
 
                         SequentialAnimation on opacity {
                             running: typingIndicator.visible
                             loops: Animation.Infinite
                             PauseAnimation { duration: index * 120 }
-                            NumberAnimation { to: 1.0; duration: 240; easing.type: Easing.OutCubic }
-                            NumberAnimation { to: 0.28; duration: 240; easing.type: Easing.OutCubic }
-                            PauseAnimation { duration: 220 }
+                            NumberAnimation { to: 1.0; duration: motionUi; easing.type: easeStandard }
+                            NumberAnimation { to: motionTypingPulseMinOpacity; duration: motionUi; easing.type: easeStandard }
+                            PauseAnimation { duration: motionUi }
                         }
                     }
                 }
             }
         }
 
-        Rectangle { anchors.fill: parent; radius: parent.radius; color: "#15F05A5A"; visible: root.status === "error" }
+        Rectangle { anchors.fill: parent; radius: parent.radius; color: chatBubbleErrorTint; visible: root.status === "error" }
     }
 }

@@ -36,9 +36,9 @@ Item {
         Text {
             text: root.label
             color: textSecondary
-            font.pixelSize: 13
-            font.weight: Font.Medium
-            font.letterSpacing: 0.2
+            font.pixelSize: typeLabel
+            font.weight: weightMedium
+            font.letterSpacing: letterTight
             Layout.fillWidth: true
         }
 
@@ -46,14 +46,16 @@ Item {
             id: toggle
             width: 44; height: 24; radius: 12
             color: root.toggleOn ? accent : (isDark ? "#252538" : "#D1D5DB")
-            Behavior on color { ColorAnimation { duration: 200 } }
+            scale: root.toggleOn ? motionHoverScaleSubtle : 1.0
+            Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
+            Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
 
             Rectangle {
                 width: 18; height: 18; radius: 9
                 color: "#FFFFFF"
                 anchors.verticalCenter: parent.verticalCenter
                 x: root.toggleOn ? parent.width - width - 3 : 3
-                Behavior on x { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                Behavior on x { SmoothedAnimation { velocity: motionTrackVelocity; duration: motionUi } }
             }
 
             MouseArea {

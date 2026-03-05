@@ -444,7 +444,7 @@ Rectangle {
                                                 height: 28
                                                 radius: radiusSm
                                                 color: deleteHover.containsMouse ? (isDark ? "#30F87171" : "#20F87171") : "transparent"
-                                                Behavior on color { ColorAnimation { duration: 150 } }
+                                                Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
 
                                                 Text {
                                                     anchors.centerIn: parent
@@ -530,8 +530,8 @@ Rectangle {
                             border.width: 1
                             opacity: addHover.containsMouse ? 1.0 : 0.7
 
-                            Behavior on color { ColorAnimation { duration: 150 } }
-                            Behavior on opacity { NumberAnimation { duration: 150 } }
+                            Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                            Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
 
                             Text {
                                 anchors.centerIn: parent
@@ -824,7 +824,7 @@ Rectangle {
         color: saveHover.containsMouse ? accentHover : accent
         z: 20
 
-        Behavior on color { ColorAnimation { duration: 150 } }
+        Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
 
         Text {
             anchors.centerIn: parent
@@ -855,7 +855,7 @@ Rectangle {
         successBg: isDark ? "#1F7A4D" : "#16A34A"
         errorBg: isDark ? "#B84040" : "#DC2626"
         textColor: "#FFFFFF"
-        duration: 2600
+        duration: toastDurationLong
     }
 
     Connections {
