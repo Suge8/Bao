@@ -4,7 +4,7 @@ setlocal enabledelayedexpansion
 set "PROJECT_ROOT=%~dp0..\.."
 pushd "%PROJECT_ROOT%"
 
-for /f "usebackq delims=" %%i in (`python "app\scripts\read_version.py"`) do set "VERSION=%%i"
+for /f "usebackq delims=" %%i in (`uv run python "app\scripts\read_version.py"`) do set "VERSION=%%i"
 
 echo ========================================
 echo   Bao Desktop ^- Windows Installer

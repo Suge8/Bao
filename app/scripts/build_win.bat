@@ -9,7 +9,7 @@ set "PROJECT_ROOT=%~dp0..\.."
 pushd "%PROJECT_ROOT%"
 
 REM ── Version ──
-for /f "usebackq delims=" %%i in (`python "app\scripts\read_version.py"`) do set "VERSION=%%i"
+for /f "usebackq delims=" %%i in (`uv run python "app\scripts\read_version.py"`) do set "VERSION=%%i"
 
 set "APP_NAME=Bao"
 set "DIST_DIR=%PROJECT_ROOT%\dist"
@@ -23,13 +23,14 @@ echo.
 
 REM ── Pre-flight ──
 echo ^> Checking dependencies...
-python -c "import nuitka" 2>nul || (echo [ERROR] Nuitka not installed. Run: pip install nuitka ordered-set zstandard & exit /b 1)
-python -c "import PySide6" 2>nul || (echo [ERROR] PySide6 not installed. Run: uv sync --extra desktop & exit /b 1)
+where uv >nul 2>nul || (echo [ERROR] uv not installed. Install uv first: https://astral.sh/uv/ & exit /b 1)
+uv run python -c "import nuitka" 2>nul || (echo [ERROR] Nuitka not installed. Run: uv pip install nuitka ordered-set zstandard & exit /b 1)
+uv run python -c "import PySide6" 2>nul || (echo [ERROR] PySide6 not installed. Run: uv sync --extra desktop & exit /b 1)
 REM Fix PySide6.__file__=None for Nuitka compatibility
-for /f "tokens=*" %%v in ('python -c "import PySide6; print(PySide6.__file__)"') do set "PF=%%v"
+for /f "tokens=*" %%v in ('uv run python -c "import PySide6; print(PySide6.__file__)"') do set "PF=%%v"
 if "%PF%"=="None" (
     echo ^> Fixing PySide6 meta-package for Nuitka compatibility...
-    for /f "tokens=*" %%q in ('python -c "import PySide6.QtCore; print(PySide6.QtCore.qVersion^(^))"') do set "QTV=%%q"
+    for /f "tokens=*" %%q in ('uv run python -c "import PySide6.QtCore; print(PySide6.QtCore.qVersion^(^))"') do set "QTV=%%q"
     uv pip install PySide6==!QTV! --no-deps --quiet
 )
 
@@ -42,7 +43,7 @@ REM ── Build ──
 echo ^> Building with Nuitka (this may take several minutes)...
 echo.
 
-python -m nuitka ^
+uv run python -m nuitka ^
     --standalone ^
     --windows-icon-from-ico="%PROJECT_ROOT%\assets\logo.ico" ^
     --windows-company-name="Bao" ^

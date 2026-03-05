@@ -9,7 +9,7 @@ def main() -> int:
 
     start = -1
     for idx, raw in enumerate(lines):
-        if raw.strip().lower() == "python -m nuitka ^":
+        if raw.strip().lower() == "uv run python -m nuitka ^":
             start = idx
             break
 
