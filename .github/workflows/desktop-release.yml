@@ -56,6 +56,9 @@ jobs:
       - name: Install ccache
         run: brew install ccache
 
+      - name: Use ccache compiler wrappers
+        run: echo "$(brew --prefix ccache)/libexec" >> $GITHUB_PATH
+
       - name: Install dependencies
         run: |
           uv sync --extra desktop
@@ -72,7 +75,7 @@ jobs:
       - name: Build with Nuitka
         env:
           NUITKA_CACHE_DIR: ${{ github.workspace }}/.nuitka-cache
-        run: CC="ccache clang" CXX="ccache clang++" CCACHE_DIR="$HOME/.cache/ccache" CCACHE_BASEDIR="$GITHUB_WORKSPACE" CCACHE_COMPILERCHECK=content bash app/scripts/build_mac.sh --arch ${{ matrix.arch }}
+        run: CC=clang CXX=clang++ CCACHE_DIR="$HOME/.cache/ccache" CCACHE_BASEDIR="$GITHUB_WORKSPACE" CCACHE_COMPILERCHECK=content CCACHE_CPP2=yes bash app/scripts/build_mac.sh --arch ${{ matrix.arch }}
 
       - name: Show ccache stats
         run: ccache -s
