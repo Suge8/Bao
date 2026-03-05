@@ -287,6 +287,13 @@ class ChatMessageModel(QAbstractListModel):
     def load_prepared(self, prepared_messages: list[dict[str, Any]]) -> None:
         if self._is_render_equivalent(prepared_messages):
             return
+        if self._can_append_without_reset(prepared_messages):
+            append_from = len(self._messages)
+            self.beginInsertRows(QModelIndex(), append_from, len(prepared_messages) - 1)
+            self._messages = prepared_messages
+            self._next_id = len(prepared_messages) + 1
+            self.endInsertRows()
+            return
         if self._can_prepend_without_reset(prepared_messages):
             prepend_count = len(prepared_messages) - len(self._messages)
             self.beginInsertRows(QModelIndex(), 0, prepend_count - 1)
@@ -347,6 +354,17 @@ class ChatMessageModel(QAbstractListModel):
             return False
         tail = prepared_messages[-len(self._messages) :]
         for left, right in zip(self._messages, tail):
+            if self._render_tuple(left) != self._render_tuple(right):
+                return False
+        return True
+
+    def _can_append_without_reset(self, prepared_messages: list[dict[str, Any]]) -> bool:
+        if not self._messages:
+            return False
+        if len(prepared_messages) <= len(self._messages):
+            return False
+        head = prepared_messages[: len(self._messages)]
+        for left, right in zip(self._messages, head):
             if self._render_tuple(left) != self._render_tuple(right):
                 return False
         return True

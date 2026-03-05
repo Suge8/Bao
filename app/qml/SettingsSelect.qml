@@ -139,7 +139,7 @@ Item {
                     background: Rectangle {
                         radius: radiusSm
                         color: optionDelegate.highlighted
-                               ? (isDark ? "#267C6CF0" : "#147C6CF0")
+                        ? (isDark ? "#2AFF951F" : "#1AFF951F")
                                : (optionDelegate.hovered
                                   ? (isDark ? "#10FFFFFF" : "#08000000")
                                   : "transparent")

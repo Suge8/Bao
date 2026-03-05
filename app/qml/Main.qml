@@ -189,7 +189,8 @@ ApplicationWindow {
     Connections {
         target: sessionService
         function onDeleteCompleted(_key, ok, error) {
-            globalToast.show(ok ? strings.session_delete_ok : (strings.session_delete_fail + (error ? (": " + error) : "")), ok)
+            if (!ok)
+                globalToast.show(strings.session_delete_fail + (error ? (": " + error) : ""), false)
         }
     }
 
@@ -197,37 +198,37 @@ ApplicationWindow {
     readonly property string fontFamily: "Helvetica Neue"
 
     // Surface colors
-    readonly property color bgBase:          isDark ? "#0C0C14" : "#F7F8FA"
-    readonly property color bgSidebar:       isDark ? "#111119" : "#EDEEF2"
-    readonly property color bgCard:          isDark ? "#16161F" : "#FFFFFF"
-    readonly property color bgCardHover:     isDark ? "#1C1C28" : "#F5F5FA"
-    readonly property color bgInput:         isDark ? "#1A1A26" : "#F2F3F7"
-    readonly property color bgInputHover:    isDark ? "#1E1E2C" : "#ECEDF3"
-    readonly property color bgInputFocus:    isDark ? "#1C1C2A" : "#FFFFFF"
-    readonly property color bgElevated:      isDark ? "#1E1E2A" : "#FFFFFF"
+    readonly property color bgBase:          isDark ? "#130E0B" : "#FCF8F4"
+    readonly property color bgSidebar:       isDark ? "#0F0B09" : "#F3ECE6"
+    readonly property color bgCard:          isDark ? "#19120E" : "#FFFFFF"
+    readonly property color bgCardHover:     isDark ? "#22170F" : "#FFF6EE"
+    readonly property color bgInput:         isDark ? "#1A120D" : "#FFF4EA"
+    readonly property color bgInputHover:    isDark ? "#23170F" : "#FFEEDF"
+    readonly property color bgInputFocus:    isDark ? "#2A1B11" : "#FFFFFF"
+    readonly property color bgElevated:      isDark ? "#24170F" : "#FFFFFF"
 
     // Text colors
-    readonly property color textPrimary:     isDark ? "#E8E8F0" : "#111118"
-    readonly property color textSecondary:   isDark ? "#8A8AA0" : "#6B7280"
-    readonly property color textTertiary:    isDark ? "#55556A" : "#9CA3AF"
-    readonly property color textPlaceholder: isDark ? "#44445A" : "#B0B5C0"
+    readonly property color textPrimary:     isDark ? "#F7EFE7" : "#261A12"
+    readonly property color textSecondary:   isDark ? "#C5AF9E" : "#6B5649"
+    readonly property color textTertiary:    isDark ? "#8B7668" : "#9D8473"
+    readonly property color textPlaceholder: isDark ? "#705D51" : "#B89D8A"
 
     // Border colors
     // NOTE: QML 8-digit hex uses #AARRGGBB (NOT #RRGGBBAA like CSS).
-    readonly property color borderSubtle:    isDark ? "#08FFFFFF" : "#08000000"
-    readonly property color borderDefault:   isDark ? "#0FFFFFFF" : "#0F000000"
-    readonly property color borderFocus:     "#7C6CF0"
+    readonly property color borderSubtle:    isDark ? "#1FFF951F" : "#14000000"
+    readonly property color borderDefault:   isDark ? "#38FF951F" : "#24000000"
+    readonly property color borderFocus:     "#FF9A2E"
 
     // Accent
-    readonly property color accent:          "#7C6CF0"
-    readonly property color accentHover:     "#6B5BD9"
-    readonly property color accentMuted:     isDark ? "#187C6CF0" : "#107C6CF0"
-    readonly property color accentGlow:      "#307C6CF0"
+    readonly property color accent:          "#FF951F"
+    readonly property color accentHover:     "#FF7F00"
+    readonly property color accentMuted:     isDark ? "#36FF951F" : "#22FF951F"
+    readonly property color accentGlow:      "#70FF951F"
 
     // Status
-    readonly property color statusSuccess:   "#34D399"
-    readonly property color statusWarning:   "#FBBF24"
-    readonly property color statusError:     "#F87171"
+    readonly property color statusSuccess:   "#22C55E"
+    readonly property color statusWarning:   "#F59E0B"
+    readonly property color statusError:     "#F05A5A"
 
     // Spacing
     readonly property int spacingXs: 4
@@ -384,7 +385,12 @@ ApplicationWindow {
                             stack.currentIndex = 0
                             sidebar.currentView = "chat"
                         }
-                        onSessionDeleteRequested: function(key) { if (sessionService) sessionService.deleteSession(key) }
+                        onSessionDeleteRequested: function(key) {
+                            if (!sessionService)
+                                return
+                            sessionService.deleteSession(key)
+                            globalToast.show(strings.session_delete_ok, true)
+                        }
                     }
 
                     StackLayout {

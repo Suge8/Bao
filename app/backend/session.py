@@ -20,7 +20,6 @@ from PySide6.QtCore import (
     QObject,
     QPersistentModelIndex,
     Qt,
-    QTimer,
     Signal,
     Slot,
 )
@@ -36,6 +35,23 @@ _ROLE_IS_ACTIVE = _ROLE_BASE + 3
 _ROLE_UPDATED_AT = _ROLE_BASE + 4
 _ROLE_CHANNEL = _ROLE_BASE + 5
 _ROLE_HAS_UNREAD = _ROLE_BASE + 6
+
+
+def _format_display_title(key: str, title: Any, *, natural_key: str = "desktop:local") -> str:
+    if isinstance(title, str):
+        cleaned = title.strip()
+        if cleaned:
+            return cleaned
+
+    if key == natural_key:
+        return "default"
+
+    if "::" in key:
+        _prefix, _sep, suffix = key.partition("::")
+        if suffix:
+            return suffix
+
+    return key
 
 
 class SessionListModel(QAbstractListModel):
@@ -54,7 +70,6 @@ class SessionListModel(QAbstractListModel):
         super().__init__(parent)
         self._sessions: list[dict[str, Any]] = []
         self._active_key: str = ""
-        self._unread_keys: set[str] = set()
 
     def rowCount(self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()) -> int:  # noqa: B008
         if parent.isValid():
@@ -72,7 +87,8 @@ class SessionListModel(QAbstractListModel):
         if role == _ROLE_KEY:
             return s.get("key", "")
         if role == _ROLE_TITLE:
-            return s.get("title", s.get("key", ""))
+            key = str(s.get("key", ""))
+            return _format_display_title(key, s.get("title"))
         if role == _ROLE_IS_ACTIVE:
             return s.get("key", "") == self._active_key
         if role == _ROLE_UPDATED_AT:
@@ -80,7 +96,7 @@ class SessionListModel(QAbstractListModel):
         if role == _ROLE_CHANNEL:
             return s.get("channel", "other")
         if role == _ROLE_HAS_UNREAD:
-            return s.get("key", "") in self._unread_keys
+            return bool(s.get("has_unread", False))
         return None
 
     def roleNames(self) -> dict[int, QByteArray]:
@@ -90,19 +106,11 @@ class SessionListModel(QAbstractListModel):
         self,
         sessions: list[dict[str, Any]],
         active_key: str,
-        unread_keys: set[str] | None = None,
     ) -> None:
         self.beginResetModel()
         self._sessions = sessions
         self._active_key = active_key
-        if unread_keys is not None:
-            self._unread_keys = unread_keys
         self.endResetModel()
-
-    def clear_unread(self, keys: list[str]) -> None:
-        """Clear unread status for given keys."""
-        for key in keys:
-            self._unread_keys.discard(key)
 
     def set_active(self, key: str) -> None:
         if self._active_key == key:
@@ -137,12 +145,9 @@ class SessionService(QObject):
         self._pending_select_key: str | None = None
         self._last_emitted_active_key = ""
         self._model = SessionListModel()
-        self._pending_deletes: dict[str, tuple[list[dict[str, Any]], str, str, set[str]]] = {}
-        self._list_fp: tuple[Any, ...] | None = None
+        self._pending_deletes: dict[str, tuple[list[dict[str, Any]], str, str]] = {}
+        self._list_fp: tuple[tuple[Any, ...], ...] | None = None
         self._disposed = False
-        self._unread_timer = QTimer(self)
-        self._unread_timer.setInterval(5000)
-        self._unread_timer.timeout.connect(self.refresh)
 
         self._listResult.connect(self._handle_list_result)
         self._selectResult.connect(self._handle_select_result)
@@ -163,15 +168,12 @@ class SessionService(QObject):
             return
         self._session_manager = session_manager
         self.refresh()
-        self._unread_timer.start()
 
     @Slot()
     def shutdown(self) -> None:
         if self._disposed:
             return
         self._disposed = True
-        if self._unread_timer.isActive():
-            self._unread_timer.stop()
         self._pending_select_key = None
         self._pending_deletes.clear()
         self._session_manager = None
@@ -188,6 +190,8 @@ class SessionService(QObject):
         if new_key != self._last_emitted_active_key:
             self._last_emitted_active_key = new_key
             self.activeKeyChanged.emit(new_key)
+            if new_key:
+                self._submit_safe(self._mark_seen_ai(new_key))
 
     # ------------------------------------------------------------------
     # Public slots
@@ -225,13 +229,6 @@ class SessionService(QObject):
             logger.debug(f"session_select_request key={key}")
         if not key:
             return
-        old_key = self._active_key
-        # Clear unread immediately
-        keys_to_clear = [k for k in [old_key, key] if k]
-        self._model.clear_unread(keys_to_clear)
-        # Mark as read in background
-        for k in keys_to_clear:
-            self._submit_safe(self._mark_read(k))
         self._pending_select_key = key
         if self._active_key != key:
             self._allow_active_selection = True
@@ -257,7 +254,7 @@ class SessionService(QObject):
             (i for i, s in enumerate(sessions_before) if s.get("key") == key),
             -1,
         )
-        sessions_after = [s for s in sessions_before if s.get("key") != key]
+        sessions_after = [dict(s) for s in sessions_before if s.get("key") != key]
         if removed_index < 0 or len(sessions_after) == len(sessions_before):
             return
 
@@ -288,15 +285,13 @@ class SessionService(QObject):
             else:
                 new_active = ""
 
-        unread_before = set(self._model._unread_keys)
-        unread_after = set(unread_before)
-        unread_after.discard(key)
-        if new_active:
-            unread_after.discard(new_active)
+        for item in sessions_after:
+            if str(item.get("key", "")) == new_active:
+                item["has_unread"] = False
 
-        self._pending_deletes[key] = (sessions_before, active_before, new_active, unread_before)
+        self._pending_deletes[key] = (sessions_before, active_before, new_active)
         self._active_key = new_active
-        self._model.reset_sessions(sessions_after, new_active, unread_after)
+        self._model.reset_sessions(sessions_after, new_active)
         self.sessionsChanged.emit()
         self._emit_active_key_if_changed(new_active)
 
@@ -310,29 +305,35 @@ class SessionService(QObject):
     # Async helpers (run on asyncio thread)
     # ------------------------------------------------------------------
 
-    async def _list_sessions(self) -> tuple[list[dict[str, Any]], str, set[str]]:
+    async def _list_sessions(self) -> tuple[list[dict[str, Any]], str]:
         sm = self._session_manager
         sessions = sm.list_sessions()
         active = sm.get_active_session_key(self._natural_key) or ""
         result = []
-        unread_keys: set[str] = set()
         for s in sessions:
             key = s["key"]
             channel = key.split(":")[0] if ":" in key else (key if key == "heartbeat" else "other")
             meta = s.get("metadata", {})
-            last_read = meta.get("desktop_last_read_at")
-            updated = s.get("updated_at", "")
-            if last_read and updated > last_read:
-                unread_keys.add(key)
+            last_ai = meta.get("desktop_last_ai_at")
+            last_seen_ai = meta.get("desktop_last_seen_ai_at")
+            has_unread = False
+            if isinstance(last_ai, str) and last_ai:
+                seen_ai = (
+                    last_seen_ai if isinstance(last_seen_ai, str) and last_seen_ai else last_ai
+                )
+                has_unread = seen_ai < last_ai
             result.append(
                 {
                     "key": key,
-                    "title": meta.get("title") or key,
-                    "updated_at": updated,
+                    "title": _format_display_title(
+                        key, meta.get("title"), natural_key=self._natural_key
+                    ),
+                    "updated_at": s.get("updated_at", ""),
                     "channel": channel,
+                    "has_unread": has_unread,
                 }
             )
-        return result, active, unread_keys
+        return result, active
 
     async def _create_session(self, name: str) -> str:
         sm = self._session_manager
@@ -352,9 +353,9 @@ class SessionService(QObject):
         self._session_manager.set_active_session_key(self._natural_key, key)
         return key
 
-    async def _mark_read(self, key: str) -> None:
+    async def _mark_seen_ai(self, key: str) -> None:
         self._session_manager.update_metadata_only(
-            key, {"desktop_last_read_at": datetime.now().isoformat()}
+            key, {"desktop_last_seen_ai_at": datetime.now().isoformat()}
         )
 
     async def _delete_session(self, key: str, new_active: str) -> None:
@@ -426,15 +427,15 @@ class SessionService(QObject):
         if not ok:
             self.errorOccurred.emit(error)
             return
-        sessions, active, unread_keys = data
+        sessions, active = data
         if self._pending_select_key is not None:
             active = self._pending_select_key
         pending_keys = set(self._pending_deletes.keys())
         if pending_keys:
             sessions = [s for s in sessions if s.get("key") not in pending_keys]
-            unread_keys.difference_update(pending_keys)
             if active in pending_keys:
                 active = self._active_key if self._active_key not in pending_keys else ""
+
         if active and not any(s.get("key") == active for s in sessions):
             active = ""
         if not self._allow_active_selection:
@@ -445,39 +446,43 @@ class SessionService(QObject):
             active = pick["key"]
             if self._session_manager:
                 self._session_manager.set_active_session_key(self._natural_key, active)
-        # Active session is always "read" — prevent stale poll from re-adding red dot
-        if self._active_key:
-            unread_keys.discard(self._active_key)
-        if active:
-            unread_keys.discard(active)
-        # Merge with current state: keep cleared keys cleared, add new unreads
-        current_cleared = (
-            set(self._model._sessions[i]["key"] for i in range(len(self._model._sessions)))
-            - self._model._unread_keys
-        )
-        unread_keys -= current_cleared
-        # Fingerprint check — skip rebuild if nothing changed
-        fp = (
-            tuple((s["key"], s.get("title", ""), s.get("updated_at", "")) for s in sessions),
-            active,
-            frozenset(unread_keys),
+        for item in sessions:
+            if str(item.get("key", "")) == active:
+                item["has_unread"] = False
+        fp = tuple(
+            (
+                s["key"],
+                s.get("title", ""),
+                bool(s.get("has_unread", False)),
+            )
+            for s in sessions
         )
         if self._list_fp == fp:
+            if active == self._active_key:
+                if self._pending_select_key is not None and active == self._pending_select_key:
+                    self._pending_select_key = None
+                return
+            self._active_key = active
+            self._model.set_active(active)
+            self._emit_active_key_if_changed(active)
+            if self._pending_select_key is not None and active == self._pending_select_key:
+                self._pending_select_key = None
             return
         self._list_fp = fp
         self._active_key = active
-        self._model.reset_sessions(sessions, active, unread_keys)
+        self._model.reset_sessions(sessions, active)
         self.sessionsChanged.emit()
-        if active:
-            self._emit_active_key_if_changed(active)
+        self._emit_active_key_if_changed(active)
+        if self._pending_select_key is not None and active == self._pending_select_key:
+            self._pending_select_key = None
 
     def _handle_select_result(self, ok: bool, error: str, key: str) -> None:
         if self._disposed:
             return
         if self._pending_select_key is not None and key != self._pending_select_key:
             return
-        self._pending_select_key = None
         if not ok:
+            self._pending_select_key = None
             self.errorOccurred.emit(error)
             self.refresh()
             return
@@ -501,24 +506,20 @@ class SessionService(QObject):
         snapshot = self._pending_deletes.pop(key, None)
         if not ok:
             if snapshot is not None:
-                sessions_before, active_before, optimistic_active, unread_before = snapshot
+                sessions_before, active_before, optimistic_active = snapshot
                 if self._active_key == optimistic_active:
                     pending_keys = set(self._pending_deletes.keys())
                     if pending_keys:
                         sessions_before = [
                             s for s in sessions_before if str(s.get("key", "")) not in pending_keys
                         ]
-                        unread_before = {
-                            unread_key
-                            for unread_key in unread_before
-                            if unread_key not in pending_keys
-                        }
                         if active_before in pending_keys:
                             active_before = self._active_key
                     self._active_key = active_before
-                    if active_before:
-                        unread_before.discard(active_before)
-                    self._model.reset_sessions(sessions_before, active_before, unread_before)
+                    for item in sessions_before:
+                        if str(item.get("key", "")) == active_before:
+                            item["has_unread"] = False
+                    self._model.reset_sessions(sessions_before, active_before)
                     self.sessionsChanged.emit()
                     self._emit_active_key_if_changed(active_before)
                 else:

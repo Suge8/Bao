@@ -73,6 +73,15 @@ def _sessions_model(svc: Any) -> Any:
     return svc.sessionsModel
 
 
+def _index_by_key(svc: Any, key: str) -> Any:
+    model = _sessions_model(svc)
+    for i in range(model.rowCount()):
+        idx = model.index(i)
+        if model.data(idx, Qt.UserRole + 1) == key:
+            return idx
+    return QModelIndex()
+
+
 def test_model_empty_initially():
     m = _new_session_model()
     assert m.rowCount() == 0
@@ -125,6 +134,18 @@ def test_model_invalid_index_returns_none():
     assert m.data(idx, Qt.UserRole + 1) is None
 
 
+def test_format_display_title_for_desktop_default_key():
+    from app.backend.session import _format_display_title
+
+    assert _format_display_title("desktop:local", None) == "default"
+
+
+def test_format_display_title_uses_named_session_suffix():
+    from app.backend.session import _format_display_title
+
+    assert _format_display_title("desktop:local::planning", "") == "planning"
+
+
 # ── SessionService tests ──────────────────────────────────────────────────────
 
 
@@ -144,7 +165,7 @@ def _make_mock_session_manager(
         {
             "key": s["key"],
             "updated_at": s.get("updated_at", 0),
-            "metadata": {"title": s.get("title", s["key"])},
+            "metadata": {"title": s.get("title", s["key"]), **dict(s.get("metadata", {}))},
         }
         for s in sessions
     ]
@@ -196,7 +217,7 @@ def test_service_initial_active_key():
         runner.shutdown(grace_s=1.0)
 
 
-def test_service_shutdown_stops_unread_timer():
+def test_service_shutdown_clears_runtime_state():
     runner = AsyncioRunner()
     runner.start()
     try:
@@ -211,9 +232,9 @@ def test_service_shutdown_stops_unread_timer():
         QTimer.singleShot(300, loop.quit)
         loop.exec()
 
-        assert svc._unread_timer.isActive() is True
         svc.shutdown()
-        assert svc._unread_timer.isActive() is False
+        assert svc._disposed is True
+        assert svc._session_manager is None
         svc.refresh()
     finally:
         runner.shutdown(grace_s=1.0)
@@ -351,11 +372,248 @@ def test_list_refresh_does_not_override_pending_selection():
         svc._active_key = "desktop:local::s1"
         svc._pending_select_key = "desktop:local::s2"
 
-        svc._handle_list_result(True, "", (sessions, "desktop:local::s1", set()))
+        svc._handle_list_result(True, "", (sessions, "desktop:local::s1"))
 
         assert svc.activeKey == "desktop:local::s2"
         idx = _sessions_model(svc).index(1)
         assert _sessions_model(svc).data(idx, Qt.UserRole + 3) is True
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_list_refresh_active_only_change_updates_active_without_rebuild():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        svc.setGatewayReady()
+
+        sessions = [
+            {"key": "desktop:local::s1", "title": "Chat 1", "updated_at": 1, "channel": "desktop"},
+            {"key": "desktop:local::s2", "title": "Chat 2", "updated_at": 2, "channel": "desktop"},
+        ]
+
+        changed_events: list[bool] = []
+        svc.sessionsChanged.connect(lambda: changed_events.append(True))
+
+        svc._handle_list_result(True, "", ([dict(s) for s in sessions], "desktop:local::s1"))
+        assert len(changed_events) == 1
+
+        svc._handle_list_result(True, "", ([dict(s) for s in sessions], "desktop:local::s2"))
+        assert len(changed_events) == 1
+        assert svc.activeKey == "desktop:local::s2"
+        assert _sessions_model(svc).data(_sessions_model(svc).index(0), Qt.UserRole + 3) is False
+        assert _sessions_model(svc).data(_sessions_model(svc).index(1), Qt.UserRole + 3) is True
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_list_refresh_uses_incoming_order_when_keys_unchanged():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        svc.setGatewayReady()
+
+        initial = [
+            {
+                "key": "desktop:local::s1",
+                "title": "Chat 1",
+                "updated_at": 10,
+                "channel": "desktop",
+                "has_unread": False,
+            },
+            {
+                "key": "desktop:local::s2",
+                "title": "Chat 2",
+                "updated_at": 9,
+                "channel": "desktop",
+                "has_unread": False,
+            },
+        ]
+        svc._handle_list_result(True, "", ([dict(s) for s in initial], "desktop:local::s1"))
+
+        reordered = [
+            {
+                "key": "desktop:local::s2",
+                "title": "Chat 2",
+                "updated_at": 20,
+                "channel": "desktop",
+                "has_unread": False,
+            },
+            {
+                "key": "desktop:local::s1",
+                "title": "Chat 1",
+                "updated_at": 10,
+                "channel": "desktop",
+                "has_unread": False,
+            },
+        ]
+        svc._handle_list_result(True, "", ([dict(s) for s in reordered], "desktop:local::s1"))
+
+        assert (
+            _sessions_model(svc).data(_sessions_model(svc).index(0), Qt.UserRole + 1)
+            == "desktop:local::s2"
+        )
+        assert (
+            _sessions_model(svc).data(_sessions_model(svc).index(1), Qt.UserRole + 1)
+            == "desktop:local::s1"
+        )
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_list_refresh_emits_active_cleared_when_sessions_empty():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        svc.setGatewayReady()
+
+        sessions = [
+            {"key": "desktop:local::s1", "title": "Chat 1", "updated_at": 1, "channel": "desktop"},
+        ]
+        active_keys: list[str] = []
+        svc.activeKeyChanged.connect(active_keys.append)
+
+        svc._handle_list_result(True, "", ([dict(s) for s in sessions], "desktop:local::s1"))
+        assert svc.activeKey == "desktop:local::s1"
+
+        svc._handle_list_result(True, "", ([], "desktop:local::s1"))
+        assert _sessions_model(svc).rowCount() == 0
+        assert svc.activeKey == ""
+        assert active_keys[-1] == ""
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_unread_reappears_after_new_update_even_if_previously_cleared():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        svc.setGatewayReady()
+
+        sessions = [
+            {
+                "key": "desktop:local::s1",
+                "title": "Chat 1",
+                "updated_at": "2026-01-01T00:00:00",
+                "channel": "desktop",
+            },
+            {
+                "key": "desktop:local::s2",
+                "title": "Chat 2",
+                "updated_at": "2026-01-01T00:00:00",
+                "channel": "desktop",
+            },
+        ]
+
+        svc._model.reset_sessions([dict(s) for s in sessions], "desktop:local::s1")
+        svc._active_key = "desktop:local::s1"
+
+        refreshed: list[dict[str, Any]] = [dict(s) for s in sessions]
+        refreshed[1]["has_unread"] = True
+        svc._handle_list_result(
+            True,
+            "",
+            (refreshed, "desktop:local::s1"),
+        )
+
+        idx_s2 = _sessions_model(svc).index(1)
+        assert _sessions_model(svc).data(idx_s2, Qt.UserRole + 6) is True
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_list_sessions_unread_uses_ai_timestamps_only():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(
+            sessions=[
+                {
+                    "key": "desktop:local::s1",
+                    "title": "Chat 1",
+                    "updated_at": "2026-01-01T00:10:00",
+                    "metadata": {
+                        "desktop_last_ai_at": "2026-01-01T00:09:00",
+                        "desktop_last_seen_ai_at": "2026-01-01T00:08:00",
+                    },
+                },
+                {
+                    "key": "desktop:local::s2",
+                    "title": "Chat 2",
+                    "updated_at": "2026-01-01T00:11:00",
+                    "metadata": {
+                        "desktop_last_ai_at": "2026-01-01T00:07:00",
+                        "desktop_last_seen_ai_at": "2026-01-01T00:07:00",
+                    },
+                },
+                {
+                    "key": "desktop:local::s3",
+                    "title": "Chat 3",
+                    "updated_at": "2026-01-01T00:12:00",
+                    "metadata": {
+                        "desktop_last_seen_ai_at": "2026-01-01T00:06:00",
+                    },
+                },
+            ],
+            active_key="desktop:local::s2",
+        )
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        idx_s1 = _index_by_key(svc, "desktop:local::s1")
+        idx_s2 = _index_by_key(svc, "desktop:local::s2")
+        idx_s3 = _index_by_key(svc, "desktop:local::s3")
+        assert idx_s1.isValid()
+        assert idx_s2.isValid()
+        assert idx_s3.isValid()
+        assert _sessions_model(svc).data(idx_s1, Qt.UserRole + 6) is True
+        assert _sessions_model(svc).data(idx_s2, Qt.UserRole + 6) is False
+        assert _sessions_model(svc).data(idx_s3, Qt.UserRole + 6) is False
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_select_session_marks_seen_ai_metadata():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(
+            sessions=[
+                {"key": "desktop:local::s1", "title": "Chat 1"},
+                {"key": "desktop:local::s2", "title": "Chat 2"},
+            ],
+            active_key="desktop:local::s1",
+        )
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        svc.selectSession("desktop:local::s2")
+
+        loop2 = QEventLoop()
+        QTimer.singleShot(300, loop2.quit)
+        loop2.exec()
+
+        assert sm.update_metadata_only.call_count >= 1
+        assert any(
+            call.args[0] == "desktop:local::s2"
+            and isinstance(call.args[1], dict)
+            and "desktop_last_seen_ai_at" in call.args[1]
+            for call in sm.update_metadata_only.call_args_list
+        )
     finally:
         runner.shutdown(grace_s=1.0)
 
@@ -707,19 +965,17 @@ def test_service_delete_failure_rollback_respects_other_pending_deletes():
             {"key": "desktop:local::s3", "title": "S3", "channel": "desktop"},
         ]
         svc._active_key = "desktop:local::s3"
-        svc._model.reset_sessions([sessions_before[2]], "desktop:local::s3", {"desktop:local::s3"})
+        svc._model.reset_sessions([sessions_before[2]], "desktop:local::s3")
         svc._pending_deletes = {
             "desktop:local::s1": (
                 sessions_before,
                 "desktop:local::s1",
                 "desktop:local::s3",
-                {"desktop:local::s2"},
             ),
             "desktop:local::s2": (
                 sessions_before,
                 "desktop:local::s2",
                 "desktop:local::s3",
-                {"desktop:local::s2"},
             ),
         }
 
@@ -757,7 +1013,9 @@ def test_service_delete_failure_restores_unread_snapshot():
         loop.exec()
 
         sessions = [dict(s) for s in svc._model._sessions]
-        svc._model.reset_sessions(sessions, "desktop:local::s1", {"desktop:local::s2"})
+        for item in sessions:
+            item["has_unread"] = str(item.get("key", "")) == "desktop:local::s2"
+        svc._model.reset_sessions(sessions, "desktop:local::s1")
 
         svc.deleteSession("desktop:local::s1")
 
@@ -765,7 +1023,8 @@ def test_service_delete_failure_restores_unread_snapshot():
         QTimer.singleShot(300, loop2.quit)
         loop2.exec()
 
-        idx_s2 = _sessions_model(svc).index(1)
+        idx_s2 = _index_by_key(svc, "desktop:local::s2")
+        assert idx_s2.isValid()
         assert _sessions_model(svc).data(idx_s2, Qt.UserRole + 1) == "desktop:local::s2"
         assert _sessions_model(svc).data(idx_s2, Qt.UserRole + 6) is True
     finally:
@@ -788,7 +1047,7 @@ def test_session_manager_mark_read_does_not_reorder_by_accident(tmp_path):
 
     sm.invalidate("desktop:local::old")
     loaded = sm.get_or_create("desktop:local::old")
-    loaded.metadata["desktop_last_read_at"] = datetime.now().isoformat()
+    loaded.metadata["desktop_last_seen_ai_at"] = datetime.now().isoformat()
     sm.save(loaded)
 
     sessions = sm.list_sessions()

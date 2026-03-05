@@ -32,11 +32,6 @@ Rectangle {
     }
 
     ListModel { id: groupModel }
-    Timer {
-        id: rebuildTimer
-        interval: 100
-        onTriggered: root.rebuildGroupModel()
-    }
 
     property var expandedGroups: ({})
     property bool gatewayIdle: !chatService || chatService.state === "idle" || chatService.state === "stopped"
@@ -74,11 +69,6 @@ Rectangle {
                 root.expandedGroups[ch] = (ch === "desktop")
         }
 
-        // Detach model from ListView during rebuild to prevent
-        // intermediate states (clear → re-add) causing flicker.
-        var savedY = sessionList.contentY
-        var wasNearEnd = sessionList.contentY >= Math.max(0, sessionList.contentHeight - sessionList.height - 8)
-        sessionList.model = null
         groupModel.clear()
         for (var gi = 0; gi < order.length; gi++) {
             var grp = order[gi]
@@ -93,13 +83,7 @@ Rectangle {
                                      itemVisible: exp, itemHasUnread: s.hasUnread })
             }
         }
-        sessionList.model = groupModel
-        if (wasNearEnd) {
-            sessionList.positionViewAtEnd()
-        } else {
-            var maxY = Math.max(0, sessionList.contentHeight - sessionList.height)
-            sessionList.contentY = Math.min(savedY, maxY)
-        }
+
     }
 
     function toggleGroup(channel) {
@@ -118,23 +102,39 @@ Rectangle {
 
     Connections {
         target: sessionService
-        function onSessionsChanged() { rebuildTimer.restart() }
+        function onSessionsChanged() {
+            var savedY = sessionList.contentY
+            root.rebuildGroupModel()
+            var maxY = Math.max(0, sessionList.contentHeight - sessionList.height)
+            sessionList.contentY = Math.min(savedY, maxY)
+        }
         function onActiveKeyChanged(key) {
+            var activeChannel = ""
             for (var i = 0; i < groupModel.count; i++) {
                 var item = groupModel.get(i)
                 if (!item.isHeader) {
-                    var wasActive = item.isActive
                     var isNowActive = item.itemKey === key
+                    if (isNowActive)
+                        activeChannel = item.channel
                     groupModel.setProperty(i, "isActive", isNowActive)
-                    // Clear unread immediately for instant feedback
-                    if (wasActive || isNowActive)
-                        groupModel.setProperty(i, "itemHasUnread", false)
                 }
+            }
+            if (!activeChannel)
+                return
+            if (root.expandedGroups[activeChannel] === true)
+                return
+            root.expandedGroups[activeChannel] = true
+            for (var j = 0; j < groupModel.count; j++) {
+                var row = groupModel.get(j)
+                if (row.channel !== activeChannel)
+                    continue
+                if (row.isHeader)
+                    groupModel.setProperty(j, "expanded", true)
+                else
+                    groupModel.setProperty(j, "itemVisible", true)
             }
         }
     }
-
-    Component.onCompleted: rebuildGroupModel()
 
     ColumnLayout {
         anchors.fill: parent
@@ -162,26 +162,26 @@ Rectangle {
             // ── State colors ──────────────────────────────────────────
             color: {
                 if (gwHover.containsMouse) {
-                    if (isRunning) return isDark ? "#2834D399" : "#1834D399"
-                    if (isError)   return isDark ? "#28F87171" : "#18F87171"
-                    if (isStarting) return isDark ? "#20FBBF24" : "#14FBBF24"
+                    if (isRunning) return isDark ? "#5222C55E" : "#3A22C55E"
+                    if (isError)   return isDark ? "#28F05A5A" : "#18F05A5A"
+                    if (isStarting) return isDark ? "#52F59E0B" : "#3AF59E0B"
                     // idle hover — stronger purple
-                    return isDark ? "#287C6CF0" : "#187C6CF0"
+                    return isDark ? "#32FF951F" : "#20FF951F"
                 }
-                if (isRunning)  return isDark ? "#1834D399" : "#1034D399"
-                if (isError)    return isDark ? "#1CF87171" : "#14F87171"
-                if (isStarting) return isDark ? "#18FBBF24" : "#10FBBF24"
+                if (isRunning)  return isDark ? "#3A22C55E" : "#2822C55E"
+                if (isError)    return isDark ? "#1CF05A5A" : "#14F05A5A"
+                if (isStarting) return isDark ? "#34F59E0B" : "#24F59E0B"
                 // idle — soft purple tint as CTA invitation
-                return isDark ? "#187C6CF0" : "#107C6CF0"
+                return isDark ? "#24FF951F" : "#16FF951F"
             }
             border.width: 1
             border.color: {
-                if (isRunning)  return isDark ? "#3034D399" : "#2834D399"
-                if (isError)    return isDark ? "#30F87171" : "#28F87171"
-                if (isStarting) return isDark ? "#28FBBF24" : "#20FBBF24"
-                if (gwHover.containsMouse) return isDark ? "#387C6CF0" : "#287C6CF0"
+                if (isRunning)  return isDark ? "#7A22C55E" : "#6022C55E"
+                if (isError)    return isDark ? "#30F05A5A" : "#24F05A5A"
+                if (isStarting) return isDark ? "#68F59E0B" : "#54F59E0B"
+                if (gwHover.containsMouse) return isDark ? "#4AFF951F" : "#35FF951F"
                 // idle — visible purple border
-                return isDark ? "#247C6CF0" : "#187C6CF0"
+                return isDark ? "#30FF951F" : "#1EFF951F"
             }
 
             // ── State transition animations ──────────────────────────
@@ -215,8 +215,8 @@ Rectangle {
                 id: startingPulse
                 running: gwCapsule.isStarting
                 loops: Animation.Infinite
-                NumberAnimation { target: gwCapsule; property: "opacity"; from: 1.0; to: 0.55; duration: 800; easing.type: Easing.InOutSine }
-                NumberAnimation { target: gwCapsule; property: "opacity"; from: 0.55; to: 1.0; duration: 800; easing.type: Easing.InOutSine }
+                NumberAnimation { target: gwCapsule; property: "opacity"; from: 1.0; to: 0.78; duration: 800; easing.type: Easing.InOutSine }
+                NumberAnimation { target: gwCapsule; property: "opacity"; from: 0.78; to: 1.0; duration: 800; easing.type: Easing.InOutSine }
             }
             // Error subtle pulse
             SequentialAnimation {
@@ -238,7 +238,7 @@ Rectangle {
                 radius: parent.radius + 1.5
                 color: "transparent"
                 border.width: 1.5
-                border.color: gwCapsule.isRunning ? (isDark ? "#4034D399" : "#3034D399") : "transparent"
+                border.color: gwCapsule.isRunning ? (isDark ? "#8A22C55E" : "#6A22C55E") : "transparent"
                 opacity: 0
                 visible: gwCapsule.isRunning
                 Behavior on border.color { ColorAnimation { duration: 300 } }
@@ -314,11 +314,11 @@ Rectangle {
                         }
                     }
                     color: {
-                        if (gwCapsule.isRunning)  return isDark ? "#88D4A8" : "#1A8A52"
+                        if (gwCapsule.isRunning)  return isDark ? "#A8EAC3" : "#177C43"
                         if (gwCapsule.isError)    return statusError
-                        if (gwCapsule.isStarting) return isDark ? "#F0D080" : "#B8860B"
+                        if (gwCapsule.isStarting) return isDark ? "#FFD484" : "#B56800"
                         // idle — purple accent text
-                        return isDark ? "#A89CF0" : "#6B5BD9"
+                        return isDark ? "#FFC58A" : "#B86A12"
                     }
                     font.pixelSize: 14
                     font.weight: Font.DemiBold
@@ -459,7 +459,6 @@ Rectangle {
                     anchors { left: parent.left; right: parent.right; top: parent.top }
                     height: model.itemVisible ? (inner.height + 4) : 0
                     clip: true
-                    Behavior on height { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
 
                     SessionItem {
                         id: inner
@@ -632,9 +631,9 @@ Rectangle {
                 width: bubbleText.implicitWidth + 24
                 height: bubbleText.implicitHeight + 16
                 radius: 12
-                color: isDark ? "#2A2A3D" : "#FFFFFF"
+                color: isDark ? "#2A1A11" : "#FFFFFF"
                 border.width: 1
-                border.color: isDark ? "#3A3A52" : "#E8E8EE"
+                border.color: isDark ? "#4A2A1A" : "#F0DED1"
 
                 opacity: 0
                 scale: 0.8
@@ -666,7 +665,7 @@ Rectangle {
                         ctx.lineTo(0, height / 2)
                         ctx.lineTo(width, height)
                         ctx.closePath()
-                        ctx.fillStyle = isDark ? "#2A2A3D" : "#FFFFFF"
+                        ctx.fillStyle = isDark ? "#2A1A11" : "#FFFFFF"
                         ctx.fill()
                     }
                 }
@@ -677,7 +676,7 @@ Rectangle {
                     anchors.centerIn: parent
                     font.pixelSize: 12
                     font.weight: Font.Medium
-                    color: isDark ? "#D0CEE8" : "#4A4A5A"
+                    color: isDark ? "#EBCDB3" : "#5D4738"
                     text: ""
                 }
             }

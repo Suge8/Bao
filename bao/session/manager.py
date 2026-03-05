@@ -58,6 +58,8 @@ class Session:
             ]
         msg = {"role": role, "content": content, "timestamp": datetime.now().isoformat(), **kwargs}
         self.messages.append(msg)
+        if role == "assistant":
+            self.metadata["desktop_last_ai_at"] = msg["timestamp"]
         self.updated_at = datetime.now()
 
     def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:

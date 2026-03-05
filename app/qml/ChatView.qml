@@ -25,9 +25,9 @@ Rectangle {
             clip: true
             spacing: 14
             topMargin: 20
-            bottomMargin: 12
+            bottomMargin: 0
             boundsBehavior: Flickable.StopAtBounds
-            cacheBuffer: 400
+            cacheBuffer: 20000
             reuseItems: false
             highlightFollowsCurrentItem: false
             highlightRangeMode: ListView.NoHighlightRange
@@ -38,142 +38,58 @@ Rectangle {
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
             // ── Smart follow / anti-flicker state ──────────────────────
-            property real followThresholdPx: 40
-            property bool autoFollow: true
-            property bool userInteracting: dragging || flicking
             property bool historyLoading: chatService ? chatService.historyLoading : false
-            property bool animateProgrammaticScroll: false
-            property bool emptyBurstWatching: false
 
-            property bool suspendEntranceAnimations: false
-            property int _prevCount: 0
-
-            function maxContentY() {
-                // ListView uses a shifted content coordinate system (originY can be negative).
-                // Use originY-based bounds to avoid landing in a blank overscroll region.
-                return originY + contentHeight - height + bottomMargin
-            }
-
-            function minContentY() {
-                return originY - topMargin
-            }
-
-            function clampContentY() {
-                var minY = minContentY()
-                var maxY = maxContentY()
-                if (contentY < minY) contentY = minY
-                else if (contentY > maxY) contentY = maxY
-            }
-
-            function isNearEnd() {
-                return contentY >= (maxContentY() - followThresholdPx)
-            }
-
-            function recomputeAutoFollow() {
-                autoFollow = atYEnd || isNearEnd()
-            }
-
-            function requestFollow(animated) {
-                if (!autoFollow || userInteracting || count <= 0) return
-                applyScrollToEnd(animated)
-            }
-
-            function applyScrollToEnd(animated) {
+            function applyScrollToEnd() {
                 if (count <= 0) return
-                animateProgrammaticScroll = !!animated
-                contentY = maxContentY()
-                if (!animated) animateProgrammaticScroll = false
-                if (!userInteracting) {
-                    clampContentY()
-                    if (!atYEnd) contentY = maxContentY()
-                }
-                animateProgrammaticScroll = false
+                positionViewAtEnd()
+                Qt.callLater(function() {
+                    if (messageList.count <= 0) return
+                    messageList.positionViewAtEnd()
+                })
             }
 
-            Timer {
-                id: emptyBurstTimer
-                interval: 60
-                repeat: false
-                onTriggered: {
-                    messageList.emptyBurstWatching = false
-                    messageList.suspendEntranceAnimations = false
-                }
+            function forceFollowToEnd() {
+                if (historyLoading || count <= 0) return
+                applyScrollToEnd()
             }
 
+            function shouldFollowOnAppend(row) {
+                if (row < 0 || !messagesModel) return false
+                var idx = messagesModel.index(row, 0)
+                var role = messagesModel.data(idx, Qt.UserRole + 2) || ""
+                var status = messagesModel.data(idx, Qt.UserRole + 5) || ""
 
-            Behavior on contentY {
-                enabled: messageList.animateProgrammaticScroll && !messageList.moving && !messageList.dragging
-                SmoothedAnimation {
-                    velocity: 5200
-                }
-            }
-
-            onMovementEnded: {
-                if (historyLoading) return
-                recomputeAutoFollow()
-            }
-
-            onCountChanged: {
-                var oldCount = _prevCount
-                _prevCount = count
-                if (historyLoading) {
-                    suspendEntranceAnimations = true
-                    return
-                }
-
-                if (oldCount === 0 && count === 1) {
-                    emptyBurstWatching = true
-                    emptyBurstTimer.restart()
-                } else if (emptyBurstWatching && count > 1) {
-                    suspendEntranceAnimations = true
-                    emptyBurstTimer.restart()
-                }
-
-                if (count > oldCount && autoFollow && !userInteracting && count > 0) {
-                    applyScrollToEnd(false)
-                }
-
-            }
-
-            onContentHeightChanged: {
-                if (historyLoading) return
-                if (autoFollow && !userInteracting && count > 0) {
-                    applyScrollToEnd(false)
-                }
+                // Only follow on AI/system instantaneous events.
+                if (role === "assistant") return true
+                if (role === "system") return true
+                return status === "typing"
             }
 
             Connections {
                 target: chatService
                 function onHistoryLoadingChanged(loading) {
                     if (loading) {
-                        messageList.suspendEntranceAnimations = true
-                        messageList.emptyBurstWatching = false
-                        emptyBurstTimer.stop()
+                        messageList.cancelFlick()
                         return
                     }
 
-                    messageList.suspendEntranceAnimations = false
-                    messageList.autoFollow = true
-                    if (messageList.count > 0) {
-                        messageList.applyScrollToEnd(false)
-                    }
+                    messageList.forceFollowToEnd()
                 }
 
                 function onMessageAppended(_row) {
-                    messageList.autoFollow = true
-                    if (messageList.count > 0 && !messageList.userInteracting) {
-                        messageList.applyScrollToEnd(false)
+                    if (messageList.shouldFollowOnAppend(_row)) {
+                        messageList.forceFollowToEnd()
                     }
                 }
-            }
 
-            Connections {
-                target: sessionService
-                function onActiveKeyChanged(_key) {
-                    messageList.autoFollow = true
+                function onStatusUpdated(_row, _status) {
+                    if (_status === "done" || _status === "error") {
+                        messageList.forceFollowToEnd()
+                    }
                 }
-            }
 
+            }
 
             delegate: MessageBubble {
                 width: messageList.width
@@ -465,16 +381,6 @@ Rectangle {
                     border.width: messageInput.activeFocus ? 1.5 : 1
                     Behavior on border.color { ColorAnimation { duration: 150 } }
 
-                    // Click anywhere in input box → focus TextArea
-                    MouseArea {
-                        anchors.fill: parent
-                        onPressed: function(mouse) {
-                            messageInput.forceActiveFocus()
-                            mouse.accepted = false
-                        }
-                        cursorShape: Qt.IBeamCursor
-                    }
-
                     ScrollView {
                         id: inputScroll
                         anchors { fill: parent; topMargin: 6; bottomMargin: 6; leftMargin: 4; rightMargin: 4 }
@@ -487,8 +393,8 @@ Rectangle {
                             color: textPrimary
                             background: null
                             wrapMode: TextArea.Wrap
-                            topPadding: 2
-                            bottomPadding: 6
+                            topPadding: 6
+                            bottomPadding: 2
                             font.pixelSize: 15
                             onCursorPositionChanged: {
                                 if (!activeFocus || cursorPosition !== length) return
@@ -544,9 +450,8 @@ Rectangle {
     function sendMessage() {
         var text = messageInput.text.trim()
         if (!text || !chatService) return
-        messageList.autoFollow = true
-        if (messageList.count > 0) messageList.applyScrollToEnd(false)
         chatService.sendMessage(text)
+        messageList.forceFollowToEnd()
         messageInput.text = ""
     }
 }

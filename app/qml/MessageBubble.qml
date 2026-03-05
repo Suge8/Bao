@@ -23,9 +23,9 @@ Item {
     readonly property int entranceOpacityDuration: entranceStyle === "greeting" ? 240 : (isSystem ? 260 : (isUser ? 160 : 200))
     readonly property int entranceScaleDuration: entranceStyle === "greeting" ? 260 : (isSystem ? 320 : (isUser ? 200 : 220))
     readonly property real entranceStartScale: entranceStyle === "greeting" ? 0.965 : (isSystem ? 0.94 : (isUser ? 0.976 : 0.972))
-    readonly property real entranceStartY: isSystem ? 18 : 0
+    readonly property real entranceStartY: isSystem ? -18 : 0
 
-    height: isSystem ? systemBubble.height + 14 : bubble.height + 10
+    height: isSystem ? systemBubble.height + 7 : bubble.height + 5
     width: parent ? parent.width : 600
 
     function playEntrance() {
@@ -68,6 +68,8 @@ Item {
             root._entranceQueued = false
             if (root._entranceStarted || !root.shouldAnimateEntrance) return
             root._entranceStarted = true
+            // Mark consumed at animation start to avoid replay flicker after delegate recycling.
+            root.consumeEntrance()
             if (root.isSystem) {
                 systemAuraNear.opacity = 0.0
                 systemAuraFar.opacity = 0.0
@@ -83,9 +85,12 @@ Item {
         id: systemAuraFar
         visible: isSystem
         anchors.fill: systemBubble
-        anchors.margins: -12
+        anchors.leftMargin: -12
+        anchors.rightMargin: -12
+        anchors.topMargin: -12
+        anchors.bottomMargin: 0
         radius: systemBubble.radius + 12
-        color: root.status === "error" ? "#2EF87171" : (isDark ? "#2C9AA8FF" : "#247C6CF0")
+        color: root.status === "error" ? "#2EF05A5A" : (isDark ? "#2CFF951F" : "#24FF951F")
         opacity: 0.0
     }
 
@@ -93,9 +98,12 @@ Item {
         id: systemAuraNear
         visible: isSystem
         anchors.fill: systemBubble
-        anchors.margins: -6
+        anchors.leftMargin: -6
+        anchors.rightMargin: -6
+        anchors.topMargin: -6
+        anchors.bottomMargin: 0
         radius: systemBubble.radius + 6
-        color: root.status === "error" ? "#44F87171" : (isDark ? "#249AA8FF" : "#1E7C6CF0")
+        color: root.status === "error" ? "#44F05A5A" : (isDark ? "#24FF951F" : "#1EFF951F")
         opacity: 0.0
     }
 
@@ -108,9 +116,9 @@ Item {
         width: Math.max(60, Math.min(root.width * 0.9, systemText.implicitWidth + 34))
         height: systemText.contentHeight + 14
         radius: 11
-        color: root.status === "error" ? (isDark ? "#20F87171" : "#14F87171") : (isDark ? "#14FFFFFF" : "#12000000")
+        color: root.status === "error" ? (isDark ? "#20F05A5A" : "#14F05A5A") : (isDark ? "#18FF951F" : "#12000000")
         border.width: 1
-        border.color: root.status === "error" ? (isDark ? "#58F87171" : "#42F87171") : borderSubtle
+        border.color: root.status === "error" ? (isDark ? "#58F05A5A" : "#42F05A5A") : borderSubtle
         opacity: shouldAnimateEntrance && !_entranceStarted ? 0.0 : 1.0
         scale: shouldAnimateEntrance && !_entranceStarted ? entranceStartScale : 1.0
         transformOrigin: Item.Center
@@ -122,7 +130,7 @@ Item {
         Rectangle {
             anchors.fill: parent
             radius: parent.radius
-            color: root.status === "error" ? "#08F87171" : (isDark ? "#0D7C6CF0" : "#097C6CF0")
+            color: root.status === "error" ? "#08F05A5A" : (isDark ? "#16FF951F" : "#0DFF951F")
         }
 
         Rectangle {
@@ -166,7 +174,6 @@ Item {
 
     ParallelAnimation {
         id: systemEntranceAnim
-        onStopped: root.consumeEntrance()
         NumberAnimation { target: systemBubble; property: "opacity"; from: 0.0; to: 1.0; duration: entranceOpacityDuration; easing.type: Easing.OutCubic }
         NumberAnimation { target: systemBubble; property: "scale"; from: entranceStartScale; to: 1.0; duration: entranceScaleDuration; easing.type: Easing.OutCubic }
         NumberAnimation { target: systemShift; property: "y"; from: entranceStartY; to: 0; duration: entranceScaleDuration; easing.type: Easing.OutCubic }
@@ -186,7 +193,7 @@ Item {
         id: contentMetrics
         text: root.content
         font.pixelSize: 15
-        textFormat: root.isMarkdown ? Text.MarkdownText : Text.PlainText
+        textFormat: Text.PlainText
         visible: false
     }
 
@@ -247,10 +254,9 @@ Item {
 
         ParallelAnimation {
             id: entranceAnim
-            onStopped: root.consumeEntrance()
             NumberAnimation { target: bubble; property: "opacity"; from: 0.0; to: 1.0; duration: entranceOpacityDuration; easing.type: Easing.OutCubic }
             NumberAnimation { target: bubble; property: "scale"; from: entranceStartScale; to: 1.0; duration: entranceScaleDuration; easing.type: Easing.OutCubic }
-            NumberAnimation { target: enterTranslate; property: "y"; from: 10; to: 0; duration: entranceScaleDuration; easing.type: Easing.OutCubic }
+            NumberAnimation { target: enterTranslate; property: "y"; from: -10; to: 0; duration: entranceScaleDuration; easing.type: Easing.OutCubic }
         }
 
         Text {
@@ -299,6 +305,6 @@ Item {
             }
         }
 
-        Rectangle { anchors.fill: parent; radius: parent.radius; color: "#15F87171"; visible: root.status === "error" }
+        Rectangle { anchors.fill: parent; radius: parent.radius; color: "#15F05A5A"; visible: root.status === "error" }
     }
 }

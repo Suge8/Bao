@@ -15,12 +15,16 @@ Rectangle {
     height: 38
     radius: radiusSm
     color: isActive
-           ? accentMuted
+           ? (isDark ? "#4AFF951F" : "#30FF951F")
            : (hoverArea.containsMouse ? (isDark ? "#08FFFFFF" : "#06000000") : "transparent")
+    border.width: isActive ? 1 : 0
+    border.color: isActive ? (isDark ? "#A0FF951F" : "#85FF951F") : "transparent"
     opacity: dimmed ? (isActive ? 0.9 : 0.6) : 1.0
 
     Behavior on color { ColorAnimation { duration: 150 } }
     Behavior on opacity { NumberAnimation { duration: 150 } }
+
+    HoverHandler { id: rowHover }
 
     Row {
         anchors {
@@ -37,7 +41,7 @@ Rectangle {
             width: 20
             height: 20
             radius: 10
-            color: root.isActive ? accentMuted : (isDark ? "#10FFFFFF" : "#12000000")
+            color: root.isActive ? (isDark ? "#5AFF951F" : "#3DFF951F") : (isDark ? "#10FFFFFF" : "#12000000")
             border.width: 1
             border.color: root.isActive ? accentGlow : borderSubtle
             anchors.verticalCenter: parent.verticalCenter
@@ -78,7 +82,7 @@ Rectangle {
         border.width: 1
         border.color: deleteHover.containsMouse ? "#66F87171" : (isDark ? "#2AFFFFFF" : "#23000000")
         scale: deleteHover.containsMouse ? 1.04 : 1.0
-        visible: hoverArea.containsMouse || deleteHover.containsMouse
+        visible: rowHover.hovered || deleteHover.containsMouse
         Behavior on color { ColorAnimation { duration: 120 } }
         Behavior on scale { NumberAnimation { duration: 120 } }
 
@@ -94,6 +98,8 @@ Rectangle {
             id: deleteHover
             anchors.fill: parent
             hoverEnabled: true
+            enabled: deleteBtn.visible
+            acceptedButtons: Qt.LeftButton
             cursorShape: Qt.PointingHandCursor
             onClicked: function(mouse) {
                 mouse.accepted = true
@@ -117,9 +123,19 @@ Rectangle {
     MouseArea {
         id: hoverArea
         z: 1
-        anchors.fill: parent
-        anchors.margins: -2
+        anchors {
+            left: parent.left
+            top: parent.top
+            bottom: parent.bottom
+            right: deleteBtn.visible ? deleteBtn.left : parent.right
+            leftMargin: -2
+            topMargin: -2
+            bottomMargin: -2
+            rightMargin: deleteBtn.visible ? 4 : -2
+        }
         hoverEnabled: true
+        acceptedButtons: Qt.LeftButton
+        preventStealing: true
         cursorShape: Qt.PointingHandCursor
         onClicked: root.selected()
     }

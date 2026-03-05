@@ -24,23 +24,27 @@ uv sync --extra desktop
 uv run python app/main.py
 ```
 
-首次运行自动创建 `~/.bao/config.jsonc`（包含 `config_version`）与默认 workspace（`~/.bao/workspace/`），无需手动初始化。若 `agents.defaults.model` 为空或 providers 中未配置 apiKey，App 自动跳转 Settings 页面引导完成配置（OpenAI 兼容端点无需额外 `apiMode` 设置）。`Save` 成功后会立即恢复有效状态（`isValid=true`）；若 JSONC patch 失败会返回可见错误（`Patch failed`），不会让界面调用崩溃。
+首次运行自动创建 `~/.bao/config.jsonc`（包含 `config_version`）与默认 workspace（`~/.bao/workspace/`），无需手动初始化。若 `agents.defaults.model` 为空或 providers 中未配置 apiKey，App 自动跳转 Settings 页面引导完成配置（OpenAI 兼容端点无需额外 `apiMode` 设置；OpenAI / Anthropic / Gemini 的 `apiBase` 缺版本段会自动补齐，传入完整 endpoint 会规范回版本 base）。`Save` 成功后会立即恢复有效状态（`isValid=true`）；若 JSONC patch 失败会返回可见错误（`Patch failed`），不会让界面调用崩溃。
 
 聊天渲染已做收口防闪：reply finalize 后的 history refresh 仅在 `role/content/format/status` 存在渲染差异时才会触发全量 reset；仅 `entrance` 元数据差异会被视为等价并跳过重载。delegate 的 `role` 兜底统一为 `assistant`，避免重建空窗误闪 user 样式大气泡。消息格式渲染固定按 `format` 字段，不再按可见性动态切换 markdown/plain，避免滚动中气泡高度抖动。
 
 Provider 返回错误（如 403）会在聊天中保留为 assistant `status=error` 气泡（红色），并随会话历史持久化，不会再因 history sync 刷新后消失。错误气泡内容会强制按 plain 渲染，避免 markdown/html 片段在实时阶段被解释后出现显示不全，并减少二次布局抖动。
 
-会话切换已采用分层预加载：启动后优先预热 desktop 会话（hot 16 条，depth 15），随后延迟补 warm 预热（最多 64 条，depth 12，默认延迟 150ms）；切换时命中缓存会直接秒开，未命中再走两阶段历史加载（先 8 条、再补 200 条）。
+会话切换采用“当前优先 + 锚点预热”路径：先加载当前会话（两阶段：先 8 条、再补 200 条），full load 完成后再以该会话为 anchor 预热邻近会话（hot/warm 分层）。`setSessionManager()` 阶段不再自动 initial prefetch，避免和首屏历史加载争用 runner。
 
-其中 warm 预加载延迟用于让当前会话首屏加载先完成，避免 warm 批次与当前会话争用资源。
-
-聊天自动跟随采用最小触发策略：历史加载完成后收口到底、消息追加（含 system/assistant/user）时在非手动拖动状态下贴底、发送消息时强制回到底部。
+聊天自动贴底采用非流式最小触发策略：仅在 `historyLoadingChanged(false)`（切会话完成）、`messageAppended`（assistant/system/typing 行）、`statusUpdated(done|error)`（AI 完成/报错瞬间）和用户发送瞬间触发贴底；不在 `contentUpdated` 或 `contentHeightChanged` 上连续跟随。
 
 未命中缓存且历史仍在加载时，聊天面板会显示显式 loading 提示，避免右侧出现长时间黑屏空窗。
 
 侧边栏快速连点切换时，当前激活会话以“用户最新选择的 session key”为事实源，异步列表刷新不会回滚到旧会话。
 
+会话列表刷新改为事件驱动：`statusUpdated`（消息收口）触发 `sessionService.refresh()`，不再使用独立轮询，排序更新时间与回复完成时机一致。
+
+会话删除体验做了双收口：点击即显示成功 toast（失败由异步回包覆盖），同时 Sidebar 在重建前后恢复 `contentY`，删除后视口保持原地。`SessionItem` 点击命中也做了单一路径分区：删除按钮可见时主行点击区自动让出右侧区域，避免“选中会话”和“删除会话”争抢同一次 pointer 事件。
+
 聊天输入区在多行场景采用单一路径高度计算：容器高度由 `contentHeight + padding + inset` 统一钳制；达到最大高度后保留底部可视安全间隙，并在光标位于末尾时自动滚动到末行，确保最后一行与光标始终可见。
+
+输入框点击焦点仅走 `TextArea` 原生路径（移除了容器级聚焦 MouseArea），首击更稳定；文本垂直位置通过 `topPadding=6 / bottomPadding=2` 微调到 ring 视觉中心。
 
 ### 3. 使用流程
 

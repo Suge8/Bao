@@ -425,6 +425,7 @@ def main() -> int:
         session_service.initialize(sm)
 
     _ = chat_service.gatewayReady.connect(_on_gateway_ready)
+    _ = chat_service.statusUpdated.connect(lambda _row, _status: session_service.refresh())
     # Wire session → gateway: when active session changes, update gateway session key
     set_session_key = cast(Callable[[str], None], chat_service.setSessionKey)
     _ = session_service.activeKeyChanged.connect(set_session_key)
