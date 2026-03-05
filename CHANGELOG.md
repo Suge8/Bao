@@ -6,6 +6,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-03-06
+
+### Added
+
+- **通道就绪等待** — ChannelManager 支持 `wait_started/wait_ready`，启动问候会等待对应 channel ready 再发送，减少启动竞态。
+
+### Changed
+
+- **启动问候提示词分层** — startup greeting 的 system 注入顺序调整为 `INSTRUCTIONS.md → PERSONA.md → Runtime`，user 侧仅发送最小内部事件 `{"event":"system.user_online"}`；若配置 `agents.defaults.utilityModel` 则启动问候优先使用 utility provider+model。
+- **工具暴露策略** — `read_file/write_file/edit_file/list_dir` 从 code bundle 调整到 core bundle，保证偏好/人设类对话也能看到文件工具（`toolExposure.mode=auto`）。
+- **Responses API 流式输出** — Responses 路径改为 SSE 增量流式解析，且在 system prompt 疑似被忽略时自动回退 Chat Completions。
+- **Desktop 会话切换单路径** — 移除会话预加载与进度合并定时器，历史加载按 latest-only 单路径收敛，流式内容逐 delta 推送。
+
+### Fixed
+
+- **Responses API system 丢失** — prompt caching 产生的 system content blocks 现在可被 Responses 兼容层正确提取为 `instructions`，避免被上游默认 Codex system prompt 覆盖。
+- **Responses SSE 收口** — 兼容流式事件在末尾不带 trailing blank separator 的收口情况。
+- **Anthropic base_url 双 v1** — 代理 base_url 末尾带 `/v1` 时不再拼出 `/v1/v1/messages`。
+- **推理强度 off 默认 thinking** — `reasoningEffort=off` 会显式禁用 Claude 的默认 extended thinking（不再自动启用 `adaptive + 1024`）。
+- **Session 保存与并发** — SessionManager 按 session key 收敛锁域并优化 save 追加路径，降低高频切换/持久化开销。
+
 ## [0.3.5] - 2026-03-05
 
 ### Added
@@ -247,6 +268,7 @@ Bao 首个正式版本。
 - **Docker** — `docker-compose.yml` + `Dockerfile`（Python + Node 混合构建）
 - **测试** — 54 个测试文件，pytest + asyncio_mode=auto
 
+[0.3.6]: https://github.com/Suge8/Bao/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/Suge8/Bao/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/Suge8/Bao/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/Suge8/Bao/compare/v0.3.2...v0.3.3
@@ -256,4 +278,4 @@ Bao 首个正式版本。
 [0.2.1]: https://github.com/Suge8/Bao/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Suge8/Bao/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Suge8/Bao/releases/tag/v0.1.0
-[Unreleased]: https://github.com/Suge8/Bao/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/Suge8/Bao/compare/v0.3.6...HEAD

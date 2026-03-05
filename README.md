@@ -262,7 +262,7 @@ bao
 
 ## 📝 Changelog
 
-`v0.3.5` 为当前发布版本，详见 [`CHANGELOG.md`](CHANGELOG.md)。
+`v0.3.6` 为当前发布版本，详见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 💬 9 大聊天平台
 
@@ -293,9 +293,9 @@ bao
 | **Gemini**      | Gemini 全系列                                                                                                    | `gemini/gemini-2.0-flash-exp`             |
 | **Codex OAuth** | 通过 ChatGPT 订阅 OAuth 认证，无需 API Key                                                                      | `openai-codex/gpt-5.1-codex`             |
 
-Provider 名称可自定义（如 `my-proxy/claude-sonnet-4-6`），前缀自动剥离。所有 Provider 类型均支持第三方代理，SDK 兼容性自动处理。OpenAI 兼容端点默认自动探测并切换 Responses / Chat Completions（无需配置 `apiMode`）。此外，OpenAI / Anthropic / Gemini 的 `apiBase` 支持自动补全：缺版本段（如 `v1` / `v1beta`）会按 Provider 默认规则补齐；若已包含完整 endpoint（如 OpenAI `chat/completions`、Anthropic `messages`、Gemini `models`），会先规范为对应版本 base，避免重复拼接。
+Provider 名称可自定义（如 `my-proxy/claude-sonnet-4-6`），前缀自动剥离。所有 Provider 类型均支持第三方代理，SDK 兼容性自动处理。OpenAI 兼容端点默认自动探测并切换 Responses / Chat Completions（无需配置 `apiMode`）；当走 Responses 路径时，按 SSE 增量流式输出并兼容无 trailing blank 的事件收口。此外，OpenAI / Anthropic / Gemini 的 `apiBase` 支持自动补全：缺版本段（如 `v1` / `v1beta`）会按 Provider 默认规则补齐；若已包含完整 endpoint（如 OpenAI `chat/completions`、Anthropic `messages`、Gemini `models`），会先规范为对应版本 base，避免重复拼接。
 
-`agents.defaults.reasoningEffort` 支持 `off` / `low` / `medium` / `high`。`off` 会显式关闭推理/思考扩展（Anthropic/Gemini 不发送 thinking，OpenAI/Codex 不发送 reasoning）；`low` / `medium` / `high` 时，Anthropic 映射为 `thinking.budget_tokens`（`2048` / `4096` / `8192`）并使用 `thinking.type="adaptive"`，Gemini 映射为 `1024` / `2048` / `4096`，OpenAI/Codex 透传 effort。未设置时，对支持 thinking 的 Claude 仍默认 `adaptive + 1024`。
+`agents.defaults.reasoningEffort` 支持 `off` / `low` / `medium` / `high`。`off` 会显式关闭推理/思考扩展（Anthropic/Gemini 不发送 thinking，OpenAI/Codex 不发送 reasoning），并且会覆盖 Claude 的默认 thinking（即使模型支持，也不会再自动启用 `adaptive + 1024`）；`low` / `medium` / `high` 时，Anthropic 映射为 `thinking.budget_tokens`（`2048` / `4096` / `8192`）并使用 `thinking.type="adaptive"`（通常会增加首 token 延迟/TTFB），Gemini 映射为 `1024` / `2048` / `4096`，OpenAI/Codex 透传 effort。未设置时，对支持 thinking 的 Claude 仍默认 `adaptive + 1024`。
 
 ## 🔌 MCP 支持
 
@@ -667,7 +667,7 @@ bao
 
 **That is it. A true one-click path and a full setup in minutes.**
 
-Optional: configure a **Utility Model** for background tasks (experience extraction, memory consolidation, session title generation) to save costs:
+Optional: configure a **Utility Model** to save costs on background tasks (experience extraction, memory consolidation, session title generation) and startup greetings:
 
 ```json
 {
@@ -682,7 +682,7 @@ Optional: configure a **Utility Model** for background tasks (experience extract
 
 ### 📝 Changelog
 
-`v0.3.5` is the current release; see [`CHANGELOG.md`](CHANGELOG.md).
+`v0.3.6` is the current release; see [`CHANGELOG.md`](CHANGELOG.md).
 
 ### 💬 9 Chat Platforms
 
@@ -713,9 +713,9 @@ Covers 99% of what's out there, plus an OAuth option.
 | **Gemini**            | Full Gemini lineup                                                                                                         | `gemini/gemini-2.0-flash-exp`             |
 | **Codex OAuth**       | Auth via ChatGPT subscription, no API Key needed                                                                           | `openai-codex/gpt-5.1-codex`             |
 
-Provider names are customizable — model prefixes are auto-stripped. All provider types support third-party proxies with automatic SDK compatibility. OpenAI-compatible endpoints automatically detect and switch between Responses and Chat Completions (no `apiMode` config needed). In addition, `apiBase` for OpenAI / Anthropic / Gemini is auto-normalized: missing version segments (for example `v1` / `v1beta`) are filled using provider defaults, and full endpoint inputs (such as OpenAI `chat/completions`, Anthropic `messages`, Gemini `models`) are normalized back to version base to avoid duplicate path concatenation.
+Provider names are customizable — model prefixes are auto-stripped. All provider types support third-party proxies with automatic SDK compatibility. OpenAI-compatible endpoints automatically detect and switch between Responses and Chat Completions (no `apiMode` config needed); when Responses is active, output is streamed incrementally via SSE and robust to streams that end without a trailing blank separator. In addition, `apiBase` for OpenAI / Anthropic / Gemini is auto-normalized: missing version segments (for example `v1` / `v1beta`) are filled using provider defaults, and full endpoint inputs (such as OpenAI `chat/completions`, Anthropic `messages`, Gemini `models`) are normalized back to version base to avoid duplicate path concatenation.
 
-`agents.defaults.reasoningEffort` accepts `off` / `low` / `medium` / `high`. `off` explicitly disables extra reasoning/thinking paths (Anthropic/Gemini send no thinking config, OpenAI/Codex send no reasoning field). For `low` / `medium` / `high`, Anthropic maps to `thinking.budget_tokens` (`2048` / `4096` / `8192`) with `thinking.type="adaptive"`, Gemini maps to `1024` / `2048` / `4096`, and OpenAI/Codex pass effort through. When unset, thinking-capable Claude models still default to `adaptive + 1024`.
+`agents.defaults.reasoningEffort` accepts `off` / `low` / `medium` / `high`. `off` explicitly disables extra reasoning/thinking paths (Anthropic/Gemini send no thinking config, OpenAI/Codex send no reasoning field), and it also overrides Claude's default thinking (even if the model supports thinking, it will not auto-enable `adaptive + 1024`). For `low` / `medium` / `high`, Anthropic maps to `thinking.budget_tokens` (`2048` / `4096` / `8192`) with `thinking.type="adaptive"` (this often increases time-to-first-token/TTFB), Gemini maps to `1024` / `2048` / `4096`, and OpenAI/Codex pass effort through. When unset, thinking-capable Claude models still default to `adaptive + 1024`.
 
 ### 🔌 MCP Support
 
