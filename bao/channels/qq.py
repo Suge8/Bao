@@ -2,7 +2,7 @@
 
 import asyncio
 from collections import deque
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -11,32 +11,36 @@ from bao.bus.queue import MessageBus
 from bao.channels.base import BaseChannel
 from bao.config.schema import QQConfig
 
+_qq_available = False
 try:
-    import botpy
     from botpy.message import C2CMessage
 
-    QQ_AVAILABLE = True
+    _qq_available = True
 except ImportError:
-    QQ_AVAILABLE = False
-    botpy = None
-    C2CMessage = None
+    pass
+
+QQ_AVAILABLE = _qq_available
 
 if TYPE_CHECKING:
     from botpy.message import C2CMessage
 
 
-def _make_bot_class(channel: "QQChannel") -> "type[botpy.Client]":
+def _make_bot_class(channel: "QQChannel") -> type[Any]:
     """Create a botpy Client subclass bound to the given channel."""
-    intents = botpy.Intents(public_messages=True, direct_message=True)
 
-    class _Bot(botpy.Client):
+    import botpy as _botpy
+
+    intents = _botpy.Intents(public_messages=True, direct_message=True)
+
+    class _Bot(_botpy.Client):
         def __init__(self):
             super().__init__(intents=intents, ext_handlers=False)
 
         async def on_ready(self):
-            logger.info("✅ 已就绪 / bot ready: {}", self.robot.name)
+            logger.info("✅ 已就绪 / bot ready: {}", getattr(self.robot, "name", ""))
+            channel.mark_ready()
 
-        async def on_c2c_message_create(self, message: "C2CMessage"):
+        async def on_c2c_message_create(self, message: Any):
             await channel._on_message(message)
 
         async def on_direct_message_create(self, message):
@@ -53,19 +57,22 @@ class QQChannel(BaseChannel):
     def __init__(self, config: QQConfig, bus: MessageBus):
         super().__init__(config, bus)
         self.config: QQConfig = config
-        self._client: "botpy.Client | None" = None
-        self._processed_ids: deque = deque(maxlen=1000)
-        self._bot_task: asyncio.Task | None = None
+        self._client: Any = None
+        self._processed_ids: deque[str] = deque(maxlen=1000)
+        self._bot_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         """Start the QQ bot."""
+        self.mark_not_ready()
         if not QQ_AVAILABLE:
             logger.error("❌ 未安装 / sdk missing: pip install qq-botpy")
+            self.mark_ready()
             return
 
         secret = self.config.secret.get_secret_value()
         if not self.config.app_id or not secret:
             logger.error("❌ 未配置 / not configured: QQ app_id/secret")
+            self.mark_ready()
             return
 
         self._running = True
@@ -94,6 +101,7 @@ class QQChannel(BaseChannel):
     async def stop(self) -> None:
         """Stop the QQ bot."""
         self._running = False
+        self.mark_not_ready()
         if self._bot_task:
             self._bot_task.cancel()
             try:

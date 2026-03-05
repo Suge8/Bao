@@ -45,6 +45,28 @@ class TestGatewayStack:
         assert dataclasses.is_dataclass(GatewayStack)
 
 
+def test_startup_system_prompt_keeps_bao_identity() -> None:
+    prompt = mod._build_startup_system_prompt(
+        persona_text="",
+        instructions_text="",
+        preferred_language="中文",
+        channel="feishu",
+        chat_id="ou_123",
+    )
+
+    assert "You are Bao. Keep Bao as your user-facing identity." in prompt
+    assert "Keep Bao as your user-facing identity." in prompt
+    assert "Treat the user line as startup presence signal" in prompt
+    assert "Never acknowledge instructions or metadata" in prompt
+    assert "Follow PERSONA.md for your self-name" in prompt
+    assert "## Runtime (actual host)" in prompt
+    assert "Channel: feishu | Chat: ou_123" in prompt
+
+
+def test_startup_trigger_is_minimal_internal_event() -> None:
+    assert mod._build_startup_trigger() == '{"event":"system.user_online"}'
+
+
 class TestCronCallbackDefensive:
     """Cron callback must catch exceptions and return 'Error: ...' string."""
 
@@ -510,6 +532,56 @@ async def test_startup_greeting_onboarding_desktop_not_blocked_by_external_publi
 
 
 @pytest.mark.asyncio
+async def test_startup_greeting_waits_for_channel_ready_when_provided() -> None:
+    fake_bus = MagicMock()
+    fake_bus.publish_outbound = AsyncMock()
+
+    ready_evt = asyncio.Event()
+
+    class FakeChannels:
+        async def wait_started(self) -> None:
+            return None
+
+        async def wait_ready(self, _name: str) -> None:
+            await ready_evt.wait()
+
+    fake_agent = MagicMock()
+    config = MagicMock()
+    config.workspace_path = "/tmp/test"
+
+    channels = MagicMock()
+    channels.telegram.enabled = False
+    channels.telegram.allow_from = []
+    channels.feishu.enabled = True
+    channels.feishu.allow_from = ["ou_123"]
+    channels.dingtalk.enabled = False
+    channels.dingtalk.allow_from = []
+    channels.imessage.enabled = False
+    channels.imessage.allow_from = []
+    channels.qq.enabled = False
+    channels.qq.allow_from = []
+    channels.email.enabled = False
+    channels.email.allow_from = []
+    channels.whatsapp.enabled = False
+    channels.whatsapp.allow_from = []
+    config.channels = channels
+
+    with (
+        patch("bao.config.onboarding.detect_onboarding_stage", return_value="lang_select"),
+        patch("bao.config.onboarding.LANG_PICKER", "picker"),
+    ):
+        task = asyncio.create_task(
+            send_startup_greeting(fake_agent, fake_bus, config, channels=FakeChannels())
+        )
+        await asyncio.sleep(0)
+        assert fake_bus.publish_outbound.await_count == 0
+        ready_evt.set()
+        await asyncio.wait_for(task, timeout=0.5)
+
+    assert fake_bus.publish_outbound.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_startup_greeting_uses_provider_chat_only() -> None:
     fake_bus = MagicMock()
     fake_bus.publish_outbound = AsyncMock()
@@ -550,14 +622,65 @@ async def test_startup_greeting_uses_provider_chat_only() -> None:
     fake_agent.provider.chat.assert_awaited_once()
     await_args = fake_agent.provider.chat.await_args
     assert await_args is not None
+    assert await_args.kwargs["temperature"] == 0.7
     messages = await_args.kwargs["messages"]
-    assert "Respond in zh" in messages[0]["content"]
-    assert "I just came online. It's" in messages[1]["content"]
+    assert "Respond in 中文" in messages[0]["content"]
+    assert messages[1]["content"] == '{"event":"system.user_online"}'
+    assert "## Runtime (actual host)" in messages[0]["content"]
+    assert "Channel: feishu | Chat: ou_123" in messages[0]["content"]
     fake_agent.process_direct.assert_not_awaited()
     assert fake_bus.publish_outbound.await_count == 1
     outbound = fake_bus.publish_outbound.await_args.args[0]
     assert outbound.channel == "feishu"
     assert outbound.chat_id == "ou_123"
+
+
+@pytest.mark.asyncio
+async def test_startup_greeting_prefers_utility_model_when_configured() -> None:
+    fake_bus = MagicMock()
+    fake_bus.publish_outbound = AsyncMock()
+
+    main_provider = MagicMock()
+    main_provider.chat = AsyncMock(return_value=MagicMock(content="main"))
+
+    utility_provider = MagicMock()
+    utility_provider.chat = AsyncMock(return_value=MagicMock(content="hello"))
+
+    fake_agent = MagicMock()
+    fake_agent.model = "main/model"
+    fake_agent.provider = main_provider
+    fake_agent._utility_provider = utility_provider
+    fake_agent._utility_model = "utility/model"
+    fake_agent.process_direct = AsyncMock(return_value="should-not-be-used")
+
+    config = MagicMock()
+    config.workspace_path = "/tmp/test"
+
+    channels = MagicMock()
+    channels.telegram.enabled = False
+    channels.telegram.allow_from = []
+    channels.feishu.enabled = True
+    channels.feishu.allow_from = ["ou_123"]
+    channels.dingtalk.enabled = False
+    channels.dingtalk.allow_from = []
+    channels.imessage.enabled = False
+    channels.imessage.allow_from = []
+    channels.qq.enabled = False
+    channels.qq.allow_from = []
+    channels.email.enabled = False
+    channels.email.allow_from = []
+    channels.whatsapp.enabled = False
+    channels.whatsapp.allow_from = []
+    config.channels = channels
+
+    with (
+        patch("bao.gateway.builder.asyncio.sleep", new=AsyncMock()),
+        patch("bao.config.onboarding.detect_onboarding_stage", return_value="ready"),
+    ):
+        await send_startup_greeting(fake_agent, fake_bus, config)
+
+    utility_provider.chat.assert_awaited_once()
+    main_provider.chat.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -770,7 +893,7 @@ async def test_startup_greeting_provider_failure_is_isolated() -> None:
         await send_startup_greeting(fake_agent, fake_bus, config)
 
     assert fake_agent.provider.chat.await_count == 2
-    fake_agent.process_direct.assert_awaited_once()
+    fake_agent.process_direct.assert_not_awaited()
     assert fake_bus.publish_outbound.await_count == 2
     outbound = fake_bus.publish_outbound.await_args.args[0]
     assert outbound.channel == "feishu"
@@ -778,7 +901,7 @@ async def test_startup_greeting_provider_failure_is_isolated() -> None:
 
 
 @pytest.mark.asyncio
-async def test_startup_greeting_falls_back_to_process_direct() -> None:
+async def test_startup_greeting_provider_failure_falls_back_to_prompt() -> None:
     fake_bus = MagicMock()
     fake_bus.publish_outbound = AsyncMock()
     fake_agent = MagicMock()
@@ -787,7 +910,7 @@ async def test_startup_greeting_falls_back_to_process_direct() -> None:
     fake_agent.temperature = 0.1
     fake_agent.provider = MagicMock()
     fake_agent.provider.chat = AsyncMock(side_effect=RuntimeError("provider down"))
-    fake_agent.process_direct = AsyncMock(return_value="fallback-hello")
+    fake_agent.process_direct = AsyncMock(return_value="should-not-be-used")
 
     config = MagicMock()
     config.workspace_path = "/tmp/test"
@@ -816,14 +939,62 @@ async def test_startup_greeting_falls_back_to_process_direct() -> None:
         await send_startup_greeting(fake_agent, fake_bus, config)
 
     fake_agent.provider.chat.assert_awaited_once()
-    fake_agent.process_direct.assert_awaited_once()
-    await_args = fake_agent.process_direct.await_args
-    assert await_args is not None
-    kwargs = await_args.kwargs
-    assert kwargs["ephemeral"] is True
-    assert kwargs["channel"] == "feishu"
-    assert kwargs["chat_id"] == "ou_123"
+    fake_agent.process_direct.assert_not_awaited()
     assert fake_bus.publish_outbound.await_count == 1
+    outbound = fake_bus.publish_outbound.await_args.args[0]
+    assert outbound.channel == "feishu"
+    assert outbound.chat_id == "ou_123"
+    assert outbound.content == '{"event":"system.user_online"}'
+
+
+@pytest.mark.asyncio
+async def test_startup_greeting_keeps_model_output_without_audit() -> None:
+    fake_bus = MagicMock()
+    fake_bus.publish_outbound = AsyncMock()
+    fake_agent = MagicMock()
+    fake_agent.model = "right-gpt/gpt-5.3-codex"
+    fake_agent.max_tokens = 4096
+    fake_agent.temperature = 0.1
+    fake_agent.provider = MagicMock()
+    fake_agent.provider.chat = AsyncMock(
+        return_value=MagicMock(content="你是想让我帮你设置提醒吗？")
+    )
+    fake_agent.process_direct = AsyncMock(return_value="should-not-be-used")
+
+    config = MagicMock()
+    config.workspace_path = "/tmp/test"
+
+    channels = MagicMock()
+    channels.telegram.enabled = False
+    channels.telegram.allow_from = []
+    channels.feishu.enabled = True
+    channels.feishu.allow_from = ["ou_123"]
+    channels.dingtalk.enabled = False
+    channels.dingtalk.allow_from = []
+    channels.imessage.enabled = False
+    channels.imessage.allow_from = []
+    channels.qq.enabled = False
+    channels.qq.allow_from = []
+    channels.email.enabled = False
+    channels.email.allow_from = []
+    channels.whatsapp.enabled = False
+    channels.whatsapp.allow_from = []
+    config.channels = channels
+
+    with (
+        patch("bao.gateway.builder.asyncio.sleep", new=AsyncMock()),
+        patch("bao.config.onboarding.detect_onboarding_stage", return_value="ready"),
+        patch("bao.config.onboarding.infer_language", return_value="zh"),
+    ):
+        await send_startup_greeting(fake_agent, fake_bus, config)
+
+    fake_agent.provider.chat.assert_awaited_once()
+    fake_agent.process_direct.assert_not_awaited()
+    assert fake_bus.publish_outbound.await_count == 1
+    outbound = fake_bus.publish_outbound.await_args.args[0]
+    assert outbound.channel == "feishu"
+    assert outbound.chat_id == "ou_123"
+    assert outbound.content == "你是想让我帮你设置提醒吗？"
 
 
 @pytest.mark.asyncio
@@ -877,4 +1048,4 @@ async def test_startup_greeting_uses_explicit_persona_language_tag(tmp_path) -> 
     assert await_args is not None
     messages = await_args.kwargs["messages"]
     assert "Respond in Español" in messages[0]["content"]
-    assert "I just came online. It's" in messages[1]["content"]
+    assert messages[1]["content"] == '{"event":"system.user_online"}'

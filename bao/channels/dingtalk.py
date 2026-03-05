@@ -1,12 +1,13 @@
 """DingTalk/DingDing channel implementation using Stream Mode."""
 
 import asyncio
+import importlib
 import json
 import mimetypes
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
 
 import httpx
@@ -17,73 +18,15 @@ from bao.bus.queue import MessageBus
 from bao.channels.base import BaseChannel
 from bao.config.schema import DingTalkConfig
 
+_dingtalk_available = False
 try:
-    from dingtalk_stream import (
-        AckMessage,
-        CallbackHandler,
-        CallbackMessage,
-        Credential,
-        DingTalkStreamClient,
-    )
-    from dingtalk_stream.chatbot import ChatbotMessage
-
-    DINGTALK_AVAILABLE = True
+    importlib.import_module("dingtalk_stream")
+    importlib.import_module("dingtalk_stream.chatbot")
+    _dingtalk_available = True
 except ImportError:
-    DINGTALK_AVAILABLE = False
-    # Fallback so class definitions don't crash at module level
-    CallbackHandler = object  # type: ignore[assignment,misc]
-    CallbackMessage = None  # type: ignore[assignment,misc]
-    AckMessage = None  # type: ignore[assignment,misc]
-    ChatbotMessage = None  # type: ignore[assignment,misc]
+    pass
 
-
-class baoDingTalkHandler(CallbackHandler):  # noqa: N801
-    """
-    Standard DingTalk Stream SDK Callback Handler.
-    Parses incoming messages and forwards them to the Bao channel.
-    """
-
-    def __init__(self, channel: "DingTalkChannel"):
-        super().__init__()
-        self.channel = channel
-
-    async def process(self, message: CallbackMessage):
-        """Process incoming stream message."""
-        try:
-            # Parse using SDK's ChatbotMessage for robust handling
-            chatbot_msg = ChatbotMessage.from_dict(message.data)
-
-            # Extract text content; fall back to raw dict if SDK object is empty
-            content = ""
-            if chatbot_msg.text:
-                content = chatbot_msg.text.content.strip()
-            if not content:
-                content = message.data.get("text", {}).get("content", "").strip()
-
-            if not content:
-                logger.warning(
-                    "⚠️ 钉钉消息为空 / empty message: {}",
-                    chatbot_msg.message_type,
-                )
-                return AckMessage.STATUS_OK, "OK"
-
-            sender_id = chatbot_msg.sender_staff_id or chatbot_msg.sender_id
-            sender_name = chatbot_msg.sender_nick or "Unknown"
-
-            logger.debug("ℹ️ 钉钉入站消息 / inbound: {} ({}) {}", sender_name, sender_id, content)
-
-            # Forward to Bao via _on_message (non-blocking).
-            # Store reference to prevent GC before task completes.
-            task = asyncio.create_task(self.channel._on_message(content, sender_id, sender_name))
-            self.channel._background_tasks.add(task)
-            task.add_done_callback(self.channel._background_tasks.discard)
-
-            return AckMessage.STATUS_OK, "OK"
-
-        except Exception as e:
-            logger.error("❌ 钉钉消息处理异常 / process error: {}", e)
-            # Return OK to avoid retry loop from DingTalk server
-            return AckMessage.STATUS_OK, "Error"
+DINGTALK_AVAILABLE = _dingtalk_available
 
 
 class DingTalkChannel(BaseChannel):
@@ -113,22 +56,34 @@ class DingTalkChannel(BaseChannel):
         self._token_expiry: float = 0
 
         # Hold references to background tasks to prevent GC
-        self._background_tasks: set[asyncio.Task] = set()
+        self._background_tasks: set[asyncio.Task[Any]] = set()
 
     async def start(self) -> None:
         """Start the DingTalk bot with Stream Mode."""
+        self.mark_not_ready()
         try:
             if not DINGTALK_AVAILABLE:
                 logger.error("❌ 钉钉 SDK 未安装 / sdk missing: pip install dingtalk-stream")
+                self.mark_ready()
                 return
+
+            from dingtalk_stream import (
+                AckMessage,
+                CallbackHandler,
+                Credential,
+                DingTalkStreamClient,
+            )
+            from dingtalk_stream.chatbot import ChatbotMessage
 
             client_secret = self.config.client_secret.get_secret_value()
             if not self.config.client_id or not client_secret:
                 logger.error("❌ 钉钉配置缺失 / config missing: client_id and client_secret")
+                self.mark_ready()
                 return
 
             self._running = True
             self._http = httpx.AsyncClient()
+            self.mark_ready()
 
             logger.info(
                 "📡 钉钉开始连接 / stream init: client_id={}...",
@@ -137,8 +92,51 @@ class DingTalkChannel(BaseChannel):
             credential = Credential(self.config.client_id, client_secret)
             self._client = DingTalkStreamClient(credential)
 
-            # Register standard handler
-            handler = baoDingTalkHandler(self)
+            if TYPE_CHECKING:
+
+                class _Handler(object):
+                    def __init__(self, channel: "DingTalkChannel"):
+                        self.channel = channel
+
+                    async def process(self, message: Any) -> Any:
+                        _ = message
+                        raise NotImplementedError
+
+            else:
+
+                class _Handler(CallbackHandler):
+                    def __init__(self, channel: "DingTalkChannel"):
+                        super().__init__()
+                        self.channel = channel
+
+                    async def process(self, message: Any) -> Any:
+                        try:
+                            raw = getattr(message, "data", None) or {}
+                            chatbot_msg = ChatbotMessage.from_dict(raw)
+                            content = ""
+                            if getattr(chatbot_msg, "text", None):
+                                content = (chatbot_msg.text.content or "").strip()
+                            if not content and isinstance(raw, dict):
+                                content = str(raw.get("text", {}).get("content", "")).strip()
+                            if not content:
+                                return AckMessage.STATUS_OK, "OK"
+                            sender_id = str(
+                                getattr(chatbot_msg, "sender_staff_id", None)
+                                or getattr(chatbot_msg, "sender_id", None)
+                                or ""
+                            )
+                            sender_name = getattr(chatbot_msg, "sender_nick", None) or "Unknown"
+                            task = asyncio.create_task(
+                                self.channel._on_message(content, sender_id, sender_name)
+                            )
+                            self.channel._background_tasks.add(task)
+                            task.add_done_callback(self.channel._background_tasks.discard)
+                            return AckMessage.STATUS_OK, "OK"
+                        except Exception as e:
+                            logger.error("❌ 钉钉消息处理异常 / process error: {}", e)
+                            return AckMessage.STATUS_OK, "Error"
+
+            handler = _Handler(self)
             self._client.register_callback_handler(ChatbotMessage.TOPIC, handler)
 
             logger.info("✅ 钉钉已连接 / stream connected: stream mode started")
@@ -155,10 +153,12 @@ class DingTalkChannel(BaseChannel):
 
         except Exception as e:
             logger.exception("❌ 钉钉启动失败 / start failed: {}", e)
+            self.mark_ready()
 
     async def stop(self) -> None:
         """Stop the DingTalk bot."""
         self._running = False
+        self.mark_not_ready()
         # Close the shared HTTP client
         if self._http:
             await self._http.aclose()

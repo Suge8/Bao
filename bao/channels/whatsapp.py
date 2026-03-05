@@ -37,6 +37,7 @@ class WhatsAppChannel(BaseChannel):
 
     async def start(self) -> None:
         """Start the WhatsApp channel by connecting to the bridge."""
+        self.mark_not_ready()
         import websockets
 
         bridge_url = self.config.bridge_url
@@ -60,6 +61,7 @@ class WhatsAppChannel(BaseChannel):
                         )
                     self._connected = True
                     logger.info("✅ 连接成功 / connected: WhatsApp bridge")
+                    self.mark_ready()
 
                     # Listen for messages
                     async for message in ws:
@@ -73,6 +75,7 @@ class WhatsAppChannel(BaseChannel):
             except Exception as e:
                 self._connected = False
                 self._ws = None
+                self.mark_not_ready()
                 logger.warning("⚠️ 连接异常 / connection error: {}", e)
 
                 if self._running:
@@ -84,6 +87,7 @@ class WhatsAppChannel(BaseChannel):
         self._progress.clear_all()
         self._running = False
         self._connected = False
+        self.mark_not_ready()
         if self._ws:
             await self._ws.close()
             self._ws = None

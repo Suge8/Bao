@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from typing import Any
 
 from loguru import logger
 from telegram import BotCommand, ReplyParameters, Update
@@ -26,7 +27,7 @@ def _markdown_to_telegram_html(text: str) -> str:
     # 1. Extract and protect code blocks (preserve content from other processing)
     code_blocks: list[str] = []
 
-    def save_code_block(m: re.Match) -> str:
+    def save_code_block(m: re.Match[str]) -> str:
         code_blocks.append(m.group(1))
         return f"\x00CB{len(code_blocks) - 1}\x00"
 
@@ -35,7 +36,7 @@ def _markdown_to_telegram_html(text: str) -> str:
     # 2. Extract and protect inline code
     inline_codes: list[str] = []
 
-    def save_inline_code(m: re.Match) -> str:
+    def save_inline_code(m: re.Match[str]) -> str:
         inline_codes.append(m.group(1))
         return f"\x00IC{len(inline_codes) - 1}\x00"
 
@@ -129,17 +130,19 @@ class TelegramChannel(BaseChannel):
         super().__init__(config, bus)
         self.config: TelegramConfig = config
         self.groq_api_key = groq_api_key
-        self._app: Application | None = None
+        self._app: Any = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
-        self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
+        self._typing_tasks: dict[str, asyncio.Task[None]] = {}  # chat_id -> typing loop task
         self._media_group_buffers: dict[str, list[dict[str, object]]] = {}
-        self._media_group_tasks: dict[str, asyncio.Task] = {}
+        self._media_group_tasks: dict[str, asyncio.Task[None]] = {}
 
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
+        self.mark_not_ready()
         token = self.config.token.get_secret_value()
         if not token:
             logger.error("❌ 未配置 / not configured: Telegram token")
+            self.mark_ready()
             return
 
         self._running = True
@@ -187,6 +190,7 @@ class TelegramChannel(BaseChannel):
         # Get bot info and register command menu
         bot_info = await app.bot.get_me()
         logger.info("✅ 连接成功 / connected: @{}", bot_info.username)
+        self.mark_ready()
 
         try:
             await app.bot.set_my_commands(self.BOT_COMMANDS)
@@ -195,7 +199,9 @@ class TelegramChannel(BaseChannel):
             logger.warning("⚠️ 注册失败 / register failed: {}", e)
 
         # Start polling (this runs until stopped)
-        await app.updater.start_polling(
+        updater = app.updater
+        assert updater is not None
+        await updater.start_polling(
             allowed_updates=["message"],
             drop_pending_updates=True,  # Ignore old messages on startup
         )
@@ -207,6 +213,7 @@ class TelegramChannel(BaseChannel):
     async def stop(self) -> None:
         """Stop the Telegram bot."""
         self._running = False
+        self.mark_not_ready()
 
         # Cancel all typing indicators
         for chat_id in list(self._typing_tasks):
@@ -224,7 +231,9 @@ class TelegramChannel(BaseChannel):
         if self._app:
             app = self._app
             logger.info("📡 停止通道 / stopping: Telegram bot")
-            await app.updater.stop()
+            updater = getattr(app, "updater", None)
+            if updater is not None:
+                await updater.stop()
             await app.stop()
             await app.shutdown()
             self._app = None

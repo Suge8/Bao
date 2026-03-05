@@ -31,11 +31,14 @@ class IMessageChannel(BaseChannel):
         self._progress = ProgressBuffer(self._send_text)
 
     async def start(self) -> None:
+        self.mark_not_ready()
         if not CHAT_DB.exists():
             logger.error("❌ iMessage 数据库缺失 / db missing: need Full Disk Access")
+            self.mark_ready()
             return
         self._running = True
         self._last_rowid = self._get_max_rowid()
+        self.mark_ready()
         if self._last_rowid == 0:
             logger.warning(
                 "⚠️ iMessage 无法读库 / db unreadable: ROWID=0, grant Full Disk Access for {}",
@@ -52,6 +55,7 @@ class IMessageChannel(BaseChannel):
     async def stop(self) -> None:
         self._progress.clear_all()
         self._running = False
+        self.mark_not_ready()
 
     async def send(self, msg: OutboundMessage) -> None:
         meta = msg.metadata or {}

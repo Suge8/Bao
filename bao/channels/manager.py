@@ -29,6 +29,7 @@ class ChannelManager:
         self.bus = bus
         self.channels: dict[str, BaseChannel] = {}
         self._dispatch_task: asyncio.Task[None] | None = None
+        self._started = asyncio.Event()
 
         self._init_channels()
 
@@ -165,6 +166,7 @@ class ChannelManager:
         """Start all channels and the outbound dispatcher."""
         if not self.channels:
             logger.warning("⚠️ 通道为空 / no channels: enabled=0")
+            self._started.set()
             return
 
         # Start outbound dispatcher
@@ -176,8 +178,19 @@ class ChannelManager:
             logger.info("📡 启动通道 / starting: {}", name)
             tasks.append(asyncio.create_task(self._start_channel(name, channel)))
 
+        self._started.set()
+
         # Wait for all to complete (they should run forever)
         await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def wait_started(self) -> None:
+        await self._started.wait()
+
+    async def wait_ready(self, name: str) -> None:
+        channel = self.channels.get(name)
+        if not channel:
+            return
+        await channel.wait_ready()
 
     async def stop_all(self) -> None:
         """Stop all channels and the dispatcher."""

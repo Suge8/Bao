@@ -16,6 +16,20 @@ from bao.bus.queue import MessageBus
 from bao.channels.base import BaseChannel
 from bao.config.schema import FeishuConfig
 
+lark: Any = None
+CreateFileRequest: Any = None
+CreateFileRequestBody: Any = None
+CreateImageRequest: Any = None
+CreateImageRequestBody: Any = None
+CreateMessageReactionRequest: Any = None
+CreateMessageReactionRequestBody: Any = None
+CreateMessageRequest: Any = None
+CreateMessageRequestBody: Any = None
+Emoji: Any = None
+GetFileRequest: Any = None
+GetMessageResourceRequest: Any = None
+
+_feishu_available = False
 try:
     import lark_oapi as lark
     from lark_oapi.api.im.v1 import (
@@ -30,14 +44,13 @@ try:
         Emoji,
         GetFileRequest,
         GetMessageResourceRequest,
-        P2ImMessageReceiveV1,
     )
 
-    FEISHU_AVAILABLE = True
+    _feishu_available = True
 except ImportError:
-    FEISHU_AVAILABLE = False
-    lark = None
-    Emoji = None
+    pass
+
+FEISHU_AVAILABLE = _feishu_available
 
 # Message type display mapping
 MSG_TYPE_MAP = {
@@ -48,7 +61,7 @@ MSG_TYPE_MAP = {
 }
 
 
-def _extract_share_card_content(content_json: dict, msg_type: str) -> str:
+def _extract_share_card_content(content_json: dict[str, Any], msg_type: str) -> str:
     """Extract text representation from share cards and interactive messages."""
     parts = []
 
@@ -68,7 +81,7 @@ def _extract_share_card_content(content_json: dict, msg_type: str) -> str:
     return "\n".join(parts) if parts else f"[{msg_type}]"
 
 
-def _extract_interactive_content(content: dict) -> list[str]:
+def _extract_interactive_content(content: dict[str, Any]) -> list[str]:
     """Recursively extract text and links from interactive card content."""
     parts = []
 
@@ -114,7 +127,7 @@ def _extract_interactive_content(content: dict) -> list[str]:
     return parts
 
 
-def _extract_element_content(element: dict) -> list[str]:
+def _extract_element_content(element: dict[str, Any]) -> list[str]:
     """Extract content from a single card element."""
     parts = []
 
@@ -187,7 +200,7 @@ def _extract_element_content(element: dict) -> list[str]:
     return parts
 
 
-def _extract_post_text(content_json: dict) -> str:
+def _extract_post_text(content_json: dict[str, Any]) -> str:
     """Extract plain text from Feishu post (rich text) message content.
 
     Supports two formats:
@@ -270,8 +283,10 @@ class FeishuChannel(BaseChannel):
 
     async def start(self) -> None:
         """Start the Feishu bot with WebSocket long connection."""
+        self.mark_not_ready()
         if not FEISHU_AVAILABLE:
             logger.error("❌ 飞书SDK缺失 / sdk missing: pip install lark-oapi")
+            self.mark_ready()
             return
 
         app_secret = self.config.app_secret.get_secret_value()
@@ -280,6 +295,7 @@ class FeishuChannel(BaseChannel):
 
         if not self.config.app_id or not app_secret:
             logger.error("❌ 飞书配置缺失 / config missing: app_id and app_secret")
+            self.mark_ready()
             return
 
         self._running = True
@@ -293,6 +309,7 @@ class FeishuChannel(BaseChannel):
             .log_level(lark.LogLevel.INFO)
             .build()
         )
+        self.mark_ready()
 
         # Create event handler (only register message receive, ignore other events)
         event_handler = (
@@ -337,6 +354,7 @@ class FeishuChannel(BaseChannel):
     async def stop(self) -> None:
         """Stop the Feishu bot."""
         self._running = False
+        self.mark_not_ready()
         ws_client = self._ws_client
         if ws_client and hasattr(ws_client, "stop"):
             try:
@@ -399,7 +417,7 @@ class FeishuChannel(BaseChannel):
     _CODE_BLOCK_RE = re.compile(r"(```[\s\S]*?```)", re.MULTILINE)
 
     @staticmethod
-    def _parse_md_table(table_text: str) -> dict | None:
+    def _parse_md_table(table_text: str) -> dict[str, Any] | None:
         """Parse a markdown table into a Feishu table element."""
         lines = [line.strip() for line in table_text.strip().split("\n") if line.strip()]
         if len(lines) < 3:
@@ -423,7 +441,7 @@ class FeishuChannel(BaseChannel):
             ],
         }
 
-    def _build_card_elements(self, content: str) -> list[dict]:
+    def _build_card_elements(self, content: str) -> list[dict[str, Any]]:
         """Split content into div/markdown + table elements for Feishu card."""
         elements, last_end = [], 0
         for m in self._TABLE_RE.finditer(content):
@@ -439,7 +457,7 @@ class FeishuChannel(BaseChannel):
             elements.extend(self._split_headings(remaining))
         return elements or [{"tag": "markdown", "content": content}]
 
-    def _split_headings(self, content: str) -> list[dict]:
+    def _split_headings(self, content: str) -> list[dict[str, Any]]:
         """Split content by headings, converting headings to div elements."""
         protected = content
         code_blocks = []
@@ -600,7 +618,7 @@ class FeishuChannel(BaseChannel):
     async def _download_and_save_media(
         self,
         msg_type: str,
-        content_json: dict,
+        content_json: dict[str, Any],
         message_id: str | None = None,
     ) -> tuple[str | None, str]:
         """Download media from Feishu and save to local disk.
@@ -730,7 +748,7 @@ class FeishuChannel(BaseChannel):
         except Exception as e:
             logger.error("❌ 飞书发送异常 / send error: {}", e)
 
-    def _on_message_sync(self, data: "P2ImMessageReceiveV1") -> None:
+    def _on_message_sync(self, data: Any) -> None:
         """
         Sync handler for incoming messages (called from WebSocket thread).
         Schedules async handling in the main event loop.
@@ -741,7 +759,7 @@ class FeishuChannel(BaseChannel):
             except RuntimeError:
                 logger.debug("Feishu: event loop closed, dropping message")
 
-    async def _on_message(self, data: "P2ImMessageReceiveV1") -> None:
+    async def _on_message(self, data: Any) -> None:
         """Handle incoming message from Feishu."""
         try:
             if not self._running:
@@ -767,10 +785,10 @@ class FeishuChannel(BaseChannel):
             if sender.sender_type == "bot":
                 return
 
-            sender_id = sender.sender_id.open_id if sender.sender_id else "unknown"
-            chat_id = message.chat_id
-            chat_type = message.chat_type
-            msg_type = message.message_type
+            sender_id = str(sender.sender_id.open_id) if sender.sender_id else "unknown"
+            chat_id = str(message.chat_id or "")
+            chat_type = str(message.chat_type or "")
+            msg_type = str(message.message_type or "")
 
             # Add reaction
             await self._add_reaction(message_id, self.config.react_emoji)

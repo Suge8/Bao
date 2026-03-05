@@ -1,5 +1,6 @@
 """Base channel interface for chat platforms."""
 
+import asyncio
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -30,6 +31,7 @@ class BaseChannel(ABC):
         self.config = config
         self.bus = bus
         self._running = False
+        self._ready = asyncio.Event()
 
     @abstractmethod
     async def start(self) -> None:
@@ -126,3 +128,12 @@ class BaseChannel(ABC):
     def is_running(self) -> bool:
         """Check if the channel is running."""
         return self._running
+
+    def mark_ready(self) -> None:
+        self._ready.set()
+
+    def mark_not_ready(self) -> None:
+        self._ready.clear()
+
+    async def wait_ready(self) -> None:
+        await self._ready.wait()

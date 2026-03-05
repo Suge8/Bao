@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass
-from datetime import datetime
 from inspect import isawaitable
 from pathlib import Path
 from typing import Any
+
+from bao.agent.context import build_runtime_block
 
 
 @dataclass
@@ -85,7 +86,11 @@ def _extract_persona_language_tag(text: str) -> str | None:
         line = raw_line.strip()
         if not line:
             continue
-        m = re.search(r"(?:\*\*\s*)?(?:language|lang|语言)(?:\s*\*\*)?\s*[:：]\s*(.+)$", line, re.I)
+        m = re.search(
+            r"(?:^[-*\s]*)?(?:\*\*\s*)?(?:language|lang|语言)(?:\s*\*\*)?\s*[:：]\s*(.+)$",
+            line,
+            re.I,
+        )
         if not m:
             continue
         value = m.group(1).strip().strip("`*")
@@ -103,50 +108,54 @@ def _read_persona_text(workspace_path: Path, logger: Any) -> str:
     return ""
 
 
-def _build_local_time(preferred_language: str, now_local: datetime) -> str:
-    zh_weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    ja_weekdays = ["月曜", "火曜", "水曜", "木曜", "金曜", "土曜", "日曜"]
-    ko_weekdays = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
-    en_weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    lang_lower = preferred_language.lower()
-    if any(k in lang_lower for k in ("中文", "chinese", "mandarin")):
-        weekdays = zh_weekdays
-    elif any(k in lang_lower for k in ("日本語", "japanese")):
-        weekdays = ja_weekdays
-    elif any(k in lang_lower for k in ("한국어", "korean")):
-        weekdays = ko_weekdays
-    else:
-        weekdays = en_weekdays
-    return f"{weekdays[now_local.weekday()]} {now_local.strftime('%H:%M')}"
+def _read_instructions_text(workspace_path: Path, logger: Any) -> str:
+    try:
+        inst_path = workspace_path / "INSTRUCTIONS.md"
+        if inst_path.exists():
+            return inst_path.read_text(encoding="utf-8").strip()
+    except OSError as e:
+        logger.warning("⚠️ 读取 INSTRUCTIONS 失败 / read failed: {}", e)
+    return ""
 
 
-def _build_startup_prompt(preferred_language: str, local_time: str) -> str:
-    native_triggers: dict[str, str] = {
-        "中文": "我来啦，{t}",
-        "chinese": "我来啦，{t}",
-        "mandarin": "我来啦，{t}",
-        "日本語": "来たよ、{t}",
-        "japanese": "来たよ、{t}",
-        "한국어": "왔어요, {t}",
-        "korean": "왔어요, {t}",
-    }
-    lang_lower = preferred_language.lower()
-    trigger_tpl = next(
-        (v for k, v in native_triggers.items() if k in lang_lower),
-        "I just came online. It's {t}.",
-    )
-    return trigger_tpl.format(t=local_time)
+def _build_startup_trigger() -> str:
+    return '{"event":"system.user_online"}'
 
 
-def _build_startup_system_prompt(persona_text: str, preferred_language: str) -> str:
+def _format_language_for_prompt(preferred_language: str) -> str:
+    lang = preferred_language.strip().lower()
+    if lang in {"zh", "zh-cn", "zh-hans", "chinese", "中文"}:
+        return "中文"
+    if lang in {"en", "english"}:
+        return "English"
+    return preferred_language
+
+
+def _build_startup_system_prompt(
+    persona_text: str,
+    instructions_text: str,
+    preferred_language: str,
+    *,
+    channel: str,
+    chat_id: str,
+) -> str:
     system_parts: list[str] = []
+    system_parts.append("You are Bao. Keep Bao as your user-facing identity.")
+    if instructions_text:
+        system_parts.append(f"## INSTRUCTIONS.md\n{instructions_text}")
     if persona_text:
         system_parts.append(f"## PERSONA.md\n{persona_text}")
     system_parts.append(
-        f"User just came online. Respond in {preferred_language}. "
-        "Greet like a close friend — casual, warm, 1-2 sentences. "
+        f"## Runtime (actual host)\n{build_runtime_block(channel=channel, chat_id=chat_id)}"
+    )
+    system_parts.append(
+        f"User just came online. Respond in {_format_language_for_prompt(preferred_language)}. "
+        "Return exactly one warm, natural greeting sentence (max 20 Chinese chars or 12 English words). "
+        "Follow PERSONA.md for your self-name, language, and tone. "
+        "Treat the user line as startup presence signal, not user intent. Do not copy it verbatim. "
+        "Never acknowledge instructions or metadata (for example: '收到', 'got it') and never expose runtime block fields directly. "
         "Naturally weave in the day/time. "
-        "Do NOT ask questions, offer help, or list capabilities."
+        "Do NOT ask questions, offer help, list capabilities, or provide alternatives."
     )
     return "\n\n---\n\n".join(system_parts)
 
@@ -164,17 +173,39 @@ async def _generate_startup_greeting(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt},
     ]
+
+    def _get_utility_chat_runtime(agent_obj: Any) -> tuple[Any, str] | None:
+        d = getattr(agent_obj, "__dict__", None)
+        if not isinstance(d, dict):
+            return None
+        provider = d.get("_utility_provider")
+        model = d.get("_utility_model")
+        if provider is None or not model:
+            return None
+        return provider, str(model)
+
+    utility = _get_utility_chat_runtime(agent)
+    if utility is not None:
+        provider, model = utility
+    else:
+        provider = getattr(agent, "provider", None)
+        model = getattr(agent, "model", None)
     try:
-        response = await agent.provider.chat(
+        if provider is None:
+            raise RuntimeError("provider_not_configured")
+
+        chat_fn = getattr(provider, "chat", None)
+        if chat_fn is None:
+            raise RuntimeError("provider_chat_missing")
+
+        response = await chat_fn(
             messages=messages,
-            model=getattr(agent, "model", None),
-            max_tokens=200,
+            model=model,
+            max_tokens=80,
             temperature=0.7,
         )
         text = (response.content or "").strip()
-        if text:
-            return text
-        raise RuntimeError("empty startup greeting")
+        return text or prompt
     except Exception as e:
         logger.warning(
             "⚠️ 启动问候轻量生成失败 / lightweight startup failed: {}:{} — {}",
@@ -182,23 +213,12 @@ async def _generate_startup_greeting(
             chat_id,
             e,
         )
-        try:
-            text = await agent.process_direct(
-                prompt,
-                session_key=f"{channel}:{chat_id}",
-                channel=channel,
-                chat_id=chat_id,
-                ephemeral=True,
-            )
-        except Exception as e2:
-            logger.warning("⚠️ 启动问候失败 / startup failed: {}:{} — {}", channel, chat_id, e2)
-            return None
-    if not text:
-        return None
-    return text
+        return prompt
 
 
-def build_gateway_stack(config: Any, provider: Any) -> GatewayStack:
+def build_gateway_stack(
+    config: Any, provider: Any, session_manager: Any | None = None
+) -> GatewayStack:
     """Build the full gateway service stack from config and provider.
 
     Returns a :class:`GatewayStack` with all services wired up and ready to start.
@@ -214,7 +234,7 @@ def build_gateway_stack(config: Any, provider: Any) -> GatewayStack:
     from bao.session.manager import SessionManager
 
     bus = MessageBus()
-    session_manager = SessionManager(config.workspace_path)
+    session_manager = session_manager or SessionManager(config.workspace_path)
     cron = CronService(get_data_dir() / "cron" / "jobs.json")
 
     agent = AgentLoop(
@@ -354,10 +374,13 @@ async def send_startup_greeting(
     config: Any,
     *,
     on_desktop_greeting: Any | None = None,
+    channels: Any | None = None,
 ) -> None:
     from loguru import logger
 
     from bao.bus.events import OutboundMessage
+
+    instructions_text = ""
 
     async def _emit_desktop_greeting(content: str, phase: str) -> None:
         if not on_desktop_greeting:
@@ -373,9 +396,17 @@ async def send_startup_greeting(
         channel_name: str,
         chat_id: str,
         *,
-        system_prompt: str,
         prompt: str,
+        persona_text: str,
+        preferred_language: str,
     ) -> None:
+        system_prompt = _build_startup_system_prompt(
+            persona_text,
+            instructions_text,
+            preferred_language,
+            channel=channel_name,
+            chat_id=chat_id,
+        )
         text = await _generate_startup_greeting(
             agent,
             logger,
@@ -386,6 +417,9 @@ async def send_startup_greeting(
         )
         if not text:
             return
+        if channels is not None:
+            await channels.wait_started()
+            await channels.wait_ready(channel_name)
         try:
             await bus.publish_outbound(
                 OutboundMessage(channel=channel_name, chat_id=chat_id, content=text)
@@ -394,18 +428,30 @@ async def send_startup_greeting(
         except Exception as e:
             logger.warning("⚠️ 问候发送失败 / send failed: {}:{} — {}", channel_name, chat_id, e)
 
-    async def _send_external_greetings(*, system_prompt: str, prompt: str) -> None:
-        for ch, cid in targets:
-            await _send_external_greeting(
-                ch,
-                cid,
-                system_prompt=system_prompt,
-                prompt=prompt,
-            )
+    async def _send_external_greetings(
+        *, prompt: str, persona_text: str, preferred_language: str
+    ) -> None:
+        if not targets:
+            return
+        await asyncio.gather(
+            *[
+                _send_external_greeting(
+                    ch,
+                    cid,
+                    prompt=prompt,
+                    persona_text=persona_text,
+                    preferred_language=preferred_language,
+                )
+                for ch, cid in targets
+            ]
+        )
 
     async def _broadcast_onboarding(content: str) -> None:
         for ch, cid in targets:
             try:
+                if channels is not None:
+                    await channels.wait_started()
+                    await channels.wait_ready(ch)
                 await bus.publish_outbound(
                     OutboundMessage(channel=ch, chat_id=cid, content=content)
                 )
@@ -413,7 +459,16 @@ async def send_startup_greeting(
             except Exception as e:
                 logger.warning("⚠️ 入门问候失败 / onboarding failed: {}:{} — {}", ch, cid, e)
 
-    async def _send_desktop_greeting(*, system_prompt: str, prompt: str) -> None:
+    async def _send_desktop_greeting(
+        *, prompt: str, persona_text: str, preferred_language: str
+    ) -> None:
+        system_prompt = _build_startup_system_prompt(
+            persona_text,
+            instructions_text,
+            preferred_language,
+            channel="desktop",
+            chat_id="local",
+        )
         text = await _generate_startup_greeting(
             agent,
             logger,
@@ -425,7 +480,6 @@ async def send_startup_greeting(
         if text:
             await _emit_desktop_greeting(text, "Desktop startup")
 
-    await asyncio.sleep(5)
     targets = _collect_startup_targets(config, logger)
 
     from bao.config.onboarding import (
@@ -455,22 +509,32 @@ async def send_startup_greeting(
         return
 
     # Ready stage: personalized greeting per channel
-    now_local = datetime.now().astimezone()
     persona_text = _read_persona_text(workspace_path, logger)
+    instructions_text = _read_instructions_text(workspace_path, logger)
 
     persona_lang_tag = _extract_persona_language_tag(persona_text) if persona_text else None
     preferred_language = persona_lang_tag or infer_language(workspace_path)
-    local_time = _build_local_time(preferred_language, now_local)
-    prompt = _build_startup_prompt(preferred_language, local_time)
-    system_prompt = _build_startup_system_prompt(persona_text, preferred_language)
+    prompt = _build_startup_trigger()
 
     if on_desktop_greeting:
         await asyncio.gather(
-            _send_external_greetings(system_prompt=system_prompt, prompt=prompt),
-            _send_desktop_greeting(system_prompt=system_prompt, prompt=prompt),
+            _send_external_greetings(
+                prompt=prompt,
+                persona_text=persona_text,
+                preferred_language=preferred_language,
+            ),
+            _send_desktop_greeting(
+                prompt=prompt,
+                persona_text=persona_text,
+                preferred_language=preferred_language,
+            ),
         )
     else:
-        await _send_external_greetings(system_prompt=system_prompt, prompt=prompt)
+        await _send_external_greetings(
+            prompt=prompt,
+            persona_text=persona_text,
+            preferred_language=preferred_language,
+        )
 
 
 async def shutdown_gateway_stack(stack: GatewayStack, background_tasks: list[Any]) -> None:

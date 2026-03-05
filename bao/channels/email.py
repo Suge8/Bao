@@ -60,16 +60,20 @@ class EmailChannel(BaseChannel):
 
     async def start(self) -> None:
         """Start polling IMAP for inbound emails."""
+        self.mark_not_ready()
         if not self.config.consent_granted:
             logger.warning(
                 "⚠️ 邮件通道未授权 / consent missing: set channels.email.consentGranted=true"
             )
+            self.mark_ready()
             return
 
         if not self._validate_config():
+            self.mark_ready()
             return
 
         self._running = True
+        self.mark_ready()
         logger.info("📡 邮件通道启动 / channel start: IMAP polling mode")
 
         poll_seconds = max(5, int(self.config.poll_interval_seconds))
@@ -100,6 +104,7 @@ class EmailChannel(BaseChannel):
     async def stop(self) -> None:
         """Stop polling loop."""
         self._running = False
+        self.mark_not_ready()
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send email via SMTP."""

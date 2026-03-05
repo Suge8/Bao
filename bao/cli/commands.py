@@ -119,7 +119,9 @@ def run_gateway(port: int, verbose: bool) -> None:
             await asyncio.gather(
                 stack.agent.run(),
                 stack.channels.start_all(),
-                send_startup_greeting(stack.agent, stack.bus, stack.config),
+                send_startup_greeting(
+                    stack.agent, stack.bus, stack.config, channels=stack.channels
+                ),
             )
         except KeyboardInterrupt:
             console.print("\n👋 正在关闭 / Shutting down...")
