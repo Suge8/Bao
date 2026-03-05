@@ -294,7 +294,9 @@ def test_run_agent_loop_blocks_tool_not_exposed_for_turn(tmp_path: Path) -> None
                 return LLMResponse(
                     content="tools",
                     tool_calls=[
-                        ToolCallRequest(id="tc-1", name="read_file", arguments={"path": "x"})
+                        ToolCallRequest(
+                            id="tc-1", name="web_fetch", arguments={"url": "https://example.com"}
+                        )
                     ],
                     finish_reason="tool_calls",
                 )

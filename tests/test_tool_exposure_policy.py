@@ -80,6 +80,16 @@ def test_auto_code_signal_includes_code_tools(tmp_path: Path) -> None:
     assert "web_fetch" not in selected
 
 
+def test_core_bundle_includes_filesystem_tools(tmp_path: Path) -> None:
+    loop = _make_loop(tmp_path, mode="auto", bundles=["core"])
+    selected = loop._select_tool_names_for_turn(_msgs("你好"))
+    assert selected is not None
+    assert "read_file" in selected
+    assert "write_file" in selected
+    assert "edit_file" in selected
+    assert "list_dir" in selected
+
+
 def test_auto_code_only_bundle_excludes_web(tmp_path: Path) -> None:
     loop = _make_loop(tmp_path, mode="auto", bundles=["core", "code"])
     selected = loop._select_tool_names_for_turn(

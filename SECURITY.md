@@ -20,6 +20,11 @@
 
 > **生产环境强烈建议启用此选项。**
 
+补充说明：
+
+- `toolExposure` 只影响“哪些工具对模型可见”，不改变工具执行层的权限与路径校验。
+- 目前文件系统工具（`read_file` / `write_file` / `edit_file` / `list_dir`）属于 core 工具集，默认可见；如需收敛风险，请优先启用 `restrictToWorkspace`。
+
 ### 2. 渠道访问控制 (`allowFrom`)
 
 通过用户白名单限制谁能与你的 Bot 对话。
