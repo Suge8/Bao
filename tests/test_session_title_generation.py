@@ -171,3 +171,33 @@ async def test_process_message_triggers_title_generation_beyond_second_turn(
         await asyncio.sleep(0)
 
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_process_message_keeps_trying_title_generation_after_sixth_turn(
+    tmp_path: Path,
+) -> None:
+    loop = _make_loop(tmp_path)
+
+    async def _fake_run_agent_loop(initial_messages: list[dict[str, Any]], **kwargs: Any):
+        del initial_messages, kwargs
+        return "ok", [], [], 0, [], False, False, []
+
+    loop._run_agent_loop = _fake_run_agent_loop
+    loop._maybe_learn_experience = lambda **kwargs: None
+
+    calls = 0
+
+    async def _fake_generate_title(_session: Any) -> None:
+        nonlocal calls
+        calls += 1
+
+    loop._generate_session_title = _fake_generate_title
+
+    for idx in range(7):
+        msg = InboundMessage(channel="telegram", sender_id="u", chat_id="1", content=f"msg-{idx}")
+        out = await loop._process_message(msg)
+        assert out is not None
+        await asyncio.sleep(0)
+
+    assert calls == 7

@@ -2225,12 +2225,7 @@ class AgentLoop:
 
         self.sessions.save(session)
 
-        user_turns = sum(1 for m in session.messages if m["role"] == "user")
-        if (
-            not session.metadata.get("title")
-            and user_turns <= 6
-            and session.key not in self._title_generation_inflight
-        ):
+        if not session.metadata.get("title") and session.key not in self._title_generation_inflight:
             self._title_generation_inflight.add(session.key)
 
             async def _generate_and_clear_title() -> None:

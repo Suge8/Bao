@@ -293,7 +293,7 @@ bao
 | **Gemini**      | Gemini 全系列                                                                                                    | `gemini/gemini-2.0-flash-exp`             |
 | **Codex OAuth** | 通过 ChatGPT 订阅 OAuth 认证，无需 API Key                                                                      | `openai-codex/gpt-5.1-codex`             |
 
-Provider 名称可自定义（如 `my-proxy/claude-sonnet-4-6`），前缀自动剥离。所有 Provider 类型均支持第三方代理，SDK 兼容性自动处理。OpenAI 兼容端点默认自动探测并切换 Responses / Chat Completions（无需配置 `apiMode`）。
+Provider 名称可自定义（如 `my-proxy/claude-sonnet-4-6`），前缀自动剥离。所有 Provider 类型均支持第三方代理，SDK 兼容性自动处理。OpenAI 兼容端点默认自动探测并切换 Responses / Chat Completions（无需配置 `apiMode`）。此外，OpenAI / Anthropic / Gemini 的 `apiBase` 支持自动补全：缺版本段（如 `v1` / `v1beta`）会按 Provider 默认规则补齐；若已包含完整 endpoint（如 OpenAI `chat/completions`、Anthropic `messages`、Gemini `models`），会先规范为对应版本 base，避免重复拼接。
 
 `agents.defaults.reasoningEffort` 支持 `off` / `low` / `medium` / `high`。`off` 会显式关闭推理/思考扩展（Anthropic/Gemini 不发送 thinking，OpenAI/Codex 不发送 reasoning）；`low` / `medium` / `high` 时，Anthropic 映射为 `thinking.budget_tokens`（`2048` / `4096` / `8192`）并使用 `thinking.type="adaptive"`，Gemini 映射为 `1024` / `2048` / `4096`，OpenAI/Codex 透传 effort。未设置时，对支持 thinking 的 Claude 仍默认 `adaptive + 1024`。
 
@@ -368,7 +368,7 @@ docker compose logs -f --tail=100 bao-gateway
 
 `/new` 触发旧会话整合时带有去重签名（消息总数 + 尾消息时间戳），同一快照不会重复归档，避免 history 摘要噪音。
 
-会话标题会在首个或第二个用户轮次后异步生成：过滤问候语后，基于首个非问候用户消息及其后续助手回复生成；失败时回退为用户文本截断。
+会话标题会在会话仍无标题时异步生成（无固定轮次窗口）：过滤问候语后，基于首个非问候用户消息及其后续助手回复生成；失败时回退为用户文本截断。
 同会话新消息默认走协作式软中断（流式阶段 + 工具边界，优先处理新消息）；`/stop` 保留为硬中断。
 
 ## 🖥️ CLI
@@ -713,7 +713,7 @@ Covers 99% of what's out there, plus an OAuth option.
 | **Gemini**            | Full Gemini lineup                                                                                                         | `gemini/gemini-2.0-flash-exp`             |
 | **Codex OAuth**       | Auth via ChatGPT subscription, no API Key needed                                                                           | `openai-codex/gpt-5.1-codex`             |
 
-Provider names are customizable — model prefixes are auto-stripped. All provider types support third-party proxies with automatic SDK compatibility. OpenAI-compatible endpoints automatically detect and switch between Responses and Chat Completions (no `apiMode` config needed).
+Provider names are customizable — model prefixes are auto-stripped. All provider types support third-party proxies with automatic SDK compatibility. OpenAI-compatible endpoints automatically detect and switch between Responses and Chat Completions (no `apiMode` config needed). In addition, `apiBase` for OpenAI / Anthropic / Gemini is auto-normalized: missing version segments (for example `v1` / `v1beta`) are filled using provider defaults, and full endpoint inputs (such as OpenAI `chat/completions`, Anthropic `messages`, Gemini `models`) are normalized back to version base to avoid duplicate path concatenation.
 
 `agents.defaults.reasoningEffort` accepts `off` / `low` / `medium` / `high`. `off` explicitly disables extra reasoning/thinking paths (Anthropic/Gemini send no thinking config, OpenAI/Codex send no reasoning field). For `low` / `medium` / `high`, Anthropic maps to `thinking.budget_tokens` (`2048` / `4096` / `8192`) with `thinking.type="adaptive"`, Gemini maps to `1024` / `2048` / `4096`, and OpenAI/Codex pass effort through. When unset, thinking-capable Claude models still default to `adaptive + 1024`.
 
@@ -788,7 +788,7 @@ Available across all platforms:
 
 `/new` now deduplicates archive-all consolidation using a lightweight snapshot signature (message count + tail timestamp), preventing duplicate history summaries for unchanged sessions.
 
-Session titles are generated asynchronously after the first or second user turn: greetings are filtered, then the first non-greeting user message is paired with its following assistant reply; if generation fails, it falls back to truncated user text.
+Session titles are generated asynchronously whenever a session still has no title (no fixed turn window): greetings are filtered, then the first non-greeting user message is paired with its following assistant reply; if generation fails, it falls back to truncated user text.
 New messages in the same session use cooperative soft interruption by default (stream phase + tool boundary); `/stop` remains a hard interrupt.
 
 ### 🖥️ CLI

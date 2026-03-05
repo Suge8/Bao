@@ -31,31 +31,80 @@ _VALID_PROVIDER_TYPES = frozenset({"openai", "openai_codex", "anthropic", "gemin
 _VERSION_SEGMENT_RE = re.compile(r"^v\d+(?:[a-z0-9-]*)?$", re.IGNORECASE)
 
 
-def _normalize_openai_api_base(api_base: str | None, default_api_base: str | None) -> str:
+def _split_path_segments(path: str) -> list[str]:
+    return [seg for seg in path.split("/") if seg]
+
+
+def _trim_suffix_segments(
+    path_segments: list[str],
+    suffixes: tuple[tuple[str, ...], ...],
+) -> list[str]:
+    lowered = [seg.lower() for seg in path_segments]
+    for suffix in sorted(suffixes, key=len, reverse=True):
+        if len(lowered) < len(suffix):
+            continue
+        if tuple(lowered[-len(suffix) :]) == suffix:
+            return path_segments[: -len(suffix)]
+    return path_segments
+
+
+def _normalize_provider_api_base(
+    api_base: str | None,
+    default_api_base: str | None,
+    *,
+    endpoint_suffixes: tuple[tuple[str, ...], ...] = (),
+) -> str:
     explicit = (api_base or "").strip().rstrip("/")
     fallback = (default_api_base or "").strip().rstrip("/")
     if not explicit:
         return fallback
 
     explicit_split = urlsplit(explicit)
-    segments = [seg for seg in explicit_split.path.split("/") if seg]
-    if any(_VERSION_SEGMENT_RE.match(seg) for seg in segments):
-        return explicit
+    explicit_segments = _split_path_segments(explicit_split.path)
+    explicit_segments = _trim_suffix_segments(explicit_segments, endpoint_suffixes)
 
-    fallback_path = urlsplit(fallback).path.rstrip("/")
-    if not fallback_path:
-        return explicit
+    if not any(_VERSION_SEGMENT_RE.match(seg) for seg in explicit_segments):
+        fallback_segments = _trim_suffix_segments(
+            _split_path_segments(urlsplit(fallback).path),
+            endpoint_suffixes,
+        )
+        if fallback_segments:
+            explicit_segments = [*explicit_segments, *fallback_segments]
 
-    joined_path = f"{explicit_split.path.rstrip('/')}/{fallback_path.lstrip('/')}"
+    normalized_path = "/" + "/".join(explicit_segments) if explicit_segments else ""
     normalized = SplitResult(
         scheme=explicit_split.scheme,
         netloc=explicit_split.netloc,
-        path=joined_path,
+        path=normalized_path,
         query="",
         fragment="",
     )
     value = urlunsplit(normalized).rstrip("/")
     return value or explicit
+
+
+def _normalize_openai_api_base(api_base: str | None, default_api_base: str | None) -> str:
+    return _normalize_provider_api_base(
+        api_base,
+        default_api_base,
+        endpoint_suffixes=(("chat", "completions"), ("completions",), ("responses",)),
+    )
+
+
+def _normalize_anthropic_api_base(api_base: str | None) -> str:
+    return _normalize_provider_api_base(
+        api_base,
+        "https://api.anthropic.com/v1/messages",
+        endpoint_suffixes=(("messages",),),
+    )
+
+
+def _normalize_gemini_api_base(api_base: str | None) -> str:
+    return _normalize_provider_api_base(
+        api_base,
+        "https://generativelanguage.googleapis.com/v1beta/models",
+        endpoint_suffixes=(("models",),),
+    )
 
 
 def make_provider(config: "Config", model: str | None = None) -> LLMProvider:
@@ -97,7 +146,7 @@ def make_provider(config: "Config", model: str | None = None) -> LLMProvider:
         return AnthropicProvider(
             api_key=api_key,
             default_model=model,
-            base_url=provider_config.api_base,
+            base_url=_normalize_anthropic_api_base(provider_config.api_base),
         )
     if provider_type == "gemini":
         from bao.providers.gemini_provider import GeminiProvider
@@ -105,7 +154,7 @@ def make_provider(config: "Config", model: str | None = None) -> LLMProvider:
         return GeminiProvider(
             api_key=api_key,
             default_model=model,
-            base_url=provider_config.api_base,
+            base_url=_normalize_gemini_api_base(provider_config.api_base),
         )
     # openai
     from bao.providers.openai_provider import OpenAICompatibleProvider
