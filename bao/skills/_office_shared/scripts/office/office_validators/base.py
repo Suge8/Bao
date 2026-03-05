@@ -2,8 +2,8 @@
 Base validator with common validation logic for document files.
 """
 
-import re
 import importlib
+import re
 from pathlib import Path
 from xml.dom import minidom as _stdlib_minidom
 

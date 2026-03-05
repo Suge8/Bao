@@ -1,6 +1,6 @@
-from pathlib import Path
 import importlib
 import sys
+from pathlib import Path
 
 _SHARED_OFFICE = Path(__file__).resolve().parents[4] / "_office_shared" / "scripts" / "office"
 if str(_SHARED_OFFICE) not in sys.path:

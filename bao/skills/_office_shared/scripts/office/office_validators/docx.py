@@ -2,11 +2,11 @@
 Validator for Word document XML files against XSD schemas.
 """
 
+import importlib
 import random
 import re
 import tempfile
 import zipfile
-import importlib
 from xml.dom import minidom as _stdlib_minidom
 
 import lxml.etree
@@ -370,10 +370,10 @@ class DOCXSchemaValidator(BaseSchemaValidator):
 
     def repair(self) -> int:
         repairs = super().repair()
-        repairs += self.repair_durableId()
+        repairs += self.repair_durable_id()
         return repairs
 
-    def repair_durableId(self) -> int:
+    def repair_durable_id(self) -> int:
         repairs = 0
 
         for xml_file in self.xml_files:
