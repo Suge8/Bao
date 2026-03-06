@@ -6,12 +6,12 @@ import asyncio
 import importlib
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 from app.backend.asyncio_runner import AsyncioRunner
-from bao.session.manager import SessionManager
+from bao.session.manager import SessionChangeEvent, SessionManager
 
 pytest = importlib.import_module("pytest")
 
@@ -99,13 +99,14 @@ def test_model_reset_sessions():
 
 def test_model_data_roles():
     m = _new_session_model()
-    sessions = [{"key": "k1", "title": "T1", "updated_at": 42}]
+    sessions = [{"key": "k1", "title": "T1", "updated_at": 42, "updated_label": "<1m"}]
     m.reset_sessions(sessions, "k1")
     idx = m.index(0)
     assert m.data(idx, Qt.UserRole + 1) == "k1"  # key
     assert m.data(idx, Qt.UserRole + 2) == "T1"  # title
     assert m.data(idx, Qt.UserRole + 3) is True  # isActive
     assert m.data(idx, Qt.UserRole + 4) == 42  # updatedAt
+    assert m.data(idx, Qt.UserRole + 7) == "<1m"
 
 
 def test_model_inactive_session():
@@ -146,6 +147,15 @@ def test_format_display_title_uses_named_session_suffix():
     assert _format_display_title("desktop:local::planning", "") == "planning"
 
 
+def test_format_updated_label_uses_compact_relative_units():
+    from app.backend.session import _format_updated_label
+
+    assert _format_updated_label(datetime.now().isoformat()) == "<1m"
+    assert (
+        _format_updated_label((datetime.now() - timedelta(hours=1, minutes=5)).isoformat()) == "1h"
+    )
+
+
 # ── SessionService tests ──────────────────────────────────────────────────────
 
 
@@ -157,6 +167,7 @@ def _make_mock_session_manager(
     delete_returns_false_after_delete=False,
 ):
     sm = MagicMock()
+    listeners: list[Any] = []
     if sessions is None:
         sessions = []
     state = {"active": active_key}
@@ -238,6 +249,20 @@ def _make_mock_session_manager(
     sm.delete_session.side_effect = _delete_session
     sm.get_or_create.side_effect = _get_or_create
     sm.save.side_effect = _save
+    sm.add_change_listener.side_effect = listeners.append
+
+    def _remove_change_listener(listener):
+        if listener in listeners:
+            listeners.remove(listener)
+
+    def _emit_change(session_key: str, kind: str) -> None:
+        event = SessionChangeEvent(session_key=session_key, kind=kind)
+        for listener in list(listeners):
+            listener(event)
+
+    sm.remove_change_listener.side_effect = _remove_change_listener
+    sm._listeners = listeners
+    sm._emit_change = _emit_change
     return sm
 
 
@@ -270,6 +295,281 @@ def test_service_shutdown_clears_runtime_state():
         assert svc._disposed is True
         assert svc._session_manager is None
         svc.refresh()
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_initialize_registers_and_shutdown_removes_change_listener():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager()
+
+        svc.initialize(sm)
+
+        assert svc._on_session_change in sm._listeners
+
+        svc.shutdown()
+
+        assert svc._on_session_change not in sm._listeners
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_bootstrap_workspace_initializes_session_manager_async(qt_app, tmp_path):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager()
+        ready: list[Any] = []
+        svc.sessionManagerReady.connect(ready.append)
+
+        with patch("bao.session.manager.SessionManager", return_value=sm):
+            svc.bootstrapWorkspace(str(tmp_path / "workspace"))
+            loop = QEventLoop()
+            QTimer.singleShot(300, loop.quit)
+            loop.exec()
+
+        assert svc._session_manager is sm
+        assert ready == [sm]
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_bootstrap_result_does_not_override_existing_session_manager(qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        current = _make_mock_session_manager()
+        late = _make_mock_session_manager()
+        ready: list[Any] = []
+        svc.sessionManagerReady.connect(ready.append)
+
+        svc.initialize(current)
+        svc._handle_bootstrap_result(True, "", late)
+        qt_app.processEvents()
+
+        assert svc._session_manager is current
+        assert ready == []
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_bootstrap_done_ignores_cancelled_future() -> None:
+    import concurrent.futures
+
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        fut: concurrent.futures.Future[object] = concurrent.futures.Future()
+        fut.cancel()
+
+        svc._on_bootstrap_done(fut)
+
+        assert svc._session_manager is None
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_session_change_event_refreshes_session_list(qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(sessions=[{"key": "desktop:local", "title": "default"}])
+        svc.setGatewayReady()
+        svc.initialize(sm)
+        qt_app.processEvents()
+
+        sm.list_sessions.side_effect = lambda: [
+            {"key": "desktop:local", "updated_at": "1", "metadata": {}},
+            {"key": "telegram:123", "updated_at": "2", "metadata": {}},
+        ]
+
+        sm._emit_change("telegram:123", "messages")
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        assert _sessions_model(svc).rowCount() == 2
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_session_change_event_ignores_after_shutdown(qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(sessions=[{"key": "desktop:local", "title": "default"}])
+        svc.initialize(sm)
+        qt_app.processEvents()
+
+        svc.shutdown()
+        sm._emit_change("desktop:local", "messages")
+        qt_app.processEvents()
+
+        assert svc.activeKey == ""
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_initialize_syncs_external_family_active_key(tmp_path, qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = SessionManager(tmp_path)
+        sm.save(sm.get_or_create("telegram:chat"))
+        sm.save(sm.get_or_create("telegram:chat::s2"))
+        sm.set_active_session_key("desktop:local", "telegram:chat::s2")
+
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        assert sm.get_active_session_key("telegram:chat") == "telegram:chat::s2"
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_external_family_active_sync_keeps_active_chat_realtime(tmp_path, qt_app):
+    from app.backend.chat import ChatMessageModel
+    from app.backend.gateway import ChatService
+
+    runner = AsyncioRunner()
+    runner.start()
+    chat = None
+    try:
+        svc = _new_session_service(runner)
+        model = ChatMessageModel()
+        chat = ChatService(model, runner)
+        sm = SessionManager(tmp_path)
+        sm.save(sm.get_or_create("telegram:chat"))
+        sm.save(sm.get_or_create("telegram:chat::s2"))
+        sm.set_active_session_key("desktop:local", "telegram:chat::s2")
+
+        svc.activeKeyChanged.connect(chat.setSessionKey)
+        chat.setSessionManager(sm)
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        async def _inbound_like_core() -> None:
+            natural = "telegram:chat"
+            key = sm.get_active_session_key(natural) or natural
+            session = sm.get_or_create(key)
+            session.add_message("user", "incoming external")
+            sm.save(session)
+
+        runner.submit(_inbound_like_core()).result(timeout=2)
+
+        loop2 = QEventLoop()
+        QTimer.singleShot(400, loop2.quit)
+        loop2.exec()
+
+        assert model.rowCount() == 1
+        assert model._messages[-1]["content"] == "incoming external"
+    finally:
+        if chat is not None:
+            try:
+                chat.deleteLater()
+            except Exception:
+                pass
+        runner.shutdown(grace_s=1.0)
+
+
+def test_rapid_same_family_selection_persists_latest_active_key(tmp_path, qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = SessionManager(tmp_path)
+        sm.save(sm.get_or_create("telegram:chat::s1"))
+        sm.save(sm.get_or_create("telegram:chat::s2"))
+
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        svc.selectSession("telegram:chat::s1")
+        svc.selectSession("telegram:chat::s2")
+
+        loop2 = QEventLoop()
+        QTimer.singleShot(400, loop2.quit)
+        loop2.exec()
+
+        assert sm.get_active_session_key("desktop:local") == "telegram:chat::s2"
+        assert sm.get_active_session_key("telegram:chat") == "telegram:chat::s2"
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_metadata_change_event_refreshes_session_list_for_plan_updates(qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(sessions=[{"key": "desktop:local", "title": "default"}])
+        svc.setGatewayReady()
+        svc.initialize(sm)
+        qt_app.processEvents()
+
+        sm.list_sessions.side_effect = lambda: [
+            {
+                "key": "desktop:local",
+                "updated_at": "2",
+                "metadata": {"title": "default", "_plan_state": {"goal": "ship"}},
+            }
+        ]
+
+        sm._emit_change("desktop:local", "metadata")
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        assert _sessions_model(svc).rowCount() == 1
+        idx = _sessions_model(svc).index(0)
+        assert _sessions_model(svc).data(idx, Qt.UserRole + 1) == "desktop:local"
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_session_service_labels_cron_and_heartbeat_channels(qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(
+            sessions=[
+                {"key": "heartbeat", "title": "heartbeat", "updated_at": "1"},
+                {"key": "cron:job-1", "title": "cron", "updated_at": "2"},
+            ]
+        )
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        heartbeat_idx = _index_by_key(svc, "heartbeat")
+        cron_idx = _index_by_key(svc, "cron:job-1")
+        assert _sessions_model(svc).data(heartbeat_idx, Qt.UserRole + 5) == "heartbeat"
+        assert _sessions_model(svc).data(cron_idx, Qt.UserRole + 5) == "cron"
     finally:
         runner.shutdown(grace_s=1.0)
 
@@ -510,7 +810,6 @@ def test_list_refresh_active_only_change_keeps_local_active_source_of_truth():
         svc._active_key = "desktop:local::s1"
         svc._last_emitted_active_key = "desktop:local::s1"
         svc._model.reset_sessions([dict(s) for s in sessions], "desktop:local::s1")
-        svc._list_fp = tuple((s["key"], s.get("title", ""), False) for s in sessions)
 
         changed_events: list[bool] = []
         active_keys: list[str] = []
@@ -518,11 +817,11 @@ def test_list_refresh_active_only_change_keeps_local_active_source_of_truth():
         svc.activeKeyChanged.connect(active_keys.append)
 
         svc._handle_list_result(True, "", ([dict(s) for s in sessions], "desktop:local::s1"))
-        assert len(changed_events) == 0
+        assert len(changed_events) == 1
 
         svc._pending_select_key = "desktop:local::s2"
         svc._handle_list_result(True, "", ([dict(s) for s in sessions], "desktop:local::s2"))
-        assert len(changed_events) == 0
+        assert len(changed_events) == 2
         assert svc.activeKey == "desktop:local::s2"
         assert active_keys == ["desktop:local::s2"]
         assert _sessions_model(svc).data(_sessions_model(svc).index(0), Qt.UserRole + 3) is False
@@ -531,7 +830,7 @@ def test_list_refresh_active_only_change_keeps_local_active_source_of_truth():
         runner.shutdown(grace_s=1.0)
 
 
-def test_list_refresh_changed_fingerprint_still_emits_active_change():
+def test_list_refresh_updates_visible_time_fields_even_when_keys_match():
     runner = AsyncioRunner()
     runner.start()
     try:
@@ -543,6 +842,7 @@ def test_list_refresh_changed_fingerprint_still_emits_active_change():
                 "key": "desktop:local::s1",
                 "title": "Chat 1",
                 "updated_at": 1,
+                "updated_label": "<1m",
                 "channel": "desktop",
                 "has_unread": False,
             },
@@ -550,6 +850,7 @@ def test_list_refresh_changed_fingerprint_still_emits_active_change():
                 "key": "desktop:local::s2",
                 "title": "Chat 2",
                 "updated_at": 2,
+                "updated_label": "2m",
                 "channel": "desktop",
                 "has_unread": False,
             },
@@ -558,22 +859,19 @@ def test_list_refresh_changed_fingerprint_still_emits_active_change():
         svc._active_key = "desktop:local::s1"
         svc._last_emitted_active_key = "desktop:local::s1"
         svc._model.reset_sessions([dict(s) for s in sessions], "desktop:local::s1")
-        svc._list_fp = tuple(
-            (s["key"], s.get("title", ""), bool(s.get("has_unread", False))) for s in sessions
-        )
-
-        active_keys: list[str] = []
-        svc.activeKeyChanged.connect(active_keys.append)
+        changed_events: list[bool] = []
+        svc.sessionsChanged.connect(lambda: changed_events.append(True))
 
         svc._handle_list_result(True, "", ([dict(s) for s in sessions], "desktop:local::s1"))
 
         refreshed = [dict(s) for s in sessions]
-        refreshed[0]["has_unread"] = True
-        svc._pending_select_key = "desktop:local::s2"
-        svc._handle_list_result(True, "", (refreshed, "desktop:local::s2"))
+        refreshed[0]["updated_at"] = 3
+        refreshed[0]["updated_label"] = "3m"
+        svc._handle_list_result(True, "", (refreshed, "desktop:local::s1"))
 
-        assert svc.activeKey == "desktop:local::s2"
-        assert active_keys == ["desktop:local::s2"]
+        idx = _sessions_model(svc).index(0)
+        assert len(changed_events) == 2
+        assert _sessions_model(svc).data(idx, Qt.UserRole + 7) == "3m"
     finally:
         runner.shutdown(grace_s=1.0)
 
@@ -1139,9 +1437,9 @@ def test_service_refresh_during_pending_delete_does_not_resurrect_session():
 
         original_delete = svc._delete_session
 
-        async def _delayed_delete(key: str, new_active: str) -> None:
+        async def _delayed_delete(key: str, new_active: str, seq: int | None) -> None:
             await asyncio.sleep(0.15)
-            await original_delete(key, new_active)
+            await original_delete(key, new_active, seq)
 
         svc._delete_session = _delayed_delete
 

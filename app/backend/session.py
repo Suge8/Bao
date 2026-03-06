@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Coroutine
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -25,6 +27,7 @@ from PySide6.QtCore import (
 )
 
 from app.backend.asyncio_runner import AsyncioRunner
+from bao.session.manager import SessionChangeEvent
 
 _DEBUG_SWITCH = os.getenv("BAO_DESKTOP_DEBUG_SWITCH") == "1"
 
@@ -35,6 +38,7 @@ _ROLE_IS_ACTIVE = _ROLE_BASE + 3
 _ROLE_UPDATED_AT = _ROLE_BASE + 4
 _ROLE_CHANNEL = _ROLE_BASE + 5
 _ROLE_HAS_UNREAD = _ROLE_BASE + 6
+_ROLE_UPDATED_LABEL = _ROLE_BASE + 7
 
 
 def _format_display_title(key: str, title: Any, *, natural_key: str = "desktop:local") -> str:
@@ -54,6 +58,76 @@ def _format_display_title(key: str, title: Any, *, natural_key: str = "desktop:l
     return key
 
 
+def _session_family_key(key: str) -> str:
+    if "::" in key:
+        prefix, _sep, _suffix = key.partition("::")
+        return prefix
+    return key
+
+
+def _parse_updated_at(value: Any) -> datetime | None:
+    if isinstance(value, (int, float)):
+        raw = float(value)
+        if raw <= 0:
+            return None
+        if raw > 10_000_000_000:
+            raw /= 1000.0
+        try:
+            return datetime.fromtimestamp(raw)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            return _parse_updated_at(int(raw))
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+def _format_updated_label(updated: Any) -> str:
+    dt = _parse_updated_at(updated)
+    if dt is None:
+        return ""
+
+    now = datetime.now(tz=dt.tzinfo)
+    seconds = max(0, int((now - dt).total_seconds()))
+    if seconds < 60:
+        return "<1m"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    if seconds < 604800:
+        return f"{seconds // 86400}d"
+    if dt.year == now.year:
+        return f"{dt.month}/{dt.day}"
+    return f"{dt.year}/{dt.month}/{dt.day}"
+
+
+def _build_session_item(
+    key: str,
+    *,
+    natural_key: str,
+    updated_at: Any = "",
+    channel: str = "desktop",
+    has_unread: bool = False,
+    title: Any = None,
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "title": _format_display_title(key, title, natural_key=natural_key),
+        "updated_at": updated_at,
+        "updated_label": _format_updated_label(updated_at),
+        "channel": channel,
+        "has_unread": has_unread,
+    }
+
+
 class SessionListModel(QAbstractListModel):
     """Simple list model exposing session dicts to QML."""
 
@@ -64,6 +138,7 @@ class SessionListModel(QAbstractListModel):
         _ROLE_UPDATED_AT: QByteArray(b"updatedAt"),
         _ROLE_CHANNEL: QByteArray(b"channel"),
         _ROLE_HAS_UNREAD: QByteArray(b"hasUnread"),
+        _ROLE_UPDATED_LABEL: QByteArray(b"updatedLabel"),
     }
 
     def __init__(self, parent: Any = None) -> None:
@@ -87,8 +162,10 @@ class SessionListModel(QAbstractListModel):
         if role == _ROLE_KEY:
             return s.get("key", "")
         if role == _ROLE_TITLE:
-            key = str(s.get("key", ""))
-            return _format_display_title(key, s.get("title"))
+            title = s.get("title", "")
+            if isinstance(title, str) and title:
+                return title
+            return s.get("key", "")
         if role == _ROLE_IS_ACTIVE:
             return s.get("key", "") == self._active_key
         if role == _ROLE_UPDATED_AT:
@@ -97,6 +174,8 @@ class SessionListModel(QAbstractListModel):
             return s.get("channel", "other")
         if role == _ROLE_HAS_UNREAD:
             return bool(s.get("has_unread", False))
+        if role == _ROLE_UPDATED_LABEL:
+            return s.get("updated_label", "")
         return None
 
     def roleNames(self) -> dict[int, QByteArray]:
@@ -129,12 +208,15 @@ class SessionService(QObject):
     activeReady = Signal(str)
     errorOccurred = Signal(str)
     deleteCompleted = Signal(str, bool, str)
+    sessionManagerReady = Signal(object)
 
     # Internal signals: asyncio thread → Qt main thread
+    _bootstrapResult = Signal(bool, str, object)
     _listResult = Signal(bool, str, object)  # ok, error, (sessions, active)
     _selectResult = Signal(bool, str, str)  # ok, error, key
     _createResult = Signal(bool, str, str)  # ok, error, key
     _deleteResult = Signal(str, bool, str)
+    _sessionChange = Signal(object)
 
     def __init__(self, runner: AsyncioRunner, parent: Any = None) -> None:
         super().__init__(parent)
@@ -148,15 +230,17 @@ class SessionService(QObject):
         self._model = SessionListModel()
         self._pending_deletes: dict[str, tuple[list[dict[str, Any]], str, str]] = {}
         self._pending_creates: set[str] = set()
-        self._list_fp: tuple[tuple[Any, ...], ...] | None = None
         self._list_request_seq = 0
         self._list_latest_seq = 0
+        self._active_commit_seq = 0
         self._disposed = False
 
+        self._bootstrapResult.connect(self._handle_bootstrap_result)
         self._listResult.connect(self._handle_list_result)
         self._selectResult.connect(self._handle_select_result)
         self._createResult.connect(self._handle_create_result)
         self._deleteResult.connect(self._handle_delete_result)
+        self._sessionChange.connect(self._handle_session_change)
 
     @Property(QObject, constant=True)
     def sessionsModel(self) -> SessionListModel:
@@ -167,11 +251,22 @@ class SessionService(QObject):
         return self._active_key
 
     def initialize(self, session_manager: Any) -> None:
-        """Called after ChatService has initialized the Bao SessionManager."""
         if self._disposed:
             return
-        self._session_manager = session_manager
+        self._attach_session_manager(session_manager)
         self.refresh()
+
+    @Slot(str)
+    def bootstrapWorkspace(self, workspace_path: str) -> None:
+        if self._disposed or self._session_manager is not None:
+            return
+        raw_path = workspace_path.strip()
+        if not raw_path:
+            return
+        fut = self._submit_safe(self._create_session_manager(raw_path))
+        if fut is None:
+            return
+        fut.add_done_callback(self._on_bootstrap_done)
 
     @Slot()
     def shutdown(self) -> None:
@@ -181,6 +276,7 @@ class SessionService(QObject):
         self._pending_select_key = None
         self._pending_deletes.clear()
         self._pending_creates.clear()
+        self._detach_session_manager(self._session_manager)
         self._session_manager = None
 
     def _submit_safe(self, coro: Coroutine[Any, Any, Any]) -> Any:
@@ -195,6 +291,51 @@ class SessionService(QObject):
             return await self._runner.run_user_io(fn, *args)
         return await asyncio.to_thread(fn, *args)
 
+    async def _create_session_manager(self, workspace_path: str) -> Any:
+        from bao.session.manager import SessionManager
+
+        workspace = Path(workspace_path).expanduser()
+        await self._run_user_io(lambda: workspace.mkdir(parents=True, exist_ok=True))
+        return await self._run_user_io(SessionManager, workspace)
+
+    def _on_bootstrap_done(self, future: Any) -> None:
+        if future.cancelled():
+            return
+        exc = future.exception()
+        if exc:
+            self._bootstrapResult.emit(False, str(exc), None)
+            return
+        self._bootstrapResult.emit(True, "", future.result())
+
+    def _handle_bootstrap_result(self, ok: bool, error: str, session_manager: Any) -> None:
+        if not ok:
+            logger.debug("Skip early session bootstrap: {}", error)
+            return
+        if self._disposed or self._session_manager is not None:
+            return
+        self.initialize(session_manager)
+        self.sessionManagerReady.emit(session_manager)
+
+    def _attach_session_manager(self, session_manager: Any) -> None:
+        previous = self._session_manager
+        if previous is session_manager:
+            return
+        self._detach_session_manager(previous)
+        self._session_manager = session_manager
+        add_listener = getattr(session_manager, "add_change_listener", None)
+        if callable(add_listener):
+            add_listener(self._on_session_change)
+
+    def _detach_session_manager(self, session_manager: Any) -> None:
+        if session_manager is None:
+            return
+        remove_listener = getattr(session_manager, "remove_change_listener", None)
+        if callable(remove_listener):
+            try:
+                remove_listener(self._on_session_change)
+            except Exception as exc:
+                logger.debug("Skip session listener removal: {}", exc)
+
     def _emit_active_key_if_changed(self, new_key: str) -> None:
         """Emit activeKeyChanged only if key actually changed."""
         if new_key != self._last_emitted_active_key:
@@ -202,9 +343,49 @@ class SessionService(QObject):
             self.activeKeyChanged.emit(new_key)
             self._emit_active_ready_if_applicable(new_key)
 
+    def _next_active_commit_seq(self) -> int:
+        self._active_commit_seq += 1
+        return self._active_commit_seq
+
+    def _maybe_reconcile_stored_active(self, active_for_view: str, stored_active: str) -> None:
+        if self._disposed or self._session_manager is None:
+            return
+        if self._pending_select_key is not None:
+            return
+        if not active_for_view or active_for_view != stored_active:
+            return
+        family_key = _session_family_key(active_for_view)
+        if not family_key or family_key == self._natural_key:
+            return
+        seq = self._next_active_commit_seq()
+        fut = self._submit_safe(self._reconcile_active_selection(active_for_view, seq))
+        if fut is not None:
+            fut.add_done_callback(self._on_sync_family_active_done)
+
+    def _set_local_active_key(self, key: str) -> None:
+        if self._active_key == key:
+            return
+        self._active_key = key
+        self._model.set_active(key)
+        if _DEBUG_SWITCH:
+            logger.debug("session_select_commit key={}", key)
+        self._emit_active_key_if_changed(key)
+
+    def _finalize_active_resolution(self, active_for_view: str, stored_active: str) -> None:
+        self._maybe_reconcile_stored_active(active_for_view, stored_active)
+        self._clear_pending_select_if_resolved(active_for_view)
+
     def _emit_active_ready_if_applicable(self, key: str) -> None:
         if self._gateway_ready and key:
             self.activeReady.emit(key)
+
+    def _on_session_change(self, event: SessionChangeEvent) -> None:
+        self._sessionChange.emit(event)
+
+    def _handle_session_change(self, event: object) -> None:
+        if self._disposed or not isinstance(event, SessionChangeEvent):
+            return
+        self.refresh()
 
     @staticmethod
     def _pick_latest_key(sessions: list[dict[str, Any]], *, preferred_channel: str) -> str:
@@ -278,28 +459,17 @@ class SessionService(QObject):
         self._pending_creates.add(key)
 
         sessions_after = [
-            {
-                "key": key,
-                "title": _format_display_title(key, None, natural_key=self._natural_key),
-                "updated_at": "",
-                "channel": "desktop",
-                "has_unread": False,
-            },
+            _build_session_item(key, natural_key=self._natural_key),
             *sessions_before,
         ]
 
         self._gateway_ready = True
         self._pending_select_key = key
-        if self._active_key != key:
-            self._active_key = key
-            self._model.set_active(key)
-            if _DEBUG_SWITCH:
-                logger.debug("session_select_commit key={}", key)
-            self._emit_active_key_if_changed(key)
+        self._set_local_active_key(key)
         self._model.reset_sessions(sessions_after, key)
         self.sessionsChanged.emit()
 
-        fut = self._submit_safe(self._create_session(key))
+        fut = self._submit_safe(self._create_session(key, self._next_active_commit_seq()))
         if fut is None:
             return
         fut.add_done_callback(lambda future, k=key: self._on_create_done(k, future))
@@ -316,13 +486,8 @@ class SessionService(QObject):
         if self._pending_select_key == key:
             return
         self._pending_select_key = key
-        if self._active_key != key:
-            self._active_key = key
-            self._model.set_active(key)
-            if _DEBUG_SWITCH:
-                logger.debug("session_select_commit key={}", key)
-            self._emit_active_key_if_changed(key)
-        fut = self._submit_safe(self._select_session(key))
+        self._set_local_active_key(key)
+        fut = self._submit_safe(self._select_session(key, self._next_active_commit_seq()))
         if fut is None:
             return
         fut.add_done_callback(self._on_select_done)
@@ -348,16 +513,9 @@ class SessionService(QObject):
         if not sessions_after:
             new_active = self._build_new_session_key("")
             self._pending_creates.add(new_active)
-            sessions_after = [
-                {
-                    "key": new_active,
-                    "title": _format_display_title(new_active, None, natural_key=self._natural_key),
-                    "updated_at": "",
-                    "channel": "desktop",
-                    "has_unread": False,
-                }
-            ]
-            fut_create = self._submit_safe(self._create_session(new_active))
+            sessions_after = [_build_session_item(new_active, natural_key=self._natural_key)]
+            create_seq = self._next_active_commit_seq()
+            fut_create = self._submit_safe(self._create_session(new_active, create_seq))
             if fut_create is not None:
                 fut_create.add_done_callback(
                     lambda future, k=new_active: self._on_create_done(k, future)
@@ -378,7 +536,8 @@ class SessionService(QObject):
         self.sessionsChanged.emit()
         self._emit_active_key_if_changed(new_active)
 
-        fut = self._submit_safe(self._delete_session(key, new_active))
+        delete_seq = self._next_active_commit_seq() if active_before == key else None
+        fut = self._submit_safe(self._delete_session(key, new_active, delete_seq))
         if fut is None:
             self._pending_deletes.pop(key, None)
             return
@@ -407,17 +566,60 @@ class SessionService(QObject):
                 )
                 has_unread = seen_ai < last_ai
             result.append(
-                {
-                    "key": key,
-                    "title": _format_display_title(
-                        key, meta.get("title"), natural_key=self._natural_key
-                    ),
-                    "updated_at": s.get("updated_at", ""),
-                    "channel": channel,
-                    "has_unread": has_unread,
-                }
+                _build_session_item(
+                    key,
+                    natural_key=self._natural_key,
+                    updated_at=s.get("updated_at", ""),
+                    channel=channel,
+                    has_unread=has_unread,
+                    title=meta.get("title"),
+                )
             )
         return seq, result, active
+
+    async def _commit_active_selection(self, key: str, seq: int) -> None:
+        sm = self._session_manager
+        if sm is None or not key:
+            return
+
+        def _write() -> None:
+            if seq != self._active_commit_seq:
+                return
+            sm.set_active_session_key(self._natural_key, key)
+            family_key = _session_family_key(key)
+            if family_key and family_key != self._natural_key:
+                sm.set_active_session_key(family_key, key)
+
+        await self._run_user_io(_write)
+
+    async def _clear_active_selection(self, seq: int) -> None:
+        sm = self._session_manager
+        if sm is None:
+            return
+
+        def _clear() -> None:
+            if seq != self._active_commit_seq:
+                return
+            sm.clear_active_session_key(self._natural_key)
+
+        await self._run_user_io(_clear)
+
+    async def _reconcile_active_selection(self, key: str, seq: int) -> None:
+        sm = self._session_manager
+        if sm is None or not key:
+            return
+        family_key = _session_family_key(key)
+        if not family_key or family_key == self._natural_key:
+            return
+        if seq != self._active_commit_seq:
+            return
+
+        current_desktop = await self._run_user_io(sm.get_active_session_key, self._natural_key)
+        current_family = await self._run_user_io(sm.get_active_session_key, family_key)
+        if seq != self._active_commit_seq:
+            return
+        if current_desktop != key or current_family != key:
+            await self._commit_active_selection(key, seq)
 
     def _build_new_session_key(self, name: str) -> str:
         if name:
@@ -426,27 +628,25 @@ class SessionService(QObject):
 
         return f"{self._natural_key}::session-{int(time.time())}"
 
-    async def _create_session(self, key: str) -> str:
+    async def _create_session(self, key: str, seq: int) -> str:
         sm = self._session_manager
 
         def _create() -> None:
             session = sm.get_or_create(key)
             sm.save(session)
-            sm.set_active_session_key(self._natural_key, key)
 
         await self._run_user_io(_create)
+        await self._commit_active_selection(key, seq)
         return key
 
-    async def _select_session(self, key: str) -> str:
-        await self._run_user_io(
-            self._session_manager.set_active_session_key, self._natural_key, key
-        )
+    async def _select_session(self, key: str, seq: int) -> str:
+        await self._commit_active_selection(key, seq)
         return key
 
-    async def _delete_session(self, key: str, new_active: str) -> None:
+    async def _delete_session(self, key: str, new_active: str, seq: int | None) -> None:
         sm = self._session_manager
 
-        def _delete() -> None:
+        def _delete() -> bool:
             was_active = sm.get_active_session_key(self._natural_key) == key
             deleted = sm.delete_session(key)
             if not deleted:
@@ -457,13 +657,15 @@ class SessionService(QObject):
                     still_exists = True
                 if still_exists:
                     raise RuntimeError(f"delete session failed: {key}")
-            if was_active:
-                if new_active:
-                    sm.set_active_session_key(self._natural_key, new_active)
-                else:
-                    sm.clear_active_session_key(self._natural_key)
+            return was_active
 
-        await self._run_user_io(_delete)
+        was_active = await self._run_user_io(_delete)
+        if not was_active or seq is None:
+            return
+        if new_active:
+            await self._commit_active_selection(new_active, seq)
+        else:
+            await self._clear_active_selection(seq)
 
     # ------------------------------------------------------------------
     # Callbacks (asyncio thread — emit signals only, no Qt ops)
@@ -486,6 +688,13 @@ class SessionService(QObject):
             self._selectResult.emit(False, str(exc), "")
         else:
             self._selectResult.emit(True, "", future.result())
+
+    def _on_sync_family_active_done(self, future: Any) -> None:
+        if self._disposed:
+            return
+        exc = future.exception()
+        if exc:
+            logger.debug("Skip active selection sync: {}", exc)
 
     def _on_create_done(self, key: str, future: Any) -> None:
         if self._disposed:
@@ -545,13 +754,7 @@ class SessionService(QObject):
                     continue
                 sessions.insert(
                     0,
-                    {
-                        "key": key,
-                        "title": _format_display_title(key, None, natural_key=self._natural_key),
-                        "updated_at": "",
-                        "channel": "desktop",
-                        "has_unread": False,
-                    },
+                    _build_session_item(key, natural_key=self._natural_key),
                 )
                 existing_keys.add(key)
 
@@ -595,33 +798,17 @@ class SessionService(QObject):
         for item in sessions:
             if str(item.get("key", "")) == active_for_view:
                 item["has_unread"] = False
-        fp = tuple(
-            (
-                s["key"],
-                s.get("title", ""),
-                bool(s.get("has_unread", False)),
-            )
-            for s in sessions
-        )
-        if self._list_fp == fp:
-            if active_for_view == self._active_key:
-                self._clear_pending_select_if_resolved(active_for_view)
-                return
-            self._active_key = active_for_view
-            self._model.set_active(active_for_view)
-            self._emit_active_key_if_changed(active_for_view)
-            self._clear_pending_select_if_resolved(active_for_view)
-            return
-        self._list_fp = fp
         self._active_key = active_for_view
         self._model.reset_sessions(sessions, active_for_view)
         self.sessionsChanged.emit()
         self._emit_active_key_if_changed(active_for_view)
+        self._finalize_active_resolution(active_for_view, stored_active)
         if auto_selected_key and self._session_manager is not None:
-            fut = self._submit_safe(self._select_session(auto_selected_key))
+            fut = self._submit_safe(
+                self._select_session(auto_selected_key, self._next_active_commit_seq())
+            )
             if fut is not None:
                 fut.add_done_callback(self._on_select_done)
-        self._clear_pending_select_if_resolved(active_for_view)
 
     def _handle_select_result(self, ok: bool, error: str, key: str) -> None:
         if self._disposed:
@@ -633,10 +820,7 @@ class SessionService(QObject):
             self.errorOccurred.emit(error)
             self.refresh()
             return
-        if self._active_key != key:
-            self._active_key = key
-            self._model.set_active(key)
-            self._emit_active_key_if_changed(key)
+        self._set_local_active_key(key)
 
     def _handle_create_result(self, ok: bool, error: str, key: str) -> None:
         if self._disposed:

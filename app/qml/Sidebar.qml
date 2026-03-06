@@ -38,6 +38,90 @@ Rectangle {
 
     property var expandedGroups: ({})
     property bool gatewayIdle: !chatService || chatService.state === "idle" || chatService.state === "stopped"
+    property int sessionsUnreadCount: 0
+    property string unreadFingerprint: ""
+    property real headerPulseScale: 0.0
+    property real headerBadgeScale: 0.0
+
+    function requestNewSession() {
+        root.newSessionRequested()
+    }
+
+    function channelIconSource(channel) {
+        switch (channel) {
+        case "desktop":
+            return "../resources/icons/sidebar-monitor.svg"
+        case "system":
+            return "../resources/icons/sidebar-settings.svg"
+        case "heartbeat":
+            return "../resources/icons/sidebar-pulse.svg"
+        case "cron":
+            return "../resources/icons/sidebar-zap.svg"
+        case "email":
+            return "../resources/icons/sidebar-mail.svg"
+        default:
+            return "../resources/icons/sidebar-chat.svg"
+        }
+    }
+
+    function channelFilledIconSource(channel) {
+        switch (channel) {
+        case "desktop":
+            return "../resources/icons/sidebar-monitor-solid.svg"
+        case "system":
+            return "../resources/icons/sidebar-settings-solid.svg"
+        case "heartbeat":
+            return "../resources/icons/sidebar-pulse-solid.svg"
+        case "cron":
+            return "../resources/icons/sidebar-zap-solid.svg"
+        case "email":
+            return "../resources/icons/sidebar-mail-solid.svg"
+        default:
+            return "../resources/icons/sidebar-chat-solid.svg"
+        }
+    }
+
+    function channelAccent(channel) {
+        switch (channel) {
+        case "desktop":
+            return isDark ? Qt.rgba(1.0, 0.78, 0.29, 1.0) : Qt.rgba(0.90, 0.58, 0.08, 1.0)
+        case "system":
+            return isDark ? Qt.rgba(0.53, 0.82, 1.0, 1.0) : Qt.rgba(0.20, 0.55, 0.85, 1.0)
+        case "heartbeat":
+            return isDark ? Qt.rgba(0.20, 0.90, 0.56, 1.0) : Qt.rgba(0.05, 0.70, 0.38, 1.0)
+        case "cron":
+            return isDark ? Qt.rgba(1.0, 0.66, 0.18, 1.0) : Qt.rgba(0.92, 0.52, 0.05, 1.0)
+        case "email":
+            return isDark ? Qt.rgba(0.46, 0.69, 1.0, 1.0) : Qt.rgba(0.22, 0.46, 0.88, 1.0)
+        default:
+            return isDark ? Qt.rgba(0.79, 0.55, 1.0, 1.0) : Qt.rgba(0.52, 0.27, 0.84, 1.0)
+        }
+    }
+
+    function channelSurface(channel, expanded, hovered) {
+        return expanded ? sidebarGroupExpandedBg : (hovered ? sidebarGroupHoverBg : sidebarGroupBg)
+    }
+
+    function applyGroupExpanded(channel, expanded) {
+        root.expandedGroups[channel] = expanded
+        for (var i = 0; i < groupModel.count; i++) {
+            var item = groupModel.get(i)
+            if (item.channel !== channel)
+                continue
+            if (item.isHeader)
+                groupModel.setProperty(i, "expanded", expanded)
+            else
+                groupModel.setProperty(i, "itemVisible", expanded)
+        }
+    }
+
+    function updateUnreadState(unreadCount, unreadFingerprintParts) {
+        var nextUnreadFingerprint = unreadFingerprintParts.join("|")
+        if (root.unreadFingerprint !== "" && nextUnreadFingerprint !== root.unreadFingerprint && unreadCount > 0)
+            sessionsHeaderPulse.restart()
+        root.sessionsUnreadCount = unreadCount
+        root.unreadFingerprint = nextUnreadFingerprint
+    }
 
     function rebuildGroupModel() {
         if (!sessionService) return
@@ -46,14 +130,22 @@ Rectangle {
 
         var groups = {}
         var order = []
+        var unreadCount = 0
+        var unreadFingerprintParts = []
         for (var i = 0; i < sm.rowCount(); i++) {
             var idx = sm.index(i, 0)
             var key     = sm.data(idx, Qt.UserRole + 1) || ""
             var title   = sm.data(idx, Qt.UserRole + 2) || key
+            var updated = sm.data(idx, Qt.UserRole + 4) || ""
             var channel = sm.data(idx, Qt.UserRole + 5) || "other"
             var unread  = sm.data(idx, Qt.UserRole + 6) || false
+            var updatedText = sm.data(idx, Qt.UserRole + 7) || ""
             if (!groups[channel]) { groups[channel] = []; order.push(channel) }
-            groups[channel].push({ key: key, title: title, channel: channel, hasUnread: unread })
+            groups[channel].push({ key: key, title: title, channel: channel, hasUnread: unread, updatedText: updatedText })
+            if (unread) {
+                unreadCount += 1
+                unreadFingerprintParts.push(String(key) + ":" + String(updated))
+            }
         }
 
         order.sort(function(a, b) {
@@ -75,17 +167,20 @@ Rectangle {
         for (var gi = 0; gi < order.length; gi++) {
             var grp = order[gi]
             var exp = root.expandedGroups[grp] === true
-            groupModel.append({ isHeader: true,  channel: grp, expanded: exp,
-                                 itemKey: "", itemTitle: "", itemVisible: true, itemHasUnread: false })
             var items = groups[grp]
+            groupModel.append({ isHeader: true,  channel: grp, expanded: exp,
+                                 itemKey: "", itemTitle: "", itemUpdatedText: "", itemVisible: true, itemHasUnread: false,
+                                 itemCount: items.length, isLastInGroup: false, isFirstInGroup: false })
             for (var si = 0; si < items.length; si++) {
                 var s = items[si]
                 groupModel.append({ isHeader: false, channel: grp, expanded: false,
-                                     itemKey: s.key, itemTitle: s.title,
-                                     itemVisible: exp, itemHasUnread: s.hasUnread })
+                                     itemKey: s.key, itemTitle: s.title, itemUpdatedText: s.updatedText,
+                                     itemVisible: exp, itemHasUnread: s.hasUnread, itemCount: 0,
+                                     isLastInGroup: si === items.length - 1,
+                                     isFirstInGroup: si === 0 })
             }
         }
-
+        updateUnreadState(unreadCount, unreadFingerprintParts)
     }
 
     function ensureGroupExpandedFor(key) {
@@ -101,32 +196,14 @@ Rectangle {
         }
         if (!activeChannel || root.expandedGroups[activeChannel] === true)
             return
-        root.expandedGroups[activeChannel] = true
-        for (var j = 0; j < groupModel.count; j++) {
-            var row = groupModel.get(j)
-            if (row.channel !== activeChannel)
-                continue
-            if (row.isHeader)
-                groupModel.setProperty(j, "expanded", true)
-            else
-                groupModel.setProperty(j, "itemVisible", true)
-        }
+        applyGroupExpanded(activeChannel, true)
     }
 
     onActiveSessionKeyChanged: ensureGroupExpandedFor(activeSessionKey)
 
     function toggleGroup(channel) {
         var newExp = !(root.expandedGroups[channel] === true)
-        root.expandedGroups[channel] = newExp
-        for (var i = 0; i < groupModel.count; i++) {
-            var item = groupModel.get(i)
-            if (item.channel === channel) {
-                if (item.isHeader)
-                    groupModel.setProperty(i, "expanded", newExp)
-                else
-                    groupModel.setProperty(i, "itemVisible", newExp)
-            }
-        }
+        applyGroupExpanded(channel, newExp)
     }
 
     Connections {
@@ -142,6 +219,13 @@ Rectangle {
         }
     }
 
+    Component.onCompleted: {
+        Qt.callLater(function() {
+            root.rebuildGroupModel()
+            root.ensureGroupExpandedFor(root.activeSessionKey)
+        })
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -149,9 +233,10 @@ Rectangle {
         // ── Gateway status capsule ────────────────────────────────────
         Rectangle {
             id: gwCapsule
+            objectName: "gatewayCapsule"
             Layout.fillWidth: true
             Layout.leftMargin: 16; Layout.rightMargin: 16
-            Layout.topMargin: 16; Layout.bottomMargin: 2
+            Layout.topMargin: 16; Layout.bottomMargin: 0
             implicitHeight: sizeCapsuleHeight
             radius: height / 2
             visible: chatService !== null
@@ -219,6 +304,11 @@ Rectangle {
             property color dotColor: stateSpec.dotColor
             property string primaryLabel: stateSpec.primaryLabel
             property string actionIconSource: stateSpec.actionIconSource
+            property string detailText: chatService ? (chatService.gatewayDetail || "") : ""
+            property bool hasErrorDetail: chatService ? Boolean(chatService.gatewayDetailIsError) : false
+            property bool showDetailBubble: hasErrorDetail || (detailText !== "" && (gwHover.containsMouse || gwDetailHover.containsMouse || activeFocus))
+            property real detailAnchorCenterX: gwAction.x + gwAction.width / 2
+            z: 6
 
             function resetVisualState() {
                 gwCapsule.actionPulse = 0.0
@@ -228,12 +318,28 @@ Rectangle {
                 gwDot.opacity = 1.0
                 gwDot.scale = 1.0
             }
+            function triggerGatewayAction() {
+                if (!chatService || gwCapsule.isStarting)
+                    return
+                if (gwCapsule.isRunning)
+                    chatService.stop()
+                else
+                    chatService.start()
+            }
             onCurrentStateChanged: resetVisualState()
-
+            activeFocusOnTab: true
+            Keys.onPressed: function(event) {
+                if (event.key === Qt.Key_Space || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                    gwCapsule.triggerGatewayAction()
+                    event.accepted = true
+                }
+            }
             color: gwCapsule.surfaceColor
-            border.width: 0
+            border.width: activeFocus ? 1.5 : 0
+            border.color: activeFocus ? borderFocus : "transparent"
             scale: gwHover.pressed ? 0.985 : (gwCapsule.isHovered ? motionHoverScaleSubtle : 1.0)
 
+            Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
             Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
             Item {
                 anchors.fill: parent
@@ -297,6 +403,12 @@ Rectangle {
                         NumberAnimation { target: gwCapsule; property: "iconTurn"; to: 6; duration: motionAmbient; easing.type: easeSoft }
                         NumberAnimation { target: gwCapsule; property: "iconTurn"; to: 0; duration: motionAmbient; easing.type: easeSoft }
                     }
+                    SequentialAnimation {
+                        running: gwCapsule.isStarting
+                        loops: Animation.Infinite
+                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.10; duration: motionAmbient; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.0; duration: motionAmbient; easing.type: easeSoft }
+                    }
                     NumberAnimation {
                         target: gwCapsule
                         property: "iconTurn"
@@ -306,12 +418,6 @@ Rectangle {
                         loops: Animation.Infinite
                         easing.type: easeLinear
                         running: gwCapsule.isStarting
-                    }
-                    SequentialAnimation {
-                        running: gwCapsule.isStarting
-                        loops: Animation.Infinite
-                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.10; duration: motionAmbient; easing.type: easeSoft }
-                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.0; duration: motionAmbient; easing.type: easeSoft }
                     }
                     SequentialAnimation {
                         running: gwCapsule.isRunning
@@ -420,148 +526,521 @@ Rectangle {
                 hoverEnabled: true
                 cursorShape: gwCapsule.isStarting ? Qt.ArrowCursor : Qt.PointingHandCursor
                 onClicked: {
-                    if (!chatService) return
-                    if (gwCapsule.isStarting) return
-                    if (gwCapsule.isRunning) chatService.stop()
-                    else chatService.start()
+                    gwCapsule.forceActiveFocus()
+                    gwCapsule.triggerGatewayAction()
                 }
-            }
-        }
-
-        // ── Sessions header ───────────────────────────────────────────────
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.leftMargin: 16
-            Layout.rightMargin: 12
-            Layout.topMargin: 14
-            Layout.bottomMargin: 10
-            spacing: 0
-
-            Text {
-                text: strings.sidebar_sessions
-                color: textSecondary
-                font.pixelSize: typeBody
-                font.weight: Font.DemiBold
-                font.letterSpacing: 0.5
-                textFormat: Text.PlainText
-                Layout.fillWidth: true
             }
 
             Rectangle {
-                implicitWidth: sizeControlHeight - 6
-                implicitHeight: sizeControlHeight - 6
-                radius: 18
-                color: newSessionHover.containsMouse ? accent : accentMuted
+                id: gatewayDetailBubble
+                objectName: "gatewayDetailBubble"
+                z: 20
+                property real maxContentHeight: 116
+                width: Math.min(gwCapsule.width - 8, 320)
+                x: Math.max(0, Math.min(gwCapsule.width - width, gwCapsule.detailAnchorCenterX - width / 2))
+                y: gwCapsule.height
+                visible: gwCapsule.showDetailBubble
+                color: gwCapsule.hasErrorDetail ? (isDark ? "#FF472122" : "#FFF9E1E1") : (isDark ? "#FF2A241F" : "#FFF8F1E7")
+                radius: 16
                 border.width: 1
-                border.color: newSessionHover.containsMouse ? accent : borderSubtle
-                scale: newSessionHover.containsMouse ? motionHoverScaleMedium : 1.0
-                Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-                Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+                border.color: gwCapsule.hasErrorDetail ? (isDark ? "#55F07A7A" : "#22DC2626") : (isDark ? "#22FFFFFF" : "#16000000")
+                opacity: visible ? 1.0 : 0.0
+                implicitHeight: Math.min(maxContentHeight, gatewayDetailText.implicitHeight) + 18
+                clip: true
 
-                Text {
-                    anchors.centerIn: parent
-                    text: "+"
-                    color: textPrimary
-                    font.pixelSize: typeTitle
-                    font.weight: weightDemiBold
+                Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+
+                Canvas {
+                    anchors.bottom: parent.top
+                    width: 12
+                    height: 8
+                    x: Math.max(0, Math.min(parent.width - width, gwCapsule.detailAnchorCenterX - gatewayDetailBubble.x - width / 2))
+                    onPaint: {
+                        var ctx = getContext("2d")
+                        ctx.clearRect(0, 0, width, height)
+                        ctx.beginPath()
+                        ctx.moveTo(width / 2, 0)
+                        ctx.lineTo(0, height)
+                        ctx.lineTo(width, height)
+                        ctx.closePath()
+                        ctx.fillStyle = gatewayDetailBubble.color
+                        ctx.fill()
+                    }
+                }
+
+                Flickable {
+                    id: gatewayDetailViewport
+                    objectName: "gatewayDetailViewport"
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 12
+                    anchors.topMargin: 9
+                    anchors.bottomMargin: 9
+                    clip: true
+                    contentWidth: width
+                    contentHeight: gatewayDetailText.implicitHeight
+                    boundsBehavior: Flickable.StopAtBounds
+                    interactive: contentHeight > height
+
+                    Text {
+                        id: gatewayDetailText
+                        objectName: "gatewayDetailText"
+                        width: gatewayDetailViewport.width
+                        text: gwCapsule.detailText
+                        color: gwCapsule.hasErrorDetail ? statusError : textSecondary
+                        font.pixelSize: typeCaption
+                        font.weight: weightMedium
+                        wrapMode: Text.WordWrap
+                        textFormat: Text.PlainText
+                    }
                 }
 
                 MouseArea {
-                    id: newSessionHover
+                    id: gwDetailHover
                     anchors.fill: parent
+                    anchors.topMargin: -8
+                    acceptedButtons: Qt.NoButton
                     hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.newSessionRequested()
                 }
             }
         }
 
         // ── Session list ──────────────────────────────────────────────────
-        ListView {
-            id: sessionList
+        Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
-            model: groupModel
-            spacing: 0
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            Layout.leftMargin: 12
+            Layout.rightMargin: 12
+            Layout.topMargin: 14
+            Layout.bottomMargin: 8
+            radius: 22
+            color: sidebarListPanelBg
+            border.width: 1
+            border.color: sidebarListPanelBorder
 
-            delegate: Item {
-                width: sessionList.width
-                height: model.isHeader ? sizeSidebarHeader : sessionRow.height
+            Rectangle {
+                anchors.fill: parent
+                radius: parent.radius
+                color: sidebarListPanelOverlay
+                opacity: 0.9
+            }
 
-                // ── Group header row ──────────────────────────────────────
-                Rectangle {
-                    visible: model.isHeader
-                    anchors { left: parent.left; right: parent.right; top: parent.top }
-                    height: sizeSidebarHeader
-                    color: "transparent"
+            Item {
+                id: sessionsHeaderBar
+                objectName: "sessionsHeaderBar"
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.leftMargin: 14
+                anchors.rightMargin: 12
+                anchors.topMargin: 8
+                height: 30
+                scale: 1.0 + headerPulseScale
 
-                    RowLayout {
-                        anchors { fill: parent; leftMargin: 14; rightMargin: 10 }
-                        spacing: 6
+                Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
 
-                        Text {
-                            text: model.expanded ? "▾" : "▸"
-                            color: textPrimary
-                            font.pixelSize: typeBody
-                            font.weight: weightDemiBold
+                Item {
+                    anchors.left: parent.left
+                    anchors.right: newSessionButton.left
+                    anchors.rightMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    height: parent.height
+
+                    Row {
+                        id: sessionsHeaderContent
+                        anchors.centerIn: parent
+                        spacing: 8
+
+                        Image {
+                            width: 22
+                            height: 22
+                            anchors.verticalCenter: parent.verticalCenter
+                            y: 1
+                            source: "../resources/icons/sidebar-sessions-title.svg"
+                            sourceSize: Qt.size(22, 22)
+                            fillMode: Image.PreserveAspectFit
+                            smooth: true
+                            mipmap: true
+                            opacity: 0.98
                         }
+
                         Text {
-                            text: strings["channel_" + (model.channel || "other")] || model.channel || "other"
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: strings.sidebar_sessions
                             color: textPrimary
-                            font.pixelSize: typeBody
-                            font.weight: weightDemiBold
-                            font.letterSpacing: letterTight
+                            font.pixelSize: typeBody + 2
+                            font.weight: weightBold
+                            font.letterSpacing: 0.35
                             textFormat: Text.PlainText
-                            Layout.fillWidth: true
+                            opacity: 0.96
                         }
-                    }
 
-                    MouseArea {
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        acceptedButtons: Qt.LeftButton
-                        preventStealing: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: root.toggleGroup(model.channel)
+                        Rectangle {
+                            objectName: "sessionsHeaderUnreadBadge"
+                            visible: root.sessionsUnreadCount > 0
+                            width: unreadBadgeText.implicitWidth + 12
+                            height: 18
+                            radius: 9
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: sidebarHeaderBadgeBg
+                            scale: 1.0 + headerBadgeScale
+
+                            Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
+
+                            Text {
+                                id: unreadBadgeText
+                                objectName: "sessionsHeaderUnreadText"
+                                anchors.centerIn: parent
+                                text: root.sessionsUnreadCount
+                                color: sidebarHeaderBadgeText
+                                font.pixelSize: typeCaption
+                                font.weight: weightDemiBold
+                            }
+                        }
                     }
                 }
 
-                // ── Session item row ──────────────────────────────────────
-                Item {
-                    id: sessionRow
-                    visible: !model.isHeader
-                    anchors { left: parent.left; right: parent.right; top: parent.top }
-                    height: model.itemVisible ? (inner.height + 4) : 0
-                    clip: true
-                    Behavior on height { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
+                IconCircleButton {
+                    id: newSessionButton
+                    objectName: "newSessionButton"
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    buttonSize: sizeControlHeight - 6
+                    glyphText: "+"
+                    glyphSize: 18
+                    fillColor: isDark ? "#12FFFFFF" : "#16000000"
+                    hoverFillColor: accent
+                    outlineColor: newSessionButton.hovered ? accent : "transparent"
+                    glyphColor: newSessionButton.hovered ? "#FFFFFFFF" : textPrimary
+                    hoverScale: motionHoverScaleMedium
+                    onClicked: root.requestNewSession()
+                }
 
-                    SessionItem {
-                        id: inner
-                        width: parent.width - 20
-                        x: 10
-                        opacity: model.itemVisible ? 1.0 : 0.0
-                        Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
-                        sessionKey:   model.itemKey   ?? ""
-                        sessionTitle: model.itemTitle ?? model.itemKey ?? ""
-                        isActive:     root.showChatSelection && sessionKey === root.activeSessionKey
-                        dimmed:       root.gatewayIdle
-                        hasUnread:    model.itemHasUnread ?? false
-                        onSelected:       root.sessionSelected(sessionKey)
-                        onDeleteRequested: root.sessionDeleteRequested(sessionKey)
+                SequentialAnimation {
+                    id: sessionsHeaderPulse
+                    running: false
+                    ParallelAnimation {
+                        NumberAnimation { target: root; property: "headerPulseScale"; from: 0.0; to: 0.03; duration: motionFast; easing.type: easeStandard }
+                        NumberAnimation { target: root; property: "headerBadgeScale"; from: 0.0; to: 0.12; duration: motionFast; easing.type: easeEmphasis }
+                    }
+                    PauseAnimation { duration: motionMicro }
+                    ParallelAnimation {
+                        NumberAnimation { target: root; property: "headerPulseScale"; to: 0.0; duration: motionPanel; easing.type: easeSoft }
+                        NumberAnimation { target: root; property: "headerBadgeScale"; to: 0.0; duration: motionPanel; easing.type: easeSoft }
                     }
                 }
             }
 
-            // Empty state
-            Text {
-                anchors.centerIn: parent
-                visible: groupModel.count === 0
-                text: strings.sidebar_no_sessions
-                color: textTertiary
-                font.pixelSize: typeLabel
+            ListView {
+                id: sessionList
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                anchors.leftMargin: 8
+                anchors.rightMargin: 8
+                anchors.topMargin: sessionsHeaderBar.y + sessionsHeaderBar.height + 6
+                anchors.bottomMargin: 8
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                model: groupModel
+                spacing: 0
+                ScrollBar.vertical: ScrollBar {
+                    policy: ScrollBar.AsNeeded
+                    width: 4
+                    background: Item {}
+                    contentItem: Rectangle {
+                        implicitWidth: 4
+                        radius: 2
+                        color: sidebarScrollbarThumb
+                        opacity: 0.72
+                    }
+                }
+                footer: Item {
+                    width: sessionList.width
+                    height: 0
+                }
+
+                delegate: Item {
+                    width: sessionList.width
+                    height: model.isHeader
+                            ? (sizeSidebarHeader + (!model.expanded ? sizeSidebarGroupGap : 0))
+                            : sessionRow.height
+
+                    // ── Group header row ──────────────────────────────────────
+                    Rectangle {
+                        id: groupHeaderCard
+                        visible: model.isHeader
+                        anchors { left: parent.left; right: parent.right; top: parent.top }
+                        height: sizeSidebarHeader
+                        radius: 14
+                        color: groupHeaderArea.pressed
+                               ? sidebarGroupExpandedBg
+                               : (groupHeaderArea.containsMouse
+                                  ? sidebarGroupHoverBg
+                                  : (model.expanded ? sidebarGroupExpandedBg : sidebarGroupBg))
+                        border.width: 0
+                        border.color: model.expanded ? sidebarGroupExpandedBorder : sidebarGroupBorder
+                        scale: groupHeaderArea.pressed ? 0.992 : 1.0
+
+                        Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                        Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
+                        Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: parent.radius
+                            color: root.channelSurface(model.channel, model.expanded, groupHeaderArea.containsMouse)
+                            opacity: 1.0
+                        }
+
+                        RowLayout {
+                            anchors { fill: parent; leftMargin: 10; rightMargin: 8 }
+                            spacing: 7
+
+                            Item {
+                                Layout.preferredWidth: 20
+                                Layout.preferredHeight: 20
+
+                                Image {
+                                    width: 16
+                                    height: 16
+                                    anchors.centerIn: parent
+                                    source: root.channelIconSource(model.channel)
+                                    sourceSize: Qt.size(16, 16)
+                                    fillMode: Image.PreserveAspectFit
+                                    smooth: true
+                                    mipmap: true
+                                    opacity: model.expanded ? 1.0 : 0.92
+                                }
+                            }
+
+                            Text {
+                                text: strings["channel_" + (model.channel || "other")] || model.channel || "other"
+                                color: textPrimary
+                                font.pixelSize: typeLabel + 1
+                                font.weight: weightDemiBold
+                                font.letterSpacing: 0.2
+                                textFormat: Text.PlainText
+                                Layout.fillWidth: true
+                                verticalAlignment: Text.AlignVCenter
+                                opacity: model.expanded ? 0.99 : 0.94
+                            }
+
+                            Rectangle {
+                                visible: (model.itemCount || 0) > 0
+                                Layout.preferredWidth: countText.implicitWidth + 12
+                                Layout.preferredHeight: 22
+                                radius: 11
+                                color: sidebarGroupCountBg
+                                border.width: 1
+                                border.color: sidebarGroupChevronBorder
+
+                                Text {
+                                    id: countText
+                                    anchors.centerIn: parent
+                                    text: model.itemCount || 0
+                                    color: sidebarGroupCountText
+                                    font.pixelSize: typeCaption
+                                    font.weight: weightDemiBold
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.preferredWidth: 22
+                                Layout.preferredHeight: 22
+                                radius: 11
+                                color: sidebarGroupChevronBg
+                                border.width: 1
+                                border.color: sidebarGroupChevronBorder
+
+                                Image {
+                                    anchors.centerIn: parent
+                                    width: 12
+                                    height: 12
+                                    source: "../resources/icons/sidebar-chevron.svg"
+                                    sourceSize: Qt.size(12, 12)
+                                    fillMode: Image.PreserveAspectFit
+                                    smooth: true
+                                    mipmap: true
+                                    rotation: model.expanded ? 0 : -90
+                                    opacity: groupHeaderArea.containsMouse ? 1.0 : 0.86
+
+                                    Behavior on rotation { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
+                                    Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+                                }
+                            }
+                        }
+
+                        MouseArea {
+                            id: groupHeaderArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            acceptedButtons: Qt.LeftButton
+                            preventStealing: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleGroup(model.channel)
+                        }
+                    }
+
+                    // ── Session item row ──────────────────────────────────────
+                    Item {
+                        id: sessionRow
+                        visible: !model.isHeader
+                        anchors { left: parent.left; right: parent.right; top: parent.top }
+                        y: model.isFirstInGroup ? sizeSidebarHeaderToRowGap : 0
+                        height: model.itemVisible
+                                ? (inner.height
+                                   + (model.isFirstInGroup ? sizeSidebarHeaderToRowGap : 0)
+                                   + (model.isLastInGroup ? sizeSidebarGroupGap : sizeSidebarGroupInnerGap))
+                                : 0
+                        clip: true
+                        Behavior on height { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
+
+                        SessionItem {
+                            id: inner
+                            width: parent.width - 16
+                            x: 8
+                            opacity: model.itemVisible ? 1.0 : 0.0
+                            Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+                            sessionKey:   model.itemKey   ?? ""
+                            sessionTitle: model.itemTitle ?? model.itemKey ?? ""
+                            sessionRelativeTime: model.itemUpdatedText ?? ""
+                            filledIconSource: root.channelFilledIconSource(model.channel)
+                            isActive:     root.showChatSelection && sessionKey === root.activeSessionKey
+                            dimmed:       root.gatewayIdle
+                            hasUnread:    model.itemHasUnread ?? false
+                            onSelected:       root.sessionSelected(sessionKey)
+                            onDeleteRequested: root.sessionDeleteRequested(sessionKey)
+                        }
+                    }
+                }
+
+
+                // Empty state
+                Item {
+                    id: emptyStateWrap
+                    objectName: "sidebarEmptyStateWrap"
+                    anchors.top: parent.top
+                    anchors.topMargin: 18
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: Math.min(sessionList.width - 28, 196)
+                    height: emptyStateCard.implicitHeight
+                    visible: groupModel.count === 0
+
+                    Rectangle {
+                        id: emptyStateCard
+                        objectName: "sidebarEmptyState"
+                        width: parent.width
+                        implicitHeight: emptyStateContent.implicitHeight + 24
+                        radius: 18
+                        color: emptyStateHover.containsMouse ? (isDark ? "#22FFFFFF" : "#14000000") : (isDark ? "#18FFFFFF" : "#0B000000")
+                        border.width: 1
+                        border.color: emptyStateHover.containsMouse ? sessionRowActiveBorder : (isDark ? "#46FFFFFF" : "#26000000")
+                        scale: emptyStateHover.pressed ? 0.988 : (emptyStateHover.containsMouse ? motionHoverScaleMedium : 1.0)
+
+                    Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                    Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                    Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+
+                    Column {
+                        id: emptyStateContent
+                        anchors.centerIn: parent
+                        anchors.verticalCenterOffset: 4
+                        width: parent.width - 28
+                        spacing: 11
+
+                        Item {
+                            width: 50
+                            height: 50
+                            anchors.horizontalCenter: parent.horizontalCenter
+
+                            Rectangle {
+                                width: 46
+                                height: 46
+                                radius: 23
+                                anchors.centerIn: parent
+                                color: emptyStateHover.containsMouse ? (isDark ? "#18FFFFFF" : "#10000000") : chatEmptyIconBg
+                                border.width: 1
+                                border.color: emptyStateHover.containsMouse ? sessionRowActiveBorder : (isDark ? "#38FFFFFF" : "#1A000000")
+
+                                Image {
+                                    width: 24
+                                    height: 24
+                                    anchors.centerIn: parent
+                                    source: "../resources/icons/chat.svg"
+                                    sourceSize: Qt.size(24, 24)
+                                    fillMode: Image.PreserveAspectFit
+                                    smooth: true
+                                    mipmap: true
+                                    opacity: 0.96
+                                }
+                            }
+
+                            Rectangle {
+                                width: 16
+                                height: 16
+                                radius: 8
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                anchors.rightMargin: 4
+                                anchors.topMargin: 4
+                                color: emptyStateHover.containsMouse ? accent : accentGlow
+
+                                PlusGlyph {
+                                    glyphSize: 7
+                                    barThickness: 1.8
+                                    glyphColor: bgSidebar
+                                    anchors.centerIn: parent
+                                }
+                            }
+                        }
+
+                        Text {
+                            width: parent.width
+                            horizontalAlignment: Text.AlignHCenter
+                            text: strings.sidebar_empty_title
+                            color: isDark ? "#FFF1E1" : "#4B2D12"
+                            font.pixelSize: typeBody + 1
+                            font.weight: weightBold
+                            wrapMode: Text.WordWrap
+                        }
+
+                        Text {
+                            width: parent.width
+                            horizontalAlignment: Text.AlignHCenter
+                            text: strings.sidebar_empty_hint
+                            color: isDark ? "#DCC5A8" : "#74512F"
+                            font.pixelSize: typeMeta
+                            wrapMode: Text.WordWrap
+                        }
+
+                        PillActionButton {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: strings.sidebar_empty_cta
+                            leadingText: "+"
+                            minHeight: 28
+                            horizontalPadding: 18
+                            fillColor: emptyStateHover.containsMouse ? accent : accentGlow
+                            hoverFillColor: emptyStateHover.containsMouse ? accent : accentGlow
+                            outlineColor: emptyStateHover.containsMouse ? accent : sessionRowActiveBorder
+                            hoverOutlineColor: emptyStateHover.containsMouse ? accent : sessionRowActiveBorder
+                            textColor: bgSidebar
+                        }
+                    }
+
+                        MouseArea {
+                            id: emptyStateHover
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.requestNewSession()
+                        }
+                    }
+                }
             }
         }
 

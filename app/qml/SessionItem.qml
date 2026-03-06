@@ -1,11 +1,12 @@
 import QtQuick 2.15
-import QtQuick.Controls 2.15
 
 Rectangle {
     id: root
 
     property string sessionKey: ""
     property string sessionTitle: ""
+    property string sessionRelativeTime: ""
+    property string filledIconSource: "../resources/icons/sidebar-chat-solid.svg"
     property bool isActive: false
     property bool dimmed: false
     property bool hasUnread: false
@@ -13,13 +14,13 @@ Rectangle {
     signal deleteRequested()
 
     height: sizeSessionRow
-    radius: radiusSm
+    radius: 12
     scale: isActive ? motionSelectionScaleActive : (hoverArea.containsMouse ? motionSelectionScaleHover : 1.0)
     color: isActive
            ? sessionRowActiveBg
-           : (hoverArea.containsMouse ? sessionRowHoverBg : "transparent")
-    border.width: isActive ? 1 : 0
-    border.color: isActive ? sessionRowActiveBorder : "transparent"
+           : (hoverArea.containsMouse ? sessionRowHoverBg : sessionRowIdleBg)
+    border.width: 0
+    border.color: isActive ? sessionRowActiveBorder : (hoverArea.containsMouse ? sessionRowHoverBorder : sessionRowIdleBorder)
     opacity: dimmed ? (isActive ? opacityDimmedActive : opacityDimmedIdle) : 1.0
 
     Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
@@ -28,66 +29,38 @@ Rectangle {
     Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
     Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
 
-    Rectangle {
-        anchors.fill: parent
-        anchors.margins: -3
-        radius: root.radius + 3
-        color: sessionRowActiveBorder
-        opacity: root.isActive ? motionSelectionAuraOpacity : 0.0
-        scale: root.isActive ? 1.0 : motionSelectionAuraHiddenScale
-        z: -1
-        Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
-        Behavior on scale { NumberAnimation { duration: motionPanel; easing.type: easeEmphasis } }
-    }
-
-    Rectangle {
-        width: 3
-        height: root.height - 14
-        radius: width / 2
-        anchors.left: parent.left
-        anchors.leftMargin: 6
-        anchors.verticalCenter: parent.verticalCenter
-        color: sessionRowActiveBorder
-        opacity: root.isActive ? 1.0 : 0.0
-        scale: root.isActive ? 1.0 : motionSelectionRailHiddenScale
-        transformOrigin: Item.Center
-        Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
-        Behavior on scale { NumberAnimation { duration: motionPanel; easing.type: easeEmphasis } }
-    }
-
-    Row {
+    Item {
+        id: contentRow
         anchors {
             verticalCenter: parent.verticalCenter
             left: parent.left
             right: deleteBtn.left
-            leftMargin: 12
+            leftMargin: 11
             rightMargin: 10
         }
-        spacing: 8
+        height: parent.height
 
-        Rectangle {
+        Item {
             id: leadingIcon
-            width: 20
-            height: 20
-            radius: 10
-            color: root.isActive ? sessionLeadingActiveBg : sessionLeadingIdleBg
-            border.width: 1
-            border.color: root.isActive ? accentGlow : borderSubtle
+            width: 16
+            height: 16
+            anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            scale: root.isActive ? motionHoverScaleSubtle : 1.0
+            scale: root.isActive ? motionHoverScaleSubtle : (hoverArea.containsMouse ? 1.03 : 1.0)
 
-            Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
-            Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
             Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
 
             Image {
                 anchors.centerIn: parent
-                source: "../resources/icons/chat.svg"
-                sourceSize: Qt.size(12, 12)
-                width: 12
-                height: 12
-                opacity: root.isActive ? 1.0 : opacityInactive
-                scale: root.isActive ? 1.06 : 1.0
+                source: root.filledIconSource
+                sourceSize: Qt.size(root.isActive ? 16 : 14, root.isActive ? 16 : 14)
+                width: root.isActive ? 16 : 14
+                height: root.isActive ? 16 : 14
+                fillMode: Image.PreserveAspectFit
+                smooth: true
+                mipmap: true
+                opacity: root.isActive ? 1.0 : 0.94
+                scale: root.isActive ? 1.05 : 1.0
 
                 Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
                 Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
@@ -95,13 +68,35 @@ Rectangle {
         }
 
         Text {
-            text: root.sessionTitle
-            color: root.isActive ? textPrimary : textSecondary
-            font.pixelSize: typeLabel
-            font.weight: root.isActive ? weightMedium : weightRegular
-            elide: Text.ElideRight
-            width: Math.max(0, parent.width - leadingIcon.width - 12)
+            id: timeText
+            objectName: "sessionRelativeTime"
+            visible: root.sessionRelativeTime !== ""
+            anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
+            text: root.sessionRelativeTime
+            color: root.isActive ? textSecondary : textTertiary
+            font.pixelSize: typeMeta
+            font.weight: weightMedium
+            renderType: Text.NativeRendering
+            opacity: visible && !hoverArea.containsMouse && !deleteHover.containsMouse ? 0.9 : 0.0
+
+            Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+            Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+        }
+
+        Text {
+            id: titleText
+            text: root.sessionTitle
+            anchors.left: leadingIcon.right
+            anchors.leftMargin: 7
+            anchors.right: timeText.visible ? timeText.left : parent.right
+            anchors.rightMargin: timeText.visible ? 10 : 0
+            color: root.isActive ? textPrimary : (hoverArea.containsMouse ? textPrimary : textSecondary)
+            font.pixelSize: typeLabel
+            font.weight: root.isActive ? weightDemiBold : weightMedium
+            elide: Text.ElideRight
+            anchors.verticalCenter: parent.verticalCenter
+            renderType: Text.NativeRendering
 
             Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
         }
@@ -113,11 +108,11 @@ Rectangle {
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
         anchors.rightMargin: 8
-        width: 30
-        height: 30
-        radius: 9
+        width: 24
+        height: 24
+        radius: 12
         color: deleteHover.containsMouse ? sessionDeleteHoverBg : sessionDeleteIdleBg
-        border.width: 1
+        border.width: 0
         border.color: deleteHover.containsMouse ? sessionDeleteHoverBorder : sessionDeleteIdleBorder
         scale: deleteHover.containsMouse ? motionHoverScaleSubtle : (hoverArea.containsMouse ? 1.0 : motionDeleteHiddenScale)
         opacity: hoverArea.containsMouse || deleteHover.containsMouse ? 1.0 : 0.0
@@ -126,12 +121,16 @@ Rectangle {
         Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
         Behavior on scale { NumberAnimation { duration: motionMicro; easing.type: easeStandard } }
 
-        Text {
+        Image {
             anchors.centerIn: parent
-            text: "✕"
-            color: sessionDeleteIcon
-            font.pixelSize: typeMeta
-            font.weight: weightMedium
+            source: "../resources/icons/sidebar-close.svg"
+            sourceSize: Qt.size(12, 12)
+            width: 12
+            height: 12
+            fillMode: Image.PreserveAspectFit
+            smooth: true
+            mipmap: true
+            opacity: deleteHover.containsMouse ? 1.0 : 0.92
         }
 
         MouseArea {

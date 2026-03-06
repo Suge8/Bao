@@ -1,5 +1,6 @@
 import json
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import wraps
@@ -13,6 +14,12 @@ from bao.utils.db import ensure_table, get_db
 # legacy safety net — runtime context is no longer injected as user message,
 # but keep filtering in case old sessions contain such entries.
 _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
+
+
+@dataclass(frozen=True)
+class SessionChangeEvent:
+    session_key: str
+    kind: str
 
 
 _META_SAMPLE = [
@@ -118,7 +125,15 @@ class Session:
             ):
                 continue
             entry: dict[str, Any] = {"role": role or "user", "content": content}
-            for k in ("tool_calls", "tool_call_id", "name", "_source", "status"):
+            for k in (
+                "tool_calls",
+                "tool_call_id",
+                "name",
+                "_source",
+                "status",
+                "format",
+                "entrance_style",
+            ):
                 if k in m:
                     entry[k] = m[k]
             if source and "_source" not in entry:
@@ -140,7 +155,15 @@ class Session:
             ):
                 continue
             entry: dict[str, Any] = {"role": m["role"], "content": m.get("content", "")}
-            for k in ("tool_calls", "tool_call_id", "name", "_source", "status"):
+            for k in (
+                "tool_calls",
+                "tool_call_id",
+                "name",
+                "_source",
+                "status",
+                "format",
+                "entrance_style",
+            ):
                 if k in m:
                     entry[k] = m[k]
             out.append(entry)
@@ -163,8 +186,27 @@ class SessionManager:
         self._meta_lock = threading.RLock()
         self._session_locks_lock = threading.Lock()
         self._session_locks: dict[str, threading.RLock] = {}
+        self._change_listeners: list[Callable[[SessionChangeEvent], None]] = []
         self._migrate_legacy(workspace)
         self._ensure_indexes()
+
+    @_synchronized
+    def add_change_listener(self, listener: Callable[[SessionChangeEvent], None]) -> None:
+        if listener not in self._change_listeners:
+            self._change_listeners.append(listener)
+
+    @_synchronized
+    def remove_change_listener(self, listener: Callable[[SessionChangeEvent], None]) -> None:
+        if listener in self._change_listeners:
+            self._change_listeners.remove(listener)
+
+    def _emit_change(self, event: SessionChangeEvent) -> None:
+        listeners = tuple(self._change_listeners)
+        for listener in listeners:
+            try:
+                listener(event)
+            except Exception as e:
+                logger.warning("⚠️ session change listener failed: {} — {}", event.session_key, e)
 
     def _lock_for(self, key: str) -> threading.RLock:
         with self._session_locks_lock:
@@ -531,6 +573,7 @@ class SessionManager:
             raise
 
         self._cache[session.key] = session
+        self._emit_change(SessionChangeEvent(session_key=session.key, kind="messages"))
 
     @_synchronized
     def update_metadata_only(self, key: str, metadata_updates: dict[str, Any]) -> None:
@@ -557,6 +600,7 @@ class SessionManager:
             )
             if key in self._cache:
                 self._cache[key].metadata.update(metadata_updates)
+            self._emit_change(SessionChangeEvent(session_key=key, kind="metadata"))
         except Exception as e:
             logger.warning("⚠️ metadata update failed: {} — {}", key, e)
 
@@ -637,6 +681,7 @@ class SessionManager:
             ArtifactStore(self.workspace, key, 0).cleanup_session()
         except Exception:
             pass
+        self._emit_change(SessionChangeEvent(session_key=key, kind="deleted"))
         return ok
 
     @_synchronized
