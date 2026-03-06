@@ -9,10 +9,12 @@ from bao.agent.tools.mcp import (
     MCPToolWrapper,
     _reached_global_cap,
     _reached_server_cap,
+    _register_pending_wrappers,
     _resolve_server_max_tools,
     _resolve_server_slim_schema,
     _slim_schema,
 )
+from bao.agent.tools.registry import ToolRegistry
 from bao.bus.queue import MessageBus
 from bao.config.schema import Config
 from bao.providers.base import LLMProvider, LLMResponse
@@ -221,6 +223,38 @@ def test_mcp_wrapper_int_description() -> None:
     )
     wrapper = MCPToolWrapper(object(), "svc", tool_def, slim_schema=False)
     assert wrapper.description == "mytool"
+
+
+def test_register_pending_wrappers_populates_discoverability_metadata() -> None:
+    registry = ToolRegistry()
+    tool_def = SimpleNamespace(
+        name="lookup",
+        description="Look up a customer record",
+        inputSchema={
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+        },
+    )
+    wrapper = MCPToolWrapper(object(), "crm", tool_def, slim_schema=True)
+
+    server_count, total_registered = _register_pending_wrappers(
+        pending_wrappers=[wrapper],
+        registry=registry,
+        total_registered=0,
+        max_tools=50,
+        server_max_tools=None,
+        server_name="crm",
+    )
+
+    meta = registry.get_metadata(wrapper.name)
+    assert server_count == 1
+    assert total_registered == 1
+    assert meta is not None
+    assert meta.bundle == "core"
+    assert "lookup" in meta.aliases
+    assert "crm" not in meta.aliases
+    assert meta.short_hint == "MCP tool for lookup."
 
 
 def test_agentloop_bool_mcp_max_tools_ignored(tmp_path: Path) -> None:

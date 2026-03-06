@@ -1,6 +1,7 @@
 """MCP client: connects to MCP servers and wraps their tools as native Bao tools."""
 
 import asyncio
+import re
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -8,7 +9,7 @@ import httpx
 from loguru import logger
 
 from bao.agent.tools.base import Tool
-from bao.agent.tools.registry import ToolRegistry
+from bao.agent.tools.registry import ToolMetadata, ToolRegistry
 
 _REMOVABLE_SCHEMA_KEYS = {"examples", "example", "default", "title", "$comment"}
 
@@ -214,7 +215,18 @@ def _register_pending_wrappers(
                 break
             if _reached_server_cap(server_count, 0, server_max_tools):
                 break
-            registry.register(wrapper)
+            neutral_hint = _neutral_metadata_hint(wrapper.original_name)
+            registry.register(
+                wrapper,
+                metadata=ToolMetadata(
+                    bundle="core",
+                    short_hint=neutral_hint,
+                    aliases=(wrapper.original_name,),
+                    keyword_aliases=(),
+                    auto_callable=True,
+                    summary=neutral_hint,
+                ),
+            )
             registered_names.append(wrapper.name)
             total_registered += 1
             server_count += 1
@@ -257,6 +269,10 @@ class MCPToolWrapper(Tool):
         self._timeout = timeout if isinstance(timeout, int) and timeout > 0 else 30
 
     @property
+    def original_name(self) -> str:
+        return self._original_name
+
+    @property
     def name(self) -> str:
         return self._name
 
@@ -285,6 +301,12 @@ class MCPToolWrapper(Tool):
             else:
                 parts.append(str(block))
         return "\n".join(parts) or "(no output)"
+
+
+def _neutral_metadata_hint(name: str) -> str:
+    label = str(name).strip().replace("_", " ").replace("-", " ")
+    label = re.sub(r"\s+", " ", label).strip() or "mcp tool"
+    return f"MCP tool for {label}."
 
 
 async def connect_mcp_servers(

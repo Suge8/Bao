@@ -22,12 +22,13 @@ from bao.agent.context import ContextBuilder
 from bao.agent.memory import MEMORY_CATEGORIES, MEMORY_CATEGORY_CAPS
 from bao.agent.protocol import StreamEvent, StreamEventType
 from bao.agent.subagent import SubagentManager
+from bao.agent.tools.base import Tool
 from bao.agent.tools.cron import CronTool
 from bao.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from bao.agent.tools.memory import ForgetTool, RememberTool, UpdateMemoryTool
 from bao.agent.tools.message import MessageTool
 from bao.agent.tools.plan import ClearPlanTool, CreatePlanTool, UpdatePlanStepTool
-from bao.agent.tools.registry import ToolRegistry
+from bao.agent.tools.registry import ToolMetadata, ToolRegistry
 from bao.agent.tools.shell import ExecTool
 from bao.agent.tools.spawn import SpawnTool
 from bao.agent.tools.task_status import CancelTaskTool, CheckTasksJsonTool, CheckTasksTool
@@ -76,12 +77,19 @@ _WEB_SIGNAL_TOKENS = (
     "www.",
     "网页",
     "网站",
+    "官网",
+    "链接",
     "url",
     "搜索",
+    "搜",
+    "查",
+    "找",
     "search",
     "crawl",
     "fetch",
     "浏览",
+    "新闻",
+    "资讯",
 )
 _DESKTOP_SIGNAL_TOKENS = (
     "desktop",
@@ -114,45 +122,31 @@ _CODE_SIGNAL_TOKENS = (
     "函数",
     "修复",
 )
-_CORE_TOOL_NAMES = frozenset(
-    {
-        "message",
-        "exec",
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list_dir",
-        "create_plan",
-        "update_plan_step",
-        "clear_plan",
-        "spawn",
-        "check_tasks",
-        "check_tasks_json",
-        "cancel_task",
-        "remember",
-        "forget",
-        "update_memory",
-        "cron",
-        "generate_image",
-    }
+_WEB_ROUTE_ALIAS_PHRASES = (
+    "搜一下",
+    "搜一搜",
+    "搜个",
+    "搜一个",
+    "给我搜",
+    "帮我搜",
+    "查一下",
+    "查一查",
+    "帮我查",
+    "帮我找",
+    "找一下",
 )
-_WEB_TOOL_NAMES = frozenset({"web_search", "web_fetch"})
-_DESKTOP_TOOL_NAMES = frozenset(
-    {
-        "screenshot",
-        "click",
-        "type_text",
-        "key_press",
-        "scroll",
-        "drag",
-        "get_screen_info",
-    }
-)
-_CODE_TOOL_NAMES = frozenset(
-    {
-        "coding_agent",
-        "coding_agent_details",
-    }
+_FOLLOWUP_SIGNAL_TOKENS = (
+    "继续",
+    "这个",
+    "这个呢",
+    "那这个",
+    "这个链接",
+    "这个网页",
+    "再试",
+    "再试一下",
+    "再来",
+    "然后呢",
+    "顺便",
 )
 _SESSION_LANG_KEY = "_session_lang"
 _CJK_CHAR_RE = re.compile(r"[\u3400-\u9FFF]")
@@ -404,38 +398,108 @@ class AgentLoop:
         # Desktop/CLI can register this to receive async notifications.
         self.on_system_response: Callable[[OutboundMessage], Awaitable[None]] | None = None
 
+    def _register_tool(
+        self,
+        tool: Tool,
+        *,
+        bundle: str,
+        short_hint: str,
+        aliases: tuple[str, ...] = (),
+        keyword_aliases: tuple[str, ...] = (),
+        auto_callable: bool = True,
+        summary: str | None = None,
+    ) -> None:
+        self.tools.register(
+            tool,
+            metadata=ToolMetadata(
+                bundle=bundle,
+                short_hint=short_hint,
+                aliases=aliases,
+                keyword_aliases=keyword_aliases,
+                auto_callable=auto_callable,
+                summary=(summary or tool.description).strip(),
+            ),
+        )
+
+    def _update_tool_metadata(self, name: str, *, short_hint: str | None = None) -> None:
+        meta = self.tools.get_metadata(name)
+        if meta is None:
+            return
+        self.tools.update_metadata(
+            name,
+            ToolMetadata(
+                bundle=meta.bundle,
+                short_hint=short_hint or meta.short_hint,
+                aliases=meta.aliases,
+                keyword_aliases=meta.keyword_aliases,
+                auto_callable=meta.auto_callable,
+                summary=meta.summary,
+            ),
+        )
+
     def _register_default_tools(self) -> None:
         allowed_dir = self.workspace if self.restrict_to_workspace else None
-        self.tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-        self.tools.register(WriteFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-        self.tools.register(EditFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-        self.tools.register(ListDirTool(workspace=self.workspace, allowed_dir=allowed_dir))
-        self.tools.register(
+        self._register_tool(
+            ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir),
+            bundle=_TOOL_BUNDLE_CORE,
+            short_hint="Read a file from the workspace or allowed path.",
+            aliases=("read file", "读取文件", "看文件"),
+            keyword_aliases=("file", "path", "read", "读取"),
+        )
+        self._register_tool(
+            WriteFileTool(workspace=self.workspace, allowed_dir=allowed_dir),
+            bundle=_TOOL_BUNDLE_CORE,
+            short_hint="Write or create a file, including missing parent directories.",
+            aliases=("write file", "创建文件", "写文件"),
+            keyword_aliases=("write", "create", "保存", "写入"),
+        )
+        self._register_tool(
+            EditFileTool(workspace=self.workspace, allowed_dir=allowed_dir),
+            bundle=_TOOL_BUNDLE_CORE,
+            short_hint="Edit an existing file by exact text replacement.",
+            aliases=("edit file", "修改文件", "替换文本"),
+            keyword_aliases=("edit", "replace", "修改", "替换"),
+        )
+        self._register_tool(
+            ListDirTool(workspace=self.workspace, allowed_dir=allowed_dir),
+            bundle=_TOOL_BUNDLE_CORE,
+            short_hint="List directory contents.",
+            aliases=("list dir", "列目录", "查看目录"),
+            keyword_aliases=("directory", "folder", "目录", "文件夹"),
+        )
+        self._register_tool(
             ExecTool(
                 working_dir=str(self.workspace),
                 timeout=self.exec_config.timeout,
                 restrict_to_workspace=self.restrict_to_workspace,
                 path_append=self.exec_config.path_append,
                 sandbox_mode=self.exec_config.sandbox_mode,
-            )
-        )
-        self.context.tool_hints.append(
-            "- exec: run shell commands on the Runtime host for local operations. "
-            "When user asks to operate this machine (e.g., mute volume), execute directly "
-            "instead of only giving manual steps."
+            ),
+            bundle=_TOOL_BUNDLE_CORE,
+            short_hint="Run shell commands on the Runtime host for local operations.",
+            aliases=("run command", "shell", "命令行", "执行命令"),
+            keyword_aliases=("command", "terminal", "bash", "run", "执行", "命令"),
         )
         from bao.agent.tools.coding_agent import CodingAgentDetailsTool, CodingAgentTool
 
         coding_tool = CodingAgentTool(workspace=self.workspace, allowed_dir=allowed_dir)
         if coding_tool.available_backends:
-            self.tools.register(coding_tool)
-            self.tools.register(CodingAgentDetailsTool(parent=coding_tool))
-            names = ", ".join(coding_tool.available_backends)
-            self.context.tool_hints.append(
-                f"- coding_agent(agent=...): delegate coding tasks to {names}. "
-                "Route via `spawn` (non-blocking; subagents have access). "
-                "Skill: skills/coding-agent/SKILL.md"
+            self._register_tool(
+                coding_tool,
+                bundle=_TOOL_BUNDLE_CODE,
+                short_hint="Delegate multi-file coding, debugging, and refactoring to a coding agent.",
+                aliases=("coding agent", "代码代理", "写代码"),
+                keyword_aliases=("code", "repo", "debug", "refactor", "test", "代码", "修复"),
             )
+            self._register_tool(
+                CodingAgentDetailsTool(parent=coding_tool),
+                bundle=_TOOL_BUNDLE_CODE,
+                short_hint="Fetch detailed output from a previous coding agent run.",
+                aliases=("coding details", "代码详情"),
+                keyword_aliases=("details", "stdout", "stderr", "详情"),
+                auto_callable=False,
+            )
+            names = ", ".join(coding_tool.available_backends)
             if "opencode" in coding_tool.available_backends:
                 _omo_paths = [
                     self.workspace / ".opencode/oh-my-opencode.jsonc",
@@ -444,9 +508,12 @@ class AgentLoop:
                     Path.home() / ".config/opencode/oh-my-opencode.json",
                 ]
                 if any(p.exists() for p in _omo_paths):
-                    self.context.tool_hints.append(
-                        "- OhMyOpenCode detected: use `ulw` prefix in opencode prompts "
-                        "for enhanced orchestration mode."
+                    self._update_tool_metadata(
+                        "coding_agent",
+                        short_hint=(
+                            f"Delegate multi-file coding to {names}; use `ulw` prefix for "
+                            "OpenCode orchestration mode when helpful."
+                        ),
                     )
         # Image generation (conditional: only when API key is configured)
         image_api_key = (
@@ -457,15 +524,16 @@ class AgentLoop:
         if self._image_generation_config and image_api_key:
             from bao.agent.tools.image_gen import ImageGenTool
 
-            self.tools.register(
+            self._register_tool(
                 ImageGenTool(
                     api_key=image_api_key,
                     model=self._image_generation_config.model,
                     base_url=self._image_generation_config.base_url,
-                )
-            )
-            self.context.tool_hints.append(
-                "- generate_image: create images from text. Send result via message(media=[path])."
+                ),
+                bundle=_TOOL_BUNDLE_CORE,
+                short_hint="Create images from text prompts.",
+                aliases=("generate image", "画图", "生成图片"),
+                keyword_aliases=("image", "draw", "画", "图片"),
             )
         search_tool = WebSearchTool(search_config=self.search_config, proxy=self.web_proxy)
         has_brave = bool(search_tool.brave_key)
@@ -478,51 +546,121 @@ class AgentLoop:
                 if ok
             ]
             logger.info("🔍 启用搜索 / search enabled: {}", ", ".join(providers))
-            self.tools.register(search_tool)
-            self.context.tool_hints.append(
-                "- web_search: prefer over web_fetch for finding information. web_fetch only for known URLs."
+            self._register_tool(
+                search_tool,
+                bundle=_TOOL_BUNDLE_WEB,
+                short_hint="Search the web for fresh information; prefer this over web_fetch when no URL is given.",
+                aliases=("web search", "search web", "搜索网页", "搜新闻", "查新闻"),
+                keyword_aliases=(
+                    "search",
+                    "web",
+                    "news",
+                    "搜索",
+                    "搜",
+                    "查",
+                    "新闻",
+                    "资讯",
+                    "最新",
+                ),
             )
-        self.tools.register(WebFetchTool(proxy=self.web_proxy))
-        self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
-        self.context.tool_hints.append(
-            "- message: cross-channel delivery only. Normal replies use direct text."
+        self._register_tool(
+            WebFetchTool(proxy=self.web_proxy),
+            bundle=_TOOL_BUNDLE_WEB,
+            short_hint="Fetch a known URL and extract readable content.",
+            aliases=("web fetch", "open url", "打开网页", "抓网页"),
+            keyword_aliases=("url", "link", "fetch", "网页", "链接", "官网"),
         )
-        self.tools.register(
-            CreatePlanTool(sessions=self.sessions, publish_outbound=self.bus.publish_outbound)
+        self._register_tool(
+            MessageTool(send_callback=self.bus.publish_outbound),
+            bundle=_TOOL_BUNDLE_CORE,
+            short_hint="Send a message to another channel or chat; normal replies do not need this tool.",
+            aliases=("send message", "发消息", "跨渠道发送"),
+            keyword_aliases=("message", "deliver", "notify", "消息", "通知"),
         )
-        self.tools.register(
-            UpdatePlanStepTool(sessions=self.sessions, publish_outbound=self.bus.publish_outbound)
+        self._register_tool(
+            CreatePlanTool(sessions=self.sessions, publish_outbound=self.bus.publish_outbound),
+            bundle=_TOOL_BUNDLE_CORE,
+            short_hint="Create a plan when work has 2+ meaningful steps or the user explicitly asks for one.",
+            aliases=("create plan", "制定计划", "拆步骤"),
+            keyword_aliases=("plan", "steps", "计划", "步骤"),
         )
-        self.tools.register(
-            ClearPlanTool(sessions=self.sessions, publish_outbound=self.bus.publish_outbound)
+        self._register_tool(
+            UpdatePlanStepTool(sessions=self.sessions, publish_outbound=self.bus.publish_outbound),
+            bundle=_TOOL_BUNDLE_CORE,
+            short_hint="Update plan progress after each completed step.",
+            aliases=("update plan", "更新计划", "推进步骤"),
+            keyword_aliases=("plan", "progress", "更新", "进度"),
         )
-        self.context.tool_hints.append(
-            "- planning tools:\n"
-            "  WHEN: task has 2+ steps, affects multiple files/components, or user asks for a plan.\n"
-            "  HOW: create_plan first → update_plan_step after each step → clear_plan when done/abandoned.\n"
-            "  SKIP: single-step simple requests — just execute directly.\n"
-            "  Keep steps short and tool-agnostic. If you started without a plan but realize the task is complex, pause and create_plan immediately."
+        self._register_tool(
+            ClearPlanTool(sessions=self.sessions, publish_outbound=self.bus.publish_outbound),
+            bundle=_TOOL_BUNDLE_CORE,
+            short_hint="Clear the active plan when the work is done or abandoned.",
+            aliases=("clear plan", "清空计划"),
+            keyword_aliases=("plan", "clear", "结束计划", "清空"),
         )
         spawn_tool = SpawnTool(manager=self.subagents)
         spawn_tool.set_publish_outbound(self.bus.publish_outbound)
-        self.tools.register(spawn_tool)
-        self.tools.register(CheckTasksTool(manager=self.subagents))
-        self.tools.register(CancelTaskTool(manager=self.subagents))
-        self.tools.register(CheckTasksJsonTool(manager=self.subagents))
-        self.context.tool_hints.append(
-            "- spawn: delegate multi-step or time-consuming work. Returns task_id for "
-            "check_tasks/cancel_task. Pass context_from=<task_id> to give the subagent context "
-            "from a previous task's result. When spawning coding tasks, describe clearly — "
-            "subagents can use coding tools if available.\n"
-            "- check_tasks: use ONLY when the user explicitly asks about task progress. "
-            "Do NOT poll proactively or call in a loop."
+        self._register_tool(
+            spawn_tool,
+            bundle=_TOOL_BUNDLE_CORE,
+            short_hint="Delegate multi-step or time-consuming work to a subagent.",
+            aliases=("spawn task", "委派任务", "子代理"),
+            keyword_aliases=("delegate", "subagent", "spawn", "委派"),
+        )
+        self._register_tool(
+            CheckTasksTool(manager=self.subagents),
+            bundle=_TOOL_BUNDLE_CORE,
+            short_hint="Check subagent progress only when the user explicitly asks.",
+            aliases=("check tasks", "查看进度"),
+            keyword_aliases=("progress", "status", "进度", "状态"),
+            auto_callable=False,
+        )
+        self._register_tool(
+            CancelTaskTool(manager=self.subagents),
+            bundle=_TOOL_BUNDLE_CORE,
+            short_hint="Cancel a running subagent task when needed.",
+            aliases=("cancel task", "取消任务"),
+            keyword_aliases=("cancel", "stop", "取消"),
+            auto_callable=False,
+        )
+        self._register_tool(
+            CheckTasksJsonTool(manager=self.subagents),
+            bundle=_TOOL_BUNDLE_CORE,
+            short_hint="Fetch structured subagent status when machine-readable progress is needed.",
+            aliases=("check tasks json", "结构化任务状态"),
+            keyword_aliases=("json", "structured", "结构化"),
+            auto_callable=False,
         )
         mem = self.context.memory
-        self.tools.register(RememberTool(memory=mem))
-        self.tools.register(ForgetTool(memory=mem))
-        self.tools.register(UpdateMemoryTool(memory=mem))
+        self._register_tool(
+            RememberTool(memory=mem),
+            bundle=_TOOL_BUNDLE_CORE,
+            short_hint="Write an explicit fact into long-term memory.",
+            aliases=("remember", "记住"),
+            keyword_aliases=("memory", "remember", "记忆", "记住"),
+        )
+        self._register_tool(
+            ForgetTool(memory=mem),
+            bundle=_TOOL_BUNDLE_CORE,
+            short_hint="Delete memory entries that match a query.",
+            aliases=("forget", "忘记", "删除记忆"),
+            keyword_aliases=("memory", "forget", "删除记忆"),
+        )
+        self._register_tool(
+            UpdateMemoryTool(memory=mem),
+            bundle=_TOOL_BUNDLE_CORE,
+            short_hint="Replace the content of one memory category.",
+            aliases=("update memory", "更新记忆"),
+            keyword_aliases=("memory", "update", "更新记忆"),
+        )
         if self.cron_service:
-            self.tools.register(CronTool(self.cron_service))
+            self._register_tool(
+                CronTool(self.cron_service),
+                bundle=_TOOL_BUNDLE_CORE,
+                short_hint="Schedule reminders and recurring tasks.",
+                aliases=("cron", "reminder", "提醒", "定时"),
+                keyword_aliases=("schedule", "cron", "remind", "提醒", "定时"),
+            )
         # Desktop automation (conditional: enabled in config + deps available)
         if self._desktop_config and self._desktop_config.enabled:
             try:
@@ -536,17 +674,54 @@ class AgentLoop:
                     TypeTextTool,
                 )
 
-                self.tools.register(ScreenshotTool())
-                self.tools.register(ClickTool())
-                self.tools.register(TypeTextTool())
-                self.tools.register(KeyPressTool())
-                self.tools.register(ScrollTool())
-                self.tools.register(DragTool())
-                self.tools.register(GetScreenInfoTool())
-                self.context.tool_hints.append(
-                    "- Desktop automation (screenshot/click/type_text/key_press/scroll/drag/"
-                    "get_screen_info): control the desktop. Use screenshot+get_screen_info "
-                    "first to see the screen, then click/type to interact."
+                self._register_tool(
+                    ScreenshotTool(),
+                    bundle=_TOOL_BUNDLE_DESKTOP,
+                    short_hint="Capture the current screen before desktop interaction.",
+                    aliases=("screenshot", "截图"),
+                    keyword_aliases=("screen", "screenshot", "截图", "屏幕"),
+                )
+                self._register_tool(
+                    ClickTool(),
+                    bundle=_TOOL_BUNDLE_DESKTOP,
+                    short_hint="Click a desktop coordinate, usually after taking a screenshot.",
+                    aliases=("click", "点击"),
+                    keyword_aliases=("click", "点击", "button"),
+                )
+                self._register_tool(
+                    TypeTextTool(),
+                    bundle=_TOOL_BUNDLE_DESKTOP,
+                    short_hint="Type text into the currently focused desktop input.",
+                    aliases=("type text", "输入文字"),
+                    keyword_aliases=("type", "input", "输入", "键入"),
+                )
+                self._register_tool(
+                    KeyPressTool(),
+                    bundle=_TOOL_BUNDLE_DESKTOP,
+                    short_hint="Press a key or hotkey on the desktop.",
+                    aliases=("key press", "按键"),
+                    keyword_aliases=("key", "hotkey", "按键", "快捷键"),
+                )
+                self._register_tool(
+                    ScrollTool(),
+                    bundle=_TOOL_BUNDLE_DESKTOP,
+                    short_hint="Scroll the desktop view.",
+                    aliases=("scroll", "滚动"),
+                    keyword_aliases=("scroll", "滚动"),
+                )
+                self._register_tool(
+                    DragTool(),
+                    bundle=_TOOL_BUNDLE_DESKTOP,
+                    short_hint="Drag between two desktop coordinates.",
+                    aliases=("drag", "拖拽"),
+                    keyword_aliases=("drag", "拖拽"),
+                )
+                self._register_tool(
+                    GetScreenInfoTool(),
+                    bundle=_TOOL_BUNDLE_DESKTOP,
+                    short_hint="Get screen dimensions and mouse position.",
+                    aliases=("screen info", "屏幕信息"),
+                    keyword_aliases=("screen", "display", "屏幕", "坐标"),
                 )
                 logger.info("🖥️ 启用桌面 / desktop enabled: desktop automation tools")
             except ImportError:
@@ -728,16 +903,62 @@ class AgentLoop:
         return ""
 
     @staticmethod
-    def _bundle_for_tool_name(name: str) -> str | None:
-        if name in _WEB_TOOL_NAMES:
-            return _TOOL_BUNDLE_WEB
-        if name in _DESKTOP_TOOL_NAMES:
-            return _TOOL_BUNDLE_DESKTOP
-        if name in _CODE_TOOL_NAMES:
-            return _TOOL_BUNDLE_CODE
-        if name in _CORE_TOOL_NAMES:
-            return _TOOL_BUNDLE_CORE
-        return None
+    def _previous_user_text(messages: list[dict[str, Any]]) -> str:
+        seen_latest = False
+        for msg in reversed(messages):
+            if msg.get("role") != "user":
+                continue
+            text = _extract_text(msg.get("content", ""))
+            if not text:
+                continue
+            if not seen_latest:
+                seen_latest = True
+                continue
+            return text.lower()
+        return ""
+
+    @staticmethod
+    def _normalize_tool_route_text(text: str) -> str:
+        normalized = text.lower().strip()
+        if not normalized:
+            return ""
+        extras: list[str] = []
+        if any(phrase in normalized for phrase in _WEB_ROUTE_ALIAS_PHRASES):
+            extras.extend(["搜索", "web"])
+        if "新闻" in normalized or "资讯" in normalized:
+            extras.extend(["搜索", "web"])
+        if "官网" in normalized or "链接" in normalized or "网址" in normalized:
+            extras.extend(["url", "web"])
+        if "最新" in normalized and any(
+            tok in normalized for tok in ("新闻", "资讯", "ai", "官网")
+        ):
+            extras.append("搜索")
+        deduped_extras = " ".join(dict.fromkeys(extras))
+        return f"{normalized} {deduped_extras}".strip()
+
+    @staticmethod
+    def _is_followup_text(text: str) -> bool:
+        normalized = text.strip().lower()
+        if not normalized:
+            return False
+        return any(token in normalized for token in _FOLLOWUP_SIGNAL_TOKENS)
+
+    def _build_tool_route_text(
+        self, initial_messages: list[dict[str, Any]], extra_signal_text: str | None = None
+    ) -> str:
+        current = self._normalize_tool_route_text(self._latest_user_text(initial_messages))
+        if isinstance(extra_signal_text, str) and extra_signal_text.strip():
+            extra = self._normalize_tool_route_text(extra_signal_text)
+            current = f"{current} {extra}".strip()
+        if self._is_followup_text(current):
+            previous = self._normalize_tool_route_text(self._previous_user_text(initial_messages))
+            if previous:
+                current = f"{current} {previous}".strip()
+        return current
+
+    def _bundle_for_tool_name(self, name: str) -> str | None:
+        meta = self.tools.get_metadata(name)
+        return meta.bundle if meta is not None else None
 
     def _auto_route_bundles(self, user_text: str) -> set[str]:
         bundles = {_TOOL_BUNDLE_CORE}
@@ -781,9 +1002,10 @@ class AgentLoop:
         return min(score, 1.0)
 
     def _score_tool_for_routing(self, name: str, user_text: str, user_tokens: set[str]) -> float:
-        bundle = self._bundle_for_tool_name(name)
-        if bundle is None:
+        meta = self.tools.get_metadata(name)
+        if meta is None:
             return -1.0
+        bundle = meta.bundle
 
         score = 0.0
         if bundle == _TOOL_BUNDLE_CORE:
@@ -797,12 +1019,30 @@ class AgentLoop:
         ):
             score += 0.9
 
-        name_tokens = {part for part in re.split(r"[_\-./]", name.lower()) if part}
+        discoverability_terms = [name.lower(), *meta.aliases, *meta.keyword_aliases]
+        name_tokens = {
+            part
+            for term in discoverability_terms
+            for part in re.split(r"[_\-./\s]", term.lower())
+            if part
+        }
         if name.lower() in user_text:
             score += 1.0
+        for alias in meta.aliases:
+            if alias and alias in user_text:
+                score += 0.8
+        for keyword in meta.keyword_aliases:
+            if keyword and keyword in user_text:
+                score += 0.35
         overlap = len(name_tokens & user_tokens)
         if overlap:
             score += min(0.6, overlap * 0.2)
+
+        summary_tokens = self._route_tokens(f"{meta.summary} {meta.short_hint}")
+        summary_overlap = len(summary_tokens & user_tokens)
+        if summary_overlap:
+            score += min(0.45, summary_overlap * 0.09)
+        score += 0.05 if meta.auto_callable else -0.05
 
         tool = self.tools.get(name)
         if tool is not None:
@@ -826,9 +1066,7 @@ class AgentLoop:
         if exposure_level >= _TOOL_ROUTE_MAX_ESCALATIONS:
             return None
         enabled_bundles = self._tool_exposure_bundles
-        user_text = self._latest_user_text(initial_messages)
-        if isinstance(extra_signal_text, str) and extra_signal_text.strip():
-            user_text = f"{user_text} {extra_signal_text.strip().lower()}".strip()
+        user_text = self._build_tool_route_text(initial_messages, extra_signal_text)
         selected_bundles = self._auto_route_bundles(user_text) & enabled_bundles
         if not selected_bundles:
             selected_bundles = {_TOOL_BUNDLE_CORE} & enabled_bundles
@@ -849,6 +1087,8 @@ class AgentLoop:
             for name in _ROUTE_RESCUE_TOOLS
             if name in self.tools.tool_names
             and self._bundle_for_tool_name(name) in selected_bundles
+            and (meta := self.tools.get_metadata(name)) is not None
+            and meta.auto_callable
         )
 
         if not selected_names:
@@ -858,6 +1098,52 @@ class AgentLoop:
                 if self._bundle_for_tool_name(name) == _TOOL_BUNDLE_CORE
             }
         return selected_names
+
+    def _order_selected_tool_names(
+        self, selected_tool_names: set[str] | None, user_text: str
+    ) -> list[str]:
+        if not selected_tool_names:
+            return []
+        user_tokens = self._route_tokens(user_text)
+        scored = [
+            (self._score_tool_for_routing(name, user_text, user_tokens), name)
+            for name in selected_tool_names
+        ]
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [name for _, name in scored]
+
+    def _build_available_tool_lines(self, selected_tool_names: list[str]) -> list[str]:
+        metadata_map = self.tools.get_metadata_map(names=set(selected_tool_names))
+        if not metadata_map:
+            return []
+        max_lines = 12
+        visible_names = selected_tool_names[:max_lines]
+        lines = []
+        for name in visible_names:
+            meta = metadata_map[name]
+            hint = meta.short_hint or meta.summary or name
+            lines.append(f"- {name}: {hint}")
+        overflow = len(selected_tool_names) - len(visible_names)
+        if overflow > 0:
+            lines.append(f"- plus {overflow} more tools already exposed this turn")
+        return lines
+
+    def _apply_available_tools_to_messages(
+        self, messages: list[dict[str, Any]], selected_tool_names: list[str]
+    ) -> list[dict[str, Any]]:
+        if not messages:
+            return messages
+        first = messages[0]
+        if first.get("role") != "system":
+            return messages
+        content = first.get("content")
+        if not isinstance(content, str):
+            return messages
+        first["content"] = self.context.apply_available_tools_block(
+            content,
+            self._build_available_tool_lines(selected_tool_names),
+        )
+        return messages
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
@@ -1164,9 +1450,16 @@ class AgentLoop:
             extra_signal_text=tool_signal_text,
             exposure_level=exposure_level,
         )
+        route_text = self._build_tool_route_text(initial_messages, tool_signal_text)
         current_tools = (
             [] if force_final_response else self.tools.get_definitions(names=selected_tool_names)
         )
+        ordered_selected_tool_names = (
+            []
+            if force_final_response
+            else self._order_selected_tool_names(selected_tool_names, route_text)
+        )
+        messages = self._apply_available_tools_to_messages(messages, ordered_selected_tool_names)
         self._sample_tool_schema_if_needed(
             current_tools=current_tools,
             iteration=iteration,
@@ -1736,9 +2029,7 @@ class AgentLoop:
                 and not state.force_final_response
                 and _exposure_level < _TOOL_ROUTE_MAX_ESCALATIONS
             ):
-                user_text = self._latest_user_text(initial_messages)
-                if isinstance(tool_signal_text, str) and tool_signal_text.strip():
-                    user_text = f"{user_text} {tool_signal_text.strip().lower()}"
+                user_text = self._build_tool_route_text(initial_messages, tool_signal_text)
                 intent = self._tool_intent_score(user_text)
                 if intent >= _TOOL_ROUTE_INTENT_THRESHOLD:
                     _exposure_level += 1
