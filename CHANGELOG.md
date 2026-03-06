@@ -6,6 +6,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-03-07
+
+### Fixed
+
+- **Desktop loading 视觉已统一** — 聊天历史加载、网关启动空态与设置页更新按钮现统一复用同一套轨道式 loading 语言，移除默认 `BusyIndicator`；侧边栏网关按钮则保留原有启动中动效，让等待态更丝滑、克制且一致。
+- **Desktop 配置保存稳态** — 首次安装生成的默认 `config.jsonc` 在一次保存中补齐多个缺失配置键时，不再因为 JSONC patch 少逗号而报 `Patch failed`；失败仍保持可见报错，不会把配置写成半有效状态。
+- **Desktop 消息气泡入场感缺失** — user 消息接入既有 `entrance_style` 单一路径，普通 user/assistant 气泡统一改为带方向感的滑入、轻微缩放与柔光回落，避免看起来像没有动效或动画未生效。
+- **Desktop system 消息偶发不贴底** — `ChatView` 的自动贴底改为先收敛 `ListView` 布局、再统一滚到底部，并直接读取当前使用中的消息模型；“Gateway started / 网关已启动” 这类 system 消息追加后会稳定贴底。
+- **Desktop entrance 语义与贴底 guard 收口** — history refresh 现在会正确识别 system `system/greeting` 的持久视觉差异；同时 deferred follow 也会尊重 `historyLoading`，避免切会话或回放开始后被旧的贴底回调强行拉到底部。
+- **Desktop 入口动画重播入口已删除** — 消息入口动画现在固定为首次插入时的一次性播放，移除了后端把同一条消息重新标记为 pending 的假重播路径，减少模型/QML 双侧状态分裂。
+- **Desktop 历史显示语义已对齐实时路径** — session display history 现在会保留 `format` 和 `entrance_style`，assistant 历史消息 reload 后不再退化为 plain；history fingerprint 也改为基于准备后的显示消息，前序消息的视觉语义变化不会再被“最后一条没变”的短路挡住。
+- **Desktop 入口动画状态与字体回退进一步收口** — `entranceConsumed` 已从模型/QML/测试中彻底删除，入口动画只保留 `entrancePending` 单一事实源；桌面端启动时也会显式绑定可用系统字体，避免 Qt 落回 `Sans Serif` 别名提示。
+- **Desktop macOS Nuitka 打包收口** — workspace 模板改为按 `bao.templates.workspace` package data 打包，避免 `.app` 内 `bao/templates` 命名空间冲突触发 `NotADirectoryError`；同时显式排除 Qt `tls` 插件，避免 Intel macOS runner 因 Homebrew `libcrypto.dylib` 依赖扫描崩溃。
+
 ## [0.3.10] - 2026-03-06
 
 ### Added
@@ -95,7 +109,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 - **记忆检索延迟优化** — 低信息输入（如确认/寒暄短句）跳过重检索，重复查询复用检索缓存；记忆/经验发生变更时自动失效缓存并按修订号隔离
 - **无 token 记忆注入语义调整** — `get_relevant_memory_context` 在 query 无有效 token 时返回空注入路径，不再回退整段全量长期记忆
 - **推理强度 `off` 语义打通** — OpenAI/OpenAI Codex/Anthropic/Gemini 统一支持 `reasoningEffort=off`，`off` 时不再发送对应 reasoning/thinking 配置
-- **Desktop 会话列表刷新改为事件驱动** — `SessionService` 移除独立轮询，改由 `ChatService.statusUpdated` 在消息收口时触发 `refresh()`，排序更新时间与回复完成时机对齐
+- **Desktop 会话列表刷新改为提交事件驱动** — `SessionManager` 在 `save/update_metadata_only/delete_session` 后统一发出变更事件，`SessionService` 直接订阅提交并复用 `refresh()`，不再借用 `ChatService.statusUpdated` 做补偿刷新
 - **Desktop 历史加载线程化** — 会话历史读取与 `prepare_history` 改为 `asyncio.to_thread(...)` 执行，降低共享 asyncio loop 被同步 I/O 阻塞的概率
 - **Desktop 预加载触发策略收敛** — 取消 `setSessionManager()` 自动 initial prefetch；切换会话后仅在当前会话 full load 完成时触发 anchor prefetch，优先保障首屏加载
 
