@@ -8,22 +8,37 @@ import sys
 from pathlib import Path
 from typing import Callable, ClassVar, TypeVar, cast
 
-from PySide6.QtCore import Property, QLocale, QObject, QRectF, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import (
+    Property,
+    QCoreApplication,
+    QEvent,
+    QLocale,
+    QObject,
+    QPointF,
+    QRectF,
+    Qt,
+    QTimer,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import (
     QColor,
+    QCursor,
     QGuiApplication,
     QIcon,
     QImage,
     QLinearGradient,
+    QMouseEvent,
     QPainter,
     QPainterPath,
     QPen,
     QPixmap,
     QSurfaceFormat,
 )
-from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQml import QQmlApplicationEngine, QQmlProperty
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtQuickControls2 import QQuickStyle
+from typing_extensions import override
 
 _F = TypeVar("_F", bound=Callable[..., object])
 
@@ -66,6 +81,92 @@ class ClipboardService(QObject):
     def copy_text(self, text: str) -> None:
         clipboard = QGuiApplication.clipboard()
         clipboard.setText(text or "")
+
+
+def _inherits_text_editor(obj: QObject | None) -> bool:
+    meta = obj.metaObject() if obj is not None else None
+    while meta is not None:
+        name = meta.className()
+        if any(token in name for token in ("TextArea", "TextField", "TextInput", "TextEdit")):
+            return True
+        meta = meta.superClass()
+    return False
+
+
+class WindowFocusDismissFilter(QObject):
+    def _post_pointer_refresh(
+        self, window: QQuickWindow, source_event: QMouseEvent | None = None
+    ) -> None:
+        if source_event is None:
+            global_point = QCursor.pos()
+            local_point = window.mapFromGlobal(global_point)
+            local_pos = QPointF(local_point)
+            global_pos = QPointF(global_point)
+        else:
+            local_pos = source_event.position()
+            global_pos = source_event.globalPosition()
+
+        window_rect = QRectF(0.0, 0.0, float(window.width()), float(window.height()))
+        if not window_rect.contains(local_pos):
+            return
+
+        move_event = QMouseEvent(
+            QEvent.Type.MouseMove,
+            local_pos,
+            local_pos,
+            global_pos,
+            Qt.MouseButton.NoButton,
+            QGuiApplication.mouseButtons(),
+            QGuiApplication.keyboardModifiers(),
+        )
+        QCoreApplication.postEvent(window, move_event)
+
+    def _resolve_focused_editor(self, window: QQuickWindow) -> tuple[QObject, object] | None:
+        focus_control = cast(QObject | None, QQmlProperty.read(window, "activeFocusControl"))
+        focus_item = window.activeFocusItem()
+        focus_owner = focus_control if _inherits_text_editor(focus_control) else focus_item
+        if not _inherits_text_editor(focus_owner):
+            return None
+        editor = cast(QObject, focus_owner)
+        hit_test_target = editor if hasattr(editor, "mapFromScene") else focus_item
+        if not hasattr(hit_test_target, "mapFromScene"):
+            return None
+        return editor, hit_test_target
+
+    def _click_is_inside_editor(self, hit_test_target: object, event: QMouseEvent) -> bool:
+        map_from_scene = getattr(hit_test_target, "mapFromScene", None)
+        contains = getattr(hit_test_target, "contains", None)
+        if not callable(map_from_scene) or not callable(contains):
+            return False
+        local = map_from_scene(event.position())
+        return bool(contains(local))
+
+    def _clear_editor_focus(self, editor: QObject) -> None:
+        deselect = getattr(editor, "deselect", None)
+        if callable(deselect):
+            try:
+                _ = deselect()
+            except Exception:
+                pass
+        _ = editor.setProperty("focus", False)
+
+    @override
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() != QEvent.Type.MouseButtonRelease:
+            return False
+        if not isinstance(watched, QQuickWindow) or not isinstance(event, QMouseEvent):
+            return False
+
+        resolved = self._resolve_focused_editor(watched)
+        if resolved is None:
+            self._post_pointer_refresh(watched, event)
+            return False
+
+        focus_owner, hit_test_target = resolved
+        if not self._click_is_inside_editor(hit_test_target, event):
+            self._clear_editor_focus(focus_owner)
+        self._post_pointer_refresh(watched, event)
+        return False
 
 
 def parse_args() -> tuple[bool, str | None, bool, str, bool, str | None]:
@@ -384,6 +485,7 @@ def main() -> int:
     from app.backend.config import ConfigService
     from app.backend.gateway import ChatService
     from app.backend.session import SessionService
+    from app.backend.update import UpdateBridge, UpdateService
 
     runner = AsyncioRunner()
     runner.start()
@@ -391,6 +493,8 @@ def main() -> int:
     chat_service = ChatService(messages_model, runner)
     config_service = ConfigService()
     session_service = SessionService(runner)
+    update_service = UpdateService(runner, config_service)
+    update_bridge = UpdateBridge()
     theme_manager = ThemeManager()
     clipboard_service = ClipboardService()
 
@@ -399,6 +503,7 @@ def main() -> int:
     _ = ensure_first_run()
 
     config_service.load()
+    update_service.reloadConfig()
 
     # Set UI language on ChatService for localized system messages
     _cfg_lang = config_service.get("ui.language", "auto")
@@ -427,22 +532,30 @@ def main() -> int:
     def _refresh_sessions_on_final_status(_row: int, status: str) -> None:
         if status not in {"done", "error"}:
             return
-        session_service.refresh()
+        refresh = cast(Callable[[], None], session_service.refresh)
+        refresh()
 
     _ = chat_service.gatewayReady.connect(_on_gateway_ready)
     _ = chat_service.statusUpdated.connect(_refresh_sessions_on_final_status)
     # Wire session → gateway: when active session changes, update gateway session key
     set_session_key = cast(Callable[[str], None], chat_service.setSessionKey)
     _ = session_service.activeKeyChanged.connect(set_session_key)
-    _ = session_service.activeReady.connect(chat_service.notifyStartupSessionReady)
+    notify_startup_session_ready = cast(Callable[[], None], chat_service.notifyStartupSessionReady)
+    _ = session_service.activeReady.connect(notify_startup_session_ready)
     # Wire session deletion → gateway: cancel streaming if needed
     handle_deleted = cast(Callable[[str, bool, str], None], chat_service.handle_session_deleted)
     _ = session_service.deleteCompleted.connect(handle_deleted)
+    _ = update_bridge.checkRequested.connect(update_service.check_for_updates)
+    _ = update_bridge.installRequested.connect(update_service.install_update)
+    _ = update_bridge.reloadRequested.connect(update_service.reloadConfig)
+    _ = update_service.quitRequested.connect(app.quit)
 
     context = engine.rootContext()
     context.setContextProperty("chatService", chat_service)
     context.setContextProperty("configService", config_service)
     context.setContextProperty("sessionService", session_service)
+    context.setContextProperty("updateService", update_service)
+    context.setContextProperty("updateBridge", update_bridge)
     context.setContextProperty("themeManager", theme_manager)
     context.setContextProperty("clipboardService", clipboard_service)
     context.setContextProperty("messagesModel", messages_model)
@@ -458,7 +571,10 @@ def main() -> int:
         root.setIcon(logo_icon)
     use_native_title_bar = True
     _ = root.setProperty("useNativeTitleBar", use_native_title_bar)
+    focus_dismiss_filter: WindowFocusDismissFilter | None = None
     if isinstance(root, QQuickWindow):
+        focus_dismiss_filter = WindowFocusDismissFilter(root)
+        root.installEventFilter(focus_dismiss_filter)
         if not use_native_title_bar:
             root.setColor(QColor(0, 0, 0, 0))
         elif sys.platform == "win32":

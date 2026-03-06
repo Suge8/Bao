@@ -517,24 +517,25 @@ class SessionService(QObject):
             return
         seq = 0
         sessions: list[dict[str, Any]]
+        stored_active = ""
         if isinstance(data, tuple) and len(data) == 3 and isinstance(data[0], int):
-            seq, sessions, _active = data
+            seq, sessions, active = data
             if seq != self._list_latest_seq:
                 return
+            if isinstance(active, str):
+                stored_active = active
         else:
             if not (isinstance(data, tuple) and len(data) == 2):
                 return
-            raw_sessions, _raw_active = data
+            raw_sessions, raw_active = data
             if not isinstance(raw_sessions, list):
                 return
             sessions = [s for s in raw_sessions if isinstance(s, dict)]
-        active_for_view = self._pending_select_key or self._active_key
-
+            if isinstance(raw_active, str):
+                stored_active = raw_active
         pending_keys = set(self._pending_deletes.keys())
         if pending_keys:
             sessions = [s for s in sessions if s.get("key") not in pending_keys]
-            if active_for_view in pending_keys:
-                active_for_view = ""
 
         pending_create_keys = set(self._pending_creates)
         if pending_create_keys:
@@ -554,6 +555,22 @@ class SessionService(QObject):
                 )
                 existing_keys.add(key)
 
+        available_keys = {str(s.get("key", "")) for s in sessions}
+
+        def _is_visible_key(key: str) -> bool:
+            return bool(key) and (key in pending_create_keys or key in available_keys)
+
+        active_for_view = ""
+        auto_selected_key = ""
+        for candidate in (
+            self._pending_select_key or "",
+            self._active_key,
+            stored_active,
+        ):
+            if _is_visible_key(candidate):
+                active_for_view = candidate
+                break
+
         if self._gateway_ready and not sessions and not pending_create_keys:
             if self._session_manager is not None:
                 self.newSession("")
@@ -562,21 +579,12 @@ class SessionService(QObject):
         if self._gateway_ready and not self._pending_select_key and not active_for_view:
             if sessions:
                 active_for_view = self._pick_latest_key(sessions, preferred_channel="desktop")
-                if active_for_view:
-                    self._active_key = active_for_view
-                    self._model.set_active(active_for_view)
-                    self._emit_active_key_if_changed(active_for_view)
+                auto_selected_key = active_for_view
             else:
                 if self._session_manager is not None:
                     self.newSession("")
                     return
 
-        if (
-            active_for_view
-            and active_for_view not in pending_create_keys
-            and not any(str(s.get("key", "")) == active_for_view for s in sessions)
-        ):
-            active_for_view = ""
         if not self._gateway_ready:
             active_for_view = ""
 
@@ -601,12 +609,18 @@ class SessionService(QObject):
                 return
             self._active_key = active_for_view
             self._model.set_active(active_for_view)
+            self._emit_active_key_if_changed(active_for_view)
             self._clear_pending_select_if_resolved(active_for_view)
             return
         self._list_fp = fp
         self._active_key = active_for_view
         self._model.reset_sessions(sessions, active_for_view)
         self.sessionsChanged.emit()
+        self._emit_active_key_if_changed(active_for_view)
+        if auto_selected_key and self._session_manager is not None:
+            fut = self._submit_safe(self._select_session(auto_selected_key))
+            if fut is not None:
+                fut.add_done_callback(self._on_select_done)
         self._clear_pending_select_if_resolved(active_for_view)
 
     def _handle_select_result(self, ok: bool, error: str, key: str) -> None:

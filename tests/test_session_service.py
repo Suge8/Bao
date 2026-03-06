@@ -329,6 +329,86 @@ def test_service_gateway_ready_restores_active_key():
         runner.shutdown(grace_s=1.0)
 
 
+def test_service_gateway_ready_prefers_persisted_active_key_over_latest_session():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(
+            sessions=[
+                {"key": "desktop:local::s1", "title": "Chat 1", "updated_at": 1},
+                {"key": "desktop:local::s2", "title": "Chat 2", "updated_at": 2},
+            ],
+            active_key="desktop:local::s1",
+        )
+
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        assert svc.activeKey == "desktop:local::s1"
+        assert _sessions_model(svc).data(_sessions_model(svc).index(0), Qt.UserRole + 3) is True
+        assert _sessions_model(svc).data(_sessions_model(svc).index(1), Qt.UserRole + 3) is False
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_service_gateway_ready_autopick_persists_selected_session():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(
+            sessions=[
+                {"key": "desktop:local::s1", "title": "Chat 1", "updated_at": 1},
+                {"key": "desktop:local::s2", "title": "Chat 2", "updated_at": 2},
+            ],
+            active_key="",
+        )
+
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        assert svc.activeKey == "desktop:local::s2"
+        assert sm.get_active_session_key("desktop:local") == "desktop:local::s2"
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_list_refresh_prefers_valid_persisted_active_when_local_active_is_stale():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        svc.setGatewayReady()
+        svc._active_key = "desktop:local::stale"
+        svc._last_emitted_active_key = "desktop:local::stale"
+
+        sessions = [
+            {"key": "desktop:local::s1", "title": "Chat 1", "updated_at": 1, "channel": "desktop"},
+            {"key": "desktop:local::s2", "title": "Chat 2", "updated_at": 2, "channel": "desktop"},
+        ]
+
+        active_keys: list[str] = []
+        svc.activeKeyChanged.connect(active_keys.append)
+
+        svc._handle_list_result(True, "", ([dict(s) for s in sessions], "desktop:local::s1"))
+
+        assert svc.activeKey == "desktop:local::s1"
+        assert active_keys == ["desktop:local::s1"]
+        assert _sessions_model(svc).data(_sessions_model(svc).index(0), Qt.UserRole + 3) is True
+        assert _sessions_model(svc).data(_sessions_model(svc).index(1), Qt.UserRole + 3) is False
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
 def test_service_gateway_ready_repairs_invalid_active_key():
     runner = AsyncioRunner()
     runner.start()
@@ -427,17 +507,73 @@ def test_list_refresh_active_only_change_keeps_local_active_source_of_truth():
             {"key": "desktop:local::s2", "title": "Chat 2", "updated_at": 2, "channel": "desktop"},
         ]
 
+        svc._active_key = "desktop:local::s1"
+        svc._last_emitted_active_key = "desktop:local::s1"
+        svc._model.reset_sessions([dict(s) for s in sessions], "desktop:local::s1")
+        svc._list_fp = tuple((s["key"], s.get("title", ""), False) for s in sessions)
+
         changed_events: list[bool] = []
+        active_keys: list[str] = []
         svc.sessionsChanged.connect(lambda: changed_events.append(True))
+        svc.activeKeyChanged.connect(active_keys.append)
 
         svc._handle_list_result(True, "", ([dict(s) for s in sessions], "desktop:local::s1"))
-        assert len(changed_events) == 1
+        assert len(changed_events) == 0
 
+        svc._pending_select_key = "desktop:local::s2"
         svc._handle_list_result(True, "", ([dict(s) for s in sessions], "desktop:local::s2"))
-        assert len(changed_events) == 1
+        assert len(changed_events) == 0
         assert svc.activeKey == "desktop:local::s2"
+        assert active_keys == ["desktop:local::s2"]
         assert _sessions_model(svc).data(_sessions_model(svc).index(0), Qt.UserRole + 3) is False
         assert _sessions_model(svc).data(_sessions_model(svc).index(1), Qt.UserRole + 3) is True
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_list_refresh_changed_fingerprint_still_emits_active_change():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        svc.setGatewayReady()
+
+        sessions = [
+            {
+                "key": "desktop:local::s1",
+                "title": "Chat 1",
+                "updated_at": 1,
+                "channel": "desktop",
+                "has_unread": False,
+            },
+            {
+                "key": "desktop:local::s2",
+                "title": "Chat 2",
+                "updated_at": 2,
+                "channel": "desktop",
+                "has_unread": False,
+            },
+        ]
+
+        svc._active_key = "desktop:local::s1"
+        svc._last_emitted_active_key = "desktop:local::s1"
+        svc._model.reset_sessions([dict(s) for s in sessions], "desktop:local::s1")
+        svc._list_fp = tuple(
+            (s["key"], s.get("title", ""), bool(s.get("has_unread", False))) for s in sessions
+        )
+
+        active_keys: list[str] = []
+        svc.activeKeyChanged.connect(active_keys.append)
+
+        svc._handle_list_result(True, "", ([dict(s) for s in sessions], "desktop:local::s1"))
+
+        refreshed = [dict(s) for s in sessions]
+        refreshed[0]["has_unread"] = True
+        svc._pending_select_key = "desktop:local::s2"
+        svc._handle_list_result(True, "", (refreshed, "desktop:local::s2"))
+
+        assert svc.activeKey == "desktop:local::s2"
+        assert active_keys == ["desktop:local::s2"]
     finally:
         runner.shutdown(grace_s=1.0)
 
