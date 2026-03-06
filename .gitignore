@@ -30,7 +30,7 @@ htmlcov/
 docs/
 
 # Runtime workspace (template is bao/templates/workspace/)
-workspace/
+/workspace/
 
 # Skill lock (opencode artifact)
 skills-lock.json
