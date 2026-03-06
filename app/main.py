@@ -407,14 +407,12 @@ def _apply_windows_titlebar_colors(
     window: QQuickWindow,
     caption_color: QColor,
     text_color: QColor,
-    border_color: QColor,
 ) -> bool:
     if sys.platform != "win32":
         return False
     try:
         import ctypes
 
-        dwmwa_border_color = 34
         dwmwa_caption_color = 35
         dwmwa_text_color = 36
         hwnd = int(window.winId())
@@ -424,7 +422,6 @@ def _apply_windows_titlebar_colors(
         values = (
             (dwmwa_caption_color, _to_colorref(caption_color)),
             (dwmwa_text_color, _to_colorref(text_color)),
-            (dwmwa_border_color, _to_colorref(border_color)),
         )
         ok = False
         for attr, raw in values:
@@ -580,11 +577,10 @@ def main() -> int:
         elif sys.platform == "win32":
             caption_color = _to_qcolor(cast(object, root.property("bgBase")), QColor("#0C0C14"))
             text_color = _to_qcolor(cast(object, root.property("textPrimary")), QColor("#E8E8F0"))
-            border_color = _to_qcolor(cast(object, root.property("borderSubtle")), caption_color)
 
             def _apply_windows_chrome() -> None:
                 _ = _apply_windows_rounded_corners(root)
-                _ = _apply_windows_titlebar_colors(root, caption_color, text_color, border_color)
+                _ = _apply_windows_titlebar_colors(root, caption_color, text_color)
 
             QTimer.singleShot(
                 0,

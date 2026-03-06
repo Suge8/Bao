@@ -32,6 +32,9 @@ QTest = QtTest.QTest
 
 from app.main import WindowFocusDismissFilter
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+MAIN_QML_PATH = PROJECT_ROOT / "app" / "qml" / "Main.qml"
+
 
 class EmptyMessagesModel(QAbstractListModel):
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
@@ -94,13 +97,20 @@ class DummyConfigService(QObject):
     saveDone = Signal()
     stateChanged = Signal()
 
+    def __init__(
+        self, *, is_valid: bool = True, needs_setup: bool = False, parent: QObject | None = None
+    ) -> None:
+        super().__init__(parent)
+        self._is_valid = is_valid
+        self._needs_setup = needs_setup
+
     @Property(bool, constant=True)
     def isValid(self) -> bool:
-        return True
+        return self._is_valid
 
     @Property(bool, constant=True)
     def needsSetup(self) -> bool:
-        return False
+        return self._needs_setup
 
     @Slot(str, result="QVariant")
     def getValue(self, path: str) -> object | None:
@@ -217,10 +227,10 @@ def _find_chat_input(root: QObject) -> QObject:
     raise AssertionError("chat composer TextArea not found")
 
 
-def _load_main_window() -> tuple[QObject, QObject]:
+def _load_main_window(config_service: DummyConfigService | None = None) -> tuple[QObject, QObject]:
     messages_model = EmptyMessagesModel()
     chat_service = DummyChatService(messages_model)
-    config_service = DummyConfigService()
+    config_service = config_service or DummyConfigService()
     session_service = DummySessionService(messages_model)
     update_service = DummyUpdateService()
     theme_manager = QObject()
@@ -244,15 +254,20 @@ def _load_main_window() -> tuple[QObject, QObject]:
     context.setContextProperty("clipboardService", clipboard_service)
     context.setContextProperty("messagesModel", messages_model)
     context.setContextProperty("systemUiLanguage", "en")
-    engine.load(
-        QUrl.fromLocalFile(str(Path("/Users/sugeh/Documents/Project/Bao/app/qml/Main.qml")))
-    )
+    engine.load(QUrl.fromLocalFile(str(MAIN_QML_PATH)))
     root_objects = engine.rootObjects()
     assert root_objects
     root = root_objects[0]
     for _ in range(5):
         _process(30)
     return engine, root
+
+
+def _find_object(root: QObject, object_name: str) -> QObject:
+    for obj in root.findChildren(QObject):
+        if obj.objectName() == object_name:
+            return obj
+    raise AssertionError(f"object not found: {object_name}")
 
 
 def _click_points_for_item(item: QObject) -> list[QPoint]:
@@ -312,6 +327,23 @@ def test_main_chat_view_external_click_clears_selection_with_window_focus_filter
 
         assert bool(message_input.property("activeFocus")) is False
         assert str(message_input.property("selectedText")) == ""
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_main_setup_mode_hides_sidebar_and_lands_on_settings(qapp):
+    _ = qapp
+    engine, root = _load_main_window(DummyConfigService(is_valid=False, needs_setup=True))
+
+    try:
+        sidebar = _find_object(root, "appSidebar")
+        stack = _find_object(root, "mainStack")
+
+        assert bool(root.property("setupMode")) is True
+        assert bool(sidebar.property("visible")) is False
+        assert int(stack.property("currentIndex")) == 1
     finally:
         root.deleteLater()
         engine.deleteLater()
