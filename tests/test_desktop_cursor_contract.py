@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import re
-
+from pathlib import Path
 
 QML_DIR = Path(__file__).resolve().parents[1] / "app" / "qml"
 _MOUSE_AREA_START = re.compile(r"MouseArea\s*\{", re.M)
