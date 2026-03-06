@@ -45,7 +45,9 @@ class WhatsAppConfig(Base):
     enabled: bool = False
     bridge_url: str = "ws://localhost:3001"
     bridge_token: SecretStr = SecretStr("")  # Shared token for bridge auth (optional, recommended)
-    allow_from: list[str] = Field(default_factory=list)  # Allowed phone numbers
+    allow_from: list[str] = Field(
+        default_factory=list
+    )  # Allowed phone numbers; also normalized for proactive startup/heartbeat targets
 
 
 class TelegramConfig(Base):
@@ -53,7 +55,9 @@ class TelegramConfig(Base):
 
     enabled: bool = False
     token: SecretStr = SecretStr("")  # Bot token from @BotFather
-    allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs or usernames
+    allow_from: list[str] = Field(
+        default_factory=list
+    )  # Allowed sender ids/usernames; use numeric chat_id for proactive startup/heartbeat targets, composite `identity|chat_id` optional
     proxy: str | None = (
         None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
     )
@@ -70,7 +74,9 @@ class FeishuConfig(Base):
     verification_token: SecretStr = SecretStr(
         ""
     )  # Verification Token for event subscription (optional)
-    allow_from: list[str] = Field(default_factory=list)  # Allowed user open_ids
+    allow_from: list[str] = Field(
+        default_factory=list
+    )  # Allowed user open_ids; ordered values also define proactive target priority
     react_emoji: str = (
         "THUMBSUP"  # Emoji type for message reactions (e.g. THUMBSUP, OK, DONE, SMILE)
     )
@@ -82,7 +88,9 @@ class DingTalkConfig(Base):
     enabled: bool = False
     client_id: str = ""  # AppKey
     client_secret: SecretStr = SecretStr("")  # AppSecret
-    allow_from: list[str] = Field(default_factory=list)  # Allowed staff_ids
+    allow_from: list[str] = Field(
+        default_factory=list
+    )  # Allowed staff_ids; ordered values also define proactive target priority
 
 
 class DiscordConfig(Base):
@@ -126,7 +134,9 @@ class EmailConfig(Base):
     mark_seen: bool = True
     max_body_chars: int = 12000
     subject_prefix: str = "Re: "
-    allow_from: list[str] = Field(default_factory=list)  # Allowed sender email addresses
+    allow_from: list[str] = Field(
+        default_factory=list
+    )  # Allowed sender email addresses; ordered values also define proactive target priority
 
 
 class MochatMentionConfig(Base):

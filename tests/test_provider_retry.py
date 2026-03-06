@@ -100,6 +100,12 @@ def test_openai_completions_retry_emits_reset_before_second_attempt() -> None:
     assert chunks == ["partial", PROGRESS_RESET, "final"]
 
 
+def test_openai_provider_defers_client_construction() -> None:
+    provider = OpenAICompatibleProvider(api_key="k", api_base="https://x.com/v1")
+
+    assert provider._client is None
+
+
 def test_openai_completions_cancelled_error_not_swallowed() -> None:
     provider = OpenAICompatibleProvider(api_key="k", api_base="https://x.com/v1")
 

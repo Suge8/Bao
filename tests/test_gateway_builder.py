@@ -9,7 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import bao.gateway.builder as mod
-from bao.gateway.builder import GatewayStack, build_gateway_stack, send_startup_greeting
+from bao.gateway.builder import (
+    DesktopStartupMessage,
+    GatewayStack,
+    build_gateway_stack,
+    send_startup_greeting,
+)
 
 
 class TestImports:
@@ -65,6 +70,59 @@ def test_startup_system_prompt_keeps_bao_identity() -> None:
 
 def test_startup_trigger_is_minimal_internal_event() -> None:
     assert mod._build_startup_trigger() == '{"event":"system.user_online"}'
+
+
+def test_build_gateway_stack_forwards_channel_error_callback() -> None:
+    fake_bus = MagicMock()
+    fake_agent = MagicMock()
+    fake_channels = MagicMock()
+    fake_on_channel_error = MagicMock()
+
+    class FakeCron:
+        on_job = None
+
+        def __init__(self, path):
+            pass
+
+    with (
+        patch.object(mod, "__name__", mod.__name__),
+        patch("bao.agent.loop.AgentLoop", return_value=fake_agent),
+        patch("bao.bus.queue.MessageBus", return_value=fake_bus),
+        patch(
+            "bao.channels.manager.ChannelManager", return_value=fake_channels
+        ) as channel_manager_cls,
+        patch(
+            "bao.config.loader.get_data_dir",
+            return_value=MagicMock(
+                __truediv__=lambda s, x: MagicMock(__truediv__=lambda s, y: "/tmp/fake")
+            ),
+        ),
+        patch("bao.cron.service.CronService", side_effect=FakeCron),
+        patch("bao.heartbeat.service.HeartbeatService", return_value=MagicMock()),
+        patch("bao.session.manager.SessionManager", return_value=MagicMock()),
+    ):
+        config = MagicMock()
+        config.workspace_path = "/tmp/test"
+        config.agents.defaults.model = "test"
+        config.agents.defaults.temperature = 0.1
+        config.agents.defaults.max_tokens = 100
+        config.agents.defaults.max_tool_iterations = 5
+        config.agents.defaults.memory_window = 10
+        config.agents.defaults.reasoning_effort = None
+        config.agents.defaults.models = []
+        config.tools.web.search = MagicMock()
+        config.tools.exec = MagicMock()
+        config.tools.embedding = MagicMock()
+        config.tools.restrict_to_workspace = False
+        config.tools.mcp_servers = {}
+        config.gateway.heartbeat.interval_s = 60
+        config.gateway.heartbeat.enabled = True
+
+        stack = build_gateway_stack(config, MagicMock(), on_channel_error=fake_on_channel_error)
+
+    assert stack.channels is fake_channels
+    _, kwargs = channel_manager_cls.call_args
+    assert kwargs["on_channel_error"] is fake_on_channel_error
 
 
 class TestCronCallbackDefensive:
@@ -313,6 +371,175 @@ async def test_heartbeat_skips_telegram_username_target() -> None:
 
 
 @pytest.mark.asyncio
+async def test_heartbeat_uses_later_valid_target_from_shared_target_list() -> None:
+    fake_bus = MagicMock()
+    fake_bus.publish_outbound = AsyncMock()
+
+    fake_agent = MagicMock()
+    fake_agent.process_direct = AsyncMock(return_value="ok")
+
+    class FakeCron:
+        on_job = None
+
+        def __init__(self, path):
+            pass
+
+    class FakeChannels:
+        async def stop_all(self):
+            return None
+
+    with (
+        patch.object(mod, "__name__", mod.__name__),
+        patch("bao.agent.loop.AgentLoop", return_value=fake_agent),
+        patch("bao.bus.queue.MessageBus", return_value=fake_bus),
+        patch("bao.channels.manager.ChannelManager", return_value=FakeChannels()),
+        patch(
+            "bao.config.loader.get_data_dir",
+            return_value=MagicMock(
+                __truediv__=lambda s, x: MagicMock(__truediv__=lambda s, y: "/tmp/fake")
+            ),
+        ),
+        patch("bao.cron.service.CronService", side_effect=FakeCron),
+        patch("bao.session.manager.SessionManager", return_value=MagicMock()),
+    ):
+        config = MagicMock()
+        config.workspace_path = "/tmp/test"
+        config.agents.defaults.model = "test"
+        config.agents.defaults.temperature = 0.1
+        config.agents.defaults.max_tokens = 100
+        config.agents.defaults.max_tool_iterations = 5
+        config.agents.defaults.memory_window = 10
+        config.agents.defaults.models = []
+        config.tools.web.search = MagicMock()
+        config.tools.exec = MagicMock()
+        config.tools.embedding = MagicMock()
+        config.tools.restrict_to_workspace = False
+        config.tools.mcp_servers = {}
+        config.gateway.heartbeat.interval_s = 60
+        config.gateway.heartbeat.enabled = True
+
+        channels = MagicMock()
+        channels.telegram.enabled = True
+        channels.telegram.allow_from = ["some_username", "-1001234567890"]
+        channels.whatsapp.enabled = False
+        channels.whatsapp.allow_from = []
+        channels.discord.enabled = False
+        channels.discord.allow_from = []
+        channels.feishu.enabled = True
+        channels.feishu.allow_from = ["ou_123"]
+        channels.dingtalk.enabled = False
+        channels.dingtalk.allow_from = []
+        channels.qq.enabled = False
+        channels.qq.allow_from = []
+        channels.imessage.enabled = False
+        channels.imessage.allow_from = []
+        channels.email.enabled = False
+        channels.email.allow_from = []
+        config.channels = channels
+
+        stack = build_gateway_stack(config, MagicMock())
+
+    assert stack.heartbeat.on_execute is not None
+    assert stack.heartbeat.on_notify is not None
+
+    await stack.heartbeat.on_execute("do tasks")
+    fake_agent.process_direct.assert_awaited_once()
+    call_kwargs = fake_agent.process_direct.await_args.kwargs
+    assert call_kwargs["channel"] == "telegram"
+    assert call_kwargs["chat_id"] == "-1001234567890"
+
+    await stack.heartbeat.on_notify("notify")
+    fake_bus.publish_outbound.assert_awaited_once()
+    outbound = fake_bus.publish_outbound.await_args.args[0]
+    assert outbound.channel == "telegram"
+    assert outbound.chat_id == "-1001234567890"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_without_primary_proactive_target_falls_back_to_cli_and_skips_notify() -> (
+    None
+):
+    fake_bus = MagicMock()
+    fake_bus.publish_outbound = AsyncMock()
+
+    fake_agent = MagicMock()
+    fake_agent.process_direct = AsyncMock(return_value="ok")
+
+    class FakeCron:
+        on_job = None
+
+        def __init__(self, path):
+            pass
+
+    class FakeChannels:
+        async def stop_all(self):
+            return None
+
+    with (
+        patch.object(mod, "__name__", mod.__name__),
+        patch("bao.agent.loop.AgentLoop", return_value=fake_agent),
+        patch("bao.bus.queue.MessageBus", return_value=fake_bus),
+        patch("bao.channels.manager.ChannelManager", return_value=FakeChannels()),
+        patch(
+            "bao.config.loader.get_data_dir",
+            return_value=MagicMock(
+                __truediv__=lambda s, x: MagicMock(__truediv__=lambda s, y: "/tmp/fake")
+            ),
+        ),
+        patch("bao.cron.service.CronService", side_effect=FakeCron),
+        patch("bao.session.manager.SessionManager", return_value=MagicMock()),
+    ):
+        config = MagicMock()
+        config.workspace_path = "/tmp/test"
+        config.agents.defaults.model = "test"
+        config.agents.defaults.temperature = 0.1
+        config.agents.defaults.max_tokens = 100
+        config.agents.defaults.max_tool_iterations = 5
+        config.agents.defaults.memory_window = 10
+        config.agents.defaults.models = []
+        config.tools.web.search = MagicMock()
+        config.tools.exec = MagicMock()
+        config.tools.embedding = MagicMock()
+        config.tools.restrict_to_workspace = False
+        config.tools.mcp_servers = {}
+        config.gateway.heartbeat.interval_s = 60
+        config.gateway.heartbeat.enabled = True
+
+        channels = MagicMock()
+        channels.telegram.enabled = True
+        channels.telegram.allow_from = ["some_username"]
+        channels.whatsapp.enabled = False
+        channels.whatsapp.allow_from = []
+        channels.discord.enabled = False
+        channels.discord.allow_from = []
+        channels.feishu.enabled = False
+        channels.feishu.allow_from = []
+        channels.dingtalk.enabled = False
+        channels.dingtalk.allow_from = []
+        channels.qq.enabled = False
+        channels.qq.allow_from = []
+        channels.imessage.enabled = False
+        channels.imessage.allow_from = []
+        channels.email.enabled = False
+        channels.email.allow_from = []
+        config.channels = channels
+
+        stack = build_gateway_stack(config, MagicMock())
+
+    assert stack.heartbeat.on_execute is not None
+    assert stack.heartbeat.on_notify is not None
+
+    await stack.heartbeat.on_execute("do tasks")
+    fake_agent.process_direct.assert_awaited_once()
+    call_kwargs = fake_agent.process_direct.await_args.kwargs
+    assert call_kwargs["channel"] == "cli"
+    assert call_kwargs["chat_id"] == "direct"
+
+    await stack.heartbeat.on_notify("notify")
+    fake_bus.publish_outbound.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_accepts_negative_telegram_chat_id() -> None:
     fake_bus = MagicMock()
     fake_bus.publish_outbound = AsyncMock()
@@ -388,6 +615,83 @@ async def test_heartbeat_accepts_negative_telegram_chat_id() -> None:
     call_kwargs = fake_agent.process_direct.await_args.kwargs
     assert call_kwargs["channel"] == "telegram"
     assert call_kwargs["chat_id"] == "-1001234567890"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_accepts_telegram_composite_target() -> None:
+    fake_bus = MagicMock()
+    fake_bus.publish_outbound = AsyncMock()
+
+    fake_agent = MagicMock()
+    fake_agent.process_direct = AsyncMock(return_value="ok")
+
+    class FakeCron:
+        on_job = None
+
+        def __init__(self, path):
+            pass
+
+    class FakeChannels:
+        async def stop_all(self):
+            return None
+
+    with (
+        patch.object(mod, "__name__", mod.__name__),
+        patch("bao.agent.loop.AgentLoop", return_value=fake_agent),
+        patch("bao.bus.queue.MessageBus", return_value=fake_bus),
+        patch("bao.channels.manager.ChannelManager", return_value=FakeChannels()),
+        patch(
+            "bao.config.loader.get_data_dir",
+            return_value=MagicMock(
+                __truediv__=lambda s, x: MagicMock(__truediv__=lambda s, y: "/tmp/fake")
+            ),
+        ),
+        patch("bao.cron.service.CronService", side_effect=FakeCron),
+        patch("bao.session.manager.SessionManager", return_value=MagicMock()),
+    ):
+        config = MagicMock()
+        config.workspace_path = "/tmp/test"
+        config.agents.defaults.model = "test"
+        config.agents.defaults.temperature = 0.1
+        config.agents.defaults.max_tokens = 100
+        config.agents.defaults.max_tool_iterations = 5
+        config.agents.defaults.memory_window = 10
+        config.agents.defaults.models = []
+        config.tools.web.search = MagicMock()
+        config.tools.exec = MagicMock()
+        config.tools.embedding = MagicMock()
+        config.tools.restrict_to_workspace = False
+        config.tools.mcp_servers = {}
+        config.gateway.heartbeat.interval_s = 60
+        config.gateway.heartbeat.enabled = True
+
+        channels = MagicMock()
+        channels.telegram.enabled = True
+        channels.telegram.allow_from = ["abc45879|6374137703"]
+        channels.whatsapp.enabled = False
+        channels.whatsapp.allow_from = []
+        channels.discord.enabled = False
+        channels.discord.allow_from = []
+        channels.feishu.enabled = False
+        channels.feishu.allow_from = []
+        channels.dingtalk.enabled = False
+        channels.dingtalk.allow_from = []
+        channels.qq.enabled = False
+        channels.qq.allow_from = []
+        channels.imessage.enabled = False
+        channels.imessage.allow_from = []
+        channels.email.enabled = False
+        channels.email.allow_from = []
+        config.channels = channels
+
+        stack = build_gateway_stack(config, MagicMock())
+
+    assert stack.heartbeat.on_execute is not None
+    await stack.heartbeat.on_execute("do tasks")
+    fake_agent.process_direct.assert_awaited_once()
+    call_kwargs = fake_agent.process_direct.await_args.kwargs
+    assert call_kwargs["channel"] == "telegram"
+    assert call_kwargs["chat_id"] == "6374137703"
 
 
 @pytest.mark.asyncio
@@ -469,6 +773,45 @@ async def test_startup_greeting_accepts_negative_telegram_chat_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_startup_greeting_accepts_telegram_composite_target() -> None:
+    fake_bus = MagicMock()
+    fake_bus.publish_outbound = AsyncMock()
+    fake_agent = MagicMock()
+
+    config = MagicMock()
+    config.workspace_path = "/tmp/test"
+
+    channels = MagicMock()
+    channels.telegram.enabled = True
+    channels.telegram.allow_from = ["abc45879|6374137703"]
+    channels.feishu.enabled = False
+    channels.feishu.allow_from = []
+    channels.dingtalk.enabled = False
+    channels.dingtalk.allow_from = []
+    channels.imessage.enabled = False
+    channels.imessage.allow_from = []
+    channels.qq.enabled = False
+    channels.qq.allow_from = []
+    channels.email.enabled = False
+    channels.email.allow_from = []
+    channels.whatsapp.enabled = False
+    channels.whatsapp.allow_from = []
+    config.channels = channels
+
+    with (
+        patch("bao.gateway.builder.asyncio.sleep", new=AsyncMock()),
+        patch("bao.config.onboarding.detect_onboarding_stage", return_value="lang_select"),
+        patch("bao.config.onboarding.LANG_PICKER", "picker"),
+    ):
+        await send_startup_greeting(fake_agent, fake_bus, config)
+
+    assert fake_bus.publish_outbound.await_count == 1
+    outbound = fake_bus.publish_outbound.await_args.args[0]
+    assert outbound.channel == "telegram"
+    assert outbound.chat_id == "6374137703"
+
+
+@pytest.mark.asyncio
 async def test_startup_greeting_onboarding_desktop_not_blocked_by_external_publish() -> None:
     fake_bus = MagicMock()
     publish_started = asyncio.Event()
@@ -483,7 +826,7 @@ async def test_startup_greeting_onboarding_desktop_not_blocked_by_external_publi
     fake_agent = MagicMock()
     desktop_called = asyncio.Event()
 
-    async def _on_desktop(_content: str) -> None:
+    async def _on_desktop(_message: DesktopStartupMessage) -> None:
         desktop_called.set()
 
     on_desktop = AsyncMock(side_effect=_on_desktop)
@@ -518,7 +861,7 @@ async def test_startup_greeting_onboarding_desktop_not_blocked_by_external_publi
                 fake_agent,
                 fake_bus,
                 config,
-                on_desktop_greeting=on_desktop,
+                on_desktop_startup_message=on_desktop,
             )
         )
 
@@ -527,7 +870,13 @@ async def test_startup_greeting_onboarding_desktop_not_blocked_by_external_publi
         release_publish.set()
         await run_task
 
-    on_desktop.assert_awaited_once_with("picker")
+    on_desktop.assert_awaited_once_with(
+        DesktopStartupMessage(
+            content="picker",
+            role="assistant",
+            entrance_style="assistantReceived",
+        )
+    )
     assert fake_bus.publish_outbound.await_count == 1
 
 
@@ -752,7 +1101,7 @@ async def test_startup_greeting_desktop_not_blocked_by_external_publish() -> Non
                 fake_agent,
                 fake_bus,
                 config,
-                on_desktop_greeting=on_desktop,
+                on_desktop_startup_message=on_desktop,
             )
         )
 
@@ -761,7 +1110,13 @@ async def test_startup_greeting_desktop_not_blocked_by_external_publish() -> Non
         release_publish.set()
         await run_task
 
-    on_desktop.assert_awaited_once_with("desktop-hi")
+    on_desktop.assert_awaited_once_with(
+        DesktopStartupMessage(
+            content="desktop-hi",
+            role="system",
+            entrance_style="greeting",
+        )
+    )
     assert fake_bus.publish_outbound.await_count == 1
 
 
@@ -785,7 +1140,7 @@ async def test_startup_greeting_cancellation_cancels_desktop_callback() -> None:
     desktop_started = asyncio.Event()
     desktop_cancelled = asyncio.Event()
 
-    async def _on_desktop(_content: str) -> None:
+    async def _on_desktop(_message: DesktopStartupMessage) -> None:
         desktop_started.set()
         try:
             await asyncio.Event().wait()
@@ -839,7 +1194,7 @@ async def test_startup_greeting_cancellation_cancels_desktop_callback() -> None:
                 fake_agent,
                 fake_bus,
                 config,
-                on_desktop_greeting=on_desktop,
+                on_desktop_startup_message=on_desktop,
             )
         )
 

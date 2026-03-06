@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from inspect import isawaitable
 from pathlib import Path
@@ -23,6 +24,13 @@ class GatewayStack:
     channels: Any
 
 
+@dataclass(frozen=True)
+class DesktopStartupMessage:
+    content: str
+    role: str
+    entrance_style: str = "none"
+
+
 def _extract_primary_id(raw_uid: Any) -> str:
     return str(raw_uid or "").split("|", 1)[0].strip()
 
@@ -31,13 +39,34 @@ def _is_telegram_chat_id(chat_id: str) -> bool:
     return bool(chat_id) and chat_id.lstrip("-").isdigit()
 
 
-def _collect_startup_targets(config: Any, logger: Any) -> list[tuple[str, str]]:
+def _extract_telegram_target_id(raw_uid: Any) -> str:
+    raw = str(raw_uid or "").strip()
+    if not raw:
+        return ""
+    for part in raw.split("|"):
+        token = part.strip()
+        if _is_telegram_chat_id(token):
+            return token
+    return ""
+
+
+def _resolve_allow_from_target(channel_name: str, raw_uid: Any) -> str:
+    if channel_name == "telegram":
+        return _extract_telegram_target_id(raw_uid)
+
+    target = _extract_primary_id(raw_uid)
+    if channel_name == "whatsapp" and target:
+        return target if "@" in target else f"{target}@s.whatsapp.net"
+    return target
+
+
+def _collect_channel_targets(config: Any, logger: Any) -> list[tuple[str, str]]:
     targets: list[tuple[str, str]] = []
     seen_targets: set[tuple[str, str]] = set()
 
     def _add_target(channel_name: str, chat_id: str) -> None:
         if not chat_id:
-            logger.warning("⚠️ 问候目标跳过 / target skipped: {} empty chat_id", channel_name)
+            logger.warning("⚠️ 目标跳过 / target skipped: {} empty chat_id", channel_name)
             return
         pair = (channel_name, chat_id)
         if pair in seen_targets:
@@ -57,20 +86,23 @@ def _collect_startup_targets(config: Any, logger: Any) -> list[tuple[str, str]]:
         if not (cfg.enabled and cfg.allow_from):
             continue
         for uid in cfg.allow_from:
-            target = _extract_primary_id(uid)
-            if name == "telegram" and not _is_telegram_chat_id(target):
+            target = _resolve_allow_from_target(name, uid)
+            if name == "telegram" and not target:
+                logger.warning(
+                    "⚠️ 目标跳过 / target skipped: telegram requires numeric chat_id in allow_from ({})",
+                    uid,
+                )
                 continue
             _add_target(name, target)
 
     wa = config.channels.whatsapp
     if wa.enabled and wa.allow_from:
         for uid in wa.allow_from:
-            bare = _extract_primary_id(uid)
-            if not bare:
-                logger.warning("⚠️ 问候目标跳过 / target skipped: whatsapp empty id")
+            target = _resolve_allow_from_target("whatsapp", uid)
+            if not target:
+                logger.warning("⚠️ 目标跳过 / target skipped: whatsapp empty id")
                 continue
-            jid = bare if "@" in bare else f"{bare}@s.whatsapp.net"
-            _add_target("whatsapp", jid)
+            _add_target("whatsapp", target)
 
     return targets
 
@@ -78,7 +110,7 @@ def _collect_startup_targets(config: Any, logger: Any) -> list[tuple[str, str]]:
 def _log_startup_out(logger: Any, channel_name: str, chat_id: str, content: str) -> None:
     preview = content[:60] + "..." if len(content) > 60 else content
     preview = preview.replace("\n", " ")
-    logger.info("💬 启动问候 / out: {}:{}: {}", channel_name, chat_id, preview)
+    logger.info("💬 启动问候已入队 / queued: {}:{}: {}", channel_name, chat_id, preview)
 
 
 def _extract_persona_language_tag(text: str) -> str | None:
@@ -217,12 +249,17 @@ async def _generate_startup_greeting(
 
 
 def build_gateway_stack(
-    config: Any, provider: Any, session_manager: Any | None = None
+    config: Any,
+    provider: Any,
+    session_manager: Any | None = None,
+    on_channel_error: Callable[[str, str, str], None] | None = None,
 ) -> GatewayStack:
     """Build the full gateway service stack from config and provider.
 
     Returns a :class:`GatewayStack` with all services wired up and ready to start.
     """
+    from loguru import logger
+
     from bao.agent.loop import AgentLoop
     from bao.bus.events import OutboundMessage
     from bao.bus.queue import MessageBus
@@ -290,37 +327,17 @@ def build_gateway_stack(
 
     cron.on_job = on_cron_job
 
-    def _iter_heartbeat_targets() -> list[tuple[str, str]]:
-        targets: list[tuple[str, str]] = []
-
-        for ch_name in ("telegram", "feishu", "dingtalk", "qq", "imessage", "email"):
-            ch_cfg = getattr(config.channels, ch_name, None)
-            if not (
-                ch_cfg and getattr(ch_cfg, "enabled", False) and getattr(ch_cfg, "allow_from", None)
-            ):
-                continue
-            chat_id = _extract_primary_id(ch_cfg.allow_from[0])
-            if ch_name == "telegram" and not _is_telegram_chat_id(chat_id):
-                continue
-            if chat_id:
-                targets.append((ch_name, chat_id))
-
-        wa_cfg = getattr(config.channels, "whatsapp", None)
-        if wa_cfg and getattr(wa_cfg, "enabled", False) and getattr(wa_cfg, "allow_from", None):
-            bare = _extract_primary_id(wa_cfg.allow_from[0])
-            if bare:
-                wa_chat_id = bare if "@" in bare else f"{bare}@s.whatsapp.net"
-                targets.append(("whatsapp", wa_chat_id))
-
-        return targets
+    def _get_primary_proactive_target() -> tuple[str, str] | None:
+        targets = _collect_channel_targets(config, logger)
+        return targets[0] if targets else None
 
     # --- heartbeat ---
     async def on_heartbeat_execute(tasks: str) -> str:
         """Phase 2: execute heartbeat tasks through the full agent loop."""
         channel, chat_id = "cli", "direct"
-        targets = _iter_heartbeat_targets()
-        if targets:
-            channel, chat_id = targets[0]
+        target = _get_primary_proactive_target()
+        if target:
+            channel, chat_id = target
 
         async def _silent(*_args, **_kwargs):
             pass
@@ -334,12 +351,11 @@ def build_gateway_stack(
         )
 
     async def on_heartbeat_notify(response: str) -> None:
-        """Deliver heartbeat result to the first available channel."""
-        targets = _iter_heartbeat_targets()
-        if not targets:
+        target = _get_primary_proactive_target()
+        if not target:
             return
 
-        ch_name, chat_id = targets[0]
+        ch_name, chat_id = target
         await bus.publish_outbound(
             OutboundMessage(channel=ch_name, chat_id=chat_id, content=response)
         )
@@ -355,7 +371,7 @@ def build_gateway_stack(
         enabled=hb_cfg.enabled,
     )
 
-    channels = ChannelManager(config, bus)
+    channels = ChannelManager(config, bus, on_channel_error=on_channel_error)
 
     return GatewayStack(
         config=config,
@@ -373,7 +389,7 @@ async def send_startup_greeting(
     bus: Any,
     config: Any,
     *,
-    on_desktop_greeting: Any | None = None,
+    on_desktop_startup_message: Any | None = None,
     channels: Any | None = None,
 ) -> None:
     from loguru import logger
@@ -382,11 +398,11 @@ async def send_startup_greeting(
 
     instructions_text = ""
 
-    async def _emit_desktop_greeting(content: str, phase: str) -> None:
-        if not on_desktop_greeting:
+    async def _emit_desktop_startup_message(message: DesktopStartupMessage, phase: str) -> None:
+        if not on_desktop_startup_message:
             return
         try:
-            maybe = on_desktop_greeting(content)
+            maybe = on_desktop_startup_message(message)
             if isawaitable(maybe):
                 await maybe
         except Exception as e:
@@ -478,9 +494,12 @@ async def send_startup_greeting(
             chat_id="local",
         )
         if text:
-            await _emit_desktop_greeting(text, "Desktop startup")
+            await _emit_desktop_startup_message(
+                DesktopStartupMessage(content=text, role="system", entrance_style="greeting"),
+                "Desktop startup",
+            )
 
-    targets = _collect_startup_targets(config, logger)
+    targets = _collect_channel_targets(config, logger)
 
     from bao.config.onboarding import (
         LANG_PICKER,
@@ -499,10 +518,17 @@ async def send_startup_greeting(
         else:
             lang = infer_language(workspace_path)
             content = PERSONA_GREETING.get(lang, PERSONA_GREETING["en"])
-        if on_desktop_greeting:
+        if on_desktop_startup_message:
             await asyncio.gather(
                 _broadcast_onboarding(content),
-                _emit_desktop_greeting(content, "Onboarding"),
+                _emit_desktop_startup_message(
+                    DesktopStartupMessage(
+                        content=content,
+                        role="assistant",
+                        entrance_style="assistantReceived",
+                    ),
+                    "Onboarding",
+                ),
             )
         else:
             await _broadcast_onboarding(content)
@@ -516,7 +542,7 @@ async def send_startup_greeting(
     preferred_language = persona_lang_tag or infer_language(workspace_path)
     prompt = _build_startup_trigger()
 
-    if on_desktop_greeting:
+    if on_desktop_startup_message:
         await asyncio.gather(
             _send_external_greetings(
                 prompt=prompt,

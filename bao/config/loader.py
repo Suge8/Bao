@@ -123,7 +123,7 @@ _JSONC_TEMPLATE = """\
     // "telegram": {
     //   "enabled": true,
     //   "token": "123456:ABC-DEF...",
-    //   "allowFrom": [],
+    //   "allowFrom": ["6374137703"],  // 私聊建议直接填数字 chat_id；需要兼容用户名时可填 "username|6374137703"
     //   "proxy": null,
     //   "replyToMessage": false
     // },

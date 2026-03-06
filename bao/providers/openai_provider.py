@@ -9,7 +9,6 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 from loguru import logger
-from openai import AsyncOpenAI
 
 from bao.providers.api_mode_cache import get_cached_mode, set_cached_mode
 from bao.providers.base import LLMProvider, LLMResponse, ToolCallRequest, normalize_tool_calls
@@ -87,12 +86,20 @@ class OpenAICompatibleProvider(LLMProvider):
             headers.update(self.extra_headers)
         self._default_headers = headers
         self._api_key_str = api_key or "dummy-key"
+        self._client: Any | None = None
 
-        self._client = AsyncOpenAI(
-            api_key=self._api_key_str,
-            base_url=self._effective_base,
-            default_headers=headers,
-        )
+    def _get_client(self) -> Any:
+        client = self._client
+        if client is None:
+            from openai import AsyncOpenAI
+
+            client = AsyncOpenAI(
+                api_key=self._api_key_str,
+                base_url=self._effective_base,
+                default_headers=self._default_headers,
+            )
+            self._client = client
+        return client
 
     def _resolve_model(self, model: str) -> str:
         if self._model_prefix and model.lower().startswith(f"{self._model_prefix}/"):
@@ -485,7 +492,7 @@ class OpenAICompatibleProvider(LLMProvider):
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 content = ""
-                stream = await self._client.chat.completions.create(**params)
+                stream = await self._get_client().chat.completions.create(**params)
                 tool_calls_acc: dict[int, dict[str, Any]] = {}
                 finish_reason = "stop"
                 usage: dict[str, int] = {}
