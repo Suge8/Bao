@@ -10,16 +10,20 @@ from collections.abc import Coroutine
 from typing import Any, TypeVar, cast
 from unittest.mock import MagicMock, patch
 
+from bao.gateway.builder import DesktopStartupMessage
+from bao.session.manager import SessionChangeEvent
+
 pytest = importlib.import_module("pytest")
 
 QtCore = pytest.importorskip("PySide6.QtCore")
-QCoreApplication = QtCore.QCoreApplication
+QtGui = pytest.importorskip("PySide6.QtGui")
+QGuiApplication = QtGui.QGuiApplication
 _T = TypeVar("_T")
 
 
 @pytest.fixture(scope="module", autouse=True)
 def qt_app():
-    app = QCoreApplication.instance() or QCoreApplication(sys.argv)
+    app = QGuiApplication.instance() or QGuiApplication(sys.argv)
     yield app
 
 
@@ -62,6 +66,23 @@ def make_service():
     svc = ChatService(model, runner)
     _LIVE_CHAT_SERVICES.append(svc)
     return svc, model
+
+
+class _SessionManagerWithListeners:
+    def __init__(self) -> None:
+        self.listeners: list[Any] = []
+
+    def add_change_listener(self, listener: Any) -> None:
+        self.listeners.append(listener)
+
+    def remove_change_listener(self, listener: Any) -> None:
+        if listener in self.listeners:
+            self.listeners.remove(listener)
+
+    def emit(self, session_key: str, kind: str) -> None:
+        event = SessionChangeEvent(session_key=session_key, kind=kind)
+        for listener in list(self.listeners):
+            listener(event)
 
 
 def test_initial_state():
@@ -110,6 +131,20 @@ def test_state_transitions_to_starting_on_start():
     assert "starting" in states
 
 
+def test_stop_invalidates_inflight_init_result() -> None:
+    svc, _model = make_service()
+
+    with patch.object(svc, "_init_gateway", return_value=None):
+        svc.start()
+
+    request_id = svc._lifecycle_request_id - 1
+    svc.stop()
+    svc._handle_init_result(request_id, True, "", MagicMock(), ["telegram"])
+
+    assert svc.state == "stopped"
+    assert svc.property("gatewayDetail") == ""
+
+
 def test_double_start_is_noop():
     svc, _ = make_service()
     states = []
@@ -131,8 +166,18 @@ def test_set_error_changes_state():
     svc._set_error("boom")
     assert svc.state == "error"
     assert svc.lastError == "boom"
+    assert svc.property("gatewayDetail") == "boom"
+    assert svc.property("gatewayDetailIsError") is True
     assert "boom" in errors
     assert "error" in states
+
+
+def test_set_error_does_not_append_chat_message():
+    svc, model = make_service()
+
+    svc._set_error("boom")
+
+    assert model.rowCount() == 0
 
 
 def test_show_system_response_immediate():
@@ -152,15 +197,19 @@ def test_system_response_queued_while_processing():
     svc._processing = True
     svc._handle_system_response("Queued msg")
     assert model.rowCount() == 0  # not displayed yet
-    assert len(svc._pending_system) == 1
-    assert svc._pending_system[0] == ("Queued msg", "system", "desktop:local")
+    assert len(svc._pending_notifications) == 1
+    queued = svc._pending_notifications[0]
+    assert queued.role == "system"
+    assert queued.content == "Queued msg"
+    assert queued.session_key == "desktop:local"
+    assert queued.entrance_style == "system"
 
 
 def test_system_response_drained_after_send():
     """Pending system responses should drain after send completes."""
     svc, model = make_service()
     svc._processing = True
-    svc._pending_system.append(("Deferred", "system", svc._session_key))
+    svc._handle_system_response("Deferred")
     row = model.append_assistant("reply", status="typing")
     svc._handle_send_result(row, True, "reply")
     assert model._messages[0]["status"] == "done"
@@ -245,19 +294,109 @@ def test_transient_greeting_persisted_with_greeting_style() -> None:
     )
 
 
+def test_transient_startup_onboarding_persisted_as_assistant() -> None:
+    svc, _model = make_service()
+    session = MagicMock()
+    sm = MagicMock()
+    sm.get_or_create.return_value = session
+    svc._session_manager = sm
+
+    svc._append_transient_assistant_message(
+        "Hello",
+        session_key="desktop:other",
+        show_in_ui=False,
+    )
+
+    session.add_message.assert_called_once_with(
+        "assistant",
+        "Hello",
+        status="done",
+        format="markdown",
+    )
+
+
 def test_desktop_startup_greeting_queued_until_startup_session_ready() -> None:
     svc, _model = make_service()
-    with patch.object(svc, "_queue_or_show_system_response") as mocked:
-        svc._startupGreeting.emit("Hello")
-        mocked.assert_not_called()
-
-        svc.notifyStartupSessionReady("desktop:local::s1")
-
-    mocked.assert_called_once_with(
-        "Hello",
-        entrance_style="greeting",
-        session_key="desktop:local::s1",
+    key = "desktop:local::s1"
+    svc._session_manager = MagicMock()
+    svc._session_key = key
+    svc._desired_session_key = key
+    svc._committed_session_key = key
+    svc._startupMessage.emit(
+        DesktopStartupMessage(content="Hello", role="system", entrance_style="greeting")
     )
+
+    assert _model.rowCount() == 0
+    assert len(svc._startup_pending) == 1
+
+    svc.notifyStartupSessionReady(key)
+
+    assert _model.rowCount() == 0
+    assert len(svc._startup_pending) == 1
+
+    svc._handle_history_result(True, "", (key, 0, (0, ""), []))
+
+    assert _model.rowCount() == 1
+    assert _model._messages[0]["role"] == "system"
+    assert _model._messages[0]["content"] == "Hello"
+    assert _model._messages[0]["entrancestyle"] == "greeting"
+    assert not svc._startup_pending
+
+
+def test_desktop_onboarding_message_queued_until_startup_session_ready() -> None:
+    svc, _model = make_service()
+    key = "desktop:local::s1"
+    svc._session_manager = MagicMock()
+    svc._session_key = key
+    svc._desired_session_key = key
+    svc._committed_session_key = key
+    svc._startupMessage.emit(
+        DesktopStartupMessage(
+            content="Hello",
+            role="assistant",
+            entrance_style="assistantReceived",
+        )
+    )
+
+    assert _model.rowCount() == 0
+    assert len(svc._startup_pending) == 1
+
+    svc.notifyStartupSessionReady(key)
+
+    assert _model.rowCount() == 0
+    assert len(svc._startup_pending) == 1
+
+    svc._handle_history_result(True, "", (key, 0, (0, ""), []))
+
+    assert _model.rowCount() == 1
+    assert _model._messages[0]["role"] == "assistant"
+    assert _model._messages[0]["content"] == "Hello"
+    assert _model._messages[0]["entrancestyle"] == "assistantReceived"
+    assert not svc._startup_pending
+
+
+def test_startup_message_waits_for_history_apply_before_flushing() -> None:
+    svc, model = make_service()
+    key = "desktop:local::s1"
+    svc._session_manager = MagicMock()
+    svc._session_key = key
+    svc._desired_session_key = key
+    svc._committed_session_key = key
+    svc.notifyStartupSessionReady(key)
+
+    svc._startupMessage.emit(
+        DesktopStartupMessage(content="Hello", role="assistant", entrance_style="assistantReceived")
+    )
+
+    assert model.rowCount() == 0
+    assert len(svc._startup_pending) == 1
+
+    svc._handle_history_result(True, "", (key, 0, (0, ""), []))
+
+    assert model.rowCount() == 1
+    assert model._messages[0]["role"] == "assistant"
+    assert model._messages[0]["content"] == "Hello"
+    assert not svc._startup_pending
 
 
 def test_system_response_empty_ignored():
@@ -265,6 +404,61 @@ def test_system_response_empty_ignored():
     svc, model = make_service()
     svc._handle_system_response("")
     assert model.rowCount() == 0
+
+
+def test_handle_init_result_sets_gateway_summary_without_chat_message() -> None:
+    svc, model = make_service()
+    session_manager = MagicMock()
+    svc._cron_status = {"jobs": 1}
+
+    svc._lifecycle_request_id = 1
+    svc._handle_init_result(1, True, "", session_manager, ["telegram", "imessage"])
+
+    assert svc.state == "running"
+    detail = str(svc.property("gatewayDetail"))
+    assert detail.startswith("✓ Gateway started")
+    assert svc.property("gatewayDetailIsError") is False
+    assert "channels: telegram, imessage" in detail
+    assert "cron: 1 jobs" in detail
+    assert "heartbeat: every 30m" in detail
+    assert model.rowCount() == 0
+
+
+def test_channel_error_updates_gateway_detail_without_chat_message() -> None:
+    svc, model = make_service()
+
+    svc._handle_channel_error("start_failed", "telegram", "bad token")
+
+    assert model.rowCount() == 0
+    assert svc.lastError == svc._format_channel_error("start_failed", "telegram", "bad token")
+    assert svc.property("gatewayDetailIsError") is True
+    assert "telegram" in str(svc.property("gatewayDetail"))
+
+
+def test_init_summary_does_not_override_existing_gateway_error() -> None:
+    svc, model = make_service()
+    session_manager = MagicMock()
+    svc._cron_status = {"jobs": 1}
+
+    svc._handle_channel_error("start_failed", "telegram", "bad token")
+    svc._lifecycle_request_id = 1
+    svc._handle_init_result(1, True, "", session_manager, ["telegram", "imessage"])
+
+    assert model.rowCount() == 0
+    assert svc.lastError == svc._format_channel_error("start_failed", "telegram", "bad token")
+    assert svc.property("gatewayDetailIsError") is True
+    assert "bad token" in str(svc.property("gatewayDetail"))
+
+
+def test_start_clears_previous_gateway_detail() -> None:
+    svc, _model = make_service()
+    svc._set_gateway_detail("boom", error="boom")
+
+    with patch.object(svc, "_init_gateway", return_value=None):
+        svc.start()
+
+    assert svc.lastError == ""
+    assert svc.property("gatewayDetail") == ""
 
 
 def test_progress_split_creates_new_bubble_on_next_delta():
@@ -424,6 +618,74 @@ def test_send_result_marks_seen_for_active_session():
     sm.update_metadata_only.assert_called_once()
 
 
+def test_set_session_manager_registers_change_listener():
+    svc, _model = make_service()
+    sm = _SessionManagerWithListeners()
+
+    svc.setSessionManager(sm)
+
+    assert svc._on_session_change in sm.listeners
+
+
+def test_set_session_manager_replaces_previous_change_listener():
+    svc, _model = make_service()
+    old_sm = _SessionManagerWithListeners()
+    new_sm = _SessionManagerWithListeners()
+
+    svc.setSessionManager(old_sm)
+    svc.setSessionManager(new_sm)
+
+    assert svc._on_session_change not in old_sm.listeners
+    assert svc._on_session_change in new_sm.listeners
+
+
+def test_session_change_reloads_active_history_for_message_commit():
+    svc, _model = make_service()
+    sm = _SessionManagerWithListeners()
+    svc.setSessionManager(sm)
+    svc._desired_session_key = "desktop:local"
+    svc._committed_session_key = "desktop:local"
+    svc._current_nav_id = 7
+
+    called = []
+    svc._cancel_history_future = lambda: called.append(("cancel",))
+    svc._request_history_load = lambda key, nav_id, show_loading=None: called.append(
+        (key, nav_id, show_loading)
+    )
+
+    sm.emit("desktop:local", "messages")
+
+    assert called == [("cancel",), ("desktop:local", 7, False)]
+
+
+def test_session_change_ignores_metadata_commit_for_active_history():
+    svc, _model = make_service()
+    sm = _SessionManagerWithListeners()
+    svc.setSessionManager(sm)
+    svc._desired_session_key = "desktop:local"
+    svc._committed_session_key = "desktop:local"
+
+    called = []
+    svc._request_history_load = lambda *args, **kwargs: called.append((args, kwargs))
+
+    sm.emit("desktop:local", "metadata")
+
+    assert called == []
+
+
+def test_handle_init_result_registers_actual_session_manager_listener():
+    svc, _model = make_service()
+    early_sm = _SessionManagerWithListeners()
+    actual_sm = _SessionManagerWithListeners()
+    svc.setSessionManager(early_sm)
+
+    svc._lifecycle_request_id = 1
+    svc._handle_init_result(1, True, "", actual_sm, [])
+
+    assert svc._on_session_change not in early_sm.listeners
+    assert svc._on_session_change in actual_sm.listeners
+
+
 def test_handle_history_result_ignores_stale_session_payload():
     svc, model = make_service()
     svc._session_key = "imessage:active"
@@ -506,7 +768,6 @@ def test_handle_history_result_rejects_stale_nav_payload():
             "status": "done",
             "entrancestyle": "none",
             "entrancepending": False,
-            "entranceconsumed": True,
         }
     ]
     sig = svc._history_signature(prepared)
@@ -594,7 +855,9 @@ def test_set_session_key_empty_clears_visible_history_without_reloading():
 def test_load_history_uses_display_history_for_ui_model():
     svc, _ = make_service()
     session = MagicMock()
-    session.get_display_history.return_value = [{"role": "assistant", "content": "a1"}]
+    session.get_display_history.return_value = [
+        {"role": "assistant", "content": "a1", "format": "markdown"}
+    ]
     svc._session_manager = MagicMock()
     svc._session_manager.get_or_create.return_value = session
 
@@ -608,11 +871,11 @@ def test_load_history_uses_display_history_for_ui_model():
             "createdat": 0,
             "role": "assistant",
             "content": "a1",
-            "format": "plain",
+            "format": "markdown",
             "status": "done",
             "entrancestyle": "none",
             "entrancepending": False,
-            "entranceconsumed": True,
+            "dividertext": "",
         }
     ]
     session.get_display_history.assert_called_once()
@@ -622,8 +885,7 @@ def test_handle_history_result_does_not_reset_when_only_entrance_differs():
     svc, model = make_service()
     svc._session_key = "desktop:local"
     svc._desired_session_key = "desktop:local"
-    row = model.append_assistant("hello", status="done", entrance_pending=True)
-    model.mark_entrance_pending(row)
+    _ = model.append_assistant("hello", status="done", entrance_pending=True)
     prepared = [
         {
             "id": 1,
@@ -634,7 +896,6 @@ def test_handle_history_result_does_not_reset_when_only_entrance_differs():
             "status": "done",
             "entrancestyle": "none",
             "entrancepending": False,
-            "entranceconsumed": True,
         }
     ]
     sig = svc._history_signature(prepared)
@@ -647,6 +908,450 @@ def test_handle_history_result_does_not_reset_when_only_entrance_differs():
     svc._handle_history_result(True, "", ("desktop:local", 1, sig, prepared))
 
     assert resets == []
+
+
+def test_handle_history_result_preserves_transient_typing_tail_without_reset():
+    svc, model = make_service()
+    svc._session_key = "desktop:local"
+    svc._desired_session_key = "desktop:local"
+    svc._committed_session_key = "desktop:local"
+    svc._active_streaming_session_key = "desktop:local"
+    svc._processing = True
+    svc._history_initialized = True
+    svc._history_fingerprint = (1, "stale")
+    svc._current_nav_id = 1
+
+    _ = model.append_user("hello")
+    typing_row = model.append_assistant("", status="typing")
+    svc._active_streaming_row = typing_row
+
+    prepared = [
+        {
+            "id": 1,
+            "createdat": 0,
+            "role": "user",
+            "content": "hello",
+            "format": "plain",
+            "status": "done",
+            "entrancestyle": "none",
+            "entrancepending": False,
+        }
+    ]
+    sig = svc._history_signature(prepared)
+    resets = []
+    model.modelReset.connect(lambda: resets.append(True))
+
+    svc._handle_history_result(True, "", ("desktop:local", 1, sig, prepared))
+
+    assert resets == []
+    assert model.rowCount() == 2
+    assert model._messages[0]["content"] == "hello"
+    assert model._messages[1]["role"] == "assistant"
+    assert model._messages[1]["status"] == "typing"
+
+
+def test_handle_history_result_updates_active_assistant_without_reset_on_finalize_race():
+    svc, model = make_service()
+    svc._session_key = "desktop:local"
+    svc._desired_session_key = "desktop:local"
+    svc._committed_session_key = "desktop:local"
+    svc._active_streaming_session_key = "desktop:local"
+    svc._processing = True
+    svc._history_initialized = True
+    svc._history_fingerprint = (2, "stale")
+    svc._current_nav_id = 1
+
+    _ = model.append_user("hello")
+    typing_row = model.append_assistant("", status="typing")
+    svc._active_streaming_row = typing_row
+
+    prepared = [
+        {
+            "id": 1,
+            "createdat": 0,
+            "role": "user",
+            "content": "hello",
+            "format": "plain",
+            "status": "done",
+            "entrancestyle": "none",
+            "entrancepending": False,
+        },
+        {
+            "id": 2,
+            "createdat": 0,
+            "role": "assistant",
+            "content": "world",
+            "format": "markdown",
+            "status": "done",
+            "entrancestyle": "none",
+            "entrancepending": False,
+        },
+    ]
+    sig = svc._history_signature(prepared)
+    resets = []
+    model.modelReset.connect(lambda: resets.append(True))
+
+    svc._handle_history_result(True, "", ("desktop:local", 1, sig, prepared))
+
+    assert resets == []
+    assert model.rowCount() == 2
+    assert model._messages[1]["content"] == "world"
+    assert model._messages[1]["status"] == "done"
+
+
+def test_handle_history_result_preserves_transient_tail_after_tool_row_without_reset():
+    svc, model = make_service()
+    svc._session_key = "desktop:local"
+    svc._desired_session_key = "desktop:local"
+    svc._committed_session_key = "desktop:local"
+    svc._active_streaming_session_key = "desktop:local"
+    svc._processing = True
+    svc._history_initialized = True
+    svc._history_fingerprint = (2, "stale")
+    svc._current_nav_id = 1
+
+    _ = model.append_user("hello")
+    _ = model.append_assistant("working", status="done")
+    typing_row = model.append_assistant("", status="typing")
+    svc._active_streaming_row = typing_row
+
+    from app.backend.chat import ChatMessageModel
+
+    prepared = ChatMessageModel.prepare_history(
+        [{"role": "user", "content": "hello"}, {"role": "tool", "content": "running tool"}]
+    )
+    sig = svc._history_signature(prepared)
+    resets = []
+    model.modelReset.connect(lambda: resets.append(True))
+
+    svc._handle_history_result(True, "", ("desktop:local", 1, sig, prepared))
+
+    assert resets == []
+    assert model.rowCount() == 4
+    assert model._messages[1]["role"] == "system"
+    assert model._messages[2]["content"] == "working"
+    assert model._messages[3]["status"] == "typing"
+    assert svc._active_streaming_row == 3
+
+
+def test_handle_history_result_reconciles_tool_row_and_final_assistant_without_reset():
+    svc, model = make_service()
+    svc._session_key = "desktop:local"
+    svc._desired_session_key = "desktop:local"
+    svc._committed_session_key = "desktop:local"
+    svc._active_streaming_session_key = "desktop:local"
+    svc._processing = True
+    svc._history_initialized = True
+    svc._history_fingerprint = (3, "stale")
+    svc._current_nav_id = 1
+
+    _ = model.append_user("hello")
+    _ = model.append_assistant("working", status="done")
+    typing_row = model.append_assistant("", status="typing")
+    svc._active_streaming_row = typing_row
+
+    from app.backend.chat import ChatMessageModel
+
+    prepared = ChatMessageModel.prepare_history(
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "tool", "content": "running tool"},
+            {"role": "assistant", "content": "final", "status": "done", "format": "markdown"},
+        ]
+    )
+    sig = svc._history_signature(prepared)
+    resets = []
+    model.modelReset.connect(lambda: resets.append(True))
+
+    svc._handle_history_result(True, "", ("desktop:local", 1, sig, prepared))
+
+    assert resets == []
+    assert model.rowCount() == 3
+    assert model._messages[1]["role"] == "system"
+    assert model._messages[2]["content"] == "final"
+    assert model._messages[2]["status"] == "done"
+    assert svc._active_streaming_row == 2
+
+
+def test_handle_history_result_reconciles_after_send_result_wins_race():
+    svc, model = make_service()
+    svc._session_key = "desktop:local"
+    svc._desired_session_key = "desktop:local"
+    svc._committed_session_key = "desktop:local"
+    svc._active_streaming_session_key = "desktop:local"
+    svc._processing = True
+    svc._history_initialized = True
+    svc._history_fingerprint = (3, "stale")
+    svc._current_nav_id = 1
+
+    _ = model.append_user("hello")
+    _ = model.append_assistant("working", status="done")
+    typing_row = model.append_assistant("", status="typing")
+    svc._active_streaming_row = typing_row
+    svc._handle_send_result(typing_row, True, "final")
+
+    from app.backend.chat import ChatMessageModel
+
+    prepared = ChatMessageModel.prepare_history(
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "tool", "content": "running tool"},
+            {"role": "assistant", "content": "final", "status": "done", "format": "markdown"},
+        ]
+    )
+    sig = svc._history_signature(prepared)
+    resets = []
+    model.modelReset.connect(lambda: resets.append(True))
+
+    svc._handle_history_result(True, "", ("desktop:local", 1, sig, prepared))
+
+    assert resets == []
+    assert model.rowCount() == 3
+    assert model._messages[1]["role"] == "system"
+    assert model._messages[2]["content"] == "final"
+    assert model._messages[2]["status"] == "done"
+
+
+def test_send_result_after_history_reconcile_uses_shifted_active_row():
+    svc, model = make_service()
+    svc._session_key = "desktop:local"
+    svc._desired_session_key = "desktop:local"
+    svc._committed_session_key = "desktop:local"
+    svc._active_streaming_session_key = "desktop:local"
+    svc._processing = True
+    svc._history_initialized = True
+    svc._history_fingerprint = (3, "stale")
+    svc._current_nav_id = 1
+
+    _ = model.append_user("hello")
+    _ = model.append_assistant("working", status="done")
+    typing_row = model.append_assistant("", status="typing")
+    svc._active_streaming_row = typing_row
+
+    from app.backend.chat import ChatMessageModel
+
+    prepared = ChatMessageModel.prepare_history(
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "tool", "content": "running tool"},
+            {"role": "assistant", "content": "final", "status": "done", "format": "markdown"},
+        ]
+    )
+    sig = svc._history_signature(prepared)
+    statuses = []
+    svc.statusUpdated.connect(lambda row, status: statuses.append((row, status)))
+
+    svc._handle_history_result(True, "", ("desktop:local", 1, sig, prepared))
+    svc._handle_send_result(typing_row, True, "final")
+
+    assert statuses[-1] == (2, "done")
+
+
+def test_send_result_after_assistant_only_history_split_uses_last_row():
+    svc, model = make_service()
+    svc._session_key = "desktop:local"
+    svc._desired_session_key = "desktop:local"
+    svc._committed_session_key = "desktop:local"
+    svc._active_streaming_session_key = "desktop:local"
+    svc._processing = True
+    svc._history_initialized = True
+    svc._history_fingerprint = (3, "stale")
+    svc._current_nav_id = 1
+
+    _ = model.append_user("hello")
+    typing_row = model.append_assistant("first", status="typing")
+    svc._active_streaming_row = typing_row
+
+    from app.backend.chat import ChatMessageModel
+
+    prepared = ChatMessageModel.prepare_history(
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "first", "status": "done", "format": "markdown"},
+            {"role": "assistant", "content": "second", "status": "done", "format": "markdown"},
+        ]
+    )
+    sig = svc._history_signature(prepared)
+    statuses = []
+    svc.statusUpdated.connect(lambda row, status: statuses.append((row, status)))
+
+    svc._handle_history_result(True, "", ("desktop:local", 1, sig, prepared))
+    svc._handle_send_result(typing_row, True, "second")
+
+    assert svc._active_streaming_row == -1
+    assert statuses[-1] == (2, "done")
+
+
+def test_history_materialized_split_clears_pending_split_before_send_result():
+    svc, model = make_service()
+    svc._session_key = "desktop:local"
+    svc._desired_session_key = "desktop:local"
+    svc._committed_session_key = "desktop:local"
+    svc._active_streaming_session_key = "desktop:local"
+    svc._processing = True
+    svc._history_initialized = True
+    svc._history_fingerprint = (3, "stale")
+    svc._current_nav_id = 1
+
+    _ = model.append_user("hello")
+    typing_row = model.append_assistant("first", status="typing")
+    svc._active_streaming_row = typing_row
+    svc._active_has_content = True
+    svc._pending_split = True
+
+    from app.backend.chat import ChatMessageModel
+
+    prepared = ChatMessageModel.prepare_history(
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "first", "status": "done", "format": "markdown"},
+            {"role": "assistant", "content": "second", "status": "done", "format": "markdown"},
+        ]
+    )
+    sig = svc._history_signature(prepared)
+    statuses = []
+    svc.statusUpdated.connect(lambda row, status: statuses.append((row, status)))
+
+    svc._handle_history_result(True, "", ("desktop:local", 1, sig, prepared))
+    svc._handle_send_result(typing_row, True, "second")
+
+    assert model.rowCount() == 3
+    assert svc._active_streaming_row == -1
+    assert svc._pending_split is False
+    assert statuses[-1] == (2, "done")
+
+
+def test_switch_back_to_streaming_session_rebinds_active_row_to_last_assistant():
+    svc, model = make_service()
+    svc._session_manager = object()
+    svc._session_key = "desktop:old"
+    svc._desired_session_key = "desktop:old"
+    svc._committed_session_key = "desktop:old"
+    svc._active_streaming_session_key = "desktop:old"
+    svc._processing = True
+    row = model.append_assistant("first", status="typing")
+    svc._active_streaming_row = row
+
+    svc.setSessionKey("desktop:new")
+    svc.setSessionKey("desktop:old")
+
+    from app.backend.chat import ChatMessageModel
+
+    prepared = ChatMessageModel.prepare_history(
+        [
+            {"role": "assistant", "content": "first", "status": "done", "format": "markdown"},
+            {"role": "assistant", "content": "second", "status": "done", "format": "markdown"},
+        ]
+    )
+    sig = svc._history_signature(prepared)
+    statuses = []
+    svc.statusUpdated.connect(lambda active_row, status: statuses.append((active_row, status)))
+
+    svc._handle_history_result(True, "", ("desktop:old", svc._current_nav_id, sig, prepared))
+    svc._handle_send_result(row, True, "second")
+
+    assert statuses[-1] == (1, "done")
+
+
+def test_switch_back_to_streaming_session_restores_typing_placeholder_after_latest_user():
+    svc, model = make_service()
+    svc._session_manager = object()
+    svc._session_key = "desktop:old"
+    svc._desired_session_key = "desktop:old"
+    svc._committed_session_key = "desktop:old"
+    svc._active_streaming_session_key = "desktop:old"
+    svc._processing = True
+    row = model.append_assistant("first", status="typing")
+    svc._active_streaming_row = row
+
+    svc.setSessionKey("desktop:new")
+    svc.setSessionKey("desktop:old")
+
+    from app.backend.chat import ChatMessageModel
+
+    prepared = ChatMessageModel.prepare_history(
+        [
+            {"role": "assistant", "content": "older", "status": "done", "format": "markdown"},
+            {"role": "user", "content": "hello"},
+        ]
+    )
+    sig = svc._history_signature(prepared)
+    statuses = []
+    svc.statusUpdated.connect(lambda active_row, status: statuses.append((active_row, status)))
+
+    svc._handle_history_result(True, "", ("desktop:old", svc._current_nav_id, sig, prepared))
+    svc._handle_send_result(row, True, "final")
+
+    assert model.rowCount() == 3
+    assert model._messages[0]["content"] == "older"
+    assert model._messages[1]["role"] == "user"
+    assert model._messages[2]["role"] == "assistant"
+    assert model._messages[2]["content"] == "final"
+    assert statuses[-1] == (2, "done")
+
+
+def test_send_result_before_switch_back_history_rebind_restores_placeholder():
+    svc, model = make_service()
+    svc._session_manager = object()
+    svc._session_key = "desktop:old"
+    svc._desired_session_key = "desktop:old"
+    svc._committed_session_key = "desktop:old"
+    svc._active_streaming_session_key = "desktop:old"
+    svc._processing = True
+    row = model.append_assistant("first", status="typing")
+    svc._active_streaming_row = row
+
+    svc.setSessionKey("desktop:new")
+    svc.setSessionKey("desktop:old")
+
+    statuses = []
+    svc.statusUpdated.connect(lambda active_row, status: statuses.append((active_row, status)))
+
+    svc._handle_send_result(row, True, "final")
+
+    assert model.rowCount() == 1
+    assert model._messages[0]["role"] == "assistant"
+    assert model._messages[0]["content"] == "final"
+    assert statuses[-1] == (0, "done")
+
+
+def test_history_signature_changes_when_earlier_prepared_message_changes():
+    svc, _ = make_service()
+
+    old_prepared = [
+        {
+            "role": "system",
+            "content": "welcome",
+            "format": "plain",
+            "status": "done",
+            "entrancestyle": "system",
+        },
+        {
+            "role": "assistant",
+            "content": "hello",
+            "format": "markdown",
+            "status": "done",
+            "entrancestyle": "none",
+        },
+    ]
+    new_prepared = [
+        {
+            "role": "system",
+            "content": "welcome",
+            "format": "plain",
+            "status": "done",
+            "entrancestyle": "greeting",
+        },
+        {
+            "role": "assistant",
+            "content": "hello",
+            "format": "markdown",
+            "status": "done",
+            "entrancestyle": "none",
+        },
+    ]
+
+    assert svc._history_signature(old_prepared) != svc._history_signature(new_prepared)
 
 
 def test_progress_update_does_not_mutate_model_when_session_mismatch():
