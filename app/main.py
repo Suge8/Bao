@@ -22,10 +22,10 @@ from PySide6.QtCore import (
     Slot,
 )
 from PySide6.QtGui import (
-    QFont,
-    QFontDatabase,
     QColor,
     QCursor,
+    QFont,
+    QFontDatabase,
     QGuiApplication,
     QIcon,
     QImage,

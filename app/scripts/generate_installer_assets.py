@@ -8,7 +8,6 @@ from typing import cast
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-
 Size = tuple[int, int]
 Bounds = tuple[int, int, int, int]
 
