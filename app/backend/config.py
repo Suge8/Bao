@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Callable, ClassVar, TypeVar, cast
 
@@ -56,6 +58,24 @@ def _as_int(value: object) -> int | None:
         except ValueError:
             return None
     return None
+
+
+def _write_text_atomic(path: Path, content: str) -> None:
+    temp_fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as handle:
+            _ = handle.write(content)
+        os.replace(temp_name, path)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
 
 
 class ConfigService(QObject):
@@ -247,7 +267,7 @@ class ConfigService(QObject):
             return False
 
         try:
-            _ = self._config_path.write_text(result, encoding="utf-8")
+            _write_text_atomic(self._config_path, result)
             self._raw_text = result
             self._data = candidate
             self._valid = True

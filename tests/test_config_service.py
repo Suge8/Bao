@@ -10,13 +10,13 @@ from unittest.mock import patch
 pytest = importlib.import_module("pytest")
 
 QtCore = pytest.importorskip("PySide6.QtCore")
-QCoreApplication = QtCore.QCoreApplication
+QtGui = pytest.importorskip("PySide6.QtGui")
+QGuiApplication = QtGui.QGuiApplication
 
 
-# Ensure a QCoreApplication exists for QObject tests
 @pytest.fixture(scope="module", autouse=True)
 def qt_app():
-    app = QCoreApplication.instance() or QCoreApplication(sys.argv)
+    app = QGuiApplication.instance() or QGuiApplication(sys.argv)
     yield app
 
 
@@ -310,3 +310,51 @@ def test_get_providers_missing_order_falls_back_to_index(tmp_path):
     assert [p["name"] for p in providers] == ["first", "second"]
     assert providers[0]["order"] == 0
     assert providers[1]["order"] == 1
+
+
+def test_save_full_providers_object_with_dotted_name_and_comments(tmp_path):
+    from app.backend.config import ConfigService
+    from app.backend.jsonc_patch import _strip_comments
+
+    config_text = (
+        "{\n"
+        "  // provider config\n"
+        '  "providers": {\n'
+        '    "openaiCompatible": {\n'
+        '      "type": "openai",\n'
+        '      "apiKey": "sk-old",\n'
+        '      "apiBase": "https://api.openai.com/v1",\n'
+        '      "order": 0\n'
+        "    }\n"
+        "  },\n"
+        '  "agents": {\n'
+        '    "defaults": {\n'
+        '      "model": "openai/gpt-4o"\n'
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+    cfg = tmp_path / "config.jsonc"
+    cfg.write_text(config_text, encoding="utf-8", newline="\r\n")
+    svc = ConfigService()
+    with patch("bao.config.loader.get_config_path", return_value=cfg):
+        svc.load()
+
+    ok = svc.save(
+        {
+            "providers": {
+                "foo.bar": {
+                    "type": "openai",
+                    "apiKey": "sk-new",
+                    "apiBase": "https://api.example.com/v1",
+                    "order": 0,
+                }
+            }
+        }
+    )
+
+    assert ok is True
+    written = cfg.read_text(encoding="utf-8")
+    assert "// provider config" in written
+    data = json.loads(_strip_comments(written))
+    assert data["providers"]["foo.bar"]["apiKey"] == "sk-new"

@@ -115,3 +115,38 @@ def test_result_parseable_after_patch():
     # Must be parseable after stripping comments
     data = _parse(result)
     assert isinstance(data, dict)
+
+
+def test_replace_providers_object_with_comments_and_crlf():
+    base = (
+        "{\r\n"
+        "  // provider block\r\n"
+        '  "providers": {\r\n'
+        '    "openai": {\r\n'
+        '      "type": "openai",\r\n'
+        '      "apiKey": "old-key"\r\n'
+        "    }\r\n"
+        "  },\r\n"
+        '  "agents": {\r\n'
+        '    "defaults": {\r\n'
+        '      "model": "openai/gpt-4o"\r\n'
+        "    }\r\n"
+        "  }\r\n"
+        "}\r\n"
+    )
+    result, errors = patch_jsonc(
+        base,
+        {
+            "providers": {
+                "foo.bar": {
+                    "type": "openai",
+                    "apiKey": "sk-test",
+                    "apiBase": "https://api.example.com/v1",
+                }
+            }
+        },
+    )
+
+    assert not errors
+    data = _parse(result)
+    assert data["providers"]["foo.bar"]["apiKey"] == "sk-test"
