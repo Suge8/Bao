@@ -262,7 +262,7 @@ bao
 
 ## 📝 Changelog
 
-`v0.3.7` 为当前发布版本，详见 [`CHANGELOG.md`](CHANGELOG.md)。
+最新发布版本与变更记录详见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 💬 9 大聊天平台
 
@@ -386,7 +386,7 @@ uv run pytest tests/ -v
 
 ## 🖥️ Desktop App (实验性)
 
-基于 PySide6 + QML 的桌面客户端，Bao 的 `bao` CLI 纯 UI 壳子。核心逻辑（AgentLoop、Channels、Cron、Heartbeat）全部复用 `bao/` core，不重复实现。
+基于 PySide6 + QML 的桌面客户端，Bao 的 `bao` CLI 纯 UI 壳子。核心逻辑（AgentLoop、Channels、Cron、Heartbeat）全部复用 `bao/` core，不重复实现；桌面端通过侧边栏顶部网关胶囊手动启动 gateway，idle / starting / running / error 四态统一在同一控件内反馈。
 
 ```bash
 uv sync --extra desktop
@@ -682,7 +682,7 @@ Optional: configure a **Utility Model** to save costs on background tasks (exper
 
 ### 📝 Changelog
 
-`v0.3.7` is the current release; see [`CHANGELOG.md`](CHANGELOG.md).
+See [`CHANGELOG.md`](CHANGELOG.md) for the latest release and change history.
 
 ### 💬 9 Chat Platforms
 
@@ -806,7 +806,7 @@ uv run pytest tests/ -v
 
 ### 🖥️ Desktop App (experimental)
 
-PySide6 + QML desktop client — a pure UI shell for Bao's `bao` CLI. All core logic (AgentLoop, Channels, Cron, Heartbeat) reuses `bao/` core, no duplication.
+PySide6 + QML desktop client — a pure UI shell for Bao's `bao` CLI. All core logic (AgentLoop, Channels, Cron, Heartbeat) reuses `bao/` core, no duplication; the desktop app starts gateway manually from the sidebar capsule and renders idle / starting / running / error in the same control.
 
 ```bash
 uv sync --extra desktop

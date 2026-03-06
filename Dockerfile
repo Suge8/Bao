@@ -22,7 +22,8 @@ WORKDIR /app
 
 # Install Python dependencies first (cacheable layer)
 COPY pyproject.toml README.md LICENSE ./
-RUN mkdir -p bao bridge && touch bao/__init__.py && \
+COPY bao/__about__.py bao/__about__.py
+RUN mkdir -p bridge && touch bao/__init__.py && \
     uv pip install --system --no-cache . && \
     rm -rf bao bridge
 

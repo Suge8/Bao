@@ -1,6 +1,7 @@
-"""
-Bao - A lightweight AI agent framework
-"""
+"""Bao - A lightweight AI agent framework."""
 
-__version__ = "0.3.7"
+from bao.__about__ import __version__
+
 __logo__ = "🐈"
+
+__all__ = ["__version__", "__logo__"]

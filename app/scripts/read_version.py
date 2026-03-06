@@ -1,22 +1,17 @@
 from __future__ import annotations
 
-import tomllib
+import sys
 from pathlib import Path
-from typing import cast
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 def main() -> int:
-    data: dict[str, object] = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-    project = data.get("project")
-    if not isinstance(project, dict):
-        raise KeyError("Missing [project] in pyproject.toml")
+    from bao.versioning import read_source_version
 
-    project_dict = cast(dict[str, object], project)
-    version = project_dict.get("version")
-    if not isinstance(version, str):
-        raise TypeError("project.version must be a string")
-
-    print(version)
+    print(read_source_version())
     return 0
 
 

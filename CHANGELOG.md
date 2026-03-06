@@ -6,6 +6,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-03-06
+
+### Changed
+
+- **Desktop 气泡点击反馈升级** — `MessageBubble` 的普通消息、system 与启动问候点击反馈统一为气泡内部的 `overlay + ripple + progress` 高光层，避免高光作为独立亮片压在气泡外侧，交互更完整也更稳定。
+- **Desktop 输入区视觉收口** — 发送按钮改为基于 `sizeButton` 的真圆形按钮，图标更新为更现代的上箭头 glyph，并在按钮组件内部统一提供 hover/press 缩放、柔光与高光反馈。
+- **Desktop 输入框聚焦动效升级** — 聊天 composer 的 hover/focus 统一驱动背景、边框、aura 与高光过渡，聚焦和失焦都更连贯，不再只是边框硬切。
+
+### Fixed
+
+- **Desktop 普通气泡文字偏上** — `MessageBubble` 的普通 user/assistant 气泡改为统一内容区内边距 + 垂直居中布局，不再依赖顶锚点硬撑文本位置，单行和多行消息的上下留白更稳定。
+- **Desktop 输入框点击外部后仍保持选中态** — 聊天页补上统一 click-away 失焦出口，点击 composer 外部会转移焦点并清除输入选区，避免焦点视觉态残留。
+- **Desktop pointer 全局偶发失效** — `WindowFocusDismissFilter` 在 `MouseButtonRelease` 边界统一补一次窗口级 pointer 重算；点击导致的切页、弹层或显隐变化即使发生在静止鼠标下，也会立即刷新 hover/cursor owner，不再需要切到别的应用再切回来恢复。
+- **Desktop 会话项删除与选中抢事件** — `SessionItem` 的主点击区在删除按钮可见时会同步收缩右边界，主行选中与右侧删除不再共享同一命中区。
+
 ## [0.3.7] - 2026-03-06
 
 ### Changed
@@ -281,6 +296,7 @@ Bao 首个正式版本。
 - **Docker** — `docker-compose.yml` + `Dockerfile`（Python + Node 混合构建）
 - **测试** — 54 个测试文件，pytest + asyncio_mode=auto
 
+[0.3.8]: https://github.com/Suge8/Bao/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/Suge8/Bao/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/Suge8/Bao/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/Suge8/Bao/compare/v0.3.4...v0.3.5
@@ -292,4 +308,4 @@ Bao 首个正式版本。
 [0.2.1]: https://github.com/Suge8/Bao/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Suge8/Bao/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Suge8/Bao/releases/tag/v0.1.0
-[Unreleased]: https://github.com/Suge8/Bao/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/Suge8/Bao/compare/v0.3.8...HEAD
