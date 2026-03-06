@@ -52,7 +52,7 @@ Bao 不一样。它**记得住**、**学得会**、**能进化**。
 ### 出错能改，工具不乱
 
 - **Retry with Reflection** — 工具报错自动重试。连续 3 次失败后，不是盲目重来，而是反思策略、换条路走
-- **Dynamic Tool Hints** — 工具提示跟着实际能力走。装了什么用什么，没装的绝不提。编程代理、搜索、MCP 工具全部按需注入，杜绝幻觉调用
+- **Registry-Backed Tool Exposure** — 工具可发现性由注册表元数据统一驱动；每轮只暴露按路由选中的工具，并在 prompt 中生成简短的 `Available Now` 区块，既省 token 又减少“明明有工具却说不能做”的错觉
 
 ### 复杂任务不阻塞
 
@@ -108,7 +108,7 @@ Bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 
 同样的能力，更少的 token 开销。Bao 在提示词层面做了系统性压缩：
 
-- **工具描述精简（MVD）** — 每个内置工具的 description 压缩为 1 句话，详细用法放 system prompt 的 tool_hints 区域
+- **工具描述精简（MVD）** — 每个内置工具的 description 压缩为 1 句话，discoverability 依赖注册表元数据 + per-turn `Available Now`，不是依赖全局 tool_hints
 - **编程代理合并** — 6 个编程工具合并为 2 个（`coding_agent` + `coding_agent_details`），减少工具列表膨胀
 - **MCP Schema 瘦身** — `mcpSlimSchema` 剥离冗余元数据，`mcpMaxTools` 限制注册总量，并支持按 server 覆盖
 - **技能摘要压缩** — 技能描述取首句或 60 字符截断，换行归一化为单行格式
@@ -386,7 +386,7 @@ uv run pytest tests/ -v
 
 ## 🖥️ Desktop App (实验性)
 
-基于 PySide6 + QML 的桌面客户端，Bao 的 `bao` CLI 纯 UI 壳子。核心逻辑（AgentLoop、Channels、Cron、Heartbeat）全部复用 `bao/` core，不重复实现；桌面端通过侧边栏顶部网关胶囊手动启动 gateway，idle / starting / running / error 四态统一在同一控件内反馈。
+基于 PySide6 + QML 的桌面客户端，Bao 的 `bao` CLI 纯 UI 壳子。核心逻辑（AgentLoop、Channels、Cron、Heartbeat）全部复用 `bao/` core，不重复实现；桌面端通过侧边栏顶部网关胶囊手动启动 gateway，idle / starting / running / error 四态统一在同一控件内反馈。侧边栏会话区现已收敛为单一会话面板：标题、未读汇总、加号按钮与会话分组共用一张卡片，AI 未读到达时会对标题区做轻量提示反馈。
 
 ```bash
 uv sync --extra desktop
@@ -472,7 +472,7 @@ Other agents repeat mistakes. **Bao learns from them.**
 #### Self-Correcting, Never Hallucinating
 
 - **Retry with Reflection** — auto-retries on tool errors. After 3 consecutive failures, it doesn't just retry blindly — it rethinks the strategy and tries a different approach
-- **Dynamic Tool Hints** — tool suggestions follow actual capabilities. Only installed tools get surfaced. Coding agents, search, MCP tools — all injected on demand. Zero hallucinated tool calls
+- **Registry-Backed Tool Exposure** — discoverability is driven by registry metadata; each turn exposes only the routed tools and adds a short `Available Now` block, which keeps token usage low while reducing false “I can't do that” replies
 
 #### Complex Tasks, Zero Blocking
 
@@ -526,7 +526,7 @@ Let AI see your screen and operate your computer. No Anthropic Computer Use requ
 
 Same capabilities, fewer tokens. Bao applies systematic compression at the prompt level:
 
-- **Minimum Viable Descriptions (MVD)** — every built-in tool description is compressed to a single sentence; detailed usage goes into system prompt tool_hints
+- **Minimum Viable Descriptions (MVD)** — every built-in tool description is compressed to a single sentence; discoverability comes from registry metadata plus per-turn `Available Now`, not from a global tool-hint list
 - **Coding agent consolidation** — 6 coding tools merged into 2 (`coding_agent` + `coding_agent_details`), cutting tool-list bloat
 - **MCP Schema slimming** — `mcpSlimSchema` strips redundant metadata, `mcpMaxTools` caps total registrations, and per-server overrides are supported
 - **Skill summary compression** — skill descriptions are truncated to the first sentence or 60 characters, normalized to single-line format
@@ -713,7 +713,7 @@ Covers 99% of what's out there, plus an OAuth option.
 | **Gemini**            | Full Gemini lineup                                                                                                         | `gemini/gemini-2.0-flash-exp`             |
 | **Codex OAuth**       | Auth via ChatGPT subscription, no API Key needed                                                                           | `openai-codex/gpt-5.1-codex`             |
 
-Provider names are customizable — model prefixes are auto-stripped. All provider types support third-party proxies with automatic SDK compatibility. OpenAI-compatible endpoints automatically detect and switch between Responses and Chat Completions (no `apiMode` config needed); when Responses is active, output is streamed incrementally via SSE and robust to streams that end without a trailing blank separator. In addition, `apiBase` for OpenAI / Anthropic / Gemini is auto-normalized: missing version segments (for example `v1` / `v1beta`) are filled using provider defaults, and full endpoint inputs (such as OpenAI `chat/completions`, Anthropic `messages`, Gemini `models`) are normalized back to version base to avoid duplicate path concatenation.
+Provider names are customizable — model prefixes are auto-stripped. All provider types support third-party proxies with automatic SDK compatibility. OpenAI-compatible endpoints automatically detect and switch between Responses and Chat Completions (no `apiMode` config needed); when Responses is active, output is streamed incrementally via SSE and robust to streams that end without a trailing blank separator. In addition, `apiBase` for OpenAI / Anthropic / Gemini is auto-normalized: missing version segments (for example `v1` / `v1beta`) are filled using provider defaults, and full endpoint inputs (such as OpenAI `chat/completions`, Anthropic `messages`, Gemini `models`) are normalized back to version base to avoid duplicate path concatenation. Provider SDK clients are now instantiated on first request rather than app startup, so fast startup no longer implies that request-time provider validation has already happened.
 
 `agents.defaults.reasoningEffort` accepts `off` / `low` / `medium` / `high`. `off` explicitly disables extra reasoning/thinking paths (Anthropic/Gemini send no thinking config, OpenAI/Codex send no reasoning field), and it also overrides Claude's default thinking (even if the model supports thinking, it will not auto-enable `adaptive + 1024`). For `low` / `medium` / `high`, Anthropic maps to `thinking.budget_tokens` (`2048` / `4096` / `8192`) with `thinking.type="adaptive"` (this often increases time-to-first-token/TTFB), Gemini maps to `1024` / `2048` / `4096`, and OpenAI/Codex pass effort through. When unset, thinking-capable Claude models still default to `adaptive + 1024`.
 
@@ -806,7 +806,7 @@ uv run pytest tests/ -v
 
 ### 🖥️ Desktop App (experimental)
 
-PySide6 + QML desktop client — a pure UI shell for Bao's `bao` CLI. All core logic (AgentLoop, Channels, Cron, Heartbeat) reuses `bao/` core, no duplication; the desktop app starts gateway manually from the sidebar capsule and renders idle / starting / running / error in the same control.
+PySide6 + QML desktop client — a pure UI shell for Bao's `bao` CLI. All core logic (AgentLoop, Channels, Cron, Heartbeat) reuses `bao/` core, no duplication; the desktop app starts gateway manually from the sidebar capsule and renders idle / starting / running / error in the same control. The sidebar sessions area now uses a single panel for title, unread summary, add action, and grouped sessions, with a lightweight header cue when new AI replies arrive.
 
 ```bash
 uv sync --extra desktop
