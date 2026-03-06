@@ -13,6 +13,7 @@ from bao.providers.api_mode_cache import get_cached_mode, set_cached_mode
 from bao.providers.base import LLMResponse
 from bao.providers.openai_provider import OpenAICompatibleProvider, _system_prompt_seems_ignored
 from bao.providers.responses_compat import (
+    _normalize_call_id,
     convert_messages_to_responses,
     convert_tools_to_responses,
     parse_responses_json,
@@ -105,6 +106,40 @@ def test_parse_responses_json():
     assert usage["prompt_tokens"] == 10
     assert usage["completion_tokens"] == 20
     print("✓ parse_responses_json")
+
+
+def test_convert_messages_to_responses_normalizes_long_call_id() -> None:
+    raw_call_id = "call_" + ("x" * 90)
+    messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": f"{raw_call_id}|fc_1", "function": {"name": "search", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": f"{raw_call_id}|fc_1", "content": "result"},
+    ]
+
+    _, input_items = convert_messages_to_responses(messages)
+
+    assert input_items[0]["type"] == "function_call"
+    assert input_items[1]["type"] == "function_call_output"
+    assert input_items[0]["call_id"] == input_items[1]["call_id"]
+    assert len(input_items[0]["call_id"]) <= 64
+
+
+def test_normalize_call_id_keeps_short_id() -> None:
+    assert _normalize_call_id("call_123") == "call_123"
+
+
+def test_normalize_call_id_shortens_long_id_stably() -> None:
+    raw_call_id = "call_" + ("y" * 120)
+    first = _normalize_call_id(raw_call_id)
+    second = _normalize_call_id(raw_call_id)
+
+    assert first == second
+    assert len(first) <= 64
 
 
 def test_api_mode_cache(tmp_path):

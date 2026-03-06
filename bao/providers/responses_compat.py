@@ -6,6 +6,7 @@ input format. Used by OpenAICompatibleProvider for auto-probe/fallback.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -44,18 +45,7 @@ def convert_messages_to_responses(
 
         # Flush pending screenshot images before non-tool message
         if role != "tool" and pending_images:
-            img_content: list[dict[str, Any]] = [
-                {"type": "input_text", "text": "[screenshot from tool above]"},
-            ]
-            for ib64 in pending_images:
-                img_content.append(
-                    {
-                        "type": "input_image",
-                        "image_url": f"data:image/jpeg;base64,{ib64}",
-                        "detail": "auto",
-                    }
-                )
-            input_items.append({"role": "user", "content": img_content})
+            input_items.append(_build_pending_image_input(pending_images))
             pending_images = []
 
         if role == "user":
@@ -76,7 +66,7 @@ def convert_messages_to_responses(
             for tool_call in msg.get("tool_calls", []) or []:
                 fn = tool_call.get("function") or {}
                 call_id, item_id = _split_tool_call_id(tool_call.get("id"))
-                call_id = call_id or f"call_{idx}"
+                call_id = _normalize_call_id(call_id or f"call_{idx}")
                 item_id = item_id or f"fc_{idx}"
                 input_items.append(
                     {
@@ -91,6 +81,7 @@ def convert_messages_to_responses(
 
         if role == "tool":
             call_id, _ = _split_tool_call_id(msg.get("tool_call_id"))
+            call_id = _normalize_call_id(call_id)
             output_text = (
                 content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
             )
@@ -108,18 +99,7 @@ def convert_messages_to_responses(
 
     # Flush any remaining images at end
     if pending_images:
-        img_content = [
-            {"type": "input_text", "text": "[screenshot from tool above]"},
-        ]
-        for ib64 in pending_images:
-            img_content.append(
-                {
-                    "type": "input_image",
-                    "image_url": f"data:image/jpeg;base64,{ib64}",
-                    "detail": "auto",
-                }
-            )
-        input_items.append({"role": "user", "content": img_content})
+        input_items.append(_build_pending_image_input(pending_images))
 
     return system_prompt, input_items
 
@@ -212,6 +192,21 @@ def _convert_user_message(content: Any) -> dict[str, Any]:
     return {"role": "user", "content": [{"type": "input_text", "text": ""}]}
 
 
+def _build_pending_image_input(images_b64: list[str]) -> dict[str, Any]:
+    content: list[dict[str, Any]] = [
+        {"type": "input_text", "text": "[screenshot from tool above]"},
+    ]
+    for image_b64 in images_b64:
+        content.append(
+            {
+                "type": "input_image",
+                "image_url": f"data:image/jpeg;base64,{image_b64}",
+                "detail": "auto",
+            }
+        )
+    return {"role": "user", "content": content}
+
+
 def _split_tool_call_id(tool_call_id: Any) -> tuple[str, str | None]:
     if isinstance(tool_call_id, str) and tool_call_id:
         if "|" in tool_call_id:
@@ -219,6 +214,15 @@ def _split_tool_call_id(tool_call_id: Any) -> tuple[str, str | None]:
             return call_id, item_id or None
         return tool_call_id, None
     return "call_0", None
+
+
+def _normalize_call_id(call_id: str) -> str:
+    raw = str(call_id or "call_0").strip() or "call_0"
+    if len(raw) <= 64:
+        return raw
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+    prefix = raw[:47]
+    return f"{prefix}_{digest}"
 
 
 _FINISH_REASON_MAP = {

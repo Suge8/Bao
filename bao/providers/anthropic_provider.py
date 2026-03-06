@@ -6,7 +6,6 @@ import asyncio
 import json
 from typing import Any, Awaitable, Callable
 
-import anthropic
 from loguru import logger
 
 from bao.providers.base import LLMProvider, LLMResponse, ToolCallRequest
@@ -70,7 +69,17 @@ class AnthropicProvider(LLMProvider):
         if base_url:
             client_kwargs["base_url"] = base_url.rstrip("/")
             client_kwargs["default_headers"] = _PROXY_SAFE_DEFAULT_HEADERS
-        self._client = anthropic.AsyncAnthropic(**client_kwargs)
+        self._client_kwargs = client_kwargs
+        self._client: Any | None = None
+
+    def _get_client(self) -> Any:
+        client = self._client
+        if client is None:
+            import anthropic
+
+            client = anthropic.AsyncAnthropic(**self._client_kwargs)
+            self._client = client
+        return client
 
     def _resolve_model(self, model: str) -> str:
         """Strip provider prefix (e.g. 'anthropic/', 'custom/') if present."""
@@ -384,7 +393,7 @@ class AnthropicProvider(LLMProvider):
                 current_tool_name: str | None = None
                 partial_json = ""
 
-                async with self._client.messages.stream(**request_kwargs) as stream:
+                async with self._get_client().messages.stream(**request_kwargs) as stream:
                     async for event in stream:
                         if event.type == "content_block_start":
                             if hasattr(event.content_block, "type"):
