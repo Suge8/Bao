@@ -112,11 +112,16 @@ uv run python -m nuitka \
     --macos-app-version="$VERSION" \
     --enable-plugin=pyside6 \
     --include-qt-plugins=qml \
+    --noinclude-qt-plugins=tls \
     --noinclude-dlls='*QtTest*' \
     --include-data-dir="$PROJECT_ROOT/app/qml=qml" \
     --include-data-dir="$PROJECT_ROOT/app/resources=resources" \
     --include-data-dir="$PROJECT_ROOT/bao/skills=data/skills" \
-    --include-data-dir="$PROJECT_ROOT/bao/templates/workspace=bao/templates/workspace" \
+    --include-package=bao.templates.workspace \
+    --include-package=bao.templates.workspace.en \
+    --include-package=bao.templates.workspace.zh \
+    --include-package-data=bao.templates.workspace.en:*.md \
+    --include-package-data=bao.templates.workspace.zh:*.md \
     --nofollow-import-to=tkinter \
     --nofollow-import-to=unittest \
     --nofollow-import-to=doctest \

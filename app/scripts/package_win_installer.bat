@@ -12,6 +12,14 @@ echo   Version: %VERSION%
 echo ========================================
 echo.
 
+echo ^> Generating installer assets...
+uv run --with pillow python "app\scripts\generate_installer_assets.py"
+if errorlevel 1 (
+    echo [ERROR] Installer asset generation failed!
+    popd
+    exit /b 1
+)
+
 iscc /DMyAppVersion=%VERSION% app\scripts\bao_installer.iss
 if errorlevel 1 (
     echo [ERROR] Installer build failed!

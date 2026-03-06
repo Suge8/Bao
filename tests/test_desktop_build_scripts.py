@@ -21,17 +21,25 @@ def test_workspace_template_directories_exist() -> None:
     assert (PROJECT_ROOT / "bao/templates/workspace/zh/HEARTBEAT.md").is_file()
 
 
-def test_build_mac_script_includes_workspace_root() -> None:
+def test_build_mac_script_includes_workspace_package_data() -> None:
     text = _read("app/scripts/build_mac.sh")
 
-    assert "workspace=bao/templates/workspace" in text
-    assert "workspace/en=bao/templates/workspace/en" not in text
-    assert "workspace/zh=bao/templates/workspace/zh" not in text
+    assert "--include-package=bao.templates.workspace" in text
+    assert "--include-package=bao.templates.workspace.en" in text
+    assert "--include-package=bao.templates.workspace.zh" in text
+    assert "--include-package-data=bao.templates.workspace.en:*.md" in text
+    assert "--include-package-data=bao.templates.workspace.zh:*.md" in text
+    assert "workspace=bao/templates/workspace" not in text
+    assert "--noinclude-qt-plugins=tls" in text
 
 
-def test_build_win_script_includes_workspace_root() -> None:
+def test_build_win_script_includes_workspace_package_data() -> None:
     text = _read("app/scripts/build_win.bat")
 
-    assert "workspace=bao\\templates\\workspace" in text
-    assert "workspace\\en=bao\\templates\\workspace\\en" not in text
-    assert "workspace\\zh=bao\\templates\\workspace\\zh" not in text
+    assert "--include-package=bao.templates.workspace" in text
+    assert "--include-package=bao.templates.workspace.en" in text
+    assert "--include-package=bao.templates.workspace.zh" in text
+    assert "--include-package-data=bao.templates.workspace.en:*.md" in text
+    assert "--include-package-data=bao.templates.workspace.zh:*.md" in text
+    assert "workspace=bao\\templates\\workspace" not in text
+    assert "--noinclude-qt-plugins=tls" in text
