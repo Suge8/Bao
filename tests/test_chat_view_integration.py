@@ -1,3 +1,5 @@
+# ruff: noqa: E402, N802, N815
+
 from __future__ import annotations
 
 import importlib

@@ -6,7 +6,6 @@ import json
 import re
 from pathlib import Path
 
-
 MAC_PATTERN = re.compile(r"^Bao-(?P<version>[^/]+)-macos-(?P<arch>arm64|x86_64)-update\.zip$")
 WIN_PATTERN = re.compile(r"^Bao-(?P<version>[^/]+)-windows-x64-setup\.exe$")
 
