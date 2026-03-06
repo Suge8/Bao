@@ -39,7 +39,15 @@ def _wait_until_ready(component: QQmlComponent, timeout_ms: int = 500) -> None:
         remaining -= 25
 
 
-def _build_wrapper(role: str, entrance_style: str, content: str = "收到，杰哥。") -> str:
+def _build_wrapper(
+    role: str,
+    entrance_style: str,
+    content: str = "收到，杰哥。",
+    *,
+    entrance_pending: bool = False,
+    show_date_divider: bool = False,
+    date_divider_text: str = "",
+) -> str:
     qml_dir = (Path(__file__).resolve().parents[1] / "app" / "qml").as_uri()
     return f'''
 import QtQuick 2.15
@@ -118,8 +126,9 @@ Item {{
         format: "plain"
         status: "done"
         entranceStyle: "{entrance_style}"
-        entrancePending: false
-        entranceConsumed: true
+        entrancePending: {str(entrance_pending).lower()}
+        showDateDivider: {str(show_date_divider).lower()}
+        dateDividerText: "{date_divider_text}"
         toastFunc: function() {{}}
     }}
 }}
@@ -283,6 +292,96 @@ def test_copy_feedback_restarts_from_baseline_on_second_click(qapp):
         _process(10)
 
         assert float(sheen.property("progress")) < first_progress
+    finally:
+        root.deleteLater()
+        _process(0)
+
+
+def test_date_divider_renders_above_bubble(qapp):
+    engine = QQmlEngine()
+    component = QQmlComponent(engine)
+    component.setData(
+        _build_wrapper(
+            "assistant",
+            "none",
+            "新的时间段。",
+            show_date_divider=True,
+            date_divider_text="3/7",
+        ).encode("utf-8"),
+        QUrl("inline:MessageBubbleHarness.qml"),
+    )
+
+    _wait_until_ready(component)
+
+    assert component.status() == QQmlComponent.Ready, component.errors()
+    root = component.create()
+    assert root is not None, component.errors()
+
+    try:
+        divider = root.findChild(QObject, "dateDivider")
+        divider_text = root.findChild(QObject, "dateDividerText")
+        bubble_body = root.findChild(QObject, "bubbleBody")
+
+        assert divider is not None
+        assert divider_text is not None
+        assert bubble_body is not None
+        assert bool(divider.property("visible")) is True
+        assert str(divider_text.property("text")) == "3/7"
+        assert float(bubble_body.property("y")) >= float(divider.property("height"))
+    finally:
+        root.deleteLater()
+        _process(0)
+
+
+@pytest.mark.parametrize(
+    ("role", "entrance_style", "expected_sign"),
+    [
+        ("user", "userSent", 1),
+        ("assistant", "assistantReceived", -1),
+    ],
+)
+def test_message_entrance_animation_has_directional_shift(
+    qapp, role: str, entrance_style: str, expected_sign: int
+):
+    engine = QQmlEngine()
+    component = QQmlComponent(engine)
+    component.setData(
+        _build_wrapper(
+            role,
+            entrance_style,
+            entrance_pending=True,
+        ).encode("utf-8"),
+        QUrl("inline:MessageBubbleEntranceHarness.qml"),
+    )
+
+    _wait_until_ready(component)
+
+    assert component.status() == QQmlComponent.Ready, component.errors()
+    root = component.create()
+    assert root is not None, component.errors()
+
+    try:
+        bubble = root.findChild(QObject, "bubbleBody")
+        shift = root.findChild(QObject, "bubbleEntranceShift")
+        glow = root.findChild(QObject, "bubbleEntranceGlow")
+
+        assert bubble is not None
+        assert shift is not None
+        assert glow is not None
+
+        assert float(bubble.property("opacity")) == 0.0
+
+        _process(40)
+
+        shift_x = float(shift.property("x"))
+        assert shift_x * expected_sign > 0.0
+        assert float(glow.property("opacity")) > 0.0
+
+        _process(420)
+
+        assert abs(float(shift.property("x"))) < 0.6
+        assert abs(float(shift.property("y"))) < 0.6
+        assert float(bubble.property("opacity")) > 0.98
     finally:
         root.deleteLater()
         _process(0)

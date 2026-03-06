@@ -11,7 +11,8 @@ Item {
     property int messageRow: -1
     property string entranceStyle: "none"
     property bool entrancePending: false
-    property bool entranceConsumed: true
+    property bool showDateDivider: false
+    property string dateDividerText: ""
     property var toastFunc: null
 
     property bool isUser: role === "user"
@@ -19,8 +20,10 @@ Item {
     property bool isGreeting: isSystem && entranceStyle === "greeting"
     property bool isSystemError: isSystem && status === "error"
     property bool isMarkdown: format === "markdown"
+    property bool isAssistantEntrance: !isSystem && entranceStyle === "assistantReceived"
+    property bool isUserEntrance: !isSystem && entranceStyle === "userSent"
     property bool _entranceStarted: false
-    readonly property bool shouldAnimateEntrance: entranceStyle !== "none" && entrancePending && !entranceConsumed
+    readonly property bool shouldAnimateEntrance: entranceStyle !== "none" && entrancePending
     readonly property bool showGreetingDecoration: isGreeting && !isSystemError
     readonly property real greetingAuraFarPeak: motionAuraFarPeak * 0.45
     readonly property real greetingAuraNearPeak: motionAuraNearPeak * 0.5
@@ -68,13 +71,25 @@ Item {
     readonly property real entranceStartScale: {
         if (isGreeting) return 0.976
         if (isSystem) return 0.9
-        if (isUser) return 0.968
-        return 0.964
+        if (isUserEntrance) return 0.982
+        if (isAssistantEntrance) return 0.976
+        if (isUser) return 0.974
+        return 0.97
+    }
+    readonly property real entranceStartX: {
+        if (isSystem) return 0
+        if (isUserEntrance) return motionEnterOffsetY * 1.5
+        if (isAssistantEntrance) return -motionEnterOffsetY * 1.25
+        if (isUser) return motionEnterOffsetY
+        return -motionEnterOffsetY
     }
     readonly property real entranceStartY: {
         if (isGreeting) return 8
         if (isSystem) return -18
-        return 0
+        if (isUserEntrance) return motionEnterOffsetY * 0.35
+        if (isAssistantEntrance) return motionEnterOffsetY * 0.55
+        if (isUser) return motionEnterOffsetY * 0.25
+        return motionEnterOffsetY * 0.45
     }
     readonly property color systemAuraFarColor: {
         if (isSystemError) return chatSystemAuraErrorFar
@@ -114,6 +129,12 @@ Item {
     readonly property int bubblePaddingX: 16
     readonly property int bubblePaddingTop: 12
     readonly property int bubblePaddingBottom: 16
+    readonly property int dividerBlockHeight: showDateDivider && dateDividerText !== "" ? 28 : 0
+    readonly property color dividerLineColor: alphaColor(textSecondary, isSystem ? 0.18 : 0.14)
+    readonly property real bubbleEntranceGlowPeak: isUserEntrance ? motionAuraNearPeak * 0.42 : motionAuraNearPeak * 0.3
+    readonly property color bubbleEntranceGlowColor: isUserEntrance
+                                                    ? root.alphaColor(accent, 0.34)
+                                                    : root.alphaColor(accentGlow, 0.52)
     readonly property bool canCopyFeedback: root.content !== ""
     readonly property color copyFeedbackOverlayColor: {
         if (isSystemError) return chatSystemBubbleErrorOverlay
@@ -142,7 +163,7 @@ Item {
         return motionGreetingSweepPeak * 0.54
     }
 
-    height: isSystem ? systemBubble.height + 7 : bubble.height + 5
+    height: dividerBlockHeight + (isSystem ? systemBubble.height + 7 : bubble.height + 5)
     width: parent ? parent.width : 600
 
     function playEntrance() {
@@ -218,6 +239,58 @@ Item {
         }
     }
 
+    Item {
+        id: dateDivider
+        objectName: "dateDivider"
+        visible: root.showDateDivider && root.dateDividerText !== ""
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: root.dividerBlockHeight
+        opacity: visible ? 1.0 : 0.0
+
+        Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.leftMargin: root.isSystem ? 24 : 34
+            anchors.right: dividerLabel.left
+            anchors.rightMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+            height: 1
+            radius: 1
+            color: root.dividerLineColor
+            opacity: 0.9
+        }
+
+        Text {
+            id: dividerLabel
+            objectName: "dateDividerText"
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.dateDividerText
+            color: textSecondary
+            font.pixelSize: typeMeta
+            font.weight: weightMedium
+            font.letterSpacing: 0.3
+            textFormat: Text.PlainText
+            renderType: Text.NativeRendering
+            opacity: 0.84
+        }
+
+        Rectangle {
+            anchors.left: dividerLabel.right
+            anchors.leftMargin: 12
+            anchors.right: parent.right
+            anchors.rightMargin: root.isSystem ? 24 : 34
+            anchors.verticalCenter: parent.verticalCenter
+            height: 1
+            radius: 1
+            color: root.dividerLineColor
+            opacity: 0.9
+        }
+    }
+
     Rectangle {
         id: systemAuraFar
         visible: isSystemError
@@ -247,7 +320,7 @@ Item {
         visible: isSystem
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.top: parent.top
-        anchors.topMargin: isGreeting ? 8 : 7
+        anchors.topMargin: root.dividerBlockHeight + (isGreeting ? 8 : 7)
         width: isGreeting
                ? Math.max(252, Math.min(root.width * 0.68, systemText.implicitWidth + root.systemTextStartX + root.systemContentPaddingX))
                : Math.max(98, Math.min(root.width * 0.9, systemText.implicitWidth + root.systemTextStartX + root.systemContentPaddingX))
@@ -553,6 +626,19 @@ Item {
     }
 
     Rectangle {
+        id: bubbleEntranceGlow
+        objectName: "bubbleEntranceGlow"
+        visible: !isSystem
+        anchors.fill: bubble
+        anchors.margins: -6
+        radius: bubble.radius + 6
+        color: bubbleEntranceGlowColor
+        opacity: 0.0
+        scale: 0.96
+        z: -1
+    }
+
+    Rectangle {
         id: bubble
         objectName: "bubbleBody"
         visible: !isSystem
@@ -562,7 +648,7 @@ Item {
             rightMargin: isUser ? 20 : 0
             leftMargin: isUser ? 0 : 20
             top: parent.top
-            topMargin: 5
+            topMargin: root.dividerBlockHeight + 5
         }
         property bool isTyping: root.status === "typing" && root.content === ""
         width: isTyping ? 72 : Math.min(contentMetrics.implicitWidth + (bubblePaddingX * 2), root.width * 0.75)
@@ -572,7 +658,12 @@ Item {
         opacity: shouldAnimateEntrance && !_entranceStarted ? 0.0 : 1.0
         scale: shouldAnimateEntrance && !_entranceStarted ? entranceStartScale : 1.0
         transformOrigin: Item.Center
-        transform: Translate { id: enterTranslate; y: 0 }
+        transform: Translate {
+            id: enterTranslate
+            objectName: "bubbleEntranceShift"
+            x: 0
+            y: 0
+        }
 
         color: isUser ? (clickArea.containsMouse ? accentHover : accent) : (clickArea.containsMouse ? bgCardHover : bgCard)
         border.color: isUser ? "transparent" : borderSubtle
@@ -638,7 +729,33 @@ Item {
             id: entranceAnim
             NumberAnimation { target: bubble; property: "opacity"; from: 0.0; to: 1.0; duration: entranceOpacityDuration; easing.type: easeStandard }
             NumberAnimation { target: bubble; property: "scale"; from: entranceStartScale; to: 1.0; duration: entranceScaleDuration; easing.type: easeEmphasis }
-            NumberAnimation { target: enterTranslate; property: "y"; from: -motionEnterOffsetY; to: 0; duration: entranceScaleDuration; easing.type: easeEmphasis }
+            NumberAnimation { target: enterTranslate; property: "x"; from: entranceStartX; to: 0; duration: entranceScaleDuration; easing.type: easeEmphasis }
+            NumberAnimation { target: enterTranslate; property: "y"; from: entranceStartY; to: 0; duration: entranceScaleDuration; easing.type: easeEmphasis }
+            SequentialAnimation {
+                NumberAnimation {
+                    target: bubbleEntranceGlow
+                    property: "opacity"
+                    from: 0.0
+                    to: bubbleEntranceGlowPeak
+                    duration: motionFast
+                    easing.type: easeStandard
+                }
+                NumberAnimation {
+                    target: bubbleEntranceGlow
+                    property: "opacity"
+                    to: 0.0
+                    duration: motionPanel
+                    easing.type: easeSoft
+                }
+            }
+            NumberAnimation {
+                target: bubbleEntranceGlow
+                property: "scale"
+                from: 0.96
+                to: 1.03
+                duration: motionPanel
+                easing.type: easeEmphasis
+            }
         }
 
         Text {
