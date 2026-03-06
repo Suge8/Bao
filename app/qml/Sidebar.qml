@@ -5,8 +5,10 @@ import QtQuick.Layouts 1.15
 Rectangle {
     id: root
 
-    property string currentView: "chat"
-    signal viewRequested(string view)
+    property bool showingSettings: false
+    property string activeSessionKey: ""
+    property bool showChatSelection: true
+    signal settingsRequested()
     signal newSessionRequested()
     signal sessionSelected(string key)
     signal sessionDeleteRequested(string key)
@@ -47,11 +49,10 @@ Rectangle {
             var idx = sm.index(i, 0)
             var key     = sm.data(idx, Qt.UserRole + 1) || ""
             var title   = sm.data(idx, Qt.UserRole + 2) || key
-            var active  = sm.data(idx, Qt.UserRole + 3) || false
             var channel = sm.data(idx, Qt.UserRole + 5) || "other"
             var unread  = sm.data(idx, Qt.UserRole + 6) || false
             if (!groups[channel]) { groups[channel] = []; order.push(channel) }
-            groups[channel].push({ key: key, title: title, isActive: active, channel: channel, hasUnread: unread })
+            groups[channel].push({ key: key, title: title, channel: channel, hasUnread: unread })
         }
 
         order.sort(function(a, b) {
@@ -74,17 +75,44 @@ Rectangle {
             var grp = order[gi]
             var exp = root.expandedGroups[grp] === true
             groupModel.append({ isHeader: true,  channel: grp, expanded: exp,
-                                 itemKey: "", itemTitle: "", isActive: false, itemVisible: true, itemHasUnread: false })
+                                 itemKey: "", itemTitle: "", itemVisible: true, itemHasUnread: false })
             var items = groups[grp]
             for (var si = 0; si < items.length; si++) {
                 var s = items[si]
                 groupModel.append({ isHeader: false, channel: grp, expanded: false,
-                                     itemKey: s.key, itemTitle: s.title, isActive: s.isActive,
+                                     itemKey: s.key, itemTitle: s.title,
                                      itemVisible: exp, itemHasUnread: s.hasUnread })
             }
         }
 
     }
+
+    function ensureGroupExpandedFor(key) {
+        if (!key)
+            return
+        var activeChannel = ""
+        for (var i = 0; i < groupModel.count; i++) {
+            var item = groupModel.get(i)
+            if (!item.isHeader && item.itemKey === key) {
+                activeChannel = item.channel
+                break
+            }
+        }
+        if (!activeChannel || root.expandedGroups[activeChannel] === true)
+            return
+        root.expandedGroups[activeChannel] = true
+        for (var j = 0; j < groupModel.count; j++) {
+            var row = groupModel.get(j)
+            if (row.channel !== activeChannel)
+                continue
+            if (row.isHeader)
+                groupModel.setProperty(j, "expanded", true)
+            else
+                groupModel.setProperty(j, "itemVisible", true)
+        }
+    }
+
+    onActiveSessionKeyChanged: ensureGroupExpandedFor(activeSessionKey)
 
     function toggleGroup(channel) {
         var newExp = !(root.expandedGroups[channel] === true)
@@ -106,35 +134,10 @@ Rectangle {
             Qt.callLater(function() {
                 var savedY = sessionList.contentY
                 root.rebuildGroupModel()
+                root.ensureGroupExpandedFor(root.activeSessionKey)
                 var maxY = Math.max(0, sessionList.contentHeight - sessionList.height)
                 sessionList.contentY = Math.min(savedY, maxY)
             })
-        }
-        function onActiveKeyChanged(key) {
-            var activeChannel = ""
-            for (var i = 0; i < groupModel.count; i++) {
-                var item = groupModel.get(i)
-                if (!item.isHeader) {
-                    var isNowActive = item.itemKey === key
-                    if (isNowActive)
-                        activeChannel = item.channel
-                    groupModel.setProperty(i, "isActive", isNowActive)
-                }
-            }
-            if (!activeChannel)
-                return
-            if (root.expandedGroups[activeChannel] === true)
-                return
-            root.expandedGroups[activeChannel] = true
-            for (var j = 0; j < groupModel.count; j++) {
-                var row = groupModel.get(j)
-                if (row.channel !== activeChannel)
-                    continue
-                if (row.isHeader)
-                    groupModel.setProperty(j, "expanded", true)
-                else
-                    groupModel.setProperty(j, "itemVisible", true)
-            }
         }
     }
 
@@ -146,204 +149,277 @@ Rectangle {
         Rectangle {
             id: gwCapsule
             Layout.fillWidth: true
-            Layout.leftMargin: 10; Layout.rightMargin: 10
+            Layout.leftMargin: 16; Layout.rightMargin: 16
             Layout.topMargin: 16; Layout.bottomMargin: 2
-            height: sizeCapsuleHeight
+            implicitHeight: sizeCapsuleHeight
             radius: height / 2
             visible: chatService !== null
 
+            property string currentState: chatService ? chatService.state : "idle"
             property bool isRunning: chatService && chatService.state === "running"
             property bool isStarting: chatService && chatService.state === "starting"
             property bool isError: chatService && chatService.state === "error"
-            property bool isStopped: {
-                if (!chatService) return true
-                var s = chatService.state
-                return s === "idle" || s === "stopped"
-            }
+            property bool isIdleVisual: !isRunning && !isStarting && !isError
+            property bool isHovered: gwHover.containsMouse
+            property real actionPulse: 0.0
+            property real iconLift: 0.0
+            property real iconPulse: 0.0
+            property real iconTurn: 0.0
 
-            // ── State colors ──────────────────────────────────────────
-            color: {
-                if (gwHover.containsMouse) {
-                    if (isRunning) return gatewayBgRunningHover
-                    if (isError)   return gatewayBgErrorHover
-                    if (isStarting) return gatewayBgStartingHover
-                    return gatewayBgIdleHover
+            function stateValue(runningValue, errorValue, startingValue, idleValue) {
+                switch (currentState) {
+                    case "running":
+                        return runningValue
+                    case "error":
+                        return errorValue
+                    case "starting":
+                        return startingValue
+                    default:
+                        return idleValue
                 }
-                if (isRunning)  return gatewayBgRunning
-                if (isError)    return gatewayBgError
-                if (isStarting) return gatewayBgStarting
-                return gatewayBgIdle
-            }
-            border.width: 1
-            border.color: {
-                if (isRunning)  return gatewayBorderRunning
-                if (isError)    return gatewayBorderError
-                if (isStarting) return gatewayBorderStarting
-                if (gwHover.containsMouse) return gatewayBorderIdleHover
-                return gatewayBorderIdle
             }
 
-            // ── State transition animations ──────────────────────────
-            Behavior on color { ColorAnimation { duration: motionPanel; easing.type: easeStandard } }
-            Behavior on border.color { ColorAnimation { duration: motionPanel; easing.type: easeStandard } }
+            property var stateSpec: stateValue(
+                                       {
+                                           surfaceColor: gatewaySurfaceRunningTop,
+                                           statusColor: gatewayTextRunning,
+                                           actionColor: statusSuccess,
+                                           dotColor: statusSuccess,
+                                           primaryLabel: strings.gateway_running,
+                                           actionIconSource: "../resources/icons/gateway-running.svg"
+                                       },
+                                       {
+                                           surfaceColor: gatewaySurfaceErrorTop,
+                                           statusColor: statusError,
+                                           actionColor: statusError,
+                                           dotColor: statusError,
+                                           primaryLabel: strings.gateway_error,
+                                           actionIconSource: "../resources/icons/gateway-error.svg"
+                                       },
+                                       {
+                                           surfaceColor: gatewaySurfaceStartingTop,
+                                           statusColor: gatewayTextStarting,
+                                           actionColor: statusWarning,
+                                           dotColor: statusWarning,
+                                           primaryLabel: strings.gateway_starting,
+                                           actionIconSource: "../resources/icons/gateway-starting.svg"
+                                       },
+                                       {
+                                           surfaceColor: gatewaySurfaceIdleTop,
+                                           statusColor: gatewayTextIdle,
+                                           actionColor: accent,
+                                           dotColor: accent,
+                                           primaryLabel: strings.button_start_gateway,
+                                           actionIconSource: "../resources/icons/gateway-idle.svg"
+                                       })
+            property color surfaceColor: stateSpec.surfaceColor
+            property color statusColor: stateSpec.statusColor
+            property color actionColor: stateSpec.actionColor
+            property color dotColor: stateSpec.dotColor
+            property string primaryLabel: stateSpec.primaryLabel
+            property string actionIconSource: stateSpec.actionIconSource
 
-            // Scale bounce on state change
-            property string _prevState: chatService ? chatService.state : "idle"
-            scale: 1.0
-            Behavior on scale { NumberAnimation { duration: motionPanel; easing.type: easeEmphasis } }
-            Connections {
-                target: chatService
-                function onStateChanged() {
-                    if (!chatService) return
-                    var s = chatService.state
-                    if (s !== gwCapsule._prevState) {
-                        gwCapsule._prevState = s
-                        gwCapsule.scale = 0.93
-                        scaleBounceTimer.restart()
+            function resetVisualState() {
+                gwCapsule.actionPulse = 0.0
+                gwCapsule.iconLift = 0.0
+                gwCapsule.iconPulse = 0.0
+                gwCapsule.iconTurn = 0.0
+                gwDot.opacity = 1.0
+                gwDot.scale = 1.0
+            }
+            onCurrentStateChanged: resetVisualState()
+
+            color: gwCapsule.surfaceColor
+            border.width: 0
+            scale: gwHover.pressed ? 0.985 : (gwCapsule.isHovered ? motionHoverScaleSubtle : 1.0)
+
+            Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
+            Item {
+                anchors.fill: parent
+
+                Rectangle {
+                    id: gwAction
+                    anchors.right: parent.right
+                    anchors.rightMargin: 22
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: sizeGatewayAction
+                    height: sizeGatewayAction
+                    radius: width / 2
+                    antialiasing: true
+                    color: Qt.darker(gwCapsule.actionColor, isDark ? 1.22 : 1.14)
+                    border.width: 0
+                    scale: (gwHover.pressed ? 0.97 : (gwCapsule.isHovered ? motionHoverScaleSubtle : 1.0)) + gwCapsule.actionPulse * 0.025
+                    Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+
+                    Rectangle {
+                        id: gwActionFace
+                        width: parent.width - 2
+                        height: width
+                        radius: width / 2
+                        anchors.centerIn: parent
+                        color: gwCapsule.actionColor
+                    }
+
+                    SequentialAnimation {
+                        running: gwCapsule.isRunning
+                        loops: Animation.Infinite
+                        NumberAnimation { target: gwCapsule; property: "actionPulse"; to: 0.03; duration: motionBreath; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "actionPulse"; to: 0.0; duration: motionBreath; easing.type: easeSoft }
+                    }
+                    SequentialAnimation {
+                        running: gwCapsule.isStarting
+                        loops: Animation.Infinite
+                        NumberAnimation { target: gwCapsule; property: "actionPulse"; to: 0.10; duration: motionAmbient; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "actionPulse"; to: 0.0; duration: motionAmbient; easing.type: easeSoft }
+                    }
+                    SequentialAnimation {
+                        running: gwCapsule.isError
+                        loops: Animation.Infinite
+                        NumberAnimation { target: gwCapsule; property: "actionPulse"; to: 0.06; duration: motionStatusPulse; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "actionPulse"; to: 0.0; duration: motionStatusPulse; easing.type: easeSoft }
+                    }
+                    SequentialAnimation {
+                        running: gwCapsule.isIdleVisual
+                        loops: Animation.Infinite
+                        NumberAnimation { target: gwCapsule; property: "iconLift"; to: -0.8; duration: motionAmbient; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconLift"; to: 0.0; duration: motionAmbient; easing.type: easeSoft }
+                    }
+                    SequentialAnimation {
+                        running: gwCapsule.isIdleVisual
+                        loops: Animation.Infinite
+                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.06; duration: motionAmbient; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.0; duration: motionAmbient; easing.type: easeSoft }
+                    }
+                    SequentialAnimation {
+                        running: gwCapsule.isIdleVisual
+                        loops: Animation.Infinite
+                        NumberAnimation { target: gwCapsule; property: "iconTurn"; to: 6; duration: motionAmbient; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconTurn"; to: 0; duration: motionAmbient; easing.type: easeSoft }
+                    }
+                    NumberAnimation {
+                        target: gwCapsule
+                        property: "iconTurn"
+                        from: 0
+                        to: 360
+                        duration: motionFloat
+                        loops: Animation.Infinite
+                        easing.type: easeLinear
+                        running: gwCapsule.isStarting
+                    }
+                    SequentialAnimation {
+                        running: gwCapsule.isStarting
+                        loops: Animation.Infinite
+                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.10; duration: motionAmbient; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.0; duration: motionAmbient; easing.type: easeSoft }
+                    }
+                    SequentialAnimation {
+                        running: gwCapsule.isRunning
+                        loops: Animation.Infinite
+                        NumberAnimation { target: gwCapsule; property: "iconLift"; to: -0.6; duration: motionBreath; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconLift"; to: 0.0; duration: motionBreath; easing.type: easeSoft }
+                    }
+                    SequentialAnimation {
+                        running: gwCapsule.isRunning
+                        loops: Animation.Infinite
+                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.08; duration: motionBreath; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.0; duration: motionBreath; easing.type: easeSoft }
+                    }
+                    SequentialAnimation {
+                        running: gwCapsule.isError
+                        loops: Animation.Infinite
+                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.05; duration: motionStatusPulse; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.0; duration: motionStatusPulse; easing.type: easeSoft }
+                    }
+
+                    Item {
+                        width: sizeGatewayActionIcon
+                        height: sizeGatewayActionIcon
+                        anchors.centerIn: gwActionFace
+                        y: gwCapsule.iconLift
+                        scale: 1.0 + gwCapsule.iconPulse
+                        rotation: gwCapsule.iconTurn
+
+                        Image {
+                            anchors.fill: parent
+                            source: gwCapsule.actionIconSource
+                            sourceSize: Qt.size(sizeGatewayActionIcon, sizeGatewayActionIcon)
+                            fillMode: Image.PreserveAspectFit
+                            smooth: true
+                            mipmap: true
+                            opacity: gwCapsule.isHovered ? 1.0 : 0.92
+                            Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+                        }
                     }
                 }
-            }
-            Timer {
-                id: scaleBounceTimer
-                interval: motionStagger; repeat: false
-                onTriggered: gwCapsule.scale = 1.0
-            }
 
-            // Starting pulse animation
-            SequentialAnimation {
-                id: startingPulse
-                running: gwCapsule.isStarting
-                loops: Animation.Infinite
-                NumberAnimation { target: gwCapsule; property: "opacity"; from: 1.0; to: motionStatusMinOpacityStarting; duration: motionAmbient; easing.type: easeSoft }
-                NumberAnimation { target: gwCapsule; property: "opacity"; from: motionStatusMinOpacityStarting; to: 1.0; duration: motionAmbient; easing.type: easeSoft }
-            }
-            // Error subtle pulse
-            SequentialAnimation {
-                id: errorPulse
-                running: gwCapsule.isError
-                loops: Animation.Infinite
-                NumberAnimation { target: gwCapsule; property: "opacity"; from: 1.0; to: motionStatusMinOpacityError; duration: motionBreath; easing.type: easeSoft }
-                NumberAnimation { target: gwCapsule; property: "opacity"; from: motionStatusMinOpacityError; to: 1.0; duration: motionBreath; easing.type: easeSoft }
-            }
-            // Reset opacity when not animating
-            onIsStartingChanged: if (!isStarting && !isError) opacity = 1.0
-            onIsErrorChanged: if (!isError && !isStarting) opacity = 1.0
+                Column {
+                    anchors.left: parent.left
+                    anchors.leftMargin: 22
+                    anchors.right: gwAction.left
+                    anchors.rightMargin: 22
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 1
 
-            // ── Running border glow (breathing) ──────────────────────
-            Rectangle {
-                id: gwGlow
-                anchors.fill: parent
-                anchors.margins: -1.5
-                radius: parent.radius + 1.5
-                color: "transparent"
-                border.width: 1.5
-                border.color: gwCapsule.isRunning ? gatewayGlowRunning : "transparent"
-                opacity: 0
-                visible: gwCapsule.isRunning
-                Behavior on border.color { ColorAnimation { duration: motionPanel; easing.type: easeStandard } }
-                SequentialAnimation {
-                    running: gwCapsule.isRunning
-                    loops: Animation.Infinite
-                    NumberAnimation { target: gwGlow; property: "opacity"; from: 0; to: motionGlowPeakOpacity; duration: motionBreath; easing.type: easeSoft }
-                    NumberAnimation { target: gwGlow; property: "opacity"; from: motionGlowPeakOpacity; to: 0; duration: motionBreath; easing.type: easeSoft }
-                }
-            }
+                    Row {
+                        spacing: 7
 
-            // ── Content row ───────────────────────────────────────────
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: 14; anchors.rightMargin: 12
-                spacing: 10
+                        Rectangle {
+                            id: gwDot
+                            width: 6
+                            height: 6
+                            radius: 3
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: gwCapsule.dotColor
+                            Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
 
-                // Status dot
-                Item {
-                    Layout.alignment: Qt.AlignVCenter
-                    width: 10; height: 10
-                    Rectangle {
-                        id: gwDot
-                        anchors.centerIn: parent
-                        width: 8; height: 8; radius: 4
-                        color: {
-                            if (!chatService) return textTertiary
-                            switch (chatService.state) {
-                                case "running":  return statusSuccess
-                                case "starting": return statusWarning
-                                case "error":    return statusError
-                                default:         return accent
+                            SequentialAnimation on scale {
+                                running: gwCapsule.isRunning
+                                loops: Animation.Infinite
+                                NumberAnimation { to: motionDotPulseScaleMax; duration: motionBreath - motionFast; easing.type: easeSoft }
+                                NumberAnimation { to: 1.0; duration: motionBreath - motionFast; easing.type: easeSoft }
+                            }
+                            SequentialAnimation {
+                                running: gwCapsule.isStarting
+                                loops: Animation.Infinite
+                                NumberAnimation { target: gwDot; property: "opacity"; from: 1.0; to: 0.42; duration: motionAmbient; easing.type: easeSoft }
+                                NumberAnimation { target: gwDot; property: "opacity"; from: 0.42; to: 1.0; duration: motionAmbient; easing.type: easeSoft }
+                            }
+                            SequentialAnimation {
+                                running: gwCapsule.isError
+                                loops: Animation.Infinite
+                                NumberAnimation { target: gwDot; property: "opacity"; from: 1.0; to: motionDotPulseMinOpacity; duration: motionStatusPulse; easing.type: easeSoft }
+                                NumberAnimation { target: gwDot; property: "opacity"; from: motionDotPulseMinOpacity; to: 1.0; duration: motionStatusPulse; easing.type: easeSoft }
                             }
                         }
+
+                        Text {
+                            text: strings.chat_gateway
+                            color: gwCapsule.statusColor
+                            font.pixelSize: typeCaption
+                            font.weight: weightDemiBold
+                            font.letterSpacing: letterWide
+                            opacity: 0.72
+                        }
+                    }
+
+                    Text {
+                        text: gwCapsule.primaryLabel
+                        color: gwCapsule.statusColor
+                        font.pixelSize: typeButton + 1
+                        font.weight: weightBold
+                        font.letterSpacing: letterTight
                         Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
-
-                        // Running: breathing scale
-                        SequentialAnimation on scale {
-                            running: gwCapsule.isRunning
-                            loops: Animation.Infinite
-                            NumberAnimation { to: motionDotPulseScaleMax; duration: motionBreath - motionFast; easing.type: easeSoft }
-                            NumberAnimation { to: 1.0; duration: motionBreath - motionFast; easing.type: easeSoft }
-                        }
-
-                        // Starting: rotation spin
-                        SequentialAnimation on rotation {
-                            running: gwCapsule.isStarting
-                            loops: Animation.Infinite
-                            NumberAnimation { from: 0; to: 360; duration: motionFloat - motionUi; easing.type: easeLinear }
-                        }
-
-                        // Error: opacity pulse
-                        SequentialAnimation {
-                            running: gwCapsule.isError
-                            loops: Animation.Infinite
-                            NumberAnimation { target: gwDot; property: "opacity"; from: 1.0; to: motionDotPulseMinOpacity; duration: motionStatusPulse; easing.type: easeSoft }
-                            NumberAnimation { target: gwDot; property: "opacity"; from: motionDotPulseMinOpacity; to: 1.0; duration: motionStatusPulse; easing.type: easeSoft }
-                        }
                     }
-                }
-
-                // Status text
-                Text {
-                    Layout.fillWidth: true
-                    Layout.alignment: Qt.AlignVCenter
-                    text: {
-                        if (!chatService) return strings.gateway_idle
-                        switch (chatService.state) {
-                            case "running":  return strings.gateway_running
-                            case "starting": return strings.gateway_starting
-                            case "error":    return strings.gateway_error
-                            default:         return strings.button_start_gateway
-                        }
-                    }
-                    color: {
-                        if (gwCapsule.isRunning)  return gatewayTextRunning
-                        if (gwCapsule.isError)    return statusError
-                        if (gwCapsule.isStarting) return gatewayTextStarting
-                        return gatewayTextIdle
-                    }
-                    font.pixelSize: typeButton
-                    font.weight: weightDemiBold
-                    font.letterSpacing: letterTight
-                    Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
-                }
-
-                // Action icon
-                Image {
-                    Layout.alignment: Qt.AlignVCenter
-                    source: gwCapsule.isRunning
-                            ? "../resources/icons/stop.svg"
-                            : "../resources/icons/power.svg"
-                    sourceSize: Qt.size(16, 16)
-                    width: 16; height: 16
-                    opacity: gwHover.containsMouse ? opacityInteractionHover : opacityInteractionIdle
-                    Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
                 }
             }
 
-            // Click handler
             MouseArea {
                 id: gwHover
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: gwCapsule.isStarting ? Qt.ArrowCursor : Qt.PointingHandCursor
                 onClicked: {
+                    if (!chatService) return
                     if (gwCapsule.isStarting) return
                     if (gwCapsule.isRunning) chatService.stop()
                     else chatService.start()
@@ -371,8 +447,8 @@ Rectangle {
             }
 
             Rectangle {
-                width: sizeControlHeight - 6
-                height: sizeControlHeight - 6
+                implicitWidth: sizeControlHeight - 6
+                implicitHeight: sizeControlHeight - 6
                 radius: 18
                 color: newSessionHover.containsMouse ? accent : accentMuted
                 border.width: 1
@@ -469,7 +545,7 @@ Rectangle {
                         Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
                         sessionKey:   model.itemKey   ?? ""
                         sessionTitle: model.itemTitle ?? model.itemKey ?? ""
-                        isActive:     model.isActive  ?? false
+                        isActive:     root.showChatSelection && sessionKey === root.activeSessionKey
                         dimmed:       root.gatewayIdle
                         hasUnread:    model.itemHasUnread ?? false
                         onSelected:       root.sessionSelected(sessionKey)
@@ -614,10 +690,8 @@ Rectangle {
                         speechBubble.show = false
                     }
                     onClicked: {
-                        if (root.currentView !== "settings") {
-                            root.currentView = "settings"
-                            root.viewRequested("settings")
-                        }
+                        if (!root.showingSettings)
+                            root.settingsRequested()
                     }
                 }
             }

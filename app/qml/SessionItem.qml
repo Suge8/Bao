@@ -14,6 +14,7 @@ Rectangle {
 
     height: sizeSessionRow
     radius: radiusSm
+    scale: isActive ? motionSelectionScaleActive : (hoverArea.containsMouse ? motionSelectionScaleHover : 1.0)
     color: isActive
            ? sessionRowActiveBg
            : (hoverArea.containsMouse ? sessionRowHoverBg : "transparent")
@@ -23,8 +24,36 @@ Rectangle {
 
     Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
     Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+    Behavior on border.width { NumberAnimation { duration: motionMicro; easing.type: easeStandard } }
+    Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
+    Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
 
-    HoverHandler { id: rowHover }
+    Rectangle {
+        anchors.fill: parent
+        anchors.margins: -3
+        radius: root.radius + 3
+        color: sessionRowActiveBorder
+        opacity: root.isActive ? motionSelectionAuraOpacity : 0.0
+        scale: root.isActive ? 1.0 : motionSelectionAuraHiddenScale
+        z: -1
+        Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
+        Behavior on scale { NumberAnimation { duration: motionPanel; easing.type: easeEmphasis } }
+    }
+
+    Rectangle {
+        width: 3
+        height: root.height - 14
+        radius: width / 2
+        anchors.left: parent.left
+        anchors.leftMargin: 6
+        anchors.verticalCenter: parent.verticalCenter
+        color: sessionRowActiveBorder
+        opacity: root.isActive ? 1.0 : 0.0
+        scale: root.isActive ? 1.0 : motionSelectionRailHiddenScale
+        transformOrigin: Item.Center
+        Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
+        Behavior on scale { NumberAnimation { duration: motionPanel; easing.type: easeEmphasis } }
+    }
 
     Row {
         anchors {
@@ -45,6 +74,11 @@ Rectangle {
             border.width: 1
             border.color: root.isActive ? accentGlow : borderSubtle
             anchors.verticalCenter: parent.verticalCenter
+            scale: root.isActive ? motionHoverScaleSubtle : 1.0
+
+            Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
+            Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
+            Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
 
             Image {
                 anchors.centerIn: parent
@@ -53,6 +87,10 @@ Rectangle {
                 width: 12
                 height: 12
                 opacity: root.isActive ? 1.0 : opacityInactive
+                scale: root.isActive ? 1.06 : 1.0
+
+                Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
+                Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
             }
         }
 
@@ -81,9 +119,11 @@ Rectangle {
         color: deleteHover.containsMouse ? sessionDeleteHoverBg : sessionDeleteIdleBg
         border.width: 1
         border.color: deleteHover.containsMouse ? sessionDeleteHoverBorder : sessionDeleteIdleBorder
-        scale: deleteHover.containsMouse ? motionHoverScaleSubtle : 1.0
-        visible: rowHover.hovered || deleteHover.containsMouse
+        scale: deleteHover.containsMouse ? motionHoverScaleSubtle : (hoverArea.containsMouse ? 1.0 : motionDeleteHiddenScale)
+        opacity: hoverArea.containsMouse || deleteHover.containsMouse ? 1.0 : 0.0
+        visible: opacity > 0.01
         Behavior on color { ColorAnimation { duration: motionMicro; easing.type: easeStandard } }
+        Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
         Behavior on scale { NumberAnimation { duration: motionMicro; easing.type: easeStandard } }
 
         Text {
@@ -131,7 +171,7 @@ Rectangle {
             leftMargin: -2
             topMargin: -2
             bottomMargin: -2
-            rightMargin: -2
+            rightMargin: deleteBtn.visible ? deleteBtn.width + deleteBtn.anchors.rightMargin : -2
         }
         hoverEnabled: true
         acceptedButtons: Qt.LeftButton

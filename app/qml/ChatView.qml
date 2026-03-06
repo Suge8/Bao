@@ -341,6 +341,7 @@ Rectangle {
         }
         // ── Input bar ────────────────────────────────────────────────────
         Rectangle {
+            id: composerBar
             Layout.fillWidth: true
             visible: chatService && chatService.state === "running"
             Layout.preferredHeight: inputRow.implicitHeight + 24
@@ -364,7 +365,17 @@ Rectangle {
                 spacing: 10
 
                 Rectangle {
+                    id: composerField
                     Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignVCenter
+                    readonly property bool focused: messageInput.activeFocus
+                    readonly property bool hovered: messageInput.hovered
+                    readonly property color fillColor: focused ? bgInputFocus : (hovered ? bgInputHover : bgInput)
+                    readonly property color strokeColor: focused ? borderFocus : (hovered ? borderDefault : borderSubtle)
+                    readonly property real strokeWidth: focused ? 1.5 : (hovered ? 1.25 : 1)
+                    readonly property real fieldScale: focused ? motionSelectionScaleHover : 1.0
+                    readonly property real auraOpacity: focused ? motionSelectionAuraOpacity : (hovered ? motionSelectionAuraOpacity * 0.35 : 0.0)
+                    readonly property real highlightOpacity: focused ? 0.9 : (hovered ? 0.5 : 0.0)
                     Layout.preferredHeight: Math.min(
                                               Math.max(
                                                   messageInput.contentHeight
@@ -376,25 +387,56 @@ Rectangle {
                                               root.composerMaxHeight
                                           )
                     radius: radiusMd
-                    color: bgInput
-                    border.color: messageInput.activeFocus ? borderFocus : borderSubtle
-                    border.width: messageInput.activeFocus ? 1.5 : 1
+                    color: fillColor
+                    border.color: strokeColor
+                    border.width: strokeWidth
+                    scale: fieldScale
                     Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                    Behavior on border.width { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+                    Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
+                    Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
+
+                    Rectangle {
+                        anchors.fill: parent
+                        anchors.margins: -4
+                        radius: parent.radius + 4
+                        color: accentGlow
+                        opacity: composerField.auraOpacity
+                        scale: composerField.focused ? 1.0 : motionSelectionAuraHiddenScale
+                        z: -1
+                        Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
+                        Behavior on scale { NumberAnimation { duration: motionPanel; easing.type: easeEmphasis } }
+                    }
+
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: parent.radius
+                        gradient: Gradient {
+                            GradientStop { position: 0.0; color: chatComposerSendHighlight }
+                            GradientStop { position: 0.5; color: "#10FFFFFF" }
+                            GradientStop { position: 1.0; color: "#00FFFFFF" }
+                        }
+                        opacity: composerField.highlightOpacity
+                        Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+                    }
 
                     ScrollView {
                         id: inputScroll
-                        anchors { fill: parent; topMargin: 6; bottomMargin: 6; leftMargin: 4; rightMargin: 4 }
+                        anchors.fill: parent
                         clip: true
                         ScrollBar.vertical.policy: ScrollBar.AsNeeded
                         TextArea {
                             id: messageInput
+                            hoverEnabled: true
                             placeholderText: strings.chat_placeholder
                             placeholderTextColor: textPlaceholder
                             color: textPrimary
                             background: null
                             wrapMode: TextArea.Wrap
-                            topPadding: 6
-                            bottomPadding: 2
+                            leftPadding: sizeFieldPaddingX
+                            rightPadding: sizeFieldPaddingX
+                            topPadding: 13
+                            bottomPadding: 7
                             font.pixelSize: typeBody
                             selectionColor: textSelectionBg
                             selectedTextColor: textSelectionFg
@@ -418,20 +460,53 @@ Rectangle {
                 }
 
                 Rectangle {
-                    width: 40; height: 40; radius: radiusMd
+                    Layout.alignment: Qt.AlignVCenter
+                    implicitWidth: sizeButton
+                    implicitHeight: sizeButton
+                    radius: implicitWidth / 2
                     property bool canSend: messageInput.text.trim().length > 0
                                           && chatService
                                           && chatService.state === "running"
+                    antialiasing: true
                     color: sendHover.containsMouse && canSend
                            ? accentHover
                            : (canSend ? accent : chatComposerSendDisabled)
+                    border.width: canSend ? 0 : 1
+                    border.color: canSend ? "transparent" : borderSubtle
+                    scale: sendHover.pressed && canSend
+                           ? motionPressScaleStrong
+                           : (sendHover.containsMouse && canSend ? motionHoverScaleSubtle : 1.0)
                     Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                    Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                    Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: parent.width + 10
+                        height: parent.height + 10
+                        radius: width / 2
+                        color: chatComposerSendGlow
+                        opacity: parent.canSend ? (sendHover.containsMouse ? 0.22 : 0.08) : 0.0
+                        z: -1
+                        Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+                    }
+
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: parent.radius
+                        gradient: Gradient {
+                            GradientStop { position: 0.0; color: chatComposerSendHighlight }
+                            GradientStop { position: 1.0; color: "#00FFFFFF" }
+                        }
+                        opacity: parent.canSend ? (sendHover.containsMouse ? 1.0 : 0.82) : 0.0
+                        Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+                    }
 
                     Image {
                         anchors.centerIn: parent
                         source: "../resources/icons/send.svg"
-                        width: 18; height: 18
-                        sourceSize: Qt.size(18, 18)
+                        width: 20; height: 20
+                        sourceSize: Qt.size(20, 20)
                         opacity: parent.canSend ? 1.0 : 0.3
                         Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
                     }

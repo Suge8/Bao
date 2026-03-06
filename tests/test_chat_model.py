@@ -186,6 +186,43 @@ def test_prepare_history_preserves_valid_status(qapp):
     assert prepared[3]["status"] == "typing"
 
 
+def test_prepare_history_preserves_system_entrance_style(qapp):
+    from app.backend.chat import ChatMessageModel
+
+    prepared = ChatMessageModel.prepare_history(
+        [
+            {"role": "system", "content": "hello", "entrance_style": "greeting"},
+            {
+                "role": "user",
+                "content": "notice",
+                "_source": "desktop-system",
+                "entrance_style": "system",
+            },
+            {"role": "tool", "content": "work", "entrance_style": "system"},
+        ]
+    )
+
+    assert prepared[0]["entrancestyle"] == "greeting"
+    assert prepared[1]["entrancestyle"] == "system"
+    assert prepared[2]["entrancestyle"] == "system"
+
+
+def test_prepare_history_invalid_entrance_style_falls_back_none(qapp):
+    from app.backend.chat import ChatMessageModel
+
+    prepared = ChatMessageModel.prepare_history(
+        [
+            {"role": "system", "content": "hello", "entrance_style": "bad-style"},
+            {"role": "user", "content": "notice", "_source": "desktop-system", "entrance_style": 1},
+            {"role": "tool", "content": "work", "entrance_style": None},
+        ]
+    )
+
+    assert prepared[0]["entrancestyle"] == "none"
+    assert prepared[1]["entrancestyle"] == "none"
+    assert prepared[2]["entrancestyle"] == "none"
+
+
 def test_prepare_history_invalid_status_falls_back_done(qapp):
     from app.backend.chat import ChatMessageModel
 

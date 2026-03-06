@@ -162,8 +162,6 @@ class ChatService(QObject):
     @Slot(str)
     def setSessionKey(self, key: str) -> None:
         """Called when SessionService switches active session. Loads history."""
-        if not key:
-            return
         if key == self._desired_session_key and (
             self._history_initialized or self._history_future is not None
         ):
@@ -181,7 +179,11 @@ class ChatService(QObject):
             return
         pending, self._startup_pending = self._startup_pending, []
         for content in pending:
-            self._systemResponse.emit(content, key)
+            self._queue_or_show_system_response(
+                content,
+                entrance_style="greeting",
+                session_key=key,
+            )
 
     def _handle_startup_greeting(self, content: str) -> None:
         if not content:
@@ -192,7 +194,11 @@ class ChatService(QObject):
         if not key:
             self._startup_pending.append(content)
             return
-        self._systemResponse.emit(content, key)
+        self._queue_or_show_system_response(
+            content,
+            entrance_style="greeting",
+            session_key=key,
+        )
 
     def _apply_session_key(self, key: str, nav_id: int) -> None:
         previous_committed = self._committed_session_key
@@ -212,13 +218,15 @@ class ChatService(QObject):
             self._active_has_content = False
             self._pending_split = False
 
-        if self._session_manager is not None:
+        if self._session_manager is not None and key:
             self._set_history_loading(True)
+        else:
+            self._set_history_loading(False)
 
         self._history_initialized = False
         self._history_fingerprint = None
         self._model.clear()
-        if self._session_manager is not None:
+        if self._session_manager is not None and key:
             self._request_history_load(key, nav_id, show_loading=False)
 
     def _request_history_load(
@@ -636,7 +644,7 @@ class ChatService(QObject):
         """Runs on Qt main thread. Queue if streaming, else show immediately."""
         self._queue_or_show_system_response(
             content,
-            entrance_style="assistantReceived",
+            entrance_style="system",
             session_key=session_key,
         )
 
@@ -664,7 +672,7 @@ class ChatService(QObject):
         self,
         content: str,
         *,
-        entrance_style: str = "assistantReceived",
+        entrance_style: str = "system",
         session_key: str = "",
     ) -> None:
         target_session_key = session_key or self._session_key
@@ -688,7 +696,7 @@ class ChatService(QObject):
         if not content:
             return
         target_session_key = session_key or self._session_key
-        self._schedule_system_message_persist(target_session_key, content, status)
+        self._schedule_system_message_persist(target_session_key, content, status, entrance_style)
         if not show_in_ui:
             return
         row = self._model.append_system(
@@ -705,9 +713,16 @@ class ChatService(QObject):
         session_key: str,
         content: str,
         status: str,
+        entrance_style: str,
     ) -> None:
         session = session_manager.get_or_create(session_key)
-        session.add_message("user", content, status=status, _source="desktop-system")
+        session.add_message(
+            "user",
+            content,
+            status=status,
+            _source="desktop-system",
+            entrance_style=entrance_style,
+        )
         session_manager.save(session)
 
     async def _persist_system_message_async(
@@ -716,6 +731,7 @@ class ChatService(QObject):
         session_key: str,
         content: str,
         status: str,
+        entrance_style: str,
     ) -> None:
         await self._run_bg_io(
             self._persist_system_message_with_manager,
@@ -723,6 +739,7 @@ class ChatService(QObject):
             session_key,
             content,
             status,
+            entrance_style,
         )
 
     def _on_system_persist_done(self, future: Any) -> None:
@@ -731,7 +748,13 @@ class ChatService(QObject):
         except Exception as exc:
             logger.warning("Failed to persist desktop system message: {}", exc)
 
-    def _schedule_system_message_persist(self, session_key: str, content: str, status: str) -> None:
+    def _schedule_system_message_persist(
+        self,
+        session_key: str,
+        content: str,
+        status: str,
+        entrance_style: str,
+    ) -> None:
         session_manager = self._session_manager
         if session_manager is None:
             return
@@ -740,7 +763,7 @@ class ChatService(QObject):
             try:
                 future = self._runner.submit(
                     self._persist_system_message_async(
-                        session_manager, session_key, content, status
+                        session_manager, session_key, content, status, entrance_style
                     )
                 )
                 future.add_done_callback(self._on_system_persist_done)
@@ -749,7 +772,13 @@ class ChatService(QObject):
                 pass
 
         try:
-            self._persist_system_message_with_manager(session_manager, session_key, content, status)
+            self._persist_system_message_with_manager(
+                session_manager,
+                session_key,
+                content,
+                status,
+                entrance_style,
+            )
         except Exception as exc:
             logger.warning("Failed to persist desktop system message: {}", exc)
 

@@ -16,21 +16,137 @@ Item {
 
     property bool isUser: role === "user"
     property bool isSystem: role === "system"
+    property bool isGreeting: isSystem && entranceStyle === "greeting"
+    property bool isSystemError: isSystem && status === "error"
     property bool isMarkdown: format === "markdown"
     property bool _entranceStarted: false
-    property bool _entranceQueued: false
     readonly property bool shouldAnimateEntrance: entranceStyle !== "none" && entrancePending && !entranceConsumed
-    readonly property int entranceOpacityDuration: entranceStyle === "greeting" ? motionUi : (isSystem ? motionPanel : (isUser ? motionFast : motionUi))
-    readonly property int entranceScaleDuration: entranceStyle === "greeting" ? (motionPanel + 20) : (isSystem ? (motionPanel + 40) : (isUser ? motionUi : (motionUi + 20)))
-    readonly property real entranceStartScale: entranceStyle === "greeting" ? 0.955 : (isSystem ? 0.9 : (isUser ? 0.968 : 0.964))
-    readonly property real entranceStartY: isSystem ? -18 : 0
+    readonly property bool showGreetingDecoration: isGreeting && !isSystemError
+    readonly property real greetingAuraFarPeak: motionAuraFarPeak * 0.45
+    readonly property real greetingAuraNearPeak: motionAuraNearPeak * 0.5
+    readonly property real feedbackProgressStart: -0.3
+    readonly property real feedbackProgressEnd: 1.3
+    readonly property real feedbackBandOuterOffset: 0.24
+    readonly property real feedbackBandInnerOffset: 0.08
+    readonly property int systemContentPaddingX: isGreeting ? 10 : 12
+    readonly property int systemContentPaddingY: isGreeting ? 11 : 8
+    readonly property int systemIconSlotWidth: isGreeting ? systemIconSize : 12
+    readonly property int systemIconSize: isGreeting ? 24 : 10
+    readonly property int systemIconGap: isGreeting ? 6 : 8
+    readonly property int systemTextStartX: systemContentPaddingX + systemIconSlotWidth + systemIconGap
+    function alphaColor(color, alpha) {
+        return Qt.rgba(color.r, color.g, color.b, Math.max(0.0, Math.min(1.0, alpha)))
+    }
+    function clamp01(value) {
+        return Math.max(0.0, Math.min(1.0, value))
+    }
+    function resetFeedbackSheen(sheen) {
+        sheen.opacity = 0.0
+        sheen.progress = feedbackProgressStart
+    }
+    function resetFeedbackRipple(ripple) {
+        ripple.opacity = 0.0
+        ripple.scale = 0.92
+    }
+    readonly property color systemIconColor: {
+        if (isSystemError) return statusError
+        if (isGreeting) return chatGreetingAccent
+        return systemAccentColor
+    }
+    readonly property int entranceOpacityDuration: {
+        if (isGreeting) return motionUi + 20
+        if (isSystem) return motionPanel
+        if (isUser) return motionFast
+        return motionUi
+    }
+    readonly property int entranceScaleDuration: {
+        if (isGreeting) return motionPanel + 40
+        if (isSystem) return motionPanel + 40
+        if (isUser) return motionUi
+        return motionUi + 20
+    }
+    readonly property real entranceStartScale: {
+        if (isGreeting) return 0.976
+        if (isSystem) return 0.9
+        if (isUser) return 0.968
+        return 0.964
+    }
+    readonly property real entranceStartY: {
+        if (isGreeting) return 8
+        if (isSystem) return -18
+        return 0
+    }
+    readonly property color systemAuraFarColor: {
+        if (isSystemError) return chatSystemAuraErrorFar
+        if (isGreeting) return chatGreetingAuraFar
+        return chatSystemAuraFar
+    }
+    readonly property color systemAuraNearColor: {
+        if (isSystemError) return chatSystemAuraErrorNear
+        if (isGreeting) return chatGreetingAuraNear
+        return chatSystemAuraNear
+    }
+    readonly property color systemBubbleFillColor: {
+        if (isSystemError) return chatSystemBubbleErrorBg
+        if (isGreeting) return chatGreetingBubbleBgStart
+        return chatSystemBubbleBg
+    }
+    readonly property color systemBubbleBorderColor: {
+        if (isSystemError) return chatSystemBubbleErrorBorder
+        if (isGreeting) return chatGreetingBubbleBorder
+        return chatSystemBubbleBorder
+    }
+    readonly property color systemOverlayColor: {
+        if (isSystemError) return chatSystemBubbleErrorOverlay
+        if (isGreeting) return chatGreetingBubbleOverlay
+        return chatSystemBubbleOverlay
+    }
+    readonly property color systemAccentColor: {
+        if (isSystemError) return statusError
+        if (isGreeting) return chatGreetingAccent
+        return accent
+    }
+    readonly property color systemTextColor: {
+        if (isSystemError) return statusError
+        if (isGreeting) return chatGreetingText
+        return chatSystemText
+    }
+    readonly property int bubblePaddingX: 16
+    readonly property int bubblePaddingTop: 12
+    readonly property int bubblePaddingBottom: 16
+    readonly property bool canCopyFeedback: root.content !== ""
+    readonly property color copyFeedbackOverlayColor: {
+        if (isSystemError) return chatSystemBubbleErrorOverlay
+        if (isGreeting) return chatGreetingBubbleHighlight
+        if (isSystem) return chatSystemBubbleOverlay
+        if (isUser) return chatBubbleCopyFlashUser
+        return accentGlow
+    }
+    readonly property color copyFeedbackSheenColor: {
+        if (isSystemError) return "#12FFFFFF"
+        if (isGreeting) return chatGreetingBubbleHighlight
+        if (isSystem) return "#18FFFFFF"
+        if (isUser) return "#24FFFFFF"
+        return "#1CFFFFFF"
+    }
+    readonly property real copyFeedbackOverlayPeak: {
+        if (isGreeting) return motionCopyFlashPeak * 0.82
+        if (isSystem) return motionCopyFlashPeak * 0.64
+        if (isUser) return motionCopyFlashPeak * 0.9
+        return motionCopyFlashPeak * 0.72
+    }
+    readonly property real copyFeedbackSheenPeak: {
+        if (isGreeting) return motionGreetingSweepPeak * 0.82
+        if (isSystem) return motionGreetingSweepPeak * 0.94
+        if (isUser) return motionGreetingSweepPeak * 0.68
+        return motionGreetingSweepPeak * 0.54
+    }
 
     height: isSystem ? systemBubble.height + 7 : bubble.height + 5
     width: parent ? parent.width : 600
 
     function playEntrance() {
-        if (_entranceStarted || _entranceQueued || !shouldAnimateEntrance) return
-        _entranceQueued = true
+        if (_entranceStarted || !shouldAnimateEntrance) return
         entranceStartTimer.restart()
     }
 
@@ -55,6 +171,27 @@ Item {
         if (root.toastFunc) root.toastFunc()
     }
 
+    function resetCopyFeedback() {
+        copyFlash.opacity = 0.0
+        resetFeedbackRipple(copyRipple)
+        resetFeedbackSheen(copySheen)
+        systemCopyFlash.opacity = 0.0
+        resetFeedbackRipple(systemCopyRipple)
+        resetFeedbackSheen(systemCopySheen)
+    }
+
+    function playCopyFeedback() {
+        if (!canCopyFeedback) return
+        resetCopyFeedback()
+        copyFeedbackAnim.restart()
+    }
+
+    function copyCurrentMessage() {
+        if (!canCopyFeedback) return
+        copyToClipboard(root.content)
+        playCopyFeedback()
+    }
+
     Component.onCompleted: playEntrance()
     onShouldAnimateEntranceChanged: {
         if (shouldAnimateEntrance) playEntrance()
@@ -65,14 +202,14 @@ Item {
         interval: 0
         repeat: false
         onTriggered: {
-            root._entranceQueued = false
             if (root._entranceStarted || !root.shouldAnimateEntrance) return
             root._entranceStarted = true
-            // Mark consumed at animation start to avoid replay flicker after delegate recycling.
+            // Mark consumed at animation start so rebuilt delegates do not replay the same entrance.
             root.consumeEntrance()
             if (root.isSystem) {
                 systemAuraNear.opacity = 0.0
                 systemAuraFar.opacity = 0.0
+                resetFeedbackSheen(greetingSweep)
                 systemShift.y = root.entranceStartY
                 systemEntranceAnim.restart()
             } else {
@@ -83,42 +220,43 @@ Item {
 
     Rectangle {
         id: systemAuraFar
-        visible: isSystem
+        visible: isSystemError
         anchors.fill: systemBubble
         anchors.leftMargin: -12
         anchors.rightMargin: -12
         anchors.topMargin: -12
-        anchors.bottomMargin: 0
-        radius: systemBubble.radius + 12
-        color: root.status === "error" ? chatSystemAuraErrorFar : chatSystemAuraFar
+        anchors.bottomMargin: -12
+        radius: systemBubble.radius + (isGreeting ? 10 : 12)
+        color: systemAuraFarColor
         opacity: 0.0
     }
 
     Rectangle {
         id: systemAuraNear
+        objectName: "systemAuraNear"
         visible: isSystem
         anchors.fill: systemBubble
-        anchors.leftMargin: -6
-        anchors.rightMargin: -6
-        anchors.topMargin: -6
-        anchors.bottomMargin: 0
-        radius: systemBubble.radius + 6
-        color: root.status === "error" ? chatSystemAuraErrorNear : chatSystemAuraNear
+        radius: systemBubble.radius
+        color: systemAuraNearColor
         opacity: 0.0
     }
 
     Rectangle {
         id: systemBubble
+        objectName: "systemBubble"
         visible: isSystem
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.top: parent.top
-        anchors.topMargin: 7
-        width: Math.max(60, Math.min(root.width * 0.9, systemText.implicitWidth + 34))
-        height: systemText.contentHeight + spacingMd + 2
-        radius: sizeSystemBubbleRadius
-        color: root.status === "error" ? chatSystemBubbleErrorBg : chatSystemBubbleBg
+        anchors.topMargin: isGreeting ? 8 : 7
+        width: isGreeting
+               ? Math.max(252, Math.min(root.width * 0.68, systemText.implicitWidth + root.systemTextStartX + root.systemContentPaddingX))
+               : Math.max(98, Math.min(root.width * 0.9, systemText.implicitWidth + root.systemTextStartX + root.systemContentPaddingX))
+        height: Math.max(systemText.contentHeight, root.systemIconSize) + (root.systemContentPaddingY * 2)
+        radius: isGreeting ? height / 2 : sizeSystemBubbleRadius
+        color: systemBubbleFillColor
         border.width: 1
-        border.color: root.status === "error" ? chatSystemBubbleErrorBorder : borderSubtle
+        border.color: systemBubbleBorderColor
+        clip: true
         opacity: shouldAnimateEntrance && !_entranceStarted ? 0.0 : 1.0
         scale: shouldAnimateEntrance && !_entranceStarted ? entranceStartScale : 1.0
         transformOrigin: Item.Center
@@ -130,45 +268,171 @@ Item {
         Rectangle {
             anchors.fill: parent
             radius: parent.radius
-            color: root.status === "error" ? chatSystemBubbleErrorOverlay : chatSystemBubbleOverlay
+            color: systemOverlayColor
         }
 
         Rectangle {
+            anchors.fill: parent
+            radius: parent.radius
+            visible: showGreetingDecoration
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: chatGreetingBubbleBgStart }
+                GradientStop { position: 1.0; color: chatGreetingBubbleBgEnd }
+            }
+            opacity: 0.92
+        }
+
+        Rectangle {
+            id: systemCopyFlash
+            objectName: "systemCopyFlash"
+            anchors.fill: parent
+            radius: parent.radius
+            color: copyFeedbackOverlayColor
+            opacity: 0.0
+        }
+
+        Rectangle {
+            id: systemCopyRipple
+            objectName: "systemCopyRipple"
+            anchors.fill: parent
+            anchors.margins: 2
+            radius: Math.max(1, parent.radius - 2)
+            color: "transparent"
+            border.width: 1
+            border.color: root.alphaColor(copyFeedbackSheenColor, 0.52)
+            opacity: 0.0
+            scale: 0.92
+            transformOrigin: Item.Center
+        }
+
+        Item {
+            id: systemIconSlot
+            width: root.systemIconSlotWidth
+            height: root.systemIconSize
             anchors.left: parent.left
-            anchors.leftMargin: 8
+            anchors.leftMargin: root.systemContentPaddingX
             anchors.verticalCenter: parent.verticalCenter
-            width: 3
-            height: Math.max(16, parent.height - 12)
-            radius: 2
-            color: root.status === "error" ? statusError : accent
-            opacity: 0.82
+            Item {
+                anchors.centerIn: parent
+                width: root.systemIconSize
+                height: root.systemIconSize
+
+                Image {
+                    id: greetingIcon
+                    visible: isGreeting
+                    anchors.centerIn: parent
+                    width: root.systemIconSize
+                    height: root.systemIconSize
+                    source: "../resources/icons/ignite.svg"
+                    sourceSize: Qt.size(root.systemIconSize, root.systemIconSize)
+                    fillMode: Image.PreserveAspectFit
+                    smooth: true
+                    opacity: 1.0
+                }
+
+                Rectangle {
+                    visible: !isGreeting
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    width: parent.width
+                    height: 2
+                    radius: 1
+                    color: root.systemIconColor
+                }
+
+                Rectangle {
+                    visible: !isGreeting
+                    anchors.top: parent.top
+                    anchors.topMargin: 4
+                    anchors.left: parent.left
+                    width: Math.max(4, parent.width - 3)
+                    height: 2
+                    radius: 1
+                    color: root.systemIconColor
+                    opacity: 0.9
+                }
+
+                Rectangle {
+                    visible: !isGreeting
+                    anchors.top: parent.top
+                    anchors.topMargin: 8
+                    anchors.left: parent.left
+                    width: Math.max(6, parent.width - 1)
+                    height: 2
+                    radius: 1
+                    color: root.systemIconColor
+                    opacity: 0.78
+                }
+            }
+        }
+
+        Rectangle {
+            id: greetingSweep
+            objectName: "greetingSweep"
+            visible: showGreetingDecoration
+            property real progress: -0.3
+            anchors.fill: parent
+            radius: parent.radius
+            color: "transparent"
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: root.alphaColor(chatGreetingSweep, 0.0) }
+                GradientStop { position: root.clamp01(greetingSweep.progress - root.feedbackBandOuterOffset); color: root.alphaColor(chatGreetingSweep, 0.0) }
+                GradientStop { position: root.clamp01(greetingSweep.progress - root.feedbackBandInnerOffset); color: root.alphaColor(chatGreetingSweep, 0.08) }
+                GradientStop { position: root.clamp01(greetingSweep.progress); color: root.alphaColor(chatGreetingSweep, 0.28) }
+                GradientStop { position: root.clamp01(greetingSweep.progress + root.feedbackBandInnerOffset); color: root.alphaColor(chatGreetingSweep, 0.1) }
+                GradientStop { position: root.clamp01(greetingSweep.progress + root.feedbackBandOuterOffset); color: root.alphaColor(chatGreetingSweep, 0.0) }
+                GradientStop { position: 1.0; color: root.alphaColor(chatGreetingSweep, 0.0) }
+            }
+            opacity: 0.0
+        }
+
+        Rectangle {
+            id: systemCopySheen
+            objectName: "systemCopySheen"
+            visible: root.canCopyFeedback
+            property real progress: -0.3
+            anchors.fill: parent
+            radius: parent.radius
+            color: "transparent"
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: root.alphaColor(copyFeedbackSheenColor, 0.0) }
+                GradientStop { position: root.clamp01(systemCopySheen.progress - root.feedbackBandOuterOffset); color: root.alphaColor(copyFeedbackSheenColor, 0.0) }
+                GradientStop { position: root.clamp01(systemCopySheen.progress - root.feedbackBandInnerOffset); color: root.alphaColor(copyFeedbackSheenColor, 0.1) }
+                GradientStop { position: root.clamp01(systemCopySheen.progress); color: root.alphaColor(copyFeedbackSheenColor, 0.32) }
+                GradientStop { position: root.clamp01(systemCopySheen.progress + root.feedbackBandInnerOffset); color: root.alphaColor(copyFeedbackSheenColor, 0.12) }
+                GradientStop { position: root.clamp01(systemCopySheen.progress + root.feedbackBandOuterOffset); color: root.alphaColor(copyFeedbackSheenColor, 0.0) }
+                GradientStop { position: 1.0; color: root.alphaColor(copyFeedbackSheenColor, 0.0) }
+            }
+            opacity: 0.0
         }
 
         Text {
             id: systemText
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.leftMargin: 17
-            anchors.rightMargin: 10
+            anchors.leftMargin: root.systemTextStartX
+            anchors.rightMargin: root.systemContentPaddingX
             anchors.verticalCenter: parent.verticalCenter
             text: root.content
-            color: root.status === "error" ? statusError : textSecondary
-            font.pixelSize: typeMeta
+            color: systemTextColor
+            font.pixelSize: isGreeting ? typeBody : typeMeta
             font.weight: weightMedium
             font.letterSpacing: letterTight
             wrapMode: Text.Wrap
-            horizontalAlignment: Text.AlignHCenter
-            lineHeight: 1.35
+            horizontalAlignment: Text.AlignLeft
+            verticalAlignment: Text.AlignVCenter
+            lineHeight: isGreeting ? lineHeightBody : 1.35
             textFormat: Text.PlainText
         }
 
-        HoverHandler { cursorShape: Qt.PointingHandCursor }
         MouseArea {
+            id: systemClickArea
             anchors.fill: parent
             z: 10
+            hoverEnabled: true
             preventStealing: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: root.copyToClipboard(root.content)
+            onClicked: root.copyCurrentMessage()
         }
     }
 
@@ -178,12 +442,103 @@ Item {
         NumberAnimation { target: systemBubble; property: "scale"; from: entranceStartScale; to: 1.0; duration: entranceScaleDuration; easing.type: easeEmphasis }
         NumberAnimation { target: systemShift; property: "y"; from: entranceStartY; to: 0; duration: entranceScaleDuration; easing.type: easeEmphasis }
         SequentialAnimation {
-            NumberAnimation { target: systemAuraNear; property: "opacity"; from: 0.0; to: motionAuraNearPeak; duration: motionFast; easing.type: easeStandard }
+            NumberAnimation {
+                target: systemAuraNear
+                property: "opacity"
+                from: 0.0
+                to: isGreeting ? greetingAuraNearPeak * 0.56 : (isSystemError ? motionAuraNearPeak * 0.72 : motionAuraNearPeak * 0.38)
+                duration: motionFast
+                easing.type: easeStandard
+            }
             NumberAnimation { target: systemAuraNear; property: "opacity"; to: 0.0; duration: motionAmbient; easing.type: easeStandard }
         }
         SequentialAnimation {
-            NumberAnimation { target: systemAuraFar; property: "opacity"; from: 0.0; to: motionAuraFarPeak; duration: motionUi; easing.type: easeStandard }
+            NumberAnimation {
+                target: systemAuraFar
+                property: "opacity"
+                from: 0.0
+                to: motionAuraFarPeak * 0.72
+                duration: motionUi
+                easing.type: easeStandard
+            }
             NumberAnimation { target: systemAuraFar; property: "opacity"; to: 0.0; duration: motionAmbient + 120; easing.type: easeStandard }
+        }
+        SequentialAnimation {
+            NumberAnimation { target: greetingSweep; property: "opacity"; from: 0.0; to: motionGreetingSweepPeak * 0.65; duration: motionFast; easing.type: easeStandard }
+            PauseAnimation { duration: motionUi }
+            NumberAnimation { target: greetingSweep; property: "opacity"; to: 0.0; duration: motionPanel; easing.type: easeSoft }
+        }
+        NumberAnimation {
+            target: greetingSweep
+            property: "progress"
+            from: root.feedbackProgressStart
+            to: root.feedbackProgressEnd
+            duration: motionAmbient + 160
+            easing.type: easeSoft
+        }
+    }
+
+    ParallelAnimation {
+        id: copyFeedbackAnim
+
+        SequentialAnimation {
+            NumberAnimation { target: copyFlash; property: "opacity"; from: 0.0; to: copyFeedbackOverlayPeak; duration: motionMicro; easing.type: easeStandard }
+            NumberAnimation { target: copyFlash; property: "opacity"; to: 0.0; duration: motionUi; easing.type: easeSoft }
+        }
+        SequentialAnimation {
+            NumberAnimation { target: copyRipple; property: "opacity"; from: 0.0; to: 0.24; duration: motionFast; easing.type: easeStandard }
+            NumberAnimation { target: copyRipple; property: "opacity"; to: 0.0; duration: motionPanel; easing.type: easeSoft }
+        }
+        NumberAnimation {
+            target: copyRipple
+            property: "scale"
+            from: 0.92
+            to: 1.02
+            duration: motionPanel
+            easing.type: easeEmphasis
+        }
+        SequentialAnimation {
+            NumberAnimation { target: systemCopyFlash; property: "opacity"; from: 0.0; to: copyFeedbackOverlayPeak; duration: motionMicro; easing.type: easeStandard }
+            NumberAnimation { target: systemCopyFlash; property: "opacity"; to: 0.0; duration: motionUi; easing.type: easeSoft }
+        }
+        SequentialAnimation {
+            NumberAnimation { target: systemCopyRipple; property: "opacity"; from: 0.0; to: 0.24; duration: motionFast; easing.type: easeStandard }
+            NumberAnimation { target: systemCopyRipple; property: "opacity"; to: 0.0; duration: motionPanel; easing.type: easeSoft }
+        }
+        NumberAnimation {
+            target: systemCopyRipple
+            property: "scale"
+            from: 0.92
+            to: 1.02
+            duration: motionPanel
+            easing.type: easeEmphasis
+        }
+
+        SequentialAnimation {
+            NumberAnimation { target: copySheen; property: "opacity"; from: 0.0; to: copyFeedbackSheenPeak; duration: motionFast; easing.type: easeStandard }
+            PauseAnimation { duration: motionMicro }
+            NumberAnimation { target: copySheen; property: "opacity"; to: 0.0; duration: motionPanel; easing.type: easeSoft }
+        }
+        NumberAnimation {
+            target: copySheen
+            property: "progress"
+            from: root.feedbackProgressStart
+            to: root.feedbackProgressEnd
+            duration: motionAmbient + 100
+            easing.type: easeSoft
+        }
+        SequentialAnimation {
+            NumberAnimation { target: systemCopySheen; property: "opacity"; from: 0.0; to: copyFeedbackSheenPeak; duration: motionFast; easing.type: easeStandard }
+            PauseAnimation { duration: motionMicro }
+            NumberAnimation { target: systemCopySheen; property: "opacity"; to: 0.0; duration: motionPanel; easing.type: easeSoft }
+        }
+        NumberAnimation {
+            target: systemCopySheen
+            property: "progress"
+            from: root.feedbackProgressStart
+            to: root.feedbackProgressEnd
+            duration: motionAmbient + 100
+            easing.type: easeSoft
         }
     }
 
@@ -199,6 +554,7 @@ Item {
 
     Rectangle {
         id: bubble
+        objectName: "bubbleBody"
         visible: !isSystem
         anchors {
             right: isUser ? parent.right : undefined
@@ -209,24 +565,25 @@ Item {
             topMargin: 5
         }
         property bool isTyping: root.status === "typing" && root.content === ""
-        width: isTyping ? 72 : Math.min(contentMetrics.implicitWidth + 32, root.width * 0.75)
-        height: isTyping ? 42 : contentText.contentHeight + 28
+        width: isTyping ? 72 : Math.min(contentMetrics.implicitWidth + (bubblePaddingX * 2), root.width * 0.75)
+        height: isTyping ? 42 : contentText.contentHeight + bubblePaddingTop + bubblePaddingBottom
         radius: sizeBubbleRadius
+        clip: true
         opacity: shouldAnimateEntrance && !_entranceStarted ? 0.0 : 1.0
         scale: shouldAnimateEntrance && !_entranceStarted ? entranceStartScale : 1.0
         transformOrigin: Item.Center
         transform: Translate { id: enterTranslate; y: 0 }
 
-        color: isUser ? (hoverHandler.hovered ? accentHover : accent) : (hoverHandler.hovered ? bgCardHover : bgCard)
+        color: isUser ? (clickArea.containsMouse ? accentHover : accent) : (clickArea.containsMouse ? bgCardHover : bgCard)
         border.color: isUser ? "transparent" : borderSubtle
         border.width: isUser ? 0 : 1
         Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
 
-        HoverHandler { id: hoverHandler; cursorShape: Qt.PointingHandCursor }
         MouseArea {
             id: clickArea
             anchors.fill: parent
             z: 10
+            hoverEnabled: true
             preventStealing: true
             cursorShape: Qt.PointingHandCursor
             onClicked: function(mouse) {
@@ -239,17 +596,42 @@ Item {
                         return
                     }
                 }
-                root.copyToClipboard(root.content)
-                copyFlash.opacity = 0.0
-                copyFlashAnim.restart()
+                root.copyCurrentMessage()
             }
         }
 
-        Rectangle { id: copyFlash; anchors.fill: parent; radius: parent.radius; z: 1; color: root.isUser ? chatBubbleCopyFlashUser : accentGlow; opacity: 0.0 }
-        SequentialAnimation {
-            id: copyFlashAnim
-            NumberAnimation { target: copyFlash; property: "opacity"; from: 0.0; to: motionCopyFlashPeak; duration: motionMicro; easing.type: easeStandard }
-            NumberAnimation { target: copyFlash; property: "opacity"; to: 0.0; duration: motionUi; easing.type: easeStandard }
+        Rectangle { id: copyFlash; objectName: "copyFlash"; anchors.fill: parent; radius: parent.radius; z: 1; color: copyFeedbackOverlayColor; opacity: 0.0 }
+        Rectangle {
+            id: copyRipple
+            objectName: "copyRipple"
+            anchors.fill: parent
+            anchors.margins: 2
+            radius: Math.max(1, parent.radius - 2)
+            color: "transparent"
+            border.width: 1
+            border.color: root.alphaColor(copyFeedbackSheenColor, 0.52)
+            opacity: 0.0
+            scale: 0.92
+            transformOrigin: Item.Center
+        }
+        Rectangle {
+            id: copySheen
+            objectName: "copySheen"
+            visible: root.canCopyFeedback
+            property real progress: -0.3
+            anchors.fill: parent
+            radius: parent.radius
+            color: "transparent"
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: root.alphaColor(copyFeedbackSheenColor, 0.0) }
+                GradientStop { position: root.clamp01(copySheen.progress - root.feedbackBandOuterOffset); color: root.alphaColor(copyFeedbackSheenColor, 0.0) }
+                GradientStop { position: root.clamp01(copySheen.progress - root.feedbackBandInnerOffset); color: root.alphaColor(copyFeedbackSheenColor, 0.1) }
+                GradientStop { position: root.clamp01(copySheen.progress); color: root.alphaColor(copyFeedbackSheenColor, 0.32) }
+                GradientStop { position: root.clamp01(copySheen.progress + root.feedbackBandInnerOffset); color: root.alphaColor(copyFeedbackSheenColor, 0.12) }
+                GradientStop { position: root.clamp01(copySheen.progress + root.feedbackBandOuterOffset); color: root.alphaColor(copyFeedbackSheenColor, 0.0) }
+                GradientStop { position: 1.0; color: root.alphaColor(copyFeedbackSheenColor, 0.0) }
+            }
+            opacity: 0.0
         }
 
         ParallelAnimation {
@@ -261,7 +643,16 @@ Item {
 
         Text {
             id: contentText
-            anchors { top: parent.top; topMargin: 14; left: parent.left; leftMargin: 16; right: parent.right; rightMargin: 16 }
+            anchors {
+                top: parent.top
+                bottom: parent.bottom
+                left: parent.left
+                right: parent.right
+                topMargin: bubblePaddingTop
+                bottomMargin: bubblePaddingBottom
+                leftMargin: bubblePaddingX
+                rightMargin: bubblePaddingX
+            }
             text: root.content
             visible: root.content !== ""
             color: root.isUser ? "#FFFFFF" : textPrimary
@@ -269,6 +660,7 @@ Item {
             wrapMode: Text.Wrap
             textFormat: root.isMarkdown ? Text.MarkdownText : Text.PlainText
             lineHeight: lineHeightBody
+            verticalAlignment: Text.AlignVCenter
         }
 
         Item {

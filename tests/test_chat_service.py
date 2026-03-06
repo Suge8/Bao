@@ -143,6 +143,7 @@ def test_show_system_response_immediate():
     assert model._messages[0]["role"] == "system"
     assert model._messages[0]["content"] == "Task done"
     assert model._messages[0]["status"] == "done"
+    assert model._messages[0]["entrancestyle"] == "system"
 
 
 def test_system_response_queued_while_processing():
@@ -152,14 +153,14 @@ def test_system_response_queued_while_processing():
     svc._handle_system_response("Queued msg")
     assert model.rowCount() == 0  # not displayed yet
     assert len(svc._pending_system) == 1
-    assert svc._pending_system[0] == ("Queued msg", "assistantReceived", "desktop:local")
+    assert svc._pending_system[0] == ("Queued msg", "system", "desktop:local")
 
 
 def test_system_response_drained_after_send():
     """Pending system responses should drain after send completes."""
     svc, model = make_service()
     svc._processing = True
-    svc._pending_system.append(("Deferred", "assistantReceived", svc._session_key))
+    svc._pending_system.append(("Deferred", "system", svc._session_key))
     row = model.append_assistant("reply", status="typing")
     svc._handle_send_result(row, True, "reply")
     assert model._messages[0]["status"] == "done"
@@ -186,6 +187,7 @@ def test_system_response_for_other_session_persisted_but_not_shown():
         "Deferred",
         status="done",
         _source="desktop-system",
+        entrance_style="system",
     )
 
 
@@ -220,16 +222,42 @@ def test_system_response_persist_uses_async_runner_and_skips_sync_save():
     sm.get_or_create.assert_not_called()
 
 
+def test_transient_greeting_persisted_with_greeting_style() -> None:
+    svc, _model = make_service()
+    session = MagicMock()
+    sm = MagicMock()
+    sm.get_or_create.return_value = session
+    svc._session_manager = sm
+
+    svc._append_transient_system_message(
+        "Hello",
+        entrance_style="greeting",
+        session_key="desktop:other",
+        show_in_ui=False,
+    )
+
+    session.add_message.assert_called_once_with(
+        "user",
+        "Hello",
+        status="done",
+        _source="desktop-system",
+        entrance_style="greeting",
+    )
+
+
 def test_desktop_startup_greeting_queued_until_startup_session_ready() -> None:
     svc, _model = make_service()
-    captured: list[tuple[str, str]] = []
-    svc._systemResponse.connect(lambda content, key: captured.append((content, key)))
+    with patch.object(svc, "_queue_or_show_system_response") as mocked:
+        svc._startupGreeting.emit("Hello")
+        mocked.assert_not_called()
 
-    svc._startupGreeting.emit("Hello")
-    assert captured == []
+        svc.notifyStartupSessionReady("desktop:local::s1")
 
-    svc.notifyStartupSessionReady("desktop:local::s1")
-    assert captured == [("Hello", "desktop:local::s1")]
+    mocked.assert_called_once_with(
+        "Hello",
+        entrance_style="greeting",
+        session_key="desktop:local::s1",
+    )
 
 
 def test_system_response_empty_ignored():
@@ -540,6 +568,27 @@ def test_set_session_key_same_key_ignored_when_history_inflight():
 
     assert called == []
     assert svc._current_nav_id == 0
+
+
+def test_set_session_key_empty_clears_visible_history_without_reloading():
+    svc, model = make_service()
+    svc._session_manager = object()
+    svc._session_key = "desktop:old"
+    svc._desired_session_key = "desktop:old"
+    svc._committed_session_key = "desktop:old"
+    svc._history_initialized = True
+    model.append_assistant("existing", status="done")
+    called = []
+    svc._request_history_load = lambda key, *_args, **kwargs: called.append(key)
+
+    svc.setSessionKey("")
+
+    assert svc._session_key == ""
+    assert svc._desired_session_key == ""
+    assert svc._committed_session_key == ""
+    assert svc.historyLoading is False
+    assert model.rowCount() == 0
+    assert called == []
 
 
 def test_load_history_uses_display_history_for_ui_model():

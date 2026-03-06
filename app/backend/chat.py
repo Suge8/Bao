@@ -36,7 +36,8 @@ class _Role(IntEnum):
 class ChatMessageModel(QAbstractListModel):
     """Incremental list model for chat messages.
 
-    Never calls beginResetModel — all mutations use beginInsertRows / dataChanged.
+    Prefers incremental updates via beginInsertRows / dataChanged.
+    Falls back to beginResetModel when history cannot be merged safely.
     """
 
     _ROLE_NAMES = {
@@ -99,6 +100,7 @@ class ChatMessageModel(QAbstractListModel):
         entrance_pending: bool = True,
     ) -> int:
         """Append an assistant message placeholder; return its row index."""
+        entrance_style = self._normalize_entrance_style(entrance_style, default="assistantReceived")
         return self._append(
             {
                 "role": "assistant",
@@ -120,6 +122,7 @@ class ChatMessageModel(QAbstractListModel):
         entrance_pending: bool = True,
     ) -> int:
         """Append a system message (gateway status, errors, etc.); return row index."""
+        entrance_style = self._normalize_entrance_style(entrance_style, default="system")
         return self._append(
             {
                 "role": "system",
@@ -204,6 +207,34 @@ class ChatMessageModel(QAbstractListModel):
         return default
 
     @staticmethod
+    def _normalize_entrance_style(style: Any, default: str = "none") -> str:
+        if isinstance(style, str) and style in {"none", "assistantReceived", "system", "greeting"}:
+            return style
+        return default
+
+    @staticmethod
+    def _build_prepared_message(
+        index: int,
+        *,
+        role: str,
+        content: Any,
+        status: str,
+        entrance_style: str = "none",
+        fmt: str = "plain",
+    ) -> dict[str, Any]:
+        return {
+            "id": index + 1,
+            "createdat": 0,
+            "role": role,
+            "content": content,
+            "format": fmt,
+            "status": status,
+            "entrancestyle": entrance_style,
+            "entrancepending": False,
+            "entranceconsumed": True,
+        }
+
+    @staticmethod
     def prepare_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         prepared: list[dict[str, Any]] = []
         for i, m in enumerate(messages):
@@ -212,75 +243,62 @@ class ChatMessageModel(QAbstractListModel):
             status = ChatMessageModel._normalize_status(m.get("status"), default="done")
             if role == "assistant":
                 prepared.append(
-                    {
-                        "id": i + 1,
-                        "createdat": 0,
-                        "role": "assistant",
-                        "content": content,
-                        "format": "plain",
-                        "status": status,
-                        "entrancestyle": "none",
-                        "entrancepending": False,
-                        "entranceconsumed": True,
-                    }
+                    ChatMessageModel._build_prepared_message(
+                        i,
+                        role="assistant",
+                        content=content,
+                        status=status,
+                    )
                 )
             elif role == "system":
+                entrance_style = ChatMessageModel._normalize_entrance_style(
+                    m.get("entrance_style"), default="none"
+                )
                 prepared.append(
-                    {
-                        "id": i + 1,
-                        "createdat": 0,
-                        "role": "system",
-                        "content": content,
-                        "format": "plain",
-                        "status": status,
-                        "entrancestyle": "none",
-                        "entrancepending": False,
-                        "entranceconsumed": True,
-                    }
+                    ChatMessageModel._build_prepared_message(
+                        i,
+                        role="system",
+                        content=content,
+                        status=status,
+                        entrance_style=entrance_style,
+                    )
                 )
             elif role == "user":
                 if m.get("_source"):
+                    entrance_style = ChatMessageModel._normalize_entrance_style(
+                        m.get("entrance_style"), default="none"
+                    )
                     prepared.append(
-                        {
-                            "id": i + 1,
-                            "createdat": 0,
-                            "role": "system",
-                            "content": content,
-                            "format": "plain",
-                            "status": status,
-                            "entrancestyle": "none",
-                            "entrancepending": False,
-                            "entranceconsumed": True,
-                        }
+                        ChatMessageModel._build_prepared_message(
+                            i,
+                            role="system",
+                            content=content,
+                            status=status,
+                            entrance_style=entrance_style,
+                        )
                     )
                 else:
                     prepared.append(
-                        {
-                            "id": i + 1,
-                            "createdat": 0,
-                            "role": "user",
-                            "content": content,
-                            "format": "plain",
-                            "status": status,
-                            "entrancestyle": "none",
-                            "entrancepending": False,
-                            "entranceconsumed": True,
-                        }
+                        ChatMessageModel._build_prepared_message(
+                            i,
+                            role="user",
+                            content=content,
+                            status=status,
+                        )
                     )
             elif role in ("tool", "tool_calls"):
                 label = "\U0001f527 " + (content if isinstance(content, str) else str(content))
+                entrance_style = ChatMessageModel._normalize_entrance_style(
+                    m.get("entrance_style"), default="none"
+                )
                 prepared.append(
-                    {
-                        "id": i + 1,
-                        "createdat": 0,
-                        "role": "system",
-                        "content": label,
-                        "format": "plain",
-                        "status": status,
-                        "entrancestyle": "none",
-                        "entrancepending": False,
-                        "entranceconsumed": True,
-                    }
+                    ChatMessageModel._build_prepared_message(
+                        i,
+                        role="system",
+                        content=label,
+                        status=status,
+                        entrance_style=entrance_style,
+                    )
                 )
         return prepared
 
