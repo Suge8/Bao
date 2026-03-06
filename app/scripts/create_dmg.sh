@@ -24,25 +24,9 @@ case "$ARCH" in
     x86_64|amd64)  ARCH="x86_64" ;;
 esac
 
-# ── Version ──
-VERSION=$(python3 -c "
-import re
-with open('pyproject.toml') as f:
-    m = re.search(r'version\s*=\s*\"([^\"]+)\"', f.read())
-    print(m.group(1) if m else '0.0.0')
-")
-
 APP_NAME="Bao"
 APP_PATH="$PROJECT_ROOT/dist/$APP_NAME.app"
-DMG_NAME="$APP_NAME-$VERSION-macos-$ARCH"
-DMG_PATH="$PROJECT_ROOT/dist/$DMG_NAME.dmg"
 DMG_TEMP="$PROJECT_ROOT/dist/dmg-staging"
-
-echo "╔══════════════════════════════════════════╗"
-echo "║  Bao Desktop — DMG Creator              ║"
-echo "║  Version: $VERSION ($ARCH)"
-echo "╚══════════════════════════════════════════╝"
-echo ""
 
 # ── Pre-flight ──
 command -v create-dmg >/dev/null 2>&1 || {
@@ -54,6 +38,22 @@ if [[ ! -d "$APP_PATH" ]]; then
     echo "❌ $APP_PATH not found. Run build_mac.sh first."
     exit 1
 fi
+
+INFO_PLIST="$APP_PATH/Contents/Info.plist"
+if [[ ! -f "$INFO_PLIST" ]]; then
+    echo "❌ $INFO_PLIST not found. Rebuild the app with build_mac.sh first."
+    exit 1
+fi
+
+VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$INFO_PLIST")
+DMG_NAME="$APP_NAME-$VERSION-macos-$ARCH"
+DMG_PATH="$PROJECT_ROOT/dist/$DMG_NAME.dmg"
+
+echo "╔══════════════════════════════════════════╗"
+echo "║  Bao Desktop — DMG Creator              ║"
+echo "║  Version: $VERSION ($ARCH)"
+echo "╚══════════════════════════════════════════╝"
+echo ""
 
 # ── Clean ──
 rm -rf "$DMG_TEMP" "$DMG_PATH"

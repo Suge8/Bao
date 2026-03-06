@@ -9,6 +9,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$PROJECT_ROOT"
 
+command -v uv >/dev/null 2>&1 || { echo "❌ uv not found"; exit 1; }
+
 # ── Parse args ──
 ARCH="${1:---arch}"
 if [[ "$ARCH" == "--arch" ]]; then
@@ -26,13 +28,8 @@ case "$ARCH" in
         ;;
 esac
 
-# ── Version from pyproject.toml ──
-VERSION=$(uv run python -c "
-import re
-with open('pyproject.toml') as f:
-    m = re.search(r'version\s*=\s*\"([^\"]+)\"', f.read())
-    print(m.group(1) if m else '0.0.0')
-")
+# ── Version ──
+VERSION=$(uv run python app/scripts/read_version.py)
 
 APP_NAME="Bao"
 DIST_DIR="$PROJECT_ROOT/dist"
@@ -48,7 +45,6 @@ echo ""
 
 # ── Pre-flight checks ──
 echo "▸ Checking dependencies..."
-command -v uv >/dev/null 2>&1 || { echo "❌ uv not found"; exit 1; }
 uv run python -c "import nuitka" 2>/dev/null || { echo "❌ Nuitka not installed. Run: uv pip install nuitka ordered-set zstandard"; exit 1; }
 uv run python -c "import PySide6" 2>/dev/null || { echo "❌ PySide6 not installed. Run: uv sync --extra desktop"; exit 1; }
 

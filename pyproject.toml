@@ -1,6 +1,6 @@
 [project]
 name = "bao-ai"
-version = "0.3.7"
+dynamic = ["version"]
 description = "A personal AI assistant that remembers, learns from experience, and never makes the same mistake twice."
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -73,6 +73,9 @@ packages = ["bao"]
 
 [tool.hatch.build.targets.wheel.sources]
 "bao" = "bao"
+
+[tool.hatch.version]
+path = "bao/__about__.py"
 
 # Include non-Python files in skills
 [tool.hatch.build]
