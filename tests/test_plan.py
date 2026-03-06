@@ -562,11 +562,14 @@ def test_help_command_does_not_expose_plan_command(tmp_path: Path) -> None:
     assert "/plan" not in out.content
 
 
-def test_planning_tool_hints_contain_trigger_policy(tmp_path: Path) -> None:
+def test_planning_tool_metadata_contains_trigger_policy(tmp_path: Path) -> None:
     loop = _make_loop(tmp_path)
-    hints = "\n".join(loop.context.tool_hints)
-    assert "WHEN:" in hints
-    assert "create_plan" in hints
-    assert "update_plan_step" in hints
-    assert "clear_plan" in hints
-    assert "SKIP:" in hints
+    create_meta = loop.tools.get_metadata("create_plan")
+    update_meta = loop.tools.get_metadata("update_plan_step")
+    clear_meta = loop.tools.get_metadata("clear_plan")
+    assert create_meta is not None
+    assert update_meta is not None
+    assert clear_meta is not None
+    assert "2+ meaningful steps" in create_meta.short_hint
+    assert "progress" in update_meta.short_hint.lower()
+    assert "done" in clear_meta.short_hint.lower() or "abandoned" in clear_meta.short_hint.lower()
