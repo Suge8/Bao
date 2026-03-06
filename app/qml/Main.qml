@@ -202,6 +202,16 @@ ApplicationWindow {
         if (uiLanguage === "zh" || uiLanguage === "en") return uiLanguage
         return autoLanguage
     }
+    readonly property bool setupMode: configService
+                                     ? (!configService.isValid || configService.needsSetup)
+                                     : true
+    readonly property int currentPageIndex: {
+        if (setupMode)
+            return 1
+        if (startView === "settings")
+            return 1
+        return 0
+    }
     onEffectiveLangChanged: if (chatService) chatService.setLanguage(effectiveLang)
 
     Component.onCompleted: _applyUiLanguageFromConfig()
@@ -540,9 +550,11 @@ ApplicationWindow {
                     spacing: 0
 
                     Sidebar {
+                        objectName: "appSidebar"
                         id: sidebar
                         Layout.preferredWidth: 240
                         Layout.fillHeight: true
+                        visible: !root.setupMode
                         showingSettings: stack.currentIndex === 1
                         activeSessionKey: sessionService ? sessionService.activeKey : ""
                         showChatSelection: stack.currentIndex === 0
@@ -561,17 +573,11 @@ ApplicationWindow {
                     }
 
                     StackLayout {
+                        objectName: "mainStack"
                         id: stack
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        currentIndex: root.startView === "settings" ? 1 : 0
-
-                        // Force settings if config is missing/invalid
-                        Component.onCompleted: {
-                            if (configService && (!configService.isValid || configService.needsSetup)) {
-                                stack.currentIndex = 1
-                            }
-                        }
+                        currentIndex: root.currentPageIndex
 
                         Item {
                             id: chatPage
@@ -704,6 +710,7 @@ ApplicationWindow {
                                 transform: Translate { x: settingsPage.revealShift }
 
                                 SettingsView {
+                                    objectName: "settingsView"
                                     id: settingsView
                                     anchors.fill: parent
                                     appRoot: root

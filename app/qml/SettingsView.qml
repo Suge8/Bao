@@ -23,6 +23,83 @@ Rectangle {
         return isZh ? zh : en
     }
 
+    function _cloneValue(value) {
+        return JSON.parse(JSON.stringify(value))
+    }
+
+    function _getProviderMap() {
+        var providers = configService ? configService.getValue("providers") : null
+        if (providers && typeof providers === "object" && !Array.isArray(providers))
+            return providers
+        return {}
+    }
+
+    function _nextProviderName() {
+        var used = {}
+        for (var i = 0; i < _providerList.length; i++) {
+            if (_providerList[i] && _providerList[i].name)
+                used[_providerList[i].name] = true
+        }
+
+        var idx = _providerList.length + 1
+        var name = "provider" + idx
+        while (used[name]) {
+            idx += 1
+            name = "provider" + idx
+        }
+        return name
+    }
+
+    function _nextProviderOrder() {
+        var maxOrder = -1
+        for (var i = 0; i < _providerList.length; i++) {
+            var ord = Number(_providerList[i] && _providerList[i].order)
+            if (!isNaN(ord) && ord > maxOrder)
+                maxOrder = ord
+        }
+        return maxOrder + 1
+    }
+
+    function _providerOrderValue(original, fallbackIndex) {
+        var rawOrder = original.order
+        if (typeof rawOrder === "number") {
+            return rawOrder
+        } else if (typeof rawOrder === "string" && rawOrder.trim() !== "") {
+            var parsedOrder = Number(rawOrder)
+            if (!isNaN(parsedOrder))
+                return parsedOrder
+        }
+        return fallbackIndex
+    }
+
+    function _mergeUiChanges(changes) {
+        var hasUiPatch = changes.hasOwnProperty("ui.language")
+        for (var uiKey in changes) {
+            if (uiKey.indexOf("ui.update.") === 0)
+                hasUiPatch = true
+        }
+        if (!hasUiPatch)
+            return
+
+        var uiNode = configService.getValue("ui")
+        var nextUi = (uiNode && typeof uiNode === "object" && !Array.isArray(uiNode)) ? _cloneValue(uiNode) : {}
+        if (changes.hasOwnProperty("ui.language")) {
+            nextUi["language"] = changes["ui.language"]
+            delete changes["ui.language"]
+        }
+
+        var updateNode = (nextUi.update && typeof nextUi.update === "object" && !Array.isArray(nextUi.update))
+                       ? _cloneValue(nextUi.update) : {}
+        for (var updateKey in changes) {
+            if (updateKey.indexOf("ui.update.") !== 0)
+                continue
+            updateNode[updateKey.substring("ui.update.".length)] = changes[updateKey]
+            delete changes[updateKey]
+        }
+        nextUi.update = updateNode
+        changes["ui"] = nextUi
+    }
+
     function _translateError(msg) {
         if (msg.indexOf("token_required:") === 0) {
             var channel = msg.split(":")[1]
@@ -101,39 +178,14 @@ Rectangle {
         flick.contentY = target
     }
 
-    // No longer needed — _addNewProvider uses dotpath insertion
-
     function _addNewProvider() {
         if (!configService) return
-        var used = {}
-        for (var i = 0; i < _providerList.length; i++) {
-            if (_providerList[i] && _providerList[i].name) used[_providerList[i].name] = true
-        }
-        var idx = _providerList.length + 1
-        var name = "provider" + idx
-        while (used[name]) {
-            idx += 1
-            name = "provider" + idx
-        }
+        var name = _nextProviderName()
+        var providerValue = {"type": "openai", "apiKey": "", "order": _nextProviderOrder()}
+        var nextProviders = _cloneValue(_getProviderMap())
+        nextProviders[name] = providerValue
 
-        var maxOrder = -1
-        for (var j = 0; j < _providerList.length; j++) {
-            var ord = Number(_providerList[j] && _providerList[j].order)
-            if (!isNaN(ord) && ord > maxOrder) maxOrder = ord
-        }
-
-        var changes = {}
-        var providerValue = {"type": "openai", "apiKey": "", "order": maxOrder + 1}
-        var existingProviders = configService.getValue("providers")
-        if (existingProviders && typeof existingProviders === "object" && !Array.isArray(existingProviders)) {
-            changes["providers." + name] = providerValue
-        } else {
-            var initialProviders = {}
-            initialProviders[name] = providerValue
-            changes["providers"] = initialProviders
-        }
-
-        var ok = configService.save(changes)
+        var ok = configService.save({"providers": nextProviders})
         toast.show(ok ? strings.settings_saved_hint : strings.settings_save_failed, ok)
         if (ok) {
             _pendingExpandProviderName = name
@@ -150,11 +202,9 @@ Rectangle {
                 changes[overrideKey] = overrides[overrideKey]
         }
 
-        var allProviders = configService.getValue("providers")
-        var providerEntries = []
+        var allProviders = _getProviderMap()
         var seenProviderNames = {}
-        var providerRename = false
-        var providerHasDotName = false
+        var nextProviders = {}
         for (var i = 0; i < root._providerList.length; i++) {
             var prefix = "_prov_" + i + "_"
             var original = root._providerList[i] || ({})
@@ -170,9 +220,6 @@ Rectangle {
                 return
             }
             seenProviderNames[newName] = true
-            if (newName.indexOf(".") !== -1) {
-                providerHasDotName = true
-            }
 
             var sourceProvider = original
             if (allProviders && typeof allProviders === "object" && !Array.isArray(allProviders)
@@ -180,70 +227,28 @@ Rectangle {
                 sourceProvider = allProviders[origName]
             }
 
-            var merged = {}
-            for (var sourceKey in sourceProvider) merged[sourceKey] = sourceProvider[sourceKey]
+            var merged = _cloneValue(sourceProvider)
             if (merged["type"] === undefined || merged["type"] === null || merged["type"] === "") {
                 merged["type"] = original.type || "openai"
             }
             if (merged["apiKey"] === undefined || merged["apiKey"] === null) {
                 merged["apiKey"] = (original.apiKey !== undefined && original.apiKey !== null) ? original.apiKey : ""
             }
-            var mergedOrder = NaN
-            if (typeof merged["order"] === "number") {
-                mergedOrder = merged["order"]
-            } else if (typeof merged["order"] === "string" && merged["order"].trim() !== "") {
-                mergedOrder = Number(merged["order"])
-            }
-            if (isNaN(mergedOrder)) {
-                var fallbackOrder = NaN
-                if (typeof original.order === "number") {
-                    fallbackOrder = original.order
-                } else if (typeof original.order === "string" && original.order.trim() !== "") {
-                    fallbackOrder = Number(original.order)
-                }
-                merged["order"] = isNaN(fallbackOrder) ? i : fallbackOrder
-            } else {
-                merged["order"] = mergedOrder
-            }
+            merged["order"] = _providerOrderValue(merged, i)
 
-            var changedFields = []
             var fieldNames = ["type", "apiKey", "apiBase"]
             for (var j = 0; j < fieldNames.length; j++) {
                 var fk = prefix + fieldNames[j]
                 if (changes[fk] !== undefined) {
                     merged[fieldNames[j]] = changes[fk]
-                    changedFields.push(fieldNames[j])
                 }
                 delete changes[fk]
             }
             delete changes[prefix + "name"]
 
-            providerEntries.push({
-                "name": newName,
-                "origName": origName,
-                "merged": merged,
-                "changedFields": changedFields
-            })
-            if (newName !== origName) {
-                providerRename = true
-            }
+            nextProviders[newName] = merged
         }
-
-        if (providerRename || providerHasDotName) {
-            var nextProviders = {}
-            for (var p = 0; p < providerEntries.length; p++) {
-                nextProviders[providerEntries[p].name] = providerEntries[p].merged
-            }
-            changes["providers"] = nextProviders
-        } else {
-            for (var e = 0; e < providerEntries.length; e++) {
-                var entry = providerEntries[e]
-                for (var c = 0; c < entry.changedFields.length; c++) {
-                    var field = entry.changedFields[c]
-                    changes["providers." + entry.name + "." + field] = entry.merged[field]
-                }
-            }
-        }
+        changes["providers"] = nextProviders
 
         var toDelete = []
         for (var k in changes) {
@@ -251,29 +256,7 @@ Rectangle {
         }
         for (var d = 0; d < toDelete.length; d++) delete changes[toDelete[d]]
 
-        var hasUiPatch = changes.hasOwnProperty("ui.language")
-        for (var uiKey in changes) {
-            if (uiKey.indexOf("ui.update.") === 0)
-                hasUiPatch = true
-        }
-        if (hasUiPatch) {
-            var uiNode = configService.getValue("ui")
-            var nextUi = (uiNode && typeof uiNode === "object" && !Array.isArray(uiNode)) ? JSON.parse(JSON.stringify(uiNode)) : {}
-            if (changes.hasOwnProperty("ui.language")) {
-                nextUi["language"] = changes["ui.language"]
-                delete changes["ui.language"]
-            }
-            var updateNode = (nextUi.update && typeof nextUi.update === "object" && !Array.isArray(nextUi.update))
-                            ? JSON.parse(JSON.stringify(nextUi.update)) : {}
-            for (var updateKey in changes) {
-                if (updateKey.indexOf("ui.update.") !== 0)
-                    continue
-                updateNode[updateKey.substring("ui.update.".length)] = changes[updateKey]
-                delete changes[updateKey]
-            }
-            nextUi.update = updateNode
-            changes["ui"] = nextUi
-        }
+        _mergeUiChanges(changes)
 
         var ok = configService.save(changes)
         if (ok) {
@@ -347,6 +330,39 @@ Rectangle {
                 anchors.top: parent.top
                 anchors.topMargin: 72
                 spacing: spacingXl
+
+                SettingsSection {
+                    Layout.fillWidth: true
+                    visible: configService && configService.needsSetup
+                    title: tr("开始前先完成这 3 步", "Finish these 3 steps first")
+
+                    ColumnLayout {
+                        width: parent.width
+                        spacing: 10
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: tr("1. 先添加一个可用的 Provider，并填入 API Key。", "1. Add a working provider and enter its API key.")
+                            color: textPrimary
+                            font.pixelSize: typeBody
+                            wrapMode: Text.WordWrap
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: tr("2. 在“代理默认设置”里填写主模型名。", "2. Enter the primary model in Agent Defaults.")
+                            color: textPrimary
+                            font.pixelSize: typeBody
+                            wrapMode: Text.WordWrap
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: tr("3. 点击右上角保存；保存成功后会自动进入聊天界面。", "3. Click Save in the top-right; after a successful save, the app will enter chat automatically.")
+                            color: textPrimary
+                            font.pixelSize: typeBody
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
 
                 SettingsSection {
                     Layout.fillWidth: true

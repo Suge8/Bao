@@ -4,6 +4,7 @@ import QtQuick.Layouts 1.15
 
 Rectangle {
     id: root
+    objectName: "sidebarRoot"
 
     property bool showingSettings: false
     property string activeSessionKey: ""
