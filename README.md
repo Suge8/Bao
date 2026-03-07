@@ -161,7 +161,7 @@ Bao 自动检测本机安装的编程 CLI（OpenCode、Codex、Claude Code），
 | 记忆系统 | Markdown 文件记忆（手动维护） | **LanceDB 向量+BM25 混合检索（hybrid retrieval），四分类长期记忆，自动整合去重，写入侧内容未变跳过 embedding** | 从手工记录升级为可检索、可治理的长期记忆系统 |
 | 经验学习 | 无闭环经验引擎 | **闭环经验引擎（Laplace 平滑、冲突检测、负面学习、主动遗忘）** | 具备可持续自我优化能力 |
 | 自我反思 | 无内置反思重试 | **Retry with Reflection（失败后反思并重试）** | 失败可恢复，任务完成率更稳 |
-| 后台任务 | 单线程阻塞式 | **子代理独立运行 + 进度追踪 + 里程碑推送 + 可取消** | 前台不被长任务阻塞，协作与可观测性更好 |
+| 后台任务 | 单线程阻塞式 | **子代理独立运行 + 进度追踪 + 里程碑推送 + 可取消；完成态通过内部事件交接，只向用户展示父代理整理后的摘要** | 前台不被长任务阻塞，协作与可观测性更好 |
 | 长任务引擎 | 主要依赖 compaction | **轨迹压缩 + 充分性检查 + 自我纠错** | 长链路任务更可控，降低中途漂移风险 |
 | 图像生成 | 无内置 | **Gemini API 文生图 + 多平台发送** | 原生支持图像生成与分发闭环 |
 | 桌面自动化 | 无内置 | **7 个桌面自动化工具，模型无关，HiDPI 自适应** | 可直接操作桌面环境，自动化覆盖面更广 |
@@ -476,11 +476,12 @@ Other agents repeat mistakes. **Bao learns from them.**
 
 #### Complex Tasks, Zero Blocking
 
-Hand off time-consuming work to a subagent: keep chatting while it works in the background. Ask once, get a clear status update.
+Hand off time-consuming work to a subagent: keep chatting while it works in the background. Bao keeps the handoff internal and only shows you the parent agent's user-facing summary when the task completes.
 
 - **Background execution** — subagents run independently while the main agent stays responsive to you
 - **Progress on demand** — the main agent calls `check_tasks` to see current phase, tool count, and iteration progress; `check_tasks_json` returns a stable schema_version=1 JSON snapshot (including `last_error` summary) for UI or automation consumers
 - **Milestone updates** — subagents auto-report every 5 iterations. No spam, no missed beats
+- **Single visible completion path** — subagent completion is handed back as an internal structured event; only the parent agent's final assistant summary enters the chat timeline
 - **Resume from prior results** — continue from a previous task without re-explaining context
 - **Long-task engine parity** — trajectory compression + sufficiency checks + context compaction for steadier, more focused long runs
 - **Cancel anytime** — task going sideways? `cancel_task` stops it; stalls (2+ minutes) get flagged
@@ -581,7 +582,7 @@ You'll never have to ask "where were you again?" **It already knows.**
 | Memory system | Markdown file memory (manual upkeep) | **LanceDB vector+BM25 hybrid retrieval, 4-category long-term memory, auto merge/dedup, write-side embedding skip when unchanged** | Upgrades memory from manual notes to searchable managed knowledge |
 | Experience learning | No closed-loop experience engine | **Closed-loop engine (Laplace smoothing, conflict checks, negative learning, active forgetting)** | Delivers continuous self-improvement over time |
 | Self-reflection | No built-in reflection retry | **Retry with Reflection after failures** | Better recovery path and more stable completion rate |
-| Background tasks | Single-thread blocking flow | **Independent subagents + progress tracking + milestones + cancellation** | Long tasks no longer block foreground interactions |
+| Background tasks | Single-thread blocking flow | **Independent subagents + progress tracking + milestones + cancellation; completion stays internal until the parent agent posts the final summary** | Long tasks no longer block foreground interactions |
 | Long-task engine | Mostly compaction-based | **Trajectory compression + sufficiency checks + self-correction** | More controlled execution on long, multi-step workflows |
 | Image generation | No built-in | **Gemini text-to-image + cross-platform delivery** | Native generation-to-delivery pipeline |
 | Desktop automation | No built-in | **7 desktop automation tools, model-agnostic, HiDPI-aware** | Broader automation reach into real desktop operations |
