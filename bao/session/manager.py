@@ -9,7 +9,7 @@ from typing import Any
 
 from loguru import logger
 
-from bao.utils.db import ensure_table, get_db
+from bao.utils.db import get_db, open_or_create_table
 
 # legacy safety net — runtime context is no longer injected as user message,
 # but keep filtering in case old sessions contain such entries.
@@ -178,17 +178,58 @@ class Session:
 class SessionManager:
     def __init__(self, workspace: Path):
         self.workspace = workspace
-        self._db = get_db(workspace)
-        self._meta_tbl = ensure_table(self._db, "session_meta", _META_SAMPLE)
-        self._msg_tbl = ensure_table(self._db, "session_messages", _MSG_SAMPLE)
+        self._db = None
+        self._meta_tbl = None
+        self._msg_tbl = None
         self._cache: dict[str, Session] = {}
         self._active_cache: dict[str, str] = {}
         self._meta_lock = threading.RLock()
+        self._init_lock = threading.RLock()
         self._session_locks_lock = threading.Lock()
         self._session_locks: dict[str, threading.RLock] = {}
         self._change_listeners: list[Callable[[SessionChangeEvent], None]] = []
-        self._migrate_legacy(workspace)
-        self._ensure_indexes()
+
+    def _db_connection(self):
+        db = self._db
+        if db is not None:
+            return db
+        with self._init_lock:
+            db = self._db
+            if db is None:
+                db = get_db(self.workspace)
+                self._db = db
+            return db
+
+    def _meta_table(self):
+        table = self._meta_tbl
+        if table is not None:
+            return table
+        with self._init_lock:
+            table = self._meta_tbl
+            if table is None:
+                table, created = open_or_create_table(
+                    self._db_connection(), "session_meta", _META_SAMPLE
+                )
+                self._meta_tbl = table
+                self._migrate_legacy(self.workspace, table)
+                if created:
+                    self._ensure_meta_index(table)
+            return table
+
+    def _msg_table(self):
+        table = self._msg_tbl
+        if table is not None:
+            return table
+        with self._init_lock:
+            table = self._msg_tbl
+            if table is None:
+                table, created = open_or_create_table(
+                    self._db_connection(), "session_messages", _MSG_SAMPLE
+                )
+                self._msg_tbl = table
+                if created:
+                    self._ensure_msg_indexes(table)
+            return table
 
     @_synchronized
     def add_change_listener(self, listener: Callable[[SessionChangeEvent], None]) -> None:
@@ -216,17 +257,22 @@ class SessionManager:
                 self._session_locks[key] = lock
             return lock
 
-    def _ensure_indexes(self) -> None:
-        """Create scalar indexes for frequently filtered columns."""
+    def _ensure_meta_index(self, table: Any) -> None:
         try:
-            self._meta_tbl.create_scalar_index("session_key", replace=False)
-            self._msg_tbl.create_scalar_index("session_key", replace=False)
-            self._msg_tbl.create_scalar_index("idx", replace=False)
-            logger.debug("📊 索引已创建 / indexes created: session_key, idx")
+            table.create_scalar_index("session_key", replace=False)
+            logger.debug("📊 索引已创建 / indexes created: session_meta.session_key")
         except Exception as e:
             logger.debug("⚠️ 索引创建跳过 / index creation skipped: {}", e)
 
-    def _migrate_legacy(self, workspace: Path) -> None:
+    def _ensure_msg_indexes(self, table: Any) -> None:
+        for column in ("session_key", "idx"):
+            try:
+                table.create_scalar_index(column, replace=False)
+                logger.debug("📊 索引已创建 / indexes created: session_messages.{}", column)
+            except Exception as e:
+                logger.debug("⚠️ 索引创建跳过 / index creation skipped: {}", e)
+
+    def _migrate_legacy(self, workspace: Path, meta_tbl: Any) -> None:
         for d in (workspace / "sessions", Path.home() / ".bao" / "sessions"):
             if not d.exists():
                 continue
@@ -234,7 +280,7 @@ class SessionManager:
                 key = path.stem.replace("_", ":")
                 try:
                     existing = (
-                        self._meta_tbl.search()
+                        meta_tbl.search()
                         .where(f"session_key = '{_escape(key)}'")
                         .limit(1)
                         .to_list()
@@ -295,8 +341,9 @@ class SessionManager:
     @_synchronized
     def ensure_session_meta(self, key: str) -> None:
         safe = _escape(key)
+        meta_tbl = self._meta_table()
         try:
-            rows = self._meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
+            rows = meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
             if rows:
                 return
         except Exception:
@@ -307,7 +354,7 @@ class SessionManager:
         now = datetime.now()
         session = Session(key=key, created_at=now, updated_at=now)
         try:
-            self._meta_tbl.add(
+            meta_tbl.add(
                 [
                     {
                         "session_key": key,
@@ -338,17 +385,17 @@ class SessionManager:
         _profile = os.getenv("BAO_DESKTOP_PROFILE") == "1"
         t0 = time.perf_counter() if _profile else 0
         safe = _escape(key)
+        meta_tbl = self._meta_table()
         with self._lock_for(key):
             try:
-                meta_rows = (
-                    self._meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
-                )
+                meta_rows = meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
                 if not meta_rows:
                     return None
                 meta = meta_rows[0]
                 t1 = time.perf_counter() if _profile else 0
 
-                msg_rows = self._msg_tbl.search().where(f"session_key = '{safe}'").to_list()
+                msg_tbl = self._msg_table()
+                msg_rows = msg_tbl.search().where(f"session_key = '{safe}'").to_list()
                 msg_rows.sort(key=lambda r: r["idx"])
                 t2 = time.perf_counter() if _profile else 0
 
@@ -409,16 +456,17 @@ class SessionManager:
         t0 = time.perf_counter() if _profile else 0
         safe = _escape(key)
         where_clause = f"session_key = '{safe}'"
+        msg_tbl = self._msg_table()
         with self._lock_for(key):
             try:
                 if limit > 0:
-                    total = self._msg_tbl.count_rows(filter=where_clause)
+                    total = msg_tbl.count_rows(filter=where_clause)
                     if total <= 0:
                         return []
                     start_idx = max(total - limit, 0)
                     where_clause = f"{where_clause} AND idx >= {start_idx}"
 
-                msg_rows = self._msg_tbl.search().where(where_clause).to_list()
+                msg_rows = msg_tbl.search().where(where_clause).to_list()
                 if not msg_rows:
                     return []
                 msg_rows.sort(key=lambda r: r["idx"])
@@ -452,16 +500,14 @@ class SessionManager:
     @_synchronized
     def save(self, session: Session) -> None:
         safe = _escape(session.key)
+        meta_tbl = self._meta_table()
+        msg_tbl: Any | None = None
         prev_meta: list[dict[str, Any]] = []
         prev_msgs: list[dict[str, Any]] = []
         try:
-            prev_meta = self._meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
+            prev_meta = meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
         except Exception:
             prev_meta = []
-        try:
-            prev_msgs = self._msg_tbl.search().where(f"session_key = '{safe}'").to_list()
-        except Exception:
-            prev_msgs = []
 
         def _row_from_message(idx: int, msg: dict[str, Any]) -> dict[str, Any]:
             extra = {k: v for k, v in msg.items() if k not in ("role", "content", "timestamp")}
@@ -491,20 +537,51 @@ class SessionManager:
                 return row_extra_json == "{}"
             return row_extra_json == json.dumps(extra, ensure_ascii=False)
 
+        def _rows_match_prefix(rows: list[dict[str, Any]], messages: list[dict[str, Any]]) -> bool:
+            if len(rows) > len(messages):
+                return False
+            return all(
+                _row_matches_message(row, idx, messages[idx]) for idx, row in enumerate(rows)
+            )
+
+        def _rows_match_messages(
+            rows: list[dict[str, Any]], messages: list[dict[str, Any]]
+        ) -> bool:
+            return len(rows) == len(messages) and _rows_match_prefix(rows, messages)
+
+        def _msg_table_for_write() -> Any:
+            nonlocal msg_tbl
+            if msg_tbl is None:
+                msg_tbl = self._msg_table()
+            return msg_tbl
+
         try:
+            message_count = len(session.messages)
+            if message_count > 0:
+                try:
+                    prev_msgs = (
+                        _msg_table_for_write().search().where(f"session_key = '{safe}'").to_list()
+                    )
+                    prev_msgs.sort(key=lambda row: int(row.get("idx", -1)))
+                except Exception:
+                    prev_msgs = []
+
             existing_count = 0
-            try:
-                existing_count = int(self._msg_tbl.count_rows(filter=f"session_key = '{safe}'"))
-            except Exception:
-                existing_count = len(prev_msgs)
+            if message_count > 0 or prev_meta:
+                try:
+                    existing_count = len(prev_msgs) or int(
+                        _msg_table_for_write().count_rows(filter=f"session_key = '{safe}'")
+                    )
+                except Exception:
+                    existing_count = len(prev_msgs)
             existing_count = max(existing_count, 0)
 
             try:
-                self._meta_tbl.delete(f"session_key = '{safe}'")
+                meta_tbl.delete(f"session_key = '{safe}'")
             except Exception:
                 pass
 
-            self._meta_tbl.add(
+            meta_tbl.add(
                 [
                     {
                         "session_key": session.key,
@@ -516,60 +593,39 @@ class SessionManager:
                 ]
             )
 
-            message_count = len(session.messages)
             if message_count == 0:
                 if existing_count > 0:
-                    self._msg_tbl.delete(f"session_key = '{safe}'")
+                    _msg_table_for_write().delete(f"session_key = '{safe}'")
             elif existing_count == 0:
-                self._msg_tbl.add(
+                _msg_table_for_write().add(
                     [_row_from_message(i, msg) for i, msg in enumerate(session.messages)]
                 )
-            elif existing_count < message_count:
+            elif existing_count < message_count and _rows_match_prefix(prev_msgs, session.messages):
                 append_rows = [
                     _row_from_message(i, session.messages[i])
                     for i in range(existing_count, message_count)
                 ]
                 if append_rows:
-                    self._msg_tbl.add(append_rows)
-            else:
-                requires_rewrite = existing_count > message_count
-                if not requires_rewrite and message_count > 0:
-                    last_row: dict[str, Any] | None = None
-                    try:
-                        rows = (
-                            self._msg_tbl.search()
-                            .where(f"session_key = '{safe}' AND idx = {message_count - 1}")
-                            .limit(1)
-                            .to_list()
-                        )
-                        if rows:
-                            last_row = rows[0]
-                    except Exception:
-                        last_row = None
-                    requires_rewrite = not _row_matches_message(
-                        last_row,
-                        message_count - 1,
-                        session.messages[-1],
-                    )
-
-                if requires_rewrite:
-                    self._msg_tbl.delete(f"session_key = '{safe}'")
-                    self._msg_tbl.add(
-                        [_row_from_message(i, msg) for i, msg in enumerate(session.messages)]
-                    )
+                    _msg_table_for_write().add(append_rows)
+            elif not _rows_match_messages(prev_msgs, session.messages):
+                _msg_table_for_write().delete(f"session_key = '{safe}'")
+                _msg_table_for_write().add(
+                    [_row_from_message(i, msg) for i, msg in enumerate(session.messages)]
+                )
         except Exception:
             try:
-                self._meta_tbl.delete(f"session_key = '{safe}'")
+                meta_tbl.delete(f"session_key = '{safe}'")
             except Exception:
                 pass
-            try:
-                self._msg_tbl.delete(f"session_key = '{safe}'")
-            except Exception:
-                pass
+            if msg_tbl is not None:
+                try:
+                    msg_tbl.delete(f"session_key = '{safe}'")
+                except Exception:
+                    pass
             if prev_meta:
-                self._meta_tbl.add(prev_meta)
-            if prev_msgs:
-                self._msg_tbl.add(prev_msgs)
+                meta_tbl.add(prev_meta)
+            if prev_msgs and msg_tbl is not None:
+                msg_tbl.add(prev_msgs)
             raise
 
         self._cache[session.key] = session
@@ -579,15 +635,16 @@ class SessionManager:
     def update_metadata_only(self, key: str, metadata_updates: dict[str, Any]) -> None:
         """Update session metadata without loading/saving messages (lightweight)."""
         safe = _escape(key)
+        meta_tbl = self._meta_table()
         try:
-            meta_rows = self._meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
+            meta_rows = meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
             if not meta_rows:
                 return
             meta = meta_rows[0]
             current_metadata = json.loads(meta.get("metadata_json") or "{}")
             current_metadata.update(metadata_updates)
-            self._meta_tbl.delete(f"session_key = '{safe}'")
-            self._meta_tbl.add(
+            meta_tbl.delete(f"session_key = '{safe}'")
+            meta_tbl.add(
                 [
                     {
                         "session_key": key,
@@ -610,8 +667,9 @@ class SessionManager:
 
     @_synchronized
     def _delete_meta_row(self, key: str) -> bool:
+        meta_tbl = self._meta_table()
         try:
-            self._meta_tbl.delete(f"session_key = '{_escape(key)}'")
+            meta_tbl.delete(f"session_key = '{_escape(key)}'")
             return True
         except Exception:
             return False
@@ -619,39 +677,41 @@ class SessionManager:
     @_synchronized
     def delete_session(self, key: str) -> bool:
         safe = _escape(key)
+        meta_tbl = self._meta_table()
+        msg_tbl = self._msg_table()
         prev_meta: list[dict[str, Any]] = []
         prev_msgs: list[dict[str, Any]] = []
         try:
-            prev_meta = self._meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
+            prev_meta = meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
         except Exception:
             prev_meta = []
         try:
-            prev_msgs = self._msg_tbl.search().where(f"session_key = '{safe}'").to_list()
+            prev_msgs = msg_tbl.search().where(f"session_key = '{safe}'").to_list()
         except Exception:
             prev_msgs = []
 
         ok = self._delete_meta_row(key)
         try:
-            self._msg_tbl.delete(f"session_key = '{safe}'")
+            msg_tbl.delete(f"session_key = '{safe}'")
         except Exception:
             ok = False
         if not ok:
             try:
-                self._meta_tbl.delete(f"session_key = '{safe}'")
+                meta_tbl.delete(f"session_key = '{safe}'")
             except Exception:
                 pass
             try:
-                self._msg_tbl.delete(f"session_key = '{safe}'")
+                msg_tbl.delete(f"session_key = '{safe}'")
             except Exception:
                 pass
             if prev_meta:
                 try:
-                    self._meta_tbl.add(prev_meta)
+                    meta_tbl.add(prev_meta)
                 except Exception:
                     pass
             if prev_msgs:
                 try:
-                    self._msg_tbl.add(prev_msgs)
+                    msg_tbl.add(prev_msgs)
                 except Exception:
                     pass
             self._cache.pop(key, None)
@@ -662,7 +722,7 @@ class SessionManager:
             if ak == key:
                 self._active_cache.pop(nk, None)
         try:
-            rows = self._meta_tbl.search().where("session_key != '_init_'").to_list()
+            rows = meta_tbl.search().where("session_key != '_init_'").to_list()
             for row in rows:
                 session_key = str(row.get("session_key", ""))
                 if not session_key.startswith("_active:"):
@@ -689,8 +749,9 @@ class SessionManager:
         if natural_key in self._active_cache:
             return self._active_cache[natural_key]
         safe = _escape(f"_active:{natural_key}")
+        meta_tbl = self._meta_table()
         try:
-            rows = self._meta_tbl.search().where(f"session_key = '{safe}'").to_list()
+            rows = meta_tbl.search().where(f"session_key = '{safe}'").to_list()
             if rows:
                 rows.sort(key=lambda row: str(row.get("updated_at", "")), reverse=True)
                 for row in rows:
@@ -711,7 +772,7 @@ class SessionManager:
         marker = f"_active:{natural_key}"
         self._delete_meta_row(marker)
         now = datetime.now().isoformat()
-        self._meta_tbl.add(
+        self._meta_table().add(
             [
                 {
                     "session_key": marker,
@@ -730,8 +791,9 @@ class SessionManager:
 
     @_synchronized
     def list_sessions(self) -> list[dict[str, Any]]:
+        meta_tbl = self._meta_table()
         try:
-            rows = self._meta_tbl.search().where("session_key != '_init_'").to_list()
+            rows = meta_tbl.search().where("session_key != '_init_'").to_list()
             sessions = [
                 {
                     "key": row["session_key"],

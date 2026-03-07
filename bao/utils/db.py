@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
+from collections.abc import Mapping, Sequence
 
 if TYPE_CHECKING:
     import lancedb
@@ -20,8 +21,17 @@ def get_db(workspace: Path) -> lancedb.DBConnection:
     return _connections[key]
 
 
-def ensure_table(db: lancedb.DBConnection, name: str, sample: list[dict]) -> lancedb.table.Table:
+def ensure_table(
+    db: lancedb.DBConnection, name: str, sample: Sequence[Mapping[str, object]]
+) -> lancedb.table.Table:
+    table, _created = open_or_create_table(db, name, sample)
+    return table
+
+
+def open_or_create_table(
+    db: lancedb.DBConnection, name: str, sample: Sequence[Mapping[str, object]]
+) -> tuple[lancedb.table.Table, bool]:
     try:
-        return db.open_table(name)
+        return db.open_table(name), False
     except Exception:
-        return db.create_table(name, data=sample)
+        return db.create_table(name, data=sample), True
