@@ -44,11 +44,25 @@ def _build_wrapper(
     entrance_style: str,
     content: str = "收到，杰哥。",
     *,
+    dark: bool = True,
     entrance_pending: bool = False,
     show_date_divider: bool = False,
     date_divider_text: str = "",
 ) -> str:
     qml_dir = (Path(__file__).resolve().parents[1] / "app" / "qml").as_uri()
+    greeting_aura_far = "#22FFD6A1" if dark else "#0EE0BE93"
+    greeting_aura_near = "#34FFE7C2" if dark else "#18E8C79F"
+    greeting_bubble_bg_start = "#FF2B2118" if dark else "#FFF7F3EC"
+    greeting_bubble_bg_end = "#FF201812" if dark else "#FFF7F3EC"
+    greeting_bubble_border = "#50FFD19A" if dark else "#1F8F6A47"
+    greeting_bubble_overlay = "#10FFFFFF" if dark else "#06FFFFFF"
+    greeting_bubble_highlight = "#88FFF5DF" if dark else "#42FFFFFF"
+    greeting_sweep = "#16FFFFFF" if dark else "#10FFFFFF"
+    greeting_accent = "#F6C889" if dark else "#A8641F"
+    greeting_text = "#FFF6EA" if dark else "#402715"
+    greeting_icon_source = (
+        "../resources/icons/ignite-dark.svg" if dark else "../resources/icons/ignite-light.svg"
+    )
     return f'''
 import QtQuick 2.15
 import QtQuick.Controls 2.15
@@ -104,16 +118,17 @@ Item {{
     property color chatSystemBubbleOverlay: "#22FFA11A"
     property color chatSystemBubbleErrorOverlay: "#08F05A5A"
     property color chatSystemText: "#F6DEBA"
-    property color chatGreetingAuraFar: "#22FFD6A1"
-    property color chatGreetingAuraNear: "#34FFE7C2"
-    property color chatGreetingBubbleBgStart: "#FF2B2118"
-    property color chatGreetingBubbleBgEnd: "#FF201812"
-    property color chatGreetingBubbleBorder: "#50FFD19A"
-    property color chatGreetingBubbleOverlay: "#10FFFFFF"
-    property color chatGreetingBubbleHighlight: "#88FFF5DF"
-    property color chatGreetingSweep: "#16FFFFFF"
-    property color chatGreetingAccent: "#F6C889"
-    property color chatGreetingText: "#FFF6EA"
+    property color chatGreetingAuraFar: "{greeting_aura_far}"
+    property color chatGreetingAuraNear: "{greeting_aura_near}"
+    property color chatGreetingBubbleBgStart: "{greeting_bubble_bg_start}"
+    property color chatGreetingBubbleBgEnd: "{greeting_bubble_bg_end}"
+    property color chatGreetingBubbleBorder: "{greeting_bubble_border}"
+    property color chatGreetingBubbleOverlay: "{greeting_bubble_overlay}"
+    property color chatGreetingBubbleHighlight: "{greeting_bubble_highlight}"
+    property color chatGreetingSweep: "{greeting_sweep}"
+    property color chatGreetingAccent: "{greeting_accent}"
+    property color chatGreetingText: "{greeting_text}"
+    property string chatGreetingIconSource: "{greeting_icon_source}"
     property color chatBubbleCopyFlashUser: "#40FFFFFF"
     property color chatBubbleErrorTint: "#15F05A5A"
 
@@ -328,6 +343,64 @@ def test_date_divider_renders_above_bubble(qapp):
         assert bool(divider.property("visible")) is True
         assert str(divider_text.property("text")) == "3/7"
         assert float(bubble_body.property("y")) >= float(divider.property("height"))
+    finally:
+        root.deleteLater()
+        _process(0)
+
+
+@pytest.mark.parametrize(
+    ("dark", "expected_icon"),
+    [(True, "ignite-dark.svg"), (False, "ignite-light.svg")],
+)
+def test_greeting_icon_uses_theme_specific_asset(qapp, dark: bool, expected_icon: str):
+    engine = QQmlEngine()
+    component = QQmlComponent(engine)
+    component.setData(
+        _build_wrapper("system", "greeting", dark=dark).encode("utf-8"),
+        QUrl("inline:MessageBubbleGreetingIconHarness.qml"),
+    )
+
+    _wait_until_ready(component)
+
+    assert component.status() == QQmlComponent.Ready, component.errors()
+    root = component.create()
+    assert root is not None, component.errors()
+
+    try:
+        icon = root.findChild(QObject, "greetingIcon")
+
+        assert icon is not None
+        assert expected_icon in str(icon.property("source"))
+    finally:
+        root.deleteLater()
+        _process(0)
+
+
+def test_light_greeting_uses_flat_bubble_and_compact_height(qapp):
+    engine = QQmlEngine()
+    component = QQmlComponent(engine)
+    component.setData(
+        _build_wrapper("system", "greeting", dark=False).encode("utf-8"),
+        QUrl("inline:MessageBubbleGreetingLightHarness.qml"),
+    )
+
+    _wait_until_ready(component)
+
+    assert component.status() == QQmlComponent.Ready, component.errors()
+    root = component.create()
+    assert root is not None, component.errors()
+
+    try:
+        bubble = root.findChild(QObject, "systemBubble")
+        gradient = root.findChild(QObject, "greetingGradient")
+        sweep = root.findChild(QObject, "greetingSweep")
+
+        assert bubble is not None
+        assert gradient is not None
+        assert sweep is not None
+        assert bool(gradient.property("visible")) is False
+        assert bool(sweep.property("visible")) is False
+        assert float(bubble.property("height")) <= 44.0
     finally:
         root.deleteLater()
         _process(0)

@@ -11,6 +11,7 @@ Popup {
     property real maxModalHeight: 620
     property bool darkMode: true
     property bool showDefaultCloseAction: true
+    property bool bodyScrollable: true
     default property alias body: modalBody.data
     property alias footer: customFooterRow.data
 
@@ -83,6 +84,7 @@ Popup {
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
+            ScrollBar.vertical.policy: root.bodyScrollable ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
 
             Column {
                 id: modalBody

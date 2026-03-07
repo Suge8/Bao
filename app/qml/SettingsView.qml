@@ -14,9 +14,7 @@ Rectangle {
     property string updateErrorUi: updateService ? updateService.errorMessage : ""
     readonly property bool updateBusy: updateStateUi === "checking" || updateStateUi === "downloading" || updateStateUi === "installing"
     readonly property string updateActionText: updateBusy ? strings.update_action_checking : strings.update_action_check
-    readonly property bool isZh: appRoot
-                                 ? (appRoot.uiLanguage === "zh" || (appRoot.uiLanguage === "auto" && appRoot.autoLanguage === "zh"))
-                                 : false
+    readonly property bool isZh: appRoot ? appRoot.effectiveLang === "zh" : false
     property var _providerList: []
     property bool _updateAutoCheckDraft: false
     property int _activeTab: 0
@@ -32,13 +30,14 @@ Rectangle {
     property real _savedScrollY: -1
     property string _pendingExpandProviderName: ""
     property var _supportedUiLanguages: ["auto", "zh", "en"]
+    property var _supportedThemeModes: ["system", "light", "dark"]
     property var _onboardingProviderApiKeyFieldRef: null
     property var _onboardingProviderTypeFieldRef: null
     property var _onboardingProviderApiBaseFieldRef: null
     readonly property bool languageConfigured: {
-        if (!configService)
+        if (!desktopPreferences)
             return false
-        var value = configService.getValue("ui.language")
+        var value = desktopPreferences.uiLanguage
         return _isSupportedUiLanguage(value)
     }
     readonly property bool providerConfigured: _hasConfiguredProvider()
@@ -53,6 +52,7 @@ Rectangle {
         var value = configService.getValue("agents.defaults.model")
         return (typeof value === "string" && value !== "") ? value : ""
     }
+    readonly property bool onboardingModelReady: onboardingDraftModel.trim() !== ""
     readonly property int onboardingCompletedCount: (languageConfigured ? 1 : 0)
                                                   + (providerConfigured ? 1 : 0)
                                                   + (modelConfigured ? 1 : 0)
@@ -65,10 +65,16 @@ Rectangle {
         return 2
     }
     readonly property string onboardingUiLanguage: {
-        if (!configService)
+        if (!desktopPreferences)
             return "auto"
-        var value = configService.getValue("ui.language")
+        var value = desktopPreferences.uiLanguage
         return _isSupportedUiLanguage(value) ? value : "auto"
+    }
+    readonly property string currentThemeMode: {
+        if (!desktopPreferences)
+            return "system"
+        var value = desktopPreferences.themeMode
+        return _isSupportedThemeMode(value) ? value : "system"
     }
     readonly property var onboardingProviderPresets: [
         {
@@ -131,6 +137,10 @@ Rectangle {
         return typeof value === "string" && _supportedUiLanguages.indexOf(value) >= 0
     }
 
+    function _isSupportedThemeMode(value) {
+        return typeof value === "string" && _supportedThemeModes.indexOf(value) >= 0
+    }
+
     function _getProviderMap() {
         var providers = configService ? configService.getValue("providers") : null
         if (providers && typeof providers === "object" && !Array.isArray(providers))
@@ -158,31 +168,26 @@ Rectangle {
     }
 
     function _mergeUiChanges(changes) {
-        var hasUiPatch = changes.hasOwnProperty("ui.language")
-        for (var uiKey in changes) {
-            if (uiKey.indexOf("ui.update.") === 0)
-                hasUiPatch = true
+        var hasUpdatePatch = false
+        for (var key in changes) {
+            if (key.indexOf("ui.update.") === 0) {
+                hasUpdatePatch = true
+                break
+            }
         }
-        if (!hasUiPatch)
+        if (!hasUpdatePatch)
             return
 
-        var uiNode = configService.getValue("ui")
-        var nextUi = (uiNode && typeof uiNode === "object" && !Array.isArray(uiNode)) ? _cloneValue(uiNode) : {}
-        if (changes.hasOwnProperty("ui.language")) {
-            nextUi["language"] = changes["ui.language"]
-            delete changes["ui.language"]
-        }
-
-        var updateNode = (nextUi.update && typeof nextUi.update === "object" && !Array.isArray(nextUi.update))
-                       ? _cloneValue(nextUi.update) : {}
+        var updateValue = configService ? configService.getValue("ui.update") : null
+        var updateNode = (updateValue && typeof updateValue === "object" && !Array.isArray(updateValue))
+                       ? _cloneValue(updateValue) : {}
         for (var updateKey in changes) {
             if (updateKey.indexOf("ui.update.") !== 0)
                 continue
             updateNode[updateKey.substring("ui.update.".length)] = changes[updateKey]
             delete changes[updateKey]
         }
-        nextUi.update = updateNode
-        changes["ui"] = nextUi
+        changes["ui"] = {"update": updateNode}
     }
 
     function _translateError(msg) {
@@ -283,14 +288,11 @@ Rectangle {
     }
 
     function _applyUiLanguageChoice(value) {
-        var previous = root.appRoot ? root.appRoot.uiLanguage : onboardingUiLanguage
-        if (root.appRoot)
-            root.appRoot.uiLanguage = value
-        if (_saveImmediate({"ui": {"language": value}}))
-            return true
-        if (root.appRoot)
-            root.appRoot.uiLanguage = previous
-        return false
+        return desktopPreferences ? desktopPreferences.setUiLanguage(value) : false
+    }
+
+    function _applyThemeModeChoice(value) {
+        return desktopPreferences ? desktopPreferences.setThemeMode(value) : false
     }
 
     function _applyProviderPreset(preset) {
@@ -560,29 +562,6 @@ Rectangle {
     function _loadProviders() {
         if (!configService) return
         _providerList = configService.getProviders() || []
-        _syncOnboardingProviderFields(_primaryProviderDraft())
-        if (_pendingExpandProviderName !== "") {
-            Qt.callLater(function() {
-                _expandAndFocusProvider(_pendingExpandProviderName)
-                _pendingExpandProviderName = ""
-            })
-        }
-    }
-
-    function _expandAndFocusProvider(name) {
-        if (!name) return
-        for (var i = 0; i < _providerList.length; i++) {
-            if (_providerList[i] && _providerList[i].name === name) {
-                var item = providerRepeater.itemAt(i)
-                if (!item) {
-                    Qt.callLater(function() { _expandAndFocusProvider(name) })
-                    return
-                }
-                item.expanded = true
-                Qt.callLater(function() { _scrollToItem(item, 12) })
-                return
-            }
-        }
     }
 
     function _addNewProvider() {
@@ -599,7 +578,6 @@ Rectangle {
         })
         _providerList = nextProviders
         _pendingExpandProviderName = name
-        Qt.callLater(function() { root._expandAndFocusProvider(name) })
     }
 
     function _removeProviderDraft(name) {
@@ -880,7 +858,7 @@ Rectangle {
 
         Item {
             id: scrollContent
-            width: settingsScroll.availableWidth
+            width: settingsScroll.width
             height: innerCol.implicitHeight + 96
             implicitHeight: height
 
@@ -1168,138 +1146,21 @@ Rectangle {
                                     }
                                 ]
 
-                                delegate: Rectangle {
+                                delegate: OnboardingStepCard {
                                     required property var modelData
-
-                                    readonly property bool done: modelData.done === true
-                                    readonly property bool current: modelData.current === true
                                     readonly property bool compact: onboardingStepsFlow.width < 720
 
                                     width: compact
                                            ? onboardingStepsFlow.width
                                            : Math.floor((onboardingStepsFlow.width - (onboardingStepsFlow.spacing * 2)) / 3)
-                                    implicitHeight: stepCardCol.implicitHeight + 28
-                                    radius: radiusLg
-                                    color: current
-                                           ? (isDark ? "#18FFB33D" : "#14FFB33D")
-                                           : (done ? (isDark ? "#10FFFFFF" : "#0A000000") : (isDark ? "#0DFFFFFF" : "#05000000"))
-                                    border.color: current ? accent : (done ? (isDark ? "#24FFD699" : "#22D0892C") : borderSubtle)
-                                    border.width: current ? 1.3 : 1
-                                    scale: current ? motionSelectionScaleActive : (done ? motionSelectionScaleHover : 1.0)
-
-                                    Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
-                                    Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
-                                    Behavior on scale { NumberAnimation { duration: motionPanel; easing.type: easeEmphasis } }
-
-                                    Rectangle {
-                                        width: 34
-                                        height: 34
-                                        radius: 17
-                                        anchors.top: parent.top
-                                        anchors.right: parent.right
-                                        anchors.topMargin: 14
-                                        anchors.rightMargin: 14
-                                        color: done ? accent : "transparent"
-                                        border.color: done ? accent : (current ? accent : borderSubtle)
-                                        border.width: current || !done ? 1.2 : 0
-                                        opacity: done ? 1.0 : 0.92
-
-                                        Text {
-                                            anchors.centerIn: parent
-                                            text: done ? "OK" : String(modelData.step + 1)
-                                            color: done ? "#FFFFFFFF" : (current ? accent : textSecondary)
-                                            font.pixelSize: typeLabel
-                                            font.weight: Font.DemiBold
-                                        }
-                                    }
-
-                                    Rectangle {
-                                        visible: current && !done
-                                        width: 42
-                                        height: 42
-                                        radius: 21
-                                        anchors.top: parent.top
-                                        anchors.right: parent.right
-                                        anchors.topMargin: 10
-                                        anchors.rightMargin: 10
-                                        color: accent
-                                        opacity: 0.0
-                                        scale: 0.86
-
-                                        SequentialAnimation on opacity {
-                                            loops: Animation.Infinite
-                                            running: parent.visible
-                                            NumberAnimation { from: 0.0; to: 0.16; duration: motionStatusPulse; easing.type: easeStandard }
-                                            NumberAnimation { from: 0.16; to: 0.0; duration: motionStatusPulse; easing.type: easeSoft }
-                                        }
-                                        SequentialAnimation on scale {
-                                            loops: Animation.Infinite
-                                            running: parent.visible
-                                            NumberAnimation { from: 0.86; to: 1.06; duration: motionStatusPulse; easing.type: easeEmphasis }
-                                            NumberAnimation { from: 1.06; to: 0.86; duration: motionStatusPulse; easing.type: easeSoft }
-                                        }
-                                    }
-
-                                    ColumnLayout {
-                                        id: stepCardCol
-                                        anchors.left: parent.left
-                                        anchors.right: parent.right
-                                        anchors.top: parent.top
-                                        anchors.margins: 14
-                                        spacing: 10
-
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: done ? tr("已完成", "Done") : (current ? tr("现在就做", "Do this now") : tr("接下来", "Up next"))
-                                            color: current ? accent : textTertiary
-                                            font.pixelSize: typeMeta
-                                            font.weight: Font.DemiBold
-                                            font.letterSpacing: letterWide
-                                        }
-
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: modelData.title
-                                            color: textPrimary
-                                            font.pixelSize: typeBody
-                                            font.weight: Font.DemiBold
-                                            wrapMode: Text.WordWrap
-                                        }
-
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: modelData.body
-                                            color: textSecondary
-                                            font.pixelSize: typeLabel
-                                            wrapMode: Text.WordWrap
-                                            lineHeight: 1.2
-                                        }
-
-                                        Rectangle {
-                                            implicitWidth: stepActionLabel.implicitWidth + 22
-                                            implicitHeight: 32
-                                            radius: 16
-                                            color: current ? accent : (done ? (isDark ? "#14FFFFFF" : "#10000000") : "transparent")
-                                            border.color: current ? accent : borderSubtle
-                                            border.width: current ? 0 : 1
-
-                                            Text {
-                                                id: stepActionLabel
-                                                anchors.centerIn: parent
-                                                text: modelData.cta
-                                                color: current ? "#FFFFFFFF" : (done ? textPrimary : textSecondary)
-                                                font.pixelSize: typeMeta
-                                                font.weight: Font.DemiBold
-                                            }
-                                        }
-                                    }
-
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: root._openOnboardingStep(modelData.step)
-                                    }
+                                    stepNumber: modelData.step || 0
+                                    overlineText: modelData.done === true ? tr("已完成", "Done") : (modelData.current === true ? tr("现在就做", "Do this now") : tr("接下来", "Up next"))
+                                    title: modelData.title || ""
+                                    description: modelData.body || ""
+                                    ctaText: modelData.cta || ""
+                                    done: modelData.done === true
+                                    current: modelData.current === true
+                                    onClicked: root._openOnboardingStep(modelData.step)
                                 }
                             }
                         }
@@ -1383,7 +1244,8 @@ Rectangle {
 
                                 SettingsSelect {
                                     label: strings.ui_language
-                                    dotpath: "ui.language"
+                                    dotpath: ""
+                                    initialValue: root.onboardingUiLanguage
                                     options: [
                                         {"label": strings.ui_language_auto, "value": "auto"},
                                         {"label": strings.ui_language_zh, "value": "zh"},
@@ -1394,21 +1256,59 @@ Rectangle {
                                             presetValue(root.onboardingUiLanguage)
                                     }
                                 }
+
+                                SettingsSelect {
+                                    label: strings.ui_theme
+                                    dotpath: ""
+                                    initialValue: root.currentThemeMode
+                                    options: [
+                                        {"label": strings.ui_theme_system, "value": "system"},
+                                        {"label": strings.ui_theme_light, "value": "light"},
+                                        {"label": strings.ui_theme_dark, "value": "dark"}
+                                    ]
+                                    onValueChanged: function(v) {
+                                        if (!_applyThemeModeChoice(v))
+                                            presetValue(root.currentThemeMode)
+                                    }
+                                }
                             }
                         }
 
-                        SettingsSelect {
+                        RowLayout {
                             visible: !root.onboardingMode
-                            label: strings.ui_language
-                            dotpath: "ui.language"
-                            options: [
-                                {"label": strings.ui_language_auto, "value": "auto"},
-                                {"label": strings.ui_language_zh, "value": "zh"},
-                                {"label": strings.ui_language_en, "value": "en"}
-                            ]
-                            onValueChanged: function(v) {
-                                if (!_applyUiLanguageChoice(v))
-                                    presetValue(root.onboardingUiLanguage)
+                            width: parent.width
+                            spacing: spacingMd
+
+                            SettingsSelect {
+                                Layout.fillWidth: true
+                                label: strings.ui_language
+                                dotpath: ""
+                                initialValue: root.onboardingUiLanguage
+                                options: [
+                                    {"label": strings.ui_language_auto, "value": "auto"},
+                                    {"label": strings.ui_language_zh, "value": "zh"},
+                                    {"label": strings.ui_language_en, "value": "en"}
+                                ]
+                                onValueChanged: function(v) {
+                                    if (!_applyUiLanguageChoice(v))
+                                        presetValue(root.onboardingUiLanguage)
+                                }
+                            }
+
+                            SettingsSelect {
+                                Layout.fillWidth: true
+                                label: strings.ui_theme
+                                dotpath: ""
+                                initialValue: root.currentThemeMode
+                                options: [
+                                    {"label": strings.ui_theme_system, "value": "system"},
+                                    {"label": strings.ui_theme_light, "value": "light"},
+                                    {"label": strings.ui_theme_dark, "value": "dark"}
+                                ]
+                                onValueChanged: function(v) {
+                                    if (!_applyThemeModeChoice(v))
+                                        presetValue(root.currentThemeMode)
+                                }
                             }
                         }
                     }
@@ -1464,50 +1364,15 @@ Rectangle {
                                 verticalAlignment: Text.AlignVCenter
                             }
 
-                            Rectangle {
-                                implicitWidth: checkRow.implicitWidth + 28
-                                implicitHeight: 30
-                                radius: 15
-                                color: updateAction.containsMouse ? accentHover : accent
-                                opacity: root.updateBusy ? 0.72 : 1.0
-
-                                Row {
-                                    id: checkRow
-                                    anchors.centerIn: parent
-                                    spacing: 7
-
-                                    LoadingOrbit {
-                                        width: 14
-                                        height: 14
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        running: root.updateBusy
-                                        color: "#FFFFFFFF"
-                                        secondaryColor: "#AAFFFFFF"
-                                        haloColor: "#44FFFFFF"
-                                        haloOpacity: 0.12
-                                        showCore: false
-                                    }
-
-                                    Text {
-                                        id: checkLabel
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: root.updateActionText
-                                        color: "#FFFFFFFF"
-                                        font.pixelSize: typeLabel
-                                        font.weight: Font.DemiBold
-                                    }
-                                }
-
-                                MouseArea {
-                                    id: updateAction
-                                    anchors.fill: parent
-                                    enabled: updateBridge !== null && !root.updateBusy
-                                    hoverEnabled: true
-                                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                    onClicked: {
-                                        root._pendingManualUpdateCheck = true
-                                        updateBridge.checkRequested()
-                                    }
+                            AsyncActionButton {
+                                text: root.updateActionText
+                                busy: root.updateBusy
+                                buttonEnabled: updateBridge !== null
+                                minHeight: 30
+                                horizontalPadding: 28
+                                onClicked: {
+                                    root._pendingManualUpdateCheck = true
+                                    updateBridge.checkRequested()
                                 }
                             }
                         }
@@ -1667,278 +1532,168 @@ Rectangle {
                             id: providerRepeater
                             model: root.onboardingMode ? [] : root._providerList
 
-                            delegate: Rectangle {
+                            delegate: ProviderCardShell {
                                 id: providerCard
-                                Layout.fillWidth: true
-                                radius: radiusMd
-                                color: isDark ? "#0DFFFFFF" : "#08000000"
-                                border.color: borderSubtle
-                                border.width: 1
-                                implicitHeight: cardCol.implicitHeight + 24
-
-                                property bool expanded: false
                                 property var provData: modelData || ({})
 
-                                ColumnLayout {
-                                    id: cardCol
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    anchors.top: parent.top
-                                    anchors.margins: spacingMd
-                                    spacing: spacingMd
-
-                                    ExpandHeader {
-                                        id: providerHeader
-                                        Layout.fillWidth: true
-                                        headerHeight: 32
-                                        expanded: providerCard.expanded
-                                        title: root.onboardingMode
-                                               ? root._providerDisplayName(provData)
-                                               : (provData.name || "")
-                                        titleColor: textPrimary
-                                        titlePixelSize: 14
-                                        titleWeight: Font.Medium
-                                        reservedRightMargin: 36
-                                        onClicked: providerCard.expanded = !providerCard.expanded
-
-                                        Rectangle {
-                                            radius: radiusSm
-                                            color: isDark ? "#14FFFFFF" : "#10000000"
-                                            implicitHeight: 24
-                                            implicitWidth: badgeText.implicitWidth + 14
-
-                                            Text {
-                                                id: badgeText
-                                                anchors.centerIn: parent
-                                                text: provData.type || ""
-                                                color: textSecondary
-                                                font.pixelSize: 12
-                                            }
-                                        }
-
-                                        IconCircleButton {
-                                            visible: !(root.onboardingMode && root._providerList.length <= 1)
-                                            buttonSize: 28
-                                            glyphText: "\u2715"
-                                            glyphSize: 13
-                                            fillColor: "transparent"
-                                            hoverFillColor: isDark ? "#30F87171" : "#20F87171"
-                                            outlineColor: "transparent"
-                                            glyphColor: textTertiary
-                                            onClicked: if (provData.name) root._removeProviderDraft(provData.name)
-                                        }
-                                    }
-
-                                    ExpandReveal {
-                                        expanded: providerCard.expanded
-                                        Layout.fillWidth: true
-                                        bottomPadding: spacingMd
-                                        slideAxis: Qt.Vertical
-                                        slideSign: 1
-                                        slideDistance: 14
-
-                                        ColumnLayout {
-                                            width: parent.width
-                                            spacing: spacingMd
-
-                                            SettingsField {
-                                                visible: !root.onboardingMode
-                                                label: tr("名称", "Name")
-                                                placeholder: "openaiCompatible"
-                                                dotpath: "_prov_" + index + "_name"
-                                                Component.onCompleted: presetText(provData.name || "")
-                                            }
-                                            SettingsSelect {
-                                                visible: !root.onboardingMode
-                                                label: tr("类型", "Type")
-                                                dotpath: "_prov_" + index + "_type"
-                                                description: tr("大多数平台选 openai；只有 Claude 官方选 anthropic，Gemini 官方选 gemini。", "Choose openai for most services. Use anthropic only for official Claude, and gemini only for official Gemini.")
-                                                options: [
-                                                    {"label": tr("openai - OpenAI / OpenRouter / DeepSeek / Groq", "openai - OpenAI / OpenRouter / DeepSeek / Groq"), "value": "openai"},
-                                                    {"label": tr("anthropic - Claude 官方", "anthropic - Official Claude"), "value": "anthropic"},
-                                                    {"label": tr("gemini - Gemini 官方", "gemini - Official Gemini"), "value": "gemini"}
-                                                ]
-                                                Component.onCompleted: presetValue(provData.type || "openai")
-                                            }
-                                            SettingsCollapsible {
-                                                visible: root.onboardingMode
-                                                Layout.fillWidth: true
-                                                title: tr("更改连接方式（可选）", "Change connection mode (optional)")
-
-                                                ColumnLayout {
-                                                    width: parent.width
-                                                    spacing: spacingMd
-
-                                                    SettingsSelect {
-                                                        label: tr("连接方式", "Connection mode")
-                                                        dotpath: "_prov_" + index + "_type"
-                                                        description: tr("默认不用动。只有你明确知道自己连的是 Claude 官方或 Gemini 官方时才改。", "You usually do not need to change this. Only switch when you know you are connecting to the official Claude or Gemini endpoints.")
-                                                        options: [
-                                                            {"label": tr("openai - 大多数服务", "openai - Most services"), "value": "openai"},
-                                                            {"label": tr("anthropic - Claude 官方", "anthropic - Official Claude"), "value": "anthropic"},
-                                                            {"label": tr("gemini - Gemini 官方", "gemini - Official Gemini"), "value": "gemini"}
-                                                        ]
-                                                        Component.onCompleted: presetValue(provData.type || "openai")
-                                                    }
-                                                }
-                                            }
-                                            SettingsField {
-                                                label: tr("API 密钥", "API Key")
-                                                placeholder: "sk-..."
-                                                dotpath: "_prov_" + index + "_apiKey"
-                                                isSecret: true
-                                                Component.onCompleted: presetText(provData.apiKey || "")
-                                            }
-                                            SettingsCollapsible {
-                                                visible: root.onboardingMode
-                                                Layout.fillWidth: true
-                                                title: tr("自定义接口（可选）", "Custom endpoint (optional)")
-
-                                                ColumnLayout {
-                                                    width: parent.width
-                                                    spacing: spacingMd
-
-                                                    SettingsField {
-                                                        label: tr("API 地址", "API Base URL")
-                                                        placeholder: tr("可留空；例如 https://api.openai.com/v1", "Optional; for example https://api.openai.com/v1")
-                                                        dotpath: "_prov_" + index + "_apiBase"
-                                                        description: tr("只在你用代理或自建服务时填写；官方默认通常可以留空。", "Only fill this when you use a proxy or self-hosted service. Official defaults can usually stay empty.")
-                                                        Component.onCompleted: presetText(provData.apiBase || "")
-                                                    }
-                                                }
-                                            }
-                                            SettingsField {
-                                                visible: !root.onboardingMode
-                                                label: tr("API 地址", "API Base URL")
-                                                placeholder: tr("可留空；例如 https://api.openai.com/v1", "Optional; for example https://api.openai.com/v1")
-                                                dotpath: "_prov_" + index + "_apiBase"
-                                                description: tr("只在你用代理或自建服务时填写；官方默认通常可以留空。", "Only fill this when you use a proxy or self-hosted service. Official defaults can usually stay empty.")
-                                                Component.onCompleted: presetText(provData.apiBase || "")
-                                            }
-                                        }
+                                Component.onCompleted: {
+                                    if (root._pendingExpandProviderName === (provData.name || "")) {
+                                        expanded = true
+                                        Qt.callLater(function() {
+                                            root._scrollToItem(providerCard, 12)
+                                            root._pendingExpandProviderName = ""
+                                        })
                                     }
                                 }
-                        }
 
-                        Rectangle {
-                            visible: root.onboardingMode && root._providerList.length > 0
-                            Layout.fillWidth: true
-                            implicitHeight: onboardingProviderCardCol.implicitHeight + 24
-                            radius: radiusMd
-                            color: isDark ? "#0DFFFFFF" : "#08000000"
-                            border.color: borderSubtle
-                            border.width: 1
-
-                            ColumnLayout {
-                                id: onboardingProviderCardCol
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.top: parent.top
-                                anchors.margins: 12
-                                spacing: spacingMd
-
-                                RowLayout {
-                                    Layout.fillWidth: true
-
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 4
-
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: root._providerDisplayName(root.onboardingPrimaryProvider)
-                                            color: textPrimary
-                                            font.pixelSize: typeBody
-                                            font.weight: Font.DemiBold
-                                            wrapMode: Text.WordWrap
-                                        }
-
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: root.providerConfigured
-                                                  ? tr("这个服务连接已经可用了。你可以直接继续下一步，或者在下面替换 API Key。", "This service connection is ready. You can continue to the next step or replace the API key below.")
-                                                  : tr("主路径只需要一件事：把这个服务的 API Key 粘进来。", "The main path only needs one thing: paste the API key for this service here.")
-                                            color: textSecondary
-                                            font.pixelSize: typeMeta
-                                            wrapMode: Text.WordWrap
-                                        }
-                                    }
-
-                                    Rectangle {
-                                        implicitWidth: providerTypeChip.implicitWidth + 16
-                                        implicitHeight: 26
-                                        radius: 13
-                                        color: isDark ? "#14FFFFFF" : "#10FFFFFF"
-
-                                        Text {
-                                            id: providerTypeChip
-                                            anchors.centerIn: parent
-                                            text: onboardingPrimaryProvider.type || "openai"
-                                            color: accent
-                                            font.pixelSize: typeCaption
-                                            font.weight: Font.DemiBold
-                                        }
-                                    }
-                                }
+                                title: root.onboardingMode
+                                       ? root._providerDisplayName(provData)
+                                       : (provData.name || "")
+                                typeText: provData.type || ""
+                                removable: !(root.onboardingMode && root._providerList.length <= 1)
+                                onRemoveClicked: if (provData.name) root._removeProviderDraft(provData.name)
 
                                 SettingsField {
-                                    id: onboardingProviderApiKeyField
-                                    objectName: "onboardingProviderApiKeyField"
-                                    label: tr("这个服务的 API Key", "API key for this service")
-                                    placeholder: "sk-..."
-                                    dotpath: "_prov_0_apiKey"
-                                    isSecret: true
-                                    description: tr("只填这一项就可以先继续。", "This is the only field you need to continue.")
-                                    Component.onCompleted: {
-                                        presetText(root.onboardingPrimaryProvider.apiKey || "")
-                                        root._onboardingProviderApiKeyFieldRef = onboardingProviderApiKeyField
-                                    }
+                                    visible: !root.onboardingMode
+                                    label: tr("名称", "Name")
+                                    placeholder: "openaiCompatible"
+                                    dotpath: "_prov_" + index + "_name"
+                                    Component.onCompleted: presetText(provData.name || "")
                                 }
-
+                                SettingsSelect {
+                                    visible: !root.onboardingMode
+                                    label: tr("类型", "Type")
+                                    dotpath: "_prov_" + index + "_type"
+                                    description: tr("大多数平台选 openai；只有 Claude 官方选 anthropic，Gemini 官方选 gemini。", "Choose openai for most services. Use anthropic only for official Claude, and gemini only for official Gemini.")
+                                    options: [
+                                        {"label": tr("openai - OpenAI / OpenRouter / DeepSeek / Groq", "openai - OpenAI / OpenRouter / DeepSeek / Groq"), "value": "openai"},
+                                        {"label": tr("anthropic - Claude 官方", "anthropic - Official Claude"), "value": "anthropic"},
+                                        {"label": tr("gemini - Gemini 官方", "gemini - Official Gemini"), "value": "gemini"}
+                                    ]
+                                    Component.onCompleted: presetValue(provData.type || "openai")
+                                }
                                 SettingsCollapsible {
-                                    id: onboardingProviderDetailsCollapsible
-                                    objectName: "onboardingProviderDetailsCollapsible"
+                                    visible: root.onboardingMode
                                     Layout.fillWidth: true
-                                    title: tr("需要的话，再改连接细节", "Change connection details only if needed")
+                                    title: tr("更改连接方式（可选）", "Change connection mode (optional)")
 
                                     ColumnLayout {
                                         width: parent.width
                                         spacing: spacingMd
 
                                         SettingsSelect {
-                                            id: onboardingProviderTypeField
-                                            objectName: "onboardingProviderTypeField"
                                             label: tr("连接方式", "Connection mode")
-                                            dotpath: "_prov_0_type"
-                                            description: tr("默认不用动。只有你确定自己连的是 Claude 官方或 Gemini 官方时才改。", "You usually do not need to change this. Only switch when you know you are connecting to the official Claude or Gemini endpoints.")
+                                            dotpath: "_prov_" + index + "_type"
+                                            description: tr("默认不用动。只有你明确知道自己连的是 Claude 官方或 Gemini 官方时才改。", "You usually do not need to change this. Only switch when you know you are connecting to the official Claude or Gemini endpoints.")
                                             options: [
                                                 {"label": tr("openai - 大多数服务", "openai - Most services"), "value": "openai"},
                                                 {"label": tr("anthropic - Claude 官方", "anthropic - Official Claude"), "value": "anthropic"},
                                                 {"label": tr("gemini - Gemini 官方", "gemini - Official Gemini"), "value": "gemini"}
                                             ]
-                                            Component.onCompleted: {
-                                                presetValue(root.onboardingPrimaryProvider.type || "openai")
-                                                root._onboardingProviderTypeFieldRef = onboardingProviderTypeField
-                                            }
-                                        }
-
-                                        SettingsField {
-                                            id: onboardingProviderApiBaseField
-                                            objectName: "onboardingProviderApiBaseField"
-                                            label: tr("自定义接口地址", "Custom endpoint URL")
-                                            placeholder: tr("可留空；例如 https://api.openai.com/v1", "Optional; for example https://api.openai.com/v1")
-                                            dotpath: "_prov_0_apiBase"
-                                            description: tr("只有你用代理、自建服务或公司网关时才需要填写。", "Only needed for proxies, self-hosted services, or company gateways.")
-                                            Component.onCompleted: {
-                                                presetText(root.onboardingPrimaryProvider.apiBase || "")
-                                                root._onboardingProviderApiBaseFieldRef = onboardingProviderApiBaseField
-                                            }
+                                            Component.onCompleted: presetValue(provData.type || "openai")
                                         }
                                     }
+                                }
+                                SettingsField {
+                                    label: tr("API 密钥", "API Key")
+                                    placeholder: "sk-..."
+                                    dotpath: "_prov_" + index + "_apiKey"
+                                    isSecret: true
+                                    Component.onCompleted: presetText(provData.apiKey || "")
+                                }
+                                SettingsCollapsible {
+                                    visible: root.onboardingMode
+                                    Layout.fillWidth: true
+                                    title: tr("自定义接口（可选）", "Custom endpoint (optional)")
+
+                                    ColumnLayout {
+                                        width: parent.width
+                                        spacing: spacingMd
+
+                                        SettingsField {
+                                            label: tr("API 地址", "API Base URL")
+                                            placeholder: tr("可留空；例如 https://api.openai.com/v1", "Optional; for example https://api.openai.com/v1")
+                                            dotpath: "_prov_" + index + "_apiBase"
+                                            description: tr("只在你用代理或自建服务时填写；官方默认通常可以留空。", "Only fill this when you use a proxy or self-hosted service. Official defaults can usually stay empty.")
+                                            Component.onCompleted: presetText(provData.apiBase || "")
+                                        }
+                                    }
+                                }
+                                SettingsField {
+                                    visible: !root.onboardingMode
+                                    label: tr("API 地址", "API Base URL")
+                                    placeholder: tr("可留空；例如 https://api.openai.com/v1", "Optional; for example https://api.openai.com/v1")
+                                    dotpath: "_prov_" + index + "_apiBase"
+                                    description: tr("只在你用代理或自建服务时填写；官方默认通常可以留空。", "Only fill this when you use a proxy or self-hosted service. Official defaults can usually stay empty.")
+                                    Component.onCompleted: presetText(provData.apiBase || "")
                                 }
                             }
                         }
 
+                        SelectedProviderSummaryCard {
+                            visible: root.onboardingMode && root._providerList.length > 0
+                            title: root._providerDisplayName(root.onboardingPrimaryProvider)
+                            description: root.providerConfigured
+                                         ? tr("这个服务连接已经可用了。你可以直接继续下一步，或者在下面替换 API Key。", "This service connection is ready. You can continue to the next step or replace the API key below.")
+                                         : tr("主路径只需要一件事：把这个服务的 API Key 粘进来。", "The main path only needs one thing: paste the API key for this service here.")
+                            typeText: onboardingPrimaryProvider.type || "openai"
+                            highlighted: root.providerConfigured
+
+                            SettingsField {
+                                id: onboardingProviderApiKeyField
+                                objectName: "onboardingProviderApiKeyField"
+                                label: tr("这个服务的 API Key", "API key for this service")
+                                placeholder: "sk-..."
+                                dotpath: "_prov_0_apiKey"
+                                isSecret: true
+                                description: tr("只填这一项就可以先继续。", "This is the only field you need to continue.")
+                                Component.onCompleted: {
+                                    presetText(root.onboardingPrimaryProvider.apiKey || "")
+                                    root._onboardingProviderApiKeyFieldRef = onboardingProviderApiKeyField
+                                }
+                            }
+
+                            SettingsCollapsible {
+                                id: onboardingProviderDetailsCollapsible
+                                objectName: "onboardingProviderDetailsCollapsible"
+                                Layout.fillWidth: true
+                                title: tr("需要的话，再改连接细节", "Change connection details only if needed")
+
+                                ColumnLayout {
+                                    width: parent.width
+                                    spacing: spacingMd
+
+                                    SettingsSelect {
+                                        id: onboardingProviderTypeField
+                                        objectName: "onboardingProviderTypeField"
+                                        label: tr("连接方式", "Connection mode")
+                                        dotpath: "_prov_0_type"
+                                        description: tr("默认不用动。只有你确定自己连的是 Claude 官方或 Gemini 官方时才改。", "You usually do not need to change this. Only switch when you know you are connecting to the official Claude or Gemini endpoints.")
+                                        options: [
+                                            {"label": tr("openai - 大多数服务", "openai - Most services"), "value": "openai"},
+                                            {"label": tr("anthropic - Claude 官方", "anthropic - Official Claude"), "value": "anthropic"},
+                                            {"label": tr("gemini - Gemini 官方", "gemini - Official Gemini"), "value": "gemini"}
+                                        ]
+                                        Component.onCompleted: {
+                                            presetValue(root.onboardingPrimaryProvider.type || "openai")
+                                            root._onboardingProviderTypeFieldRef = onboardingProviderTypeField
+                                        }
+                                    }
+
+                                    SettingsField {
+                                        id: onboardingProviderApiBaseField
+                                        objectName: "onboardingProviderApiBaseField"
+                                        label: tr("自定义接口地址", "Custom endpoint URL")
+                                        placeholder: tr("可留空；例如 https://api.openai.com/v1", "Optional; for example https://api.openai.com/v1")
+                                        dotpath: "_prov_0_apiBase"
+                                        description: tr("只有你用代理、自建服务或公司网关时才需要填写。", "Only needed for proxies, self-hosted services, or company gateways.")
+                                        Component.onCompleted: {
+                                            presetText(root.onboardingPrimaryProvider.apiBase || "")
+                                            root._onboardingProviderApiBaseFieldRef = onboardingProviderApiBaseField
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         Rectangle {
@@ -1991,7 +1746,7 @@ Rectangle {
                     actionText: root.providerConfigured
                                 ? tr("保存并开始聊天", "Save and start chatting")
                                 : tr("先保存上面的服务连接", "Save the connection above first")
-                    actionEnabled: root.providerConfigured
+                    actionEnabled: root.providerConfigured && root.onboardingModelReady
                     actionHandler: function() { root._saveSection(onboardingModelSectionBody) }
 
                     ColumnLayout {
@@ -2063,6 +1818,7 @@ Rectangle {
 
                                 SettingsField {
                                     id: onboardingPrimaryModelField
+                                    objectName: "onboardingPrimaryModelField"
                                     label: tr("默认聊天 AI", "Default chat AI")
                                     dotpath: "agents.defaults.model"
                                     placeholder: "openai/gpt-4o"

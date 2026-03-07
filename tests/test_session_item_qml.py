@@ -30,7 +30,7 @@ def _process(ms: int) -> None:
     loop.exec()
 
 
-def _build_wrapper(relative_time: str) -> str:
+def _build_wrapper(relative_time: str, *, dark: bool = True) -> str:
     qml_dir = (Path(__file__).resolve().parents[1] / "app" / "qml").as_uri()
     return f'''
 import QtQuick 2.15
@@ -71,6 +71,7 @@ Item {{
     property color sessionDeleteHoverBorder: "#00000000"
     property color sessionDeleteIdleBorder: "#00000000"
     property color sessionUnreadDot: "#FFA11A"
+    property bool isDark: {str(dark).lower()}
 
     SessionItem {{
         id: item
@@ -109,6 +110,40 @@ def test_session_item_renders_relative_time_label(qapp):
         )
         assert str(time_label.property("text")) == "2h"
         assert bool(time_label.property("visible")) is True
+    finally:
+        root.deleteLater()
+        _process(0)
+
+
+@pytest.mark.parametrize(
+    ("dark", "expected_icon"),
+    [(True, "sidebar-close.svg"), (False, "sidebar-close-light.svg")],
+)
+def test_session_item_delete_icon_tracks_theme(qapp, dark: bool, expected_icon: str):
+    _ = qapp
+    engine = QQmlEngine()
+    component = QQmlComponent(engine)
+    component.setData(
+        _build_wrapper("2h", dark=dark).encode("utf-8"),
+        QUrl("inline:SessionItemThemeHarness.qml"),
+    )
+
+    deadline = 20
+    while component.status() == QQmlComponent.Loading and deadline > 0:
+        _process(25)
+        deadline -= 1
+
+    assert component.status() == QQmlComponent.Ready, component.errors()
+    root = component.create()
+    assert root is not None, component.errors()
+
+    try:
+        delete_icon = next(
+            obj
+            for obj in root.findChildren(QtCore.QObject)
+            if obj.objectName() == "sessionDeleteIcon"
+        )
+        assert expected_icon in str(delete_icon.property("source"))
     finally:
         root.deleteLater()
         _process(0)

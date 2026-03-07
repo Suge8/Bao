@@ -8,6 +8,7 @@ Item {
     property string label: ""
     property string dotpath: ""
     property string description: ""
+    property var initialValue: undefined
 
     // Array of { label: string, value: any }
     property var options: []
@@ -39,13 +40,12 @@ Item {
     }
 
     function presetValue(v) {
-        var idx = indexForValue(v)
-        if (idx < 0) return false
-        combo.currentIndex = idx
-        return true
+        return syncValue(v)
     }
 
     function readConfigValue() {
+        if (initialValue !== undefined)
+            return {"exists": true, "value": initialValue}
         if (!configService || !dotpath)
             return {"exists": false, "value": undefined}
         var parts = dotpath.split(".")
@@ -59,11 +59,26 @@ Item {
         return {"exists": true, "value": parentValue[key]}
     }
 
+    function syncValue(value) {
+        var idx = indexForValue(value)
+        if (idx < 0)
+            return false
+        combo.currentIndex = idx
+        return true
+    }
+
     Component.onCompleted: {
         var state = readConfigValue()
-        if (state.exists && presetValue(state.value))
+        if (state.exists && syncValue(state.value))
             _hasInitialValue = true
         _loaded = true
+    }
+
+    onInitialValueChanged: {
+        if (!_loaded || initialValue === undefined)
+            return
+        if (syncValue(initialValue))
+            _hasInitialValue = true
     }
 
     Column {
