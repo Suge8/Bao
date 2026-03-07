@@ -1606,7 +1606,7 @@ def test_session_manager_delete_rolls_back_when_message_delete_fails(tmp_path):
 def test_session_manager_get_active_key_prefers_latest_marker(tmp_path):
     sm = SessionManager(tmp_path)
     marker = "_active:desktop:local"
-    sm._meta_tbl.add(
+    sm._meta_table().add(
         [
             {
                 "session_key": marker,
