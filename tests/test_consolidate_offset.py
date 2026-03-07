@@ -194,6 +194,22 @@ class TestSessionPersistence:
         assert history[0]["content"] == "msg20"
         assert history[-1]["content"] == "msg29"
 
+    def test_persistence_rewrites_when_middle_message_changes(self, tmp_path):
+        temp_manager = SessionManager(Path(tmp_path))
+        session = Session("test:rewrite-middle")
+        session.add_message("user", "msg0")
+        session.add_message("assistant", "msg1")
+        session.add_message("user", "msg2")
+        temp_manager.save(session)
+
+        session.messages[1]["content"] = "msg1-updated"
+        temp_manager.save(session)
+        temp_manager.invalidate("test:rewrite-middle")
+
+        reloaded = temp_manager.get_or_create("test:rewrite-middle")
+
+        assert [m["content"] for m in reloaded.messages] == ["msg0", "msg1-updated", "msg2"]
+
     def test_clear_resets_session(self, tmp_path):
         """Test that clear() properly resets session."""
         session = create_session_with_messages("test:clear", 10)
