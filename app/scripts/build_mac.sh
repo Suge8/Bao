@@ -81,6 +81,12 @@ if [[ -d "$PYSIDE6_DIR/Qt/qml" ]]; then
     done
 fi
 
+QPDF_PLUGIN="$PYSIDE6_DIR/Qt/plugins/imageformats/libqpdf.dylib"
+if [[ -f "$QPDF_PLUGIN" ]]; then
+    echo "▸ Removing problematic imageformat plugin: imageformats/libqpdf.dylib"
+    rm -f "$QPDF_PLUGIN"
+fi
+
 # ── Clean previous build ──
 echo "▸ Cleaning previous build..."
 rm -rf "$BUILD_DIR" "$OUTPUT_APP"
