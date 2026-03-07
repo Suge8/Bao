@@ -10,6 +10,9 @@
 #define MyAppPublisher "Bao Contributors"
 #define MyAppURL "https://github.com/bao-project/Bao"
 #define MyAppExeName "Bao.exe"
+#ifndef BuildSource
+  #define BuildSource "..\..\dist\build-win-x64\main.dist"
+#endif
 
 [Setup]
 AppId={{B4A0-DE5K-T0P-BA0-A1}}
@@ -24,7 +27,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\..\dist
 OutputBaseFilename=Bao-{#MyAppVersion}-windows-x64-setup
-SetupIconFile=..\..\assets\logo.ico
+SetupIconFile=..\resources\logo.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -76,7 +79,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopShortcut}"; GroupDescription
 Name: "startmenu"; Description: "{cm:CreateStartMenuShortcut}"; GroupDescription: "{cm:ShortcutsGroup}"; Flags: checkedonce
 
 [Files]
-Source: "..\..\dist\build-win-x64\main.dist\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#BuildSource}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon

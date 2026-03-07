@@ -24,7 +24,8 @@ concurrency:
 
 env:
   PYTHON_VERSION: '3.11'
-  NUITKA_VERSION: '4.0.3'
+  PYTHONUTF8: '1'
+  INNOSETUP_VERSION: '6.7.1'
 
 jobs:
   resolve-release:
@@ -111,52 +112,11 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Restore compiler caches
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ccache
-            .nuitka-cache
-          key: ${{ runner.os }}-${{ matrix.arch }}-py${{ env.PYTHON_VERSION }}-nuitka${{ env.NUITKA_VERSION }}-desktop-${{ hashFiles('uv.lock', 'app/scripts/build_mac.sh') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.arch }}-py${{ env.PYTHON_VERSION }}-nuitka${{ env.NUITKA_VERSION }}-desktop-
-            ${{ runner.os }}-${{ matrix.arch }}-desktop-
-
-      - name: Ensure ccache
-        run: |
-          if command -v ccache >/dev/null 2>&1; then
-            echo "Using preinstalled ccache: $(command -v ccache)"
-          else
-            HOMEBREW_NO_AUTO_UPDATE=1 brew install ccache
-          fi
-
-      - name: Configure ccache compiler wrappers
-        run: |
-          CC_REAL="$(command -v clang)"
-          CXX_REAL="$(command -v clang++)"
-          WRAPPER_DIR="$RUNNER_TEMP/ccache-bin"
-          mkdir -p "$WRAPPER_DIR"
-          cat >"$WRAPPER_DIR/clang" <<EOF
-          #!/usr/bin/env bash
-          exec ccache "$CC_REAL" "\$@"
-          EOF
-          cat >"$WRAPPER_DIR/clang++" <<EOF
-          #!/usr/bin/env bash
-          exec ccache "$CXX_REAL" "\$@"
-          EOF
-          chmod +x "$WRAPPER_DIR/clang" "$WRAPPER_DIR/clang++"
-          echo "$WRAPPER_DIR" >> $GITHUB_PATH
-
       - name: Install dependencies
-        run: uv sync --extra desktop-build --frozen
+        run: uv sync --extra desktop-build-pyinstaller --frozen
 
-      - name: Build with Nuitka
-        env:
-          NUITKA_CACHE_DIR: ${{ github.workspace }}/.nuitka-cache
-        run: CC=clang CXX=clang++ CCACHE_DIR="$HOME/.cache/ccache" CCACHE_BASEDIR="$GITHUB_WORKSPACE" CCACHE_COMPILERCHECK=content CCACHE_CPP2=yes bash app/scripts/build_mac.sh --arch ${{ matrix.arch }}
-
-      - name: Show ccache stats
-        run: ccache -s
+      - name: Build with PyInstaller
+        run: bash app/scripts/build_mac_pyinstaller.sh --arch ${{ matrix.arch }}
 
       - name: Ensure create-dmg
         run: |
@@ -167,10 +127,10 @@ jobs:
           fi
 
       - name: Create DMG
-        run: bash app/scripts/create_dmg.sh --arch ${{ matrix.arch }}
+        run: bash app/scripts/create_dmg.sh --arch ${{ matrix.arch }} --app-path "$GITHUB_WORKSPACE/dist-pyinstaller/dist/Bao.app"
 
       - name: Create update zip
-        run: bash app/scripts/create_update_zip.sh --arch ${{ matrix.arch }}
+        run: bash app/scripts/create_update_zip.sh --arch ${{ matrix.arch }} --app-path "$GITHUB_WORKSPACE/dist-pyinstaller/dist/Bao.app"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -199,7 +159,7 @@ jobs:
         run: |
           $resolved = python app/scripts/resolve_inno_setup.py 2>$null
           if ($LASTEXITCODE -ne 0) {
-            choco install innosetup -y
+            choco install innosetup --version=${{ env.INNOSETUP_VERSION }} -y
             $resolved = python app/scripts/resolve_inno_setup.py
             if ($LASTEXITCODE -ne 0) {
               throw 'Inno Setup compiler with required language files not found.'
@@ -225,7 +185,7 @@ jobs:
         run: |
           $resolved = python app/scripts/resolve_inno_setup.py 2>$null
           if ($LASTEXITCODE -ne 0) {
-            choco install innosetup -y
+            choco install innosetup --version=${{ env.INNOSETUP_VERSION }} -y
             $resolved = python app/scripts/resolve_inno_setup.py
             if ($LASTEXITCODE -ne 0) {
               throw 'Inno Setup compiler with required language files not found.'
@@ -240,28 +200,16 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Restore Nuitka cache
-        uses: actions/cache@v4
-        with:
-          path: .nuitka-cache
-          key: ${{ runner.os }}-x64-py${{ env.PYTHON_VERSION }}-nuitka${{ env.NUITKA_VERSION }}-desktop-${{ hashFiles('uv.lock', 'app/scripts/build_win.bat') }}
-          restore-keys: |
-            ${{ runner.os }}-x64-py${{ env.PYTHON_VERSION }}-nuitka${{ env.NUITKA_VERSION }}-desktop-
-            ${{ runner.os }}-x64-desktop-
-
       - name: Install dependencies
-        run: uv sync --extra desktop-build --frozen
+        run: uv sync --extra desktop-build-pyinstaller --frozen
 
-      - name: Validate Windows build script continuation
-        run: python app/scripts/validate_build_win_bat.py
-
-      - name: Build with Nuitka
-        env:
-          NUITKA_CACHE_DIR: ${{ github.workspace }}\.nuitka-cache
-        run: app\scripts\build_win.bat
+      - name: Build with PyInstaller
+        run: app\scripts\build_win_pyinstaller.bat
 
       - name: Create installer
-        run: app\scripts\package_win_installer.bat
+        env:
+          BAO_DESKTOP_REQUIRE_PRIMARY: '1'
+        run: app\scripts\package_win_installer.bat --require-primary --build-root dist-pyinstaller\dist\Bao
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
