@@ -94,11 +94,30 @@ def test_build_subagent_prompt_includes_memory_sections(manager):
         "task",
         channel="telegram",
         has_search=True,
+        has_browser=True,
         related_memory=["pref: use concise replies"],
         related_experience=["lesson: verify with tests"],
     )
     assert "## Related Memory" in prompt
     assert "## Past Experience" in prompt
+    assert "Control a browser" in prompt
+    assert "built-in skills:" in prompt
+    assert "workspace overrides:" in prompt
+
+
+def test_build_subagent_prompt_points_coding_skill_to_builtin_path(bus, tmp_path):
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    manager = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=bus,
+        model="test-model",
+    )
+
+    prompt = manager._build_subagent_prompt("task", channel="telegram", coding_tools=["opencode"])
+
+    assert "`bao/skills/coding-agent/SKILL.md`" in prompt
 
 
 @pytest.mark.asyncio
@@ -1438,8 +1457,19 @@ async def test_system_response_preserves_session_key_metadata():
                 channel="system",
                 sender_id="subagent",
                 chat_id="tg:1",
-                content="task done",
-                metadata={"session_key": "tg:1::s2", "origin": "test"},
+                content="",
+                metadata={
+                    "session_key": "tg:1::s2",
+                    "origin": "test",
+                    "system_event": {
+                        "type": "subagent_result",
+                        "task_id": "task-1",
+                        "label": "research",
+                        "task": "research topic",
+                        "status": "ok",
+                        "result": "done",
+                    },
+                },
             )
         )
 
@@ -1455,6 +1485,61 @@ async def test_system_response_preserves_session_key_metadata():
         assert len(captured) == 1
         assert captured[0].metadata.get("session_key") == "tg:1::s2"
         assert captured[0].metadata.get("origin") == "test"
+        assert "system_event" not in captured[0].metadata
+
+
+@pytest.mark.asyncio
+async def test_announce_result_publishes_structured_system_event(manager):
+    manager.bus.publish_inbound = AsyncMock()
+
+    await manager._announce_result(
+        "task123",
+        "research",
+        "look into memory flow",
+        "Found the duplication path.",
+        {"channel": "desktop", "chat_id": "local", "session_key": "desktop:local"},
+        "ok",
+    )
+
+    manager.bus.publish_inbound.assert_awaited_once()
+    await_args = manager.bus.publish_inbound.await_args
+    assert await_args is not None
+    inbound = await_args.args[0]
+    assert inbound.channel == "system"
+    assert inbound.sender_id == "subagent"
+    assert inbound.content == ""
+    assert inbound.metadata["session_key"] == "desktop:local"
+    assert inbound.metadata["system_event"] == {
+        "type": "subagent_result",
+        "task_id": "task123",
+        "label": "research",
+        "task": "look into memory flow",
+        "status": "ok",
+        "result": "Found the duplication path.",
+    }
+
+
+def test_shared_subagent_result_event_helpers_normalize_contract():
+    from bao.agent import shared
+
+    event = shared.build_subagent_result_event(
+        task_id=" task123 ",
+        label=" research ",
+        task=" look into memory flow ",
+        status="unexpected",
+        result=" done ",
+    )
+
+    assert event == {
+        "type": "subagent_result",
+        "task_id": "task123",
+        "label": "research",
+        "task": "look into memory flow",
+        "status": "ok",
+        "result": "done",
+    }
+    parsed = shared.parse_subagent_result_event({"system_event": event})
+    assert parsed == event
 
 
 @pytest.mark.asyncio

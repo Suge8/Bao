@@ -4,12 +4,14 @@ import html
 import json
 import os
 import re
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 from loguru import logger
 
+from bao.agent.tools.agent_browser import AgentBrowserRunner, agent_browser_available
 from bao.agent.tools.base import Tool
 from bao.config.schema import WebSearchConfig
 
@@ -420,6 +422,18 @@ class WebSearchTool(Tool):
 # ═══════════════════════════════════════════════════════════════════════════
 
 _FILTER_LEVELS = ("none", "standard", "aggressive")
+_BROWSER_BLOCK_STATUSES = frozenset({403, 429, 503})
+_BROWSER_BLOCK_MARKERS = (
+    "just a moment",
+    "verify you are human",
+    "cf-challenge",
+    "cloudflare",
+    "captcha",
+    "access denied",
+    "perimeterx",
+    "datadome",
+    "attention required",
+)
 
 
 class WebFetchTool(Tool):
@@ -460,9 +474,25 @@ class WebFetchTool(Tool):
     def parameters(self) -> dict[str, Any]:
         return self._PARAMETERS
 
-    def __init__(self, max_chars: int = 50000, proxy: str | None = None):
+    def __init__(
+        self,
+        max_chars: int = 50000,
+        proxy: str | None = None,
+        *,
+        workspace: Path | None = None,
+        allowed_dir: Path | None = None,
+    ):
         self.max_chars = max_chars
         self.proxy = (proxy or "").strip() or None
+        self._browser_runner = (
+            AgentBrowserRunner(workspace=workspace, allowed_dir=allowed_dir)
+            if workspace is not None
+            else None
+        )
+
+    def set_context(self, channel: str, chat_id: str, session_key: str | None = None) -> None:
+        if self._browser_runner is not None:
+            self._browser_runner.set_context(channel, chat_id, session_key)
 
     async def execute(self, **kwargs: Any) -> str:
         from readability import Document
@@ -558,41 +588,48 @@ class WebFetchTool(Tool):
                 text, extractor = json.dumps(r.json(), indent=2, ensure_ascii=False), "json"
             elif "text/html" in ctype or r.text[:256].lower().startswith(("<!doctype", "<html")):
                 raw_html = r.text
-                if filter_level != "none":
-                    raw_html = _preclean_html(raw_html)
-
-                doc = Document(raw_html)
-                summary = doc.summary()
-                content = (
-                    self._to_markdown(summary)
-                    if extract_mode == "markdown"
-                    else _strip_tags(summary)
+                text, filtered, truncated = self._extract_readable_text(
+                    raw_html=raw_html,
+                    extract_mode=extract_mode,
+                    filter_level=filter_level,
+                    max_chars=max_chars,
+                    document_cls=Document,
                 )
-                text = f"# {doc.title()}\n\n{content}" if doc.title() else content
                 extractor = "readability"
-                text, filtered = _apply_filters(text, filter_level)
+                fallback_reason = self._browser_fallback_reason(
+                    status=r.status_code,
+                    raw_html=raw_html,
+                    extracted_text=text,
+                )
+                fallback_payload = await self._browser_fallback_payload(
+                    url=url,
+                    masked_url=masked_url,
+                    extract_mode=extract_mode,
+                    filter_level=filter_level,
+                    max_chars=max_chars,
+                    fallback_reason=fallback_reason,
+                )
+                if fallback_payload is not None:
+                    return json.dumps(fallback_payload, ensure_ascii=False)
             else:
                 text, extractor = r.text, "raw"
 
-            if filter_level != "none":
-                text, truncated = _smart_truncate(text, max_chars)
-            else:
-                truncated = len(text) > max_chars
-                if truncated:
-                    text = text[:max_chars]
+            if extractor != "readability":
+                text, truncated = self._truncate_output(text, filter_level, max_chars)
 
             return json.dumps(
-                {
-                    "url": masked_url,
-                    "finalUrl": str(r.url),
-                    "status": r.status_code,
-                    "extractor": extractor,
-                    "filterLevel": filter_level,
-                    "filtered": filtered,
-                    "truncated": truncated,
-                    "length": len(text),
-                    "text": text,
-                },
+                self._build_success_payload(
+                    masked_url=masked_url,
+                    final_url=str(r.url),
+                    status=r.status_code,
+                    extractor=extractor,
+                    backend="http",
+                    fallback_reason=None,
+                    filter_level=filter_level,
+                    filtered=filtered,
+                    truncated=truncated,
+                    text=text,
+                ),
                 ensure_ascii=False,
             )
         except httpx.ProxyError as e:
@@ -601,8 +638,144 @@ class WebFetchTool(Tool):
             return json.dumps(
                 {"error": f"Proxy error: {safe}", "url": masked_url}, ensure_ascii=False
             )
+        except httpx.HTTPStatusError as e:
+            fallback_reason = self._browser_fallback_reason(
+                status=e.response.status_code if e.response is not None else None,
+                raw_html=e.response.text if e.response is not None else "",
+                extracted_text="",
+                error_text=_safe_error_text(e),
+            )
+            fallback_payload = await self._browser_fallback_payload(
+                url=url,
+                masked_url=masked_url,
+                extract_mode=extract_mode,
+                filter_level=filter_level,
+                max_chars=max_chars,
+                fallback_reason=fallback_reason,
+            )
+            if fallback_payload is not None:
+                return json.dumps(fallback_payload, ensure_ascii=False)
+            return json.dumps({"error": _safe_error_text(e), "url": masked_url}, ensure_ascii=False)
         except Exception as e:
             return json.dumps({"error": _safe_error_text(e), "url": masked_url}, ensure_ascii=False)
+
+    def _extract_readable_text(
+        self,
+        *,
+        raw_html: str,
+        extract_mode: str,
+        filter_level: str,
+        max_chars: int,
+        document_cls: Any,
+    ) -> tuple[str, bool, bool]:
+        html_for_readability = _preclean_html(raw_html) if filter_level != "none" else raw_html
+        doc = document_cls(html_for_readability)
+        summary = doc.summary()
+        content = self._to_markdown(summary) if extract_mode == "markdown" else _strip_tags(summary)
+        text = f"# {doc.title()}\n\n{content}" if doc.title() else content
+        text, filtered = _apply_filters(text, filter_level)
+        text, truncated = self._truncate_output(text, filter_level, max_chars)
+        return text, filtered, truncated
+
+    def _truncate_output(self, text: str, filter_level: str, max_chars: int) -> tuple[str, bool]:
+        if filter_level != "none":
+            return _smart_truncate(text, max_chars)
+        truncated = len(text) > max_chars
+        if truncated:
+            return text[:max_chars], True
+        return text, False
+
+    def _build_success_payload(
+        self,
+        *,
+        masked_url: str,
+        final_url: str,
+        status: int,
+        extractor: str,
+        backend: str,
+        fallback_reason: str | None,
+        filter_level: str,
+        filtered: bool,
+        truncated: bool,
+        text: str,
+    ) -> dict[str, Any]:
+        return {
+            "url": masked_url,
+            "finalUrl": final_url,
+            "status": status,
+            "extractor": extractor,
+            "backend": backend,
+            "fallbackUsed": fallback_reason is not None,
+            "fallbackReason": fallback_reason,
+            "filterLevel": filter_level,
+            "filtered": filtered,
+            "truncated": truncated,
+            "length": len(text),
+            "text": text,
+        }
+
+    def _browser_fallback_reason(
+        self,
+        *,
+        status: int | None,
+        raw_html: str,
+        extracted_text: str,
+        error_text: str = "",
+    ) -> str | None:
+        if not self._browser_runner or not agent_browser_available():
+            return None
+        if isinstance(status, int) and status in _BROWSER_BLOCK_STATUSES:
+            return f"status_{status}"
+        normalized_html = raw_html.lower()
+        if any(marker in normalized_html for marker in _BROWSER_BLOCK_MARKERS):
+            return "challenge_detected"
+        if error_text and any(marker in error_text.lower() for marker in _BROWSER_BLOCK_MARKERS):
+            return "challenge_error"
+        if raw_html and len(extracted_text.strip()) < 80 and len(raw_html) > 1200:
+            return "empty_readability_result"
+        return None
+
+    async def _browser_fallback_payload(
+        self,
+        *,
+        url: str,
+        masked_url: str,
+        extract_mode: str,
+        filter_level: str,
+        max_chars: int,
+        fallback_reason: str | None,
+    ) -> dict[str, Any] | None:
+        if self._browser_runner is None or fallback_reason is None:
+            return None
+        logger.info("WebFetch fallback via agent-browser for {} ({})", masked_url, fallback_reason)
+        fetched = await self._browser_runner.fetch_html(url, session=None)
+        if error := fetched.get("error"):
+            return {
+                "error": f"HTTP fetch failed and browser fallback also failed: {error}",
+                "url": masked_url,
+            }
+
+        from readability import Document
+
+        text, filtered, truncated = self._extract_readable_text(
+            raw_html=fetched.get("html", ""),
+            extract_mode=extract_mode,
+            filter_level=filter_level,
+            max_chars=max_chars,
+            document_cls=Document,
+        )
+        return self._build_success_payload(
+            masked_url=masked_url,
+            final_url=fetched.get("final_url", url),
+            status=200,
+            extractor="readability",
+            backend="agent-browser",
+            fallback_reason=fallback_reason,
+            filter_level=filter_level,
+            filtered=filtered,
+            truncated=truncated,
+            text=text,
+        )
 
     def _to_markdown(self, html_content: str) -> str:
         """Convert HTML to markdown."""

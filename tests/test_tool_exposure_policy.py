@@ -96,6 +96,8 @@ def test_auto_web_signal_includes_web_tools(tmp_path: Path) -> None:
     selected = loop._select_tool_names_for_turn(_msgs("请搜索 https://example.com 相关信息"))
     assert selected is not None
     assert "web_fetch" in selected
+    if "agent_browser" in loop.tools.tool_names:
+        assert "agent_browser" in selected
     # web_search only registered when search API key is configured
     if "web_search" in loop.tools.tool_names:
         assert "web_search" in selected
@@ -257,6 +259,17 @@ def test_score_tool_web_signal_boosts_web_tools(tmp_path: Path) -> None:
     web_score = loop._score_tool_for_routing("web_fetch", user_text, tokens)
     core_score = loop._score_tool_for_routing("message", user_text, tokens)
     assert web_score > core_score
+
+
+def test_browser_signal_boosts_agent_browser_when_available(tmp_path: Path) -> None:
+    loop = _make_loop(tmp_path, mode="auto", bundles=["core", "web"])
+    if "agent_browser" not in loop.tools.tool_names:
+        return
+    user_text = "请用浏览器打开这个网站并点击登录"
+    tokens = loop._route_tokens(user_text)
+    browser_score = loop._score_tool_for_routing("agent_browser", user_text, tokens)
+    core_score = loop._score_tool_for_routing("message", user_text, tokens)
+    assert browser_score > core_score
 
 
 def test_score_tool_unknown_bundle_returns_negative(tmp_path: Path) -> None:

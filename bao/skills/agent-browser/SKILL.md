@@ -1,12 +1,40 @@
 ---
 name: agent-browser
 description: Automate browser interactions: navigate, click, fill forms, take screenshots, extract data.
+metadata: {"bao":{"emoji":"🌐","requires":{"bins":["agent-browser"]}}}
 allowed-tools: Bash(agent-browser:*)
 ---
 
 # Browser Automation with agent-browser
 
+## Preferred path in Bao
+
+If `agent_browser` is present in `## Available Now`, use that tool instead of composing shell commands yourself.
+
+Use this skill to understand the workflow and command vocabulary behind the tool, or to debug the underlying CLI behavior when needed.
+
+## Prerequisite
+
+This skill requires the external `agent-browser` CLI to be installed and available on `PATH`.
+
+If the CLI is missing:
+- Do not pretend browser automation is available.
+- Tell the user that this workflow depends on the `agent-browser` CLI.
+- Ask the user to install it using the installation method appropriate for their environment, then retry.
+
 ## Quick start
+
+Preferred Bao tool call shape:
+
+```json
+{"action":"open","args":["https://example.com"]}
+{"action":"snapshot"}
+{"action":"click","args":["@e1"]}
+{"action":"fill","args":["@e2","hello"]}
+{"action":"close"}
+```
+
+Underlying CLI equivalent:
 
 ```bash
 agent-browser open <url>        # Navigate to page
@@ -18,10 +46,17 @@ agent-browser close             # Close browser
 
 ## Core workflow
 
-1. Navigate: `agent-browser open <url>`
-2. Snapshot: `agent-browser snapshot -i` (returns elements with refs like `@e1`, `@e2`)
-3. Interact using refs from the snapshot
-4. Re-snapshot after navigation or significant DOM changes
+1. Navigate to the page.
+2. Snapshot the page structure and interactive refs.
+3. Interact using refs from the latest snapshot.
+4. Re-snapshot after navigation or significant DOM changes.
+
+In Bao, the same loop maps naturally to:
+
+1. `agent_browser(action="open", args=[url])`
+2. `agent_browser(action="snapshot")`
+3. `agent_browser(action="click"|"fill"|..., args=[...])`
+4. `agent_browser(action="snapshot")` again when the page changed
 
 ## Commands
 

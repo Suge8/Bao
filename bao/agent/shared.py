@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, TypedDict
 
 import json_repair
 from loguru import logger
@@ -17,6 +17,64 @@ if TYPE_CHECKING:
     from bao.agent.artifacts import ArtifactStore
 
 from bao.agent.protocol import ToolErrorCategory, ToolErrorInfo
+
+SubagentResultStatus = Literal["ok", "error"]
+SUBAGENT_RESULT_EVENT_TYPE = "subagent_result"
+
+
+class SubagentResultEvent(TypedDict):
+    type: Literal["subagent_result"]
+    task_id: str
+    label: str
+    task: str
+    status: SubagentResultStatus
+    result: str
+
+
+def _normalize_subagent_result_status(status: Any) -> SubagentResultStatus:
+    return "error" if status == "error" else "ok"
+
+
+def build_subagent_result_event(
+    *,
+    task_id: str,
+    label: str,
+    task: str,
+    status: Any,
+    result: str,
+) -> SubagentResultEvent:
+    return {
+        "type": SUBAGENT_RESULT_EVENT_TYPE,
+        "task_id": task_id.strip(),
+        "label": label.strip(),
+        "task": task.strip(),
+        "status": _normalize_subagent_result_status(status),
+        "result": result.strip(),
+    }
+
+
+def parse_subagent_result_event(metadata: dict[str, Any] | None) -> SubagentResultEvent | None:
+    if not isinstance(metadata, dict):
+        return None
+    raw_event = metadata.get("system_event")
+    if not isinstance(raw_event, dict):
+        return None
+    if raw_event.get("type") != SUBAGENT_RESULT_EVENT_TYPE:
+        return None
+    task = raw_event.get("task")
+    if not isinstance(task, str) or not task.strip():
+        return None
+    result = raw_event.get("result")
+    label = raw_event.get("label")
+    task_id = raw_event.get("task_id")
+    return build_subagent_result_event(
+        task_id=task_id if isinstance(task_id, str) else "",
+        label=label if isinstance(label, str) else "",
+        task=task,
+        status=raw_event.get("status"),
+        result=result if isinstance(result, str) else "",
+    )
+
 
 # ---------------------------------------------------------------------------
 # 1. parse_llm_json — pure function, no deps

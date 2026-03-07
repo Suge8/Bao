@@ -263,13 +263,132 @@ def test_process_system_message_localizes_blank_final_fallback(tmp_path: Path) -
         channel="system",
         sender_id="subagent",
         chat_id="imessage:+86100",
-        content="done",
-        metadata={"session_key": "imessage:+86100"},
+        content="",
+        metadata={
+            "session_key": "imessage:+86100",
+            "system_event": {
+                "type": "subagent_result",
+                "task_id": "task-1",
+                "label": "research",
+                "task": "整理重复消息问题",
+                "status": "ok",
+                "result": "done",
+            },
+        },
     )
 
     out = asyncio.run(loop._process_system_message(msg))
     assert out is not None
     assert out.content == "后台任务已完成。"
+    assert "system_event" not in out.metadata
+    persisted = loop.sessions.get_or_create("imessage:+86100").messages
+    assert len(persisted) == 1
+    assert persisted[0]["role"] == "assistant"
+    assert persisted[0]["content"] == "后台任务已完成。"
+    assert persisted[0].get("_source") is None
+
+
+def test_process_system_message_error_event_uses_same_summary_path(tmp_path: Path) -> None:
+    (tmp_path / "INSTRUCTIONS.md").write_text("ready", encoding="utf-8")
+    (tmp_path / "PERSONA.md").write_text("ready", encoding="utf-8")
+
+    provider = ToolObservabilityProvider(with_tool_calls=False)
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        max_iterations=2,
+    )
+
+    captured_messages: list[list[dict[str, Any]]] = []
+
+    async def _fake_run_agent_loop(initial_messages: list[dict[str, Any]], **kwargs: Any):
+        captured_messages.append(initial_messages)
+        del kwargs
+        return "任务失败，请稍后再试。", [], [], 0, [], False, False, []
+
+    setattr(loop, "_run_agent_loop", _fake_run_agent_loop)
+
+    msg = InboundMessage(
+        channel="system",
+        sender_id="subagent",
+        chat_id="imessage:+86100",
+        content="",
+        metadata={
+            "session_key": "imessage:+86100",
+            "system_event": {
+                "type": "subagent_result",
+                "task_id": "task-2",
+                "label": "repair",
+                "task": "处理失败路径",
+                "status": "error",
+                "result": "tool failed",
+            },
+        },
+    )
+
+    out = asyncio.run(loop._process_system_message(msg))
+    assert out is not None
+    assert out.content == "任务失败，请稍后再试。"
+    assert "system_event" not in out.metadata
+    assert captured_messages
+    user_contents = [
+        item.get("content", "") for item in captured_messages[0] if item.get("role") == "user"
+    ]
+    assert any("[Background task failed]" in content for content in user_contents)
+    persisted = loop.sessions.get_or_create("imessage:+86100").messages
+    assert len(persisted) == 1
+    assert persisted[0]["role"] == "assistant"
+    assert persisted[0]["content"] == "任务失败，请稍后再试。"
+    assert persisted[0].get("_source") is None
+
+
+def test_process_system_message_malformed_event_falls_back_to_content(tmp_path: Path) -> None:
+    (tmp_path / "INSTRUCTIONS.md").write_text("ready", encoding="utf-8")
+    (tmp_path / "PERSONA.md").write_text("ready", encoding="utf-8")
+
+    provider = ToolObservabilityProvider(with_tool_calls=False)
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        max_iterations=2,
+    )
+
+    captured_messages: list[list[dict[str, Any]]] = []
+
+    async def _fake_run_agent_loop(initial_messages: list[dict[str, Any]], **kwargs: Any):
+        captured_messages.append(initial_messages)
+        del kwargs
+        return "按旧 system 内容处理。", [], [], 0, [], False, False, []
+
+    setattr(loop, "_run_agent_loop", _fake_run_agent_loop)
+
+    msg = InboundMessage(
+        channel="system",
+        sender_id="subagent",
+        chat_id="imessage:+86100",
+        content="legacy system payload",
+        metadata={
+            "session_key": "imessage:+86100",
+            "system_event": {
+                "type": "subagent_result",
+                "label": "repair",
+                "status": "ok",
+                "result": "missing task should disable event parsing",
+            },
+        },
+    )
+
+    out = asyncio.run(loop._process_system_message(msg))
+    assert out is not None
+    assert out.content == "按旧 system 内容处理。"
+    assert "system_event" not in out.metadata
+    assert captured_messages
+    user_contents = [
+        item.get("content", "") for item in captured_messages[0] if item.get("role") == "user"
+    ]
+    assert "legacy system payload" in user_contents
 
 
 def test_run_agent_loop_blocks_tool_not_exposed_for_turn(tmp_path: Path) -> None:

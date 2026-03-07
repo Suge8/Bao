@@ -37,6 +37,52 @@ class _FakeClient:
             self._capture["kwargs"] = kwargs
         return _FakeResponse(self._payload)
 
+    async def get(self, url: str, **kwargs: Any) -> _FakeResponse:
+        if self._capture is not None:
+            self._capture["url"] = url
+            self._capture["kwargs"] = kwargs
+        return _FakeResponse(self._payload)
+
+
+class _FetchResponse:
+    def __init__(
+        self,
+        *,
+        text: str,
+        status_code: int = 200,
+        content_type: str = "text/html",
+        url: str = "https://example.com",
+    ):
+        self.text = text
+        self.status_code = status_code
+        self.headers = {"content-type": content_type}
+        self.url = url
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            request = httpx.Request("GET", self.url)
+            response = httpx.Response(self.status_code, request=request, text=self.text)
+            raise httpx.HTTPStatusError("boom", request=request, response=response)
+
+    def json(self) -> dict[str, Any]:
+        return json.loads(self.text)
+
+
+class _FetchClient:
+    def __init__(self, response: _FetchResponse):
+        self._response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        del exc_type, exc, tb
+        return False
+
+    async def get(self, url: str, **kwargs: Any) -> _FetchResponse:
+        del url, kwargs
+        return self._response
+
 
 async def _provider_error(query: str, n: int) -> str:
     del query, n
@@ -138,6 +184,68 @@ def test_web_fetch_rejects_non_integer_max_chars() -> None:
     out = asyncio.run(WebFetchTool().execute(url="https://example.com", maxChars="500"))
     payload = json.loads(out)
     assert payload["error"] == "Invalid parameter 'maxChars': must be integer"
+
+
+def test_web_fetch_falls_back_to_agent_browser_on_block(monkeypatch, tmp_path) -> None:
+    response = _FetchResponse(text="<html><title>Just a moment...</title></html>")
+    monkeypatch.setattr(
+        "bao.agent.tools.web._make_async_client", lambda *args, **kwargs: _FetchClient(response)
+    )
+    monkeypatch.setattr("bao.agent.tools.web.agent_browser_available", lambda: True)
+
+    async def fake_fetch_html(self, url: str, *, wait_ms: int = 1500, session: str | None = None):
+        del self, wait_ms, session
+        return {
+            "html": "<html><body><main><h1>Loaded</h1><p>Real content</p></main></body></html>",
+            "final_url": url,
+        }
+
+    monkeypatch.setattr(
+        "bao.agent.tools.agent_browser.AgentBrowserRunner.fetch_html", fake_fetch_html
+    )
+    out = asyncio.run(
+        WebFetchTool(workspace=tmp_path, allowed_dir=tmp_path).execute(url="https://example.com")
+    )
+    payload = json.loads(out)
+    assert payload["backend"] == "agent-browser"
+    assert payload["fallbackUsed"] is True
+    assert payload["fallbackReason"] == "challenge_detected"
+    assert "Real content" in payload["text"]
+
+
+def test_web_fetch_reports_browser_fallback_failure(monkeypatch, tmp_path) -> None:
+    request = httpx.Request("GET", "https://example.com")
+    response = httpx.Response(403, request=request, text="forbidden")
+
+    class _StatusClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return False
+
+        async def get(self, url: str, **kwargs: Any):
+            del url, kwargs
+            raise httpx.HTTPStatusError("forbidden", request=request, response=response)
+
+    monkeypatch.setattr(
+        "bao.agent.tools.web._make_async_client", lambda *args, **kwargs: _StatusClient()
+    )
+    monkeypatch.setattr("bao.agent.tools.web.agent_browser_available", lambda: True)
+
+    async def fake_fetch_html(self, url: str, *, wait_ms: int = 1500, session: str | None = None):
+        del self, url, wait_ms, session
+        return {"error": "Error: browser failed"}
+
+    monkeypatch.setattr(
+        "bao.agent.tools.agent_browser.AgentBrowserRunner.fetch_html", fake_fetch_html
+    )
+    out = asyncio.run(
+        WebFetchTool(workspace=tmp_path, allowed_dir=tmp_path).execute(url="https://example.com")
+    )
+    payload = json.loads(out)
+    assert payload["error"].startswith("HTTP fetch failed and browser fallback also failed")
 
 
 def test_mask_url_credentials_redacts_userinfo() -> None:
