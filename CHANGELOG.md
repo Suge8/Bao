@@ -72,7 +72,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ### Fixed
 
-- **macOS CI ccache 编译器探测失败** — 通过 `ccache` 的 libexec wrapper 启用编译缓存，避免 `CC="ccache clang"` 触发 Nuitka/Scons 无法识别 clang 版本的致命错误。
+- **macOS CI ccache 编译器探测失败** — 通过 `ccache` 编译器 wrapper 启用编译缓存，避免 `CC="ccache clang"` 触发 Nuitka/Scons 无法识别 clang 版本的致命错误。
 - **Windows 打包脚本解释器不一致** — 构建与打包脚本统一使用 `uv run python`，避免 CI 中系统 `python` 找不到 Nuitka/PySide6。
 - **workspace 模板资源打包缺失/告警** — 仅打包 `bao/templates/workspace` 到分发包内路径，避免 `bao/templates` 空目录告警并确保 onboarding 模板可用。
 - **Windows 文件描述编码异常** — `--windows-file-description` 改为 ASCII（`Bao - ...`），避免控制台/元数据出现乱码。
