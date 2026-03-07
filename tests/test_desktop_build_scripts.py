@@ -19,6 +19,7 @@ def test_workspace_template_directories_exist() -> None:
     assert (PROJECT_ROOT / "bao/templates/workspace/zh/INSTRUCTIONS.md").is_file()
     assert (PROJECT_ROOT / "bao/templates/workspace/zh/PERSONA.md").is_file()
     assert (PROJECT_ROOT / "bao/templates/workspace/zh/HEARTBEAT.md").is_file()
+    assert (PROJECT_ROOT / "app/resources/installer/ChineseSimplified.isl").is_file()
 
 
 def test_build_mac_script_includes_workspace_package_data() -> None:
@@ -49,6 +50,15 @@ def test_package_win_installer_script_resolves_inno_setup_before_compile() -> No
     assert "resolve_inno_setup.py" in text
     assert "Resolving Inno Setup compiler" in text
     assert '"%ISCC_EXE%" /DMyAppVersion=%VERSION% app\\scripts\\bao_installer.iss' in text
+
+
+def test_inno_setup_script_vendors_simplified_chinese_language_file() -> None:
+    text = _read("app/scripts/bao_installer.iss")
+
+    assert (
+        'Name: "chinesesimplified"; MessagesFile: "..\\resources\\installer\\ChineseSimplified.isl"'
+        in text
+    )
 
 
 def test_desktop_release_workflow_supports_rebuilding_existing_tag() -> None:

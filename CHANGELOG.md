@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.16] - 2026-03-07
+
+### Fixed
+
+- **Desktop packaging guard-rail 测试重新对齐 Windows 与安装器资源路径** — `tests/test_desktop_build_scripts.py` 改为用 raw string 断言 Windows build script 路径，避免 `\a` 之类的反斜杠转义在 pytest 里先把检查自身炸掉；同时补回对仓库内 `ChineseSimplified.isl` 和 `.iss` 引用路径的显式断言，让 release workflow 在昂贵打包开始前就能更稳定地发现脚本回归。
+
 ## [0.3.15] - 2026-03-07
 
 ### Fixed
