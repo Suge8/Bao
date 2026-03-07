@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from bao.agent.loop import AgentLoop
-from bao.agent.tools.agent_browser import AgentBrowserTool, AgentBrowserRunner
+from bao.agent.tools.agent_browser import AgentBrowserRunner, AgentBrowserTool
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider, LLMResponse
 

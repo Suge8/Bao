@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import importlib
+import threading
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
-
-import importlib
-import threading
 
 from bao.utils.db import ensure_table
 

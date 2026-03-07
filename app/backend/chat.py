@@ -488,8 +488,19 @@ class ChatMessageModel(QAbstractListModel):
         if len(prepared_messages) != len(self._messages):
             return False
         for current, prepared in zip(self._messages, prepared_messages):
-            if current.get("role") != prepared.get("role"):
+            current_role = current.get("role")
+            if current_role != prepared.get("role"):
                 return False
+            if current_role == "system":
+                current_pending = bool(current.get("entrancepending"))
+                prepared_pending = bool(prepared.get("entrancepending"))
+                if (
+                    not current_pending
+                    and not prepared_pending
+                    and current.get("entrancestyle", "none")
+                    != prepared.get("entrancestyle", "none")
+                ):
+                    return False
         return True
 
     def _update_without_reset(self, prepared_messages: list[dict[str, Any]]) -> None:

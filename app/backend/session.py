@@ -7,10 +7,10 @@ Internal signals marshal results back to the Qt main thread.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Coroutine
 from concurrent.futures import CancelledError as FutureCancelledError
 from datetime import datetime
-import os
 from pathlib import Path
 from typing import Any
 

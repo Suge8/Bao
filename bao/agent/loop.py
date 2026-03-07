@@ -64,6 +64,7 @@ _TOOL_ROUTE_TOPK_TIER0 = 8
 _TOOL_ROUTE_TOPK_TIER1 = 16
 _TOOL_ROUTE_MAX_ESCALATIONS = 2
 _TOOL_ROUTE_INTENT_THRESHOLD = 0.65
+_ROUTE_CODE_ESSENTIAL_TOOLS = frozenset({"read_file"})
 _ROUTE_RESCUE_TOOLS = frozenset(
     {
         "message",
@@ -1127,6 +1128,10 @@ class AgentLoop:
             and (meta := self.tools.get_metadata(name)) is not None
             and meta.auto_callable
         )
+        if _TOOL_BUNDLE_CODE in selected_bundles:
+            selected_names.update(
+                name for name in _ROUTE_CODE_ESSENTIAL_TOOLS if name in self.tools.tool_names
+            )
 
         if not selected_names:
             selected_names = {
