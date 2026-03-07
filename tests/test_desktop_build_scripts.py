@@ -173,13 +173,11 @@ def test_windows_icon_pipeline_uses_single_bundled_ico() -> None:
     build_win = _read("app/scripts/build_win.bat")
     installer = _read("app/scripts/bao_installer.iss")
     app_readme = _read("app/README.md")
-    packaging_docs = _read("docs/desktop-packaging.md")
     main_py = _read("app/main.py")
 
     assert r'--windows-icon-from-ico="%PROJECT_ROOT%\app\resources\logo.ico"' in build_win
     assert r"SetupIconFile=..\resources\logo.ico" in installer
     assert "app/resources/logo.ico" in app_readme
-    assert "app/resources/logo.ico" in packaging_docs
     assert "WINDOWS_APP_ICON_RELATIVE_PATHS" in main_py
 
 
@@ -236,25 +234,21 @@ def test_desktop_ci_lite_uses_pyinstaller_build_dependencies() -> None:
     assert "choco install innosetup --version=${{ env.INNOSETUP_VERSION }} -y" in text
 
 
-def test_desktop_prd_declares_pyinstaller_primary_and_nuitka_backup() -> None:
-    text = _read("docs/prd-desktop-app.md")
+def test_app_readme_declares_pyinstaller_primary_and_nuitka_backup() -> None:
+    text = _read("app/README.md")
 
-    assert "PyInstaller onedir（主） + Nuitka（备用）" in text
+    assert "当前默认打包路径已切到 **PyInstaller onedir**；`Nuitka` 保留为备用方案。" in text
 
 
-def test_project_agents_documents_pyinstaller_as_default_packager() -> None:
-    text = _read("AGENTS.md")
+def test_app_readme_documents_pyinstaller_default_scripts() -> None:
+    text = _read("app/README.md")
 
     assert "build_mac_pyinstaller.sh" in text
     assert "build_win_pyinstaller.bat" in text
-    assert "默认 PyInstaller" in text
-
-
-def test_docs_agents_describes_pyinstaller_as_primary_doc_path() -> None:
-    text = _read("docs/AGENTS.md")
-
-    assert "PyInstaller 主链" in text
-    assert "Nuitka 备用链" in text
+    assert "# macOS 默认构建（PyInstaller）" in text
+    assert "# Windows 默认构建（PyInstaller）" in text
+    assert "# macOS 备用构建（Nuitka）" in text
+    assert "# Windows 备用构建（Nuitka）" in text
 
 
 def test_desktop_release_validation_job_does_not_depend_on_uv_cache() -> None:
