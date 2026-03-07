@@ -104,32 +104,27 @@ def test_candidate_compiler_paths_deduplicates_sources(tmp_path: Path) -> None:
     assert candidates == [compiler]
 
 
-def test_candidate_compiler_paths_expands_chocolatey_shim(tmp_path: Path) -> None:
+def test_candidate_compiler_paths_keeps_chocolatey_shim_as_executable_candidate(
+    tmp_path: Path,
+) -> None:
     chocolatey_root = tmp_path / "Chocolatey"
     shim = chocolatey_root / "bin" / "iscc.exe"
     shim.parent.mkdir(parents=True, exist_ok=True)
     _ = shim.write_text("", encoding="utf-8")
-
-    compiler = _make_compiler(chocolatey_root / "lib" / "innosetup" / "tools" / "Inno Setup 6")
     env = {"ChocolateyInstall": str(chocolatey_root)}
 
     candidates = candidate_compiler_paths(env, which_fn=_which_compiler(shim))
 
-    assert candidates == [
-        shim,
-        chocolatey_root / "lib" / "innosetup" / "tools" / "ISCC.exe",
-        compiler,
-    ]
+    assert candidates == [shim]
 
 
-def test_resolve_inno_setup_accepts_chocolatey_layout(tmp_path: Path) -> None:
+def test_resolve_inno_setup_accepts_chocolatey_shim_without_sidecar_files(tmp_path: Path) -> None:
     chocolatey_root = tmp_path / "Chocolatey"
     shim = chocolatey_root / "bin" / "iscc.exe"
     shim.parent.mkdir(parents=True, exist_ok=True)
     _ = shim.write_text("", encoding="utf-8")
-    compiler = _make_compiler(chocolatey_root / "lib" / "innosetup" / "tools" / "Inno Setup 6")
     env = {"ChocolateyInstall": str(chocolatey_root)}
 
     resolved = resolve_inno_setup(env, which_fn=_which_compiler(shim))
 
-    assert resolved == compiler
+    assert resolved == shim

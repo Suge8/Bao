@@ -34,48 +34,15 @@ def _looks_like_chocolatey_shim(candidate: Path, env: Mapping[str, str]) -> bool
         return False
 
     try:
-        return candidate.is_relative_to(Path(chocolatey_root))
+        return candidate.is_relative_to(Path(chocolatey_root) / "bin")
     except ValueError:
         return False
 
 
-def _chocolatey_roots(candidate: Path, env: Mapping[str, str]) -> list[Path]:
-    roots: list[Path] = []
-
-    configured_root = env.get("ChocolateyInstall")
-    if configured_root:
-        roots.append(Path(configured_root))
-
-    if candidate.parent.name.lower() == "bin":
-        roots.append(candidate.parent.parent)
-
-    unique_roots: list[Path] = []
-    seen: set[str] = set()
-    for root in roots:
-        normalized = os.path.normcase(str(root))
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        unique_roots.append(root)
-
-    return unique_roots
-
-
-def _expand_candidate(candidate: Path, env: Mapping[str, str]) -> list[Path]:
-    expanded = [candidate]
-    if not _looks_like_chocolatey_shim(candidate, env):
-        return expanded
-
-    for root in _chocolatey_roots(candidate, env):
-        package_root = root / "lib" / "innosetup" / "tools"
-        expanded.extend(
-            [
-                package_root / "ISCC.exe",
-                package_root / "Inno Setup 6" / "ISCC.exe",
-            ]
-        )
-
-    return expanded
+def missing_candidate_files(compiler_path: Path, env: Mapping[str, str]) -> list[str]:
+    if _looks_like_chocolatey_shim(compiler_path, env):
+        return [] if compiler_path.is_file() else ["ISCC.exe"]
+    return missing_inno_files(compiler_path)
 
 
 def candidate_compiler_paths(
@@ -88,14 +55,12 @@ def candidate_compiler_paths(
 
     override = env.get("BAO_ISCC_EXE")
     if override:
-        for candidate in _expand_candidate(Path(override), env):
-            _append_unique(candidates, seen, candidate)
+        _append_unique(candidates, seen, Path(override))
 
     for command in ("iscc.exe", "iscc"):
         found = which_fn(command)
         if found:
-            for candidate in _expand_candidate(Path(found), env):
-                _append_unique(candidates, seen, candidate)
+            _append_unique(candidates, seen, Path(found))
 
     for key in ("ProgramFiles(x86)", "ProgramFiles"):
         base = env.get(key)
@@ -126,7 +91,7 @@ def resolve_inno_setup(
     which_fn: Callable[[str], str | None] = shutil.which,
 ) -> Path | None:
     for candidate in candidate_compiler_paths(env, which_fn=which_fn):
-        if not missing_inno_files(candidate):
+        if not missing_candidate_files(candidate, env):
             return candidate
     return None
 
@@ -147,7 +112,7 @@ def main() -> int:
         return 1
 
     for candidate in candidates:
-        missing = ", ".join(missing_inno_files(candidate)) or "unknown"
+        missing = ", ".join(missing_candidate_files(candidate, env)) or "unknown"
         print(f"Rejected Inno Setup candidate: {candidate} (missing: {missing})", file=sys.stderr)
     return 1
 
