@@ -20,7 +20,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
-iscc /DMyAppVersion=%VERSION% app\scripts\bao_installer.iss
+echo ^> Resolving Inno Setup compiler...
+for /f "usebackq delims=" %%i in (`uv run python "app\scripts\resolve_inno_setup.py"`) do set "ISCC_EXE=%%i"
+if not defined ISCC_EXE (
+    echo [ERROR] Inno Setup compiler with required language files not found!
+    popd
+    exit /b 1
+)
+
+"%ISCC_EXE%" /DMyAppVersion=%VERSION% app\scripts\bao_installer.iss
 if errorlevel 1 (
     echo [ERROR] Installer build failed!
     popd

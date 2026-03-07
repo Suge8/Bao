@@ -43,3 +43,11 @@ def test_build_win_script_includes_workspace_package_data() -> None:
     assert "--include-package-data=bao.templates.workspace.zh:*.md" in text
     assert "workspace=bao\\templates\\workspace" not in text
     assert "--noinclude-qt-plugins=tls" in text
+
+
+def test_package_win_installer_script_resolves_inno_setup_before_compile() -> None:
+    text = _read("app/scripts/package_win_installer.bat")
+
+    assert "resolve_inno_setup.py" in text
+    assert "Resolving Inno Setup compiler" in text
+    assert '"%ISCC_EXE%" /DMyAppVersion=%VERSION% app\\scripts\\bao_installer.iss' in text
