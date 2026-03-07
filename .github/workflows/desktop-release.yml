@@ -9,32 +9,87 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      release_ref:
+        description: Existing release tag to rebuild (for example v0.3.11)
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: desktop-release-${{ github.ref }}
+  group: desktop-release-${{ startsWith(github.event.inputs.release_ref || '', 'refs/tags/') && (github.event.inputs.release_ref || '') || startsWith(github.event.inputs.release_ref || '', 'v') && format('refs/tags/{0}', github.event.inputs.release_ref) || github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
   PYTHON_VERSION: '3.11'
+  NUITKA_VERSION: '4.0.3'
 
 jobs:
+  resolve-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_ref: ${{ steps.resolve.outputs.release_ref }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      release_version: ${{ steps.resolve.outputs.release_version }}
+      source_ref: ${{ steps.resolve.outputs.source_ref }}
+    steps:
+      - name: Resolve release ref
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_RELEASE_REF: ${{ github.event.inputs.release_ref || '' }}
+        run: |
+          ref="${INPUT_RELEASE_REF:-${GITHUB_REF}}"
+          case "$ref" in
+            refs/tags/v*) ;;
+            v*) ref="refs/tags/$ref" ;;
+            *)
+              echo "::error::Expected a version tag like v0.3.11 or refs/tags/v0.3.11, got '$ref'"
+              exit 1
+              ;;
+          esac
+
+          tag="${ref#refs/tags/}"
+          version="${tag#v}"
+          source_ref="$ref"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            source_ref="$GITHUB_REF"
+          fi
+          echo "release_ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release_version=$version" >> "$GITHUB_OUTPUT"
+          echo "source_ref=$source_ref" >> "$GITHUB_OUTPUT"
+
   validate-version:
+    needs: resolve-release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release.outputs.source_ref }}
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install validation dependencies
+        run: uv sync --extra dev --frozen
+
       - name: Validate release version wiring
-        run: python app/scripts/validate_release_version.py --github-ref "${GITHUB_REF}"
+        run: uv run python app/scripts/validate_release_version.py --github-ref "${{ needs.resolve-release.outputs.release_ref }}"
+
+      - name: Validate desktop packaging guard rails
+        run: PYTHONPATH=. uv run pytest tests/test_desktop_build_scripts.py -q
 
   build-mac:
-    needs: validate-version
+    needs: [resolve-release, validate-version, preflight-windows-installer]
     strategy:
       fail-fast: false
       matrix:
@@ -46,6 +101,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release.outputs.source_ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -62,28 +119,38 @@ jobs:
           path: |
             ~/.cache/ccache
             .nuitka-cache
-          key: ${{ runner.os }}-${{ matrix.arch }}-desktop-${{ hashFiles('uv.lock', 'app/scripts/build_mac.sh') }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-py${{ env.PYTHON_VERSION }}-nuitka${{ env.NUITKA_VERSION }}-desktop-${{ hashFiles('uv.lock', 'app/scripts/build_mac.sh') }}
           restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-py${{ env.PYTHON_VERSION }}-nuitka${{ env.NUITKA_VERSION }}-desktop-
             ${{ runner.os }}-${{ matrix.arch }}-desktop-
 
-      - name: Install ccache
-        run: brew install ccache
+      - name: Ensure ccache
+        run: |
+          if command -v ccache >/dev/null 2>&1; then
+            echo "Using preinstalled ccache: $(command -v ccache)"
+          else
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install ccache
+          fi
 
-      - name: Use ccache compiler wrappers
-        run: echo "$(brew --prefix ccache)/libexec" >> $GITHUB_PATH
+      - name: Configure ccache compiler wrappers
+        run: |
+          CC_REAL="$(command -v clang)"
+          CXX_REAL="$(command -v clang++)"
+          WRAPPER_DIR="$RUNNER_TEMP/ccache-bin"
+          mkdir -p "$WRAPPER_DIR"
+          cat >"$WRAPPER_DIR/clang" <<EOF
+          #!/usr/bin/env bash
+          exec ccache "$CC_REAL" "\$@"
+          EOF
+          cat >"$WRAPPER_DIR/clang++" <<EOF
+          #!/usr/bin/env bash
+          exec ccache "$CXX_REAL" "\$@"
+          EOF
+          chmod +x "$WRAPPER_DIR/clang" "$WRAPPER_DIR/clang++"
+          echo "$WRAPPER_DIR" >> $GITHUB_PATH
 
       - name: Install dependencies
-        run: |
-          uv sync --extra desktop
-          uv pip install nuitka ordered-set zstandard
-
-      - name: Patch Nuitka 4.0.1 bugs
-        run: |
-          NUITKA_DIR=$(uv run python -c "import nuitka, os; print(os.path.dirname(nuitka.__file__))")
-          sed -i.bak 's/key=lambda d: getDistributionName(d))/key=lambda d: getDistributionName(d) or "")/' "$NUITKA_DIR/utils/Distributions.py"
-          sed -i.bak 's/return len(getDistributionName(dist))/return len(getDistributionName(dist) or "")/' "$NUITKA_DIR/utils/Distributions.py"
-          sed -i.bak 's/assert _package_part == package_part, (_package_part, package_part)/if _package_part != package_part: package_finding = "not-found"/' "$NUITKA_DIR/importing/Recursion.py"
-          find "$NUITKA_DIR" -name '*.pyc' -delete
+        run: uv sync --extra desktop-build --frozen
 
       - name: Build with Nuitka
         env:
@@ -93,8 +160,13 @@ jobs:
       - name: Show ccache stats
         run: ccache -s
 
-      - name: Install create-dmg
-        run: brew install create-dmg
+      - name: Ensure create-dmg
+        run: |
+          if command -v create-dmg >/dev/null 2>&1; then
+            echo "Using preinstalled create-dmg: $(command -v create-dmg)"
+          else
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install create-dmg
+          fi
 
       - name: Create DMG
         run: bash app/scripts/create_dmg.sh --arch ${{ matrix.arch }}
@@ -110,16 +182,60 @@ jobs:
             dist/*.dmg
             dist/*-update.zip
           retention-days: 14
+          compression-level: 0
 
-  build-windows:
-    needs: validate-version
+  preflight-windows-installer:
+    needs: [resolve-release, validate-version]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release.outputs.source_ref }}
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Validate Inno Setup toolchain early
+        shell: pwsh
+        run: |
+          $resolved = python app/scripts/resolve_inno_setup.py 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            choco install innosetup -y
+            $resolved = python app/scripts/resolve_inno_setup.py
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Inno Setup compiler with required language files not found.'
+            }
+          }
+
+          Write-Host "Validated Inno Setup compiler: $resolved"
+
+  build-windows:
+    needs: [resolve-release, validate-version, preflight-windows-installer]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release.outputs.source_ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Ensure Inno Setup
+        shell: pwsh
+        run: |
+          $resolved = python app/scripts/resolve_inno_setup.py 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            choco install innosetup -y
+            $resolved = python app/scripts/resolve_inno_setup.py
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Inno Setup compiler with required language files not found.'
+            }
+          }
+
+          Write-Host "Using Inno Setup compiler: $resolved"
+          "BAO_ISCC_EXE=$resolved" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -130,25 +246,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .nuitka-cache
-          key: ${{ runner.os }}-x64-desktop-${{ hashFiles('uv.lock', 'app/scripts/build_win.bat') }}
+          key: ${{ runner.os }}-x64-py${{ env.PYTHON_VERSION }}-nuitka${{ env.NUITKA_VERSION }}-desktop-${{ hashFiles('uv.lock', 'app/scripts/build_win.bat') }}
           restore-keys: |
+            ${{ runner.os }}-x64-py${{ env.PYTHON_VERSION }}-nuitka${{ env.NUITKA_VERSION }}-desktop-
             ${{ runner.os }}-x64-desktop-
 
       - name: Install dependencies
-        run: |
-          uv sync --extra desktop
-          uv pip install nuitka ordered-set zstandard
-
-      - name: Patch Nuitka 4.0.1 bugs
-        shell: pwsh
-        run: |
-          $nuitkaDir = uv run python -c "import nuitka, os; print(os.path.dirname(nuitka.__file__))"
-          $distFile = Join-Path $nuitkaDir 'utils/Distributions.py'
-          (Get-Content $distFile) -replace 'key=lambda d: getDistributionName\(d\)\)', 'key=lambda d: getDistributionName(d) or "")' | Set-Content $distFile
-          (Get-Content $distFile) -replace 'return len\(getDistributionName\(dist\)\)', 'return len(getDistributionName(dist) or "")' | Set-Content $distFile
-          $recFile = Join-Path $nuitkaDir 'importing/Recursion.py'
-          (Get-Content $recFile) -replace 'assert _package_part == package_part, \(_package_part, package_part\)', 'if _package_part != package_part: package_finding = "not-found"' | Set-Content $recFile
-          Get-ChildItem -Path $nuitkaDir -Recurse -Filter '*.pyc' | Remove-Item -Force
+        run: uv sync --extra desktop-build --frozen
 
       - name: Validate Windows build script continuation
         run: python app/scripts/validate_build_win_bat.py
@@ -157,9 +261,6 @@ jobs:
         env:
           NUITKA_CACHE_DIR: ${{ github.workspace }}\.nuitka-cache
         run: app\scripts\build_win.bat
-
-      - name: Install Inno Setup
-        run: choco install innosetup -y
 
       - name: Create installer
         run: app\scripts\package_win_installer.bat
@@ -170,29 +271,26 @@ jobs:
           name: bao-windows-x64
           path: dist/Bao-*-windows-x64-setup.exe
           retention-days: 14
+          compression-level: 0
 
   release:
-    needs: [build-mac, build-windows]
+    needs: [resolve-release, build-mac, build-windows]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(needs.resolve-release.outputs.release_ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
-
-      - name: Get version
-        id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          pattern: bao-*
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "Bao ${{ steps.version.outputs.version }}"
+          tag_name: ${{ needs.resolve-release.outputs.release_tag }}
+          name: "Bao ${{ needs.resolve-release.outputs.release_version }}"
           draft: true
           generate_release_notes: true
           files: |

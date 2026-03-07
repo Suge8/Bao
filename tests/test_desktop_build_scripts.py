@@ -51,3 +51,24 @@ def test_package_win_installer_script_resolves_inno_setup_before_compile() -> No
     assert "resolve_inno_setup.py" in text
     assert "Resolving Inno Setup compiler" in text
     assert '"%ISCC_EXE%" /DMyAppVersion=%VERSION% app\\scripts\\bao_installer.iss' in text
+
+
+def test_desktop_release_workflow_supports_rebuilding_existing_tag() -> None:
+    text = _read(".github/workflows/desktop-release.yml")
+
+    assert "workflow_dispatch:" in text
+    assert "release_ref:" in text
+    assert "source_ref: ${{ steps.resolve.outputs.source_ref }}" in text
+    assert "ref: ${{ needs.resolve-release.outputs.source_ref }}" in text
+    assert "tag_name: ${{ needs.resolve-release.outputs.release_tag }}" in text
+    assert "Validate desktop packaging guard rails" in text
+
+
+def test_desktop_release_workflow_checks_inno_setup_before_windows_build() -> None:
+    text = _read(".github/workflows/desktop-release.yml")
+
+    preflight_index = text.index("  preflight-windows-installer:")
+    build_index = text.index("        run: app\\scripts\\build_win.bat")
+    assert preflight_index < build_index
+    assert "Validate Inno Setup toolchain early" in text
+    assert "BAO_ISCC_EXE=$resolved" in text
