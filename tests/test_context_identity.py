@@ -51,6 +51,15 @@ def test_available_now_block_can_be_injected_into_system_prompt(tmp_path: Path) 
     assert "current tools as the source of truth" in prompt
 
 
+def test_skills_prompt_mentions_workspace_and_builtin_skill_paths(tmp_path: Path) -> None:
+    builder = _make_builder(tmp_path)
+
+    prompt = builder.build_system_prompt(channel="desktop", chat_id="user")
+
+    assert "workspace skills: `skills/{name}/SKILL.md`" in prompt
+    assert "built-in skills: `bao/skills/{name}/SKILL.md`" in prompt
+
+
 def test_context_builder_defers_memory_store_until_first_memory_access(tmp_path: Path) -> None:
     init_calls = 0
 

@@ -185,7 +185,9 @@ class ContextBuilder:
             parts.append(f"""# Skills
 
 Skills are procedural guides, not your current executable tool list.
-To use one, read `skills/{{name}}/SKILL.md` via the read_file tool.
+To use one, read its `SKILL.md` via the read_file tool:
+- workspace skills: `skills/{{name}}/SKILL.md`
+- built-in skills: `bao/skills/{{name}}/SKILL.md`
 Decide what you can do from the current Available now block and the current tool set, not from this index alone.
 If available="false", the skill's dependencies are not currently available.
 

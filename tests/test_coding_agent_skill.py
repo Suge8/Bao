@@ -9,6 +9,7 @@ from bao.agent.skills import SkillsLoader
 
 SKILL_DIR = Path(__file__).parent.parent / "bao" / "skills"
 CODING_AGENT_SKILL_DIR = SKILL_DIR / "coding-agent"
+AGENT_BROWSER_SKILL_DIR = SKILL_DIR / "agent-browser"
 SETUP_SCRIPT = CODING_AGENT_SKILL_DIR / "scripts" / "setup-project.sh"
 
 
@@ -81,6 +82,30 @@ class TestSkillMetadata:
         assert "codex" in bins_any
         assert "claude" in bins_any
 
+    def test_agent_browser_skill_has_required_cli_metadata(self, tmp_path):
+        loader = SkillsLoader(
+            workspace=tmp_path,
+            builtin_skills_dir=SKILL_DIR,
+        )
+        meta = loader.get_skill_metadata("agent-browser")
+        assert meta is not None
+        raw = meta.get("metadata", "")
+        parsed = json.loads(raw) if isinstance(raw, str) and raw else {}
+        bao_meta = parsed.get("bao", {})
+        requires = bao_meta.get("requires", {})
+        bins = requires.get("bins", [])
+        assert "agent-browser" in bins
+
+    def test_agent_browser_skill_content_prefers_builtin_tool(self, tmp_path):
+        loader = SkillsLoader(
+            workspace=tmp_path,
+            builtin_skills_dir=SKILL_DIR,
+        )
+        content = loader.load_skill("agent-browser")
+        assert content is not None
+        assert "agent_browser" in content
+        assert "If `agent_browser` is present in `## Available Now`" in content
+
 
 # ---------------------------------------------------------------------------
 # bins_any requirement logic
@@ -123,6 +148,30 @@ class TestBinsAnyRequirements:
         msg = loader._get_missing_requirements(meta)
         assert "CLI(any)" in msg
         assert "opencode" in msg
+
+
+class TestAgentBrowserRequirements:
+    def test_agent_browser_filtered_when_cli_missing(self, tmp_path, monkeypatch):
+        loader = SkillsLoader(workspace=tmp_path, builtin_skills_dir=SKILL_DIR)
+        original_which = __import__("shutil").which
+        monkeypatch.setattr(
+            "shutil.which",
+            lambda b: None if b == "agent-browser" else original_which(b),
+        )
+        skills = loader.list_skills(filter_unavailable=True)
+        names = [s["name"] for s in skills]
+        assert "agent-browser" not in names
+
+    def test_agent_browser_missing_requirements_message(self, tmp_path, monkeypatch):
+        loader = SkillsLoader(workspace=tmp_path, builtin_skills_dir=SKILL_DIR)
+        original_which = __import__("shutil").which
+        monkeypatch.setattr(
+            "shutil.which",
+            lambda b: None if b == "agent-browser" else original_which(b),
+        )
+        meta = loader._get_skill_meta("agent-browser")
+        msg = loader._get_missing_requirements(meta)
+        assert "CLI: agent-browser" in msg
 
 
 # ---------------------------------------------------------------------------
