@@ -276,7 +276,6 @@ _JSONC_TEMPLATE = """\
   //  🖥️ Desktop UI | 桌面界面
   // ───────────────────────────────────────────────────────────────
   "ui": {
-    "language": "auto",
     "update": {
       // 桌面端更新：默认使用 GitHub Pages 上的稳定 feed
       // Desktop updates: defaults to the stable feed hosted on GitHub Pages

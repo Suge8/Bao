@@ -6,10 +6,9 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, ClassVar, TypeVar, cast
+from typing import Callable, cast
 
 from PySide6.QtCore import (
-    Property,
     QCoreApplication,
     QEvent,
     QLocale,
@@ -18,8 +17,6 @@ from PySide6.QtCore import (
     QRectF,
     Qt,
     QTimer,
-    Signal,
-    Slot,
 )
 from PySide6.QtGui import (
     QColor,
@@ -42,47 +39,38 @@ from PySide6.QtQuick import QQuickWindow
 from PySide6.QtQuickControls2 import QQuickStyle
 from typing_extensions import override
 
-_F = TypeVar("_F", bound=Callable[..., object])
-
-
-def _typed_slot(
-    *types: type[object] | str,
-    name: str | None = None,
-    result: type[object] | str | None = None,
-) -> Callable[[_F], _F]:
-    if name is None and result is None:
-        slot_decorator = Slot(*types)
-    elif result is None:
-        slot_decorator = Slot(*types, name=name)
-    elif name is None:
-        slot_decorator = Slot(*types, result=result)
-    else:
-        slot_decorator = Slot(*types, name=name, result=result)
-    return cast(Callable[[_F], _F], slot_decorator)
-
-
-class ThemeManager(QObject):
-    isDarkChanged: ClassVar[Signal] = Signal()
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._is_dark: bool = True
-
-    @Property(bool, notify=isDarkChanged)
-    def isDark(self) -> bool:
-        return self._is_dark
-
-    @_typed_slot()
-    def toggle_theme(self) -> None:
-        self._is_dark = not self._is_dark
-        self.isDarkChanged.emit()
-
-
-class ClipboardService(QObject):
-    @_typed_slot(str, name="copyText")
-    def copy_text(self, text: str) -> None:
-        clipboard = QGuiApplication.clipboard()
-        clipboard.setText(text or "")
+BUNDLED_APP_FONT_FILENAME = "OPPO Sans.ttf"
+BUNDLED_APP_FONT_FAMILY_PREFIX = ""
+BUNDLED_APP_FONT_RELATIVE_PATHS = (
+    f"app/resources/fonts/{BUNDLED_APP_FONT_FILENAME}",
+    f"resources/fonts/{BUNDLED_APP_FONT_FILENAME}",
+)
+PREFERRED_SYSTEM_FONT_FAMILIES = (
+    "Helvetica Neue",
+    ".AppleSystemUIFont",
+    "Segoe UI",
+    "Arial",
+    "Noto Sans",
+    "DejaVu Sans",
+)
+WINDOWS_APP_ICON_RELATIVE_PATHS = (
+    "resources/logo.ico",
+    "app/resources/logo.ico",
+)
+WINDOWS_APP_ICON_FALLBACK_RELATIVE_PATHS = (
+    "resources/logo-circle.png",
+    "app/resources/logo-circle.png",
+    "assets/logo.ico",
+    "assets/logo.jpg",
+    "assets/logo.jpeg",
+    "assets/logo.png",
+)
+DEFAULT_APP_ICON_RELATIVE_PATHS = (
+    "assets/logo.jpg",
+    "assets/logo.jpeg",
+    "assets/logo.png",
+    "assets/logo.ico",
+)
 
 
 def _inherits_text_editor(obj: QObject | None) -> bool:
@@ -227,55 +215,50 @@ def resolve_qml_path(qml_arg: str | None) -> Path:
     return candidates[0].resolve()
 
 
-def _icon_relative_paths(*, frozen: bool) -> tuple[str, ...]:
-    if sys.platform == "win32":
-        if frozen:
-            return (
-                "resources/logo-circle.png",
-                "app/resources/logo-circle.png",
-                "assets/logo.ico",
-                "assets/logo.jpg",
-                "assets/logo.jpeg",
-                "assets/logo.png",
-            )
-        return (
-            "app/resources/logo-circle.png",
-            "assets/logo.ico",
-            "assets/logo.jpg",
-            "assets/logo.jpeg",
-            "assets/logo.png",
-        )
-
-    return (
-        "assets/logo.jpg",
-        "assets/logo.jpeg",
-        "assets/logo.png",
-        "assets/logo.ico",
-    )
-
-
-def _icon_candidate_groups() -> list[tuple[Path, tuple[str, ...]]]:
+def _app_resource_candidate_roots() -> list[Path]:
     src_root = Path(__file__).resolve().parent.parent
-    groups: list[tuple[Path, tuple[str, ...]]] = [(src_root, _icon_relative_paths(frozen=False))]
+    roots = [src_root]
     if not getattr(sys, "frozen", False):
-        return groups
+        return roots
 
     exe = Path(sys.executable).resolve()
     meipass = getattr(sys, "_MEIPASS", "")
-    frozen_roots = [Path(meipass)] if meipass else []
-    frozen_roots.extend([exe.parent, exe.parent.parent / "Resources"])
-    frozen_paths = _icon_relative_paths(frozen=True)
-    groups.extend((root, frozen_paths) for root in frozen_roots)
-    return groups
+    if meipass:
+        roots.append(Path(meipass))
+    roots.extend([exe.parent, exe.parent.parent / "Resources"])
+
+    unique_roots: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        resolved = root.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique_roots.append(resolved)
+    return unique_roots
 
 
-def resolve_app_icon_path() -> Path | None:
-    for root, relative_paths in _icon_candidate_groups():
+def resolve_app_resource_path(*relative_paths: str) -> Path | None:
+    for root in _app_resource_candidate_roots():
         for relative_path in relative_paths:
             path = root / relative_path
             if path.exists():
                 return path.resolve()
     return None
+
+
+def resolve_app_icon_path() -> Path | None:
+    if sys.platform == "win32":
+        bundled_icon = resolve_app_resource_path(*WINDOWS_APP_ICON_RELATIVE_PATHS)
+        if bundled_icon is not None:
+            return bundled_icon
+        return resolve_app_resource_path(*WINDOWS_APP_ICON_FALLBACK_RELATIVE_PATHS)
+
+    return resolve_app_resource_path(*DEFAULT_APP_ICON_RELATIVE_PATHS)
+
+
+def resolve_bundled_app_font_path() -> Path | None:
+    return resolve_app_resource_path(*BUNDLED_APP_FONT_RELATIVE_PATHS)
 
 
 def load_app_icon(icon_path: Path) -> QIcon | None:
@@ -390,19 +373,51 @@ def detect_system_ui_language() -> str:
     return "en"
 
 
-def preferred_app_font_family() -> str | None:
+def effective_desktop_language(preferences: QObject) -> str:
+    value = preferences.property("effectiveLanguage")
+    return value if isinstance(value, str) else "en"
+
+
+def preferred_system_font_family() -> str | None:
     families = set(QFontDatabase.families())
-    for family in (
-        "Helvetica Neue",
-        ".AppleSystemUIFont",
-        "Segoe UI",
-        "Arial",
-        "Noto Sans",
-        "DejaVu Sans",
-    ):
+    for family in PREFERRED_SYSTEM_FONT_FAMILIES:
         if family in families:
             return family
     return None
+
+
+def resolve_app_font_family() -> str | None:
+    font_path = resolve_bundled_app_font_path()
+    if font_path is not None:
+        font_id = QFontDatabase.addApplicationFont(str(font_path))
+        if font_id != -1:
+            families = QFontDatabase.applicationFontFamilies(font_id)
+            if families:
+                return families[0]
+    return preferred_system_font_family()
+
+
+def configured_gateway_channels(config_service: object) -> list[str]:
+    order = (
+        "telegram",
+        "discord",
+        "whatsapp",
+        "feishu",
+        "slack",
+        "email",
+        "qq",
+        "dingtalk",
+        "imessage",
+    )
+    get_value = getattr(config_service, "get", None)
+    if not callable(get_value):
+        return []
+
+    channels: list[str] = []
+    for name in order:
+        if bool(get_value(f"channels.{name}.enabled", False)):
+            channels.append(name)
+    return channels
 
 
 def _apply_windows_rounded_corners(window: QQuickWindow) -> bool:
@@ -487,16 +502,9 @@ def main() -> int:
         print(f"QML load failed: file not found: {qml_path}", file=sys.stderr)
         return 1
 
-    # --- loguru setup (mirrors CLI _setup_logging) ---
-    import logging
+    from bao.runtime_diagnostics import configure_desktop_logging
 
-    from loguru import logger
-
-    logger.remove()
-    logging.basicConfig(level=logging.WARNING)
-    for name in ("httpcore", "httpx", "openai"):
-        logging.getLogger(name).setLevel(logging.WARNING)
-    _ = logger.add(sys.stderr, level="INFO", format="{time:HH:mm:ss} | {message}")
+    _ = configure_desktop_logging()
 
     os.environ["QT_QUICK_CONTROLS_STYLE"] = "Basic"
     os.environ["QML_DISABLE_DISK_CACHE"] = "1"
@@ -508,9 +516,9 @@ def main() -> int:
     QSurfaceFormat.setDefaultFormat(fmt)
 
     app = QGuiApplication(sys.argv)
-    preferred_font = preferred_app_font_family()
-    if preferred_font:
-        app.setFont(QFont(preferred_font))
+    app_font_family = resolve_app_font_family()
+    if app_font_family:
+        app.setFont(QFont(app_font_family))
     logo_path = resolve_app_icon_path()
     logo_icon: QIcon | None = None
     if logo_path:
@@ -522,7 +530,9 @@ def main() -> int:
     from app.backend.asyncio_runner import AsyncioRunner
     from app.backend.chat import ChatMessageModel
     from app.backend.config import ConfigService
+    from app.backend.diagnostics import DiagnosticsService
     from app.backend.gateway import ChatService
+    from app.backend.preferences import DesktopPreferences
     from app.backend.session import SessionService
     from app.backend.update import UpdateBridge, UpdateService
 
@@ -533,22 +543,42 @@ def main() -> int:
     config_service = ConfigService()
     session_service = SessionService(runner)
     update_service = UpdateService(runner, config_service)
+    diagnostics_service = DiagnosticsService()
     update_bridge = UpdateBridge()
-    theme_manager = ThemeManager()
-    clipboard_service = ClipboardService()
 
     from bao.config.loader import ensure_first_run
 
     _ = ensure_first_run()
 
     config_service.load()
+    system_ui_language = detect_system_ui_language()
+    legacy_ui_language = config_service.get("ui.language", "auto")
+    desktop_preferences = DesktopPreferences(
+        system_ui_language=system_ui_language,
+        legacy_ui_language=legacy_ui_language if isinstance(legacy_ui_language, str) else None,
+    )
     update_service.reloadConfig()
 
     # Set UI language on ChatService for localized system messages
-    _cfg_lang = config_service.get("ui.language", "auto")
-    _ui_lang = _cfg_lang if _cfg_lang in ("zh", "en") else detect_system_ui_language()
     set_language = cast(Callable[[str], None], chat_service.setLanguage)
-    set_language(_ui_lang)
+    set_language(effective_desktop_language(desktop_preferences))
+    _ = desktop_preferences.effectiveLanguageChanged.connect(
+        lambda: set_language(effective_desktop_language(desktop_preferences))
+    )
+    set_configured_gateway_channels = cast(
+        Callable[[list[str]], None], chat_service.setConfiguredGatewayChannels
+    )
+
+    def refresh_configured_gateway_channels() -> None:
+        set_configured_gateway_channels(configured_gateway_channels(config_service))
+
+    refresh_configured_gateway_channels()
+    _ = config_service.configLoaded.connect(refresh_configured_gateway_channels)
+    _ = config_service.saveDone.connect(refresh_configured_gateway_channels)
+    set_config_data = cast(Callable[[object], None], chat_service.setConfigData)
+    set_config_data(config_service.exportData())
+    _ = config_service.configLoaded.connect(lambda: set_config_data(config_service.exportData()))
+    _ = config_service.saveDone.connect(lambda: set_config_data(config_service.exportData()))
 
     workspace_value = config_service.get("agents.defaults.workspace", "~/.bao/workspace")
     workspace_str = workspace_value if isinstance(workspace_value, str) else "~/.bao/workspace"
@@ -566,12 +596,17 @@ def main() -> int:
     # Wire session → gateway: when active session changes, update gateway session key
     set_session_key = cast(Callable[[str], None], chat_service.setSessionKey)
     _ = session_service.activeKeyChanged.connect(set_session_key)
+    set_session_summary = cast(
+        Callable[[str, object, object], None], chat_service.setSessionSummary
+    )
+    _ = session_service.activeSummaryChanged.connect(set_session_summary)
     notify_startup_session_ready = cast(Callable[[], None], chat_service.notifyStartupSessionReady)
     _ = session_service.activeReady.connect(notify_startup_session_ready)
     # Wire session deletion → gateway: cancel streaming if needed
     handle_deleted = cast(Callable[[str, bool, str], None], chat_service.handle_session_deleted)
     _ = session_service.deleteCompleted.connect(handle_deleted)
-    session_service.bootstrapWorkspace(str(_ws))
+    bootstrap_workspace = cast(Callable[[str], None], session_service.bootstrapWorkspace)
+    bootstrap_workspace(str(_ws))
     _ = update_bridge.checkRequested.connect(update_service.check_for_updates)
     _ = update_bridge.installRequested.connect(update_service.install_update)
     _ = update_bridge.reloadRequested.connect(update_service.reloadConfig)
@@ -582,11 +617,11 @@ def main() -> int:
     context.setContextProperty("configService", config_service)
     context.setContextProperty("sessionService", session_service)
     context.setContextProperty("updateService", update_service)
+    context.setContextProperty("diagnosticsService", diagnostics_service)
     context.setContextProperty("updateBridge", update_bridge)
-    context.setContextProperty("themeManager", theme_manager)
-    context.setContextProperty("clipboardService", clipboard_service)
+    context.setContextProperty("desktopPreferences", desktop_preferences)
     context.setContextProperty("messagesModel", messages_model)
-    context.setContextProperty("systemUiLanguage", detect_system_ui_language())
+    context.setContextProperty("systemUiLanguage", system_ui_language)
 
     engine.load(str(qml_path))
     if not engine.rootObjects():
@@ -637,7 +672,8 @@ def main() -> int:
 
         QTimer.singleShot(250, _snap)
     elif smoke_theme_toggle:
-        QTimer.singleShot(100, theme_manager.toggle_theme)
+        toggle_theme = cast(Callable[[], None], desktop_preferences.toggleTheme)
+        QTimer.singleShot(100, toggle_theme)
         QTimer.singleShot(500, app.quit)
     elif smoke:
         QTimer.singleShot(500, app.quit)

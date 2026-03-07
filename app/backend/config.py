@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -216,13 +217,6 @@ class ConfigService(QObject):
                 raise ValueError("Top-level config must be an object")
             self._data = parsed_data
             validated = RuntimeConfig.model_validate(self._data)
-            dotted = self._data.get("ui.language")
-            if isinstance(dotted, str):
-                ui_node = _as_dict(self._data.get("ui"))
-                if ui_node is None:
-                    ui_node = {}
-                    self._data["ui"] = ui_node
-                _ = ui_node.setdefault("language", dotted)
             self._apply_ui_defaults(validated)
             self._valid = True
             self._notify_state_changed()
@@ -282,6 +276,10 @@ class ConfigService(QObject):
                 }
             )
         return visible
+
+    @_typed_slot(result="QVariant")
+    def exportData(self) -> dict[str, object]:
+        return copy.deepcopy(self._data)
 
     @_typed_slot(str, result=bool)
     def removeProvider(self, name: str) -> bool:
@@ -403,7 +401,6 @@ class ConfigService(QObject):
         if ui_node is None:
             ui_node = {}
             self._data["ui"] = ui_node
-        _ = ui_node.setdefault("language", validated.ui.language)
 
         update_node = _as_dict(ui_node.get("update"))
         if update_node is None:
