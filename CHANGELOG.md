@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.18] - 2026-03-08
+
+### Fixed
+
+- **Desktop Release 早期 guard-rail 测试不再依赖本地工程笔记文件** — `tests/test_desktop_build_scripts.py` 现仅断言随仓库跟踪的脚本与 `app/README.md` 契约，不再读取未进入 Git 的 `AGENTS.md` 与 `docs/*.md`，避免本地通过但 CI checkout 后因 `FileNotFoundError` 提前失败。
+
 ## [0.3.17] - 2026-03-08
 
 ### Added
