@@ -10,6 +10,7 @@ Rectangle {
     readonly property int composerMaxHeight: 140
     readonly property int composerScrollInset: 12
     readonly property int composerBottomSafeGap: 4
+    readonly property real composerFieldRadius: composerMinHeight / 2
     readonly property int chatTopSafeInset: windowContentInsetTop
     readonly property int chatTopContentGap: spacingMd
     readonly property int chatSideInset: windowContentInsetSide + spacingSm
@@ -33,6 +34,8 @@ Rectangle {
         spacing: spacingLg
         topMargin: root.chatTopSafeInset + root.chatTopContentGap
         bottomMargin: 0
+        focus: root.visible
+        activeFocusOnTab: true
         boundsBehavior: Flickable.StopAtBounds
         cacheBuffer: 20000
         reuseItems: false
@@ -46,11 +49,106 @@ Rectangle {
 
         // ── Smart follow / anti-flicker state ──────────────────────
         property bool historyLoading: chatService ? chatService.historyLoading : false
+        readonly property string activeSessionKey: sessionService ? sessionService.activeKey : ""
+        property string renderedSessionKey: activeSessionKey
+        readonly property bool sessionReady: chatService ? chatService.activeSessionReady : false
+        readonly property bool sessionHasMessages: chatService ? chatService.activeSessionHasMessages : false
+        readonly property real keyboardLineStep: Math.max(48, Math.round(height * 0.08))
+        readonly property real keyboardPageStep: Math.max(keyboardLineStep, Math.round(height * 0.9))
+        property real pendingRestoreContentY: -1
+        property bool pendingRestoreAtEnd: false
 
         function positionAfterLayout() {
             if (count <= 0) return
             forceLayout()
             positionViewAtEnd()
+        }
+
+        function maxContentY() {
+            return Math.max(originY, originY + contentHeight - height)
+        }
+
+        function minContentY() {
+            return originY
+        }
+
+        function isNearEnd() {
+            return maxContentY() - contentY <= Math.max(24, keyboardLineStep)
+        }
+
+        function scrollBy(delta) {
+            if (count <= 0) return
+            var minY = minContentY()
+            var maxY = maxContentY()
+            var nextY = contentY + delta
+            if (nextY <= minY) {
+                positionViewAtBeginning()
+                return
+            }
+            if (nextY >= maxY) {
+                positionAfterLayout()
+                return
+            }
+            contentY = Math.max(minY, Math.min(maxY, nextY))
+        }
+
+        function handleNavigationKey(event) {
+            if (!event || messageInput.activeFocus || count <= 0) return false
+
+            switch (event.key) {
+            case Qt.Key_Up:
+                scrollBy(-keyboardLineStep)
+                return true
+            case Qt.Key_Down:
+                scrollBy(keyboardLineStep)
+                return true
+            case Qt.Key_PageUp:
+                scrollBy(-keyboardPageStep)
+                return true
+            case Qt.Key_PageDown:
+                scrollBy(keyboardPageStep)
+                return true
+            case Qt.Key_Home:
+                positionViewAtBeginning()
+                return true
+            case Qt.Key_End:
+                positionAfterLayout()
+                return true
+            default:
+                return false
+            }
+        }
+
+        function captureViewportBeforeReset() {
+            pendingRestoreAtEnd = isNearEnd()
+            pendingRestoreContentY = contentY
+        }
+
+        function clearPendingViewportRestore() {
+            pendingRestoreContentY = -1
+            pendingRestoreAtEnd = false
+        }
+
+        function restoreViewportAfterReset() {
+            if (pendingRestoreContentY < 0 && !pendingRestoreAtEnd) return
+
+            Qt.callLater(function() {
+                if (messageList.count <= 0) {
+                    messageList.clearPendingViewportRestore()
+                    return
+                }
+
+                messageList.forceLayout()
+                if (messageList.pendingRestoreAtEnd) {
+                    messageList.positionViewAtEnd()
+                } else {
+                    messageList.contentY = Math.max(
+                        messageList.minContentY(),
+                        Math.min(messageList.maxContentY(), messageList.pendingRestoreContentY)
+                    )
+                }
+                messageList.clearPendingViewportRestore()
+            })
         }
 
         function messageMetaAt(row) {
@@ -114,6 +212,49 @@ Rectangle {
                     messageList.forceFollowToEnd()
                 }
             }
+        }
+
+        Connections {
+            target: messageList.model
+            ignoreUnknownSignals: true
+
+            function onModelAboutToBeReset() {
+                if (messageList.activeSessionKey === messageList.renderedSessionKey) {
+                    messageList.captureViewportBeforeReset()
+                } else {
+                    messageList.clearPendingViewportRestore()
+                }
+            }
+
+            function onModelReset() {
+                var switchedSession = messageList.activeSessionKey !== messageList.renderedSessionKey
+                messageList.renderedSessionKey = messageList.activeSessionKey
+                if (switchedSession) {
+                    Qt.callLater(function() {
+                        messageList.forceFollowToEnd()
+                    })
+                    return
+                }
+                messageList.restoreViewportAfterReset()
+            }
+        }
+
+        Connections {
+            target: chatService
+            ignoreUnknownSignals: true
+
+            function onSessionViewApplied(key) {
+                Qt.callLater(function() {
+                    messageList.renderedSessionKey = key || messageList.activeSessionKey
+                    messageList.forceActiveFocus()
+                    messageList.forceFollowToEnd()
+                })
+            }
+        }
+
+        Keys.onPressed: function(event) {
+            if (messageList.handleNavigationKey(event))
+                event.accepted = true
         }
 
         delegate: MessageBubble {
@@ -196,12 +337,15 @@ Rectangle {
                         anchors.horizontalCenter: parent.horizontalCenter
                         width: 72; height: 72; radius: 36
                         color: chatEmptyIconBg
+                        border.width: isDark ? 0 : 1
+                        border.color: chatEmptyIconBorder
                         Image {
+                            objectName: "chatEmptySetupIcon"
                             anchors.centerIn: parent
-                            source: "../resources/icons/settings.svg"
-                            sourceSize: Qt.size(32, 32)
-                            width: 32; height: 32
-                            opacity: 0.6
+                            source: themedIconSource("settings")
+                            sourceSize: Qt.size(34, 34)
+                            width: 34; height: 34
+                            opacity: isDark ? 0.72 : 0.96
                         }
                     }
                     Text {
@@ -308,20 +452,28 @@ Rectangle {
 
                 // ── State 4: Ready (running, no messages yet) ──
                 Column {
+                    id: readyEmptyState
+                    objectName: "chatEmptyReadyState"
                     anchors.horizontalCenter: parent.horizontalCenter
-                    visible: chatService && chatService.state === "running"
+                    visible: chatService && messageList.sessionReady
+                             && !messageList.sessionHasMessages
+                             && chatService.state !== "starting"
+                             && chatService.state !== "error"
                     spacing: 14
 
                     Rectangle {
                         anchors.horizontalCenter: parent.horizontalCenter
                         width: 72; height: 72; radius: 36
                         color: chatEmptyIconBg
+                        border.width: isDark ? 0 : 1
+                        border.color: chatEmptyIconBorder
                         Image {
+                            objectName: "chatEmptyReadyIcon"
                             anchors.centerIn: parent
-                            source: "../resources/icons/chat.svg"
-                            sourceSize: Qt.size(32, 32)
-                            width: 32; height: 32
-                            opacity: 0.6
+                            source: themedIconSource("chat")
+                            sourceSize: Qt.size(34, 34)
+                            width: 34; height: 34
+                            opacity: isDark ? 0.68 : 0.94
                         }
                     }
                     Text {
@@ -334,7 +486,9 @@ Rectangle {
                     }
                     Text {
                         anchors.horizontalCenter: parent.horizontalCenter
-                        text: strings.empty_chat_hint
+                        text: chatService && chatService.state === "running"
+                              ? strings.empty_chat_hint
+                              : strings.empty_chat_idle_hint
                         color: textTertiary
                         font.pixelSize: typeButton
                     }
@@ -342,11 +496,14 @@ Rectangle {
 
                 // ── State 5: Idle/Stopped (gateway not started) ──
                 Column {
+                    id: idleEmptyState
+                    objectName: "chatEmptyIdleState"
                     anchors.horizontalCenter: parent.horizontalCenter
                     visible: {
                         if (!chatService) return true
                         var s = chatService.state
                         return (s === "idle" || s === "stopped")
+                               && !messageList.sessionReady
                                && !(configService && configService.needsSetup)
                     }
                     spacing: 14
@@ -355,12 +512,15 @@ Rectangle {
                         anchors.horizontalCenter: parent.horizontalCenter
                         width: 72; height: 72; radius: 36
                         color: chatEmptyIconBg
+                        border.width: isDark ? 0 : 1
+                        border.color: chatEmptyIconBorder
                         Image {
+                            objectName: "chatEmptyIdleIcon"
                             anchors.centerIn: parent
-                            source: "../resources/icons/zap.svg"
-                            sourceSize: Qt.size(32, 32)
-                            width: 32; height: 32
-                            opacity: 0.5
+                            source: themedIconSource("zap")
+                            sourceSize: Qt.size(34, 34)
+                            width: 34; height: 34
+                            opacity: isDark ? 0.7 : 0.96
                         }
                     }
                     Text {
@@ -438,10 +598,11 @@ Rectangle {
                                           ),
                                           root.composerMaxHeight
                                       )
-                radius: height / 2
+                radius: root.composerFieldRadius
                 color: fillColor
                 border.color: strokeColor
                 border.width: strokeWidth
+                clip: true
                 scale: fieldScale
                 Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
                 Behavior on border.width { NumberAnimation { duration: motionFast; easing.type: easeStandard } }

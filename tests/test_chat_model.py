@@ -117,7 +117,7 @@ def test_load_history_source_renders_as_system(qapp):
     m = _new_model()
     m.load_history(
         [
-            {"role": "user", "content": "[System: subagent] task done", "_source": "subagent"},
+            {"role": "user", "content": "gateway started", "_source": "desktop-system"},
             {"role": "assistant", "content": "summary"},
             {"role": "user", "content": "[System: cron] scheduled", "_source": "cron"},
             {"role": "assistant", "content": "ok"},
@@ -125,7 +125,6 @@ def test_load_history_source_renders_as_system(qapp):
         ]
     )
     assert m.rowCount() == 5
-    # subagent message → system bubble
     assert m.data(m.index(0), Qt.UserRole + 2) == "system"
     # assistant stays assistant
     assert m.data(m.index(1), Qt.UserRole + 2) == "assistant"
@@ -374,7 +373,7 @@ def test_prepare_history_invalid_status_falls_back_done(qapp):
         [
             {"role": "assistant", "content": "a", "status": "bad"},
             {"role": "system", "content": "s", "status": 1},
-            {"role": "user", "content": "u", "_source": "subagent", "status": None},
+            {"role": "user", "content": "u", "_source": "desktop-system", "status": None},
         ]
     )
 

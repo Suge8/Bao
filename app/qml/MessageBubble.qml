@@ -31,12 +31,13 @@ Item {
     readonly property real feedbackProgressEnd: 1.3
     readonly property real feedbackBandOuterOffset: 0.24
     readonly property real feedbackBandInnerOffset: 0.08
-    readonly property int systemContentPaddingX: isGreeting ? 10 : 12
-    readonly property int systemContentPaddingY: isGreeting ? 11 : 8
+    readonly property int systemContentPaddingX: isGreeting ? 11 : 12
+    readonly property int systemContentPaddingY: isGreeting ? 7 : 8
     readonly property int systemIconSlotWidth: isGreeting ? systemIconSize : 12
-    readonly property int systemIconSize: isGreeting ? 24 : 10
-    readonly property int systemIconGap: isGreeting ? 6 : 8
+    readonly property int systemIconSize: isGreeting ? 22 : 10
+    readonly property int systemIconGap: isGreeting ? 5 : 8
     readonly property int systemTextStartX: systemContentPaddingX + systemIconSlotWidth + systemIconGap
+    readonly property bool useGreetingGradient: showGreetingDecoration && chatGreetingBubbleBgStart !== chatGreetingBubbleBgEnd
     function alphaColor(color, alpha) {
         return Qt.rgba(color.r, color.g, color.b, Math.max(0.0, Math.min(1.0, alpha)))
     }
@@ -322,7 +323,7 @@ Item {
         anchors.top: parent.top
         anchors.topMargin: root.dividerBlockHeight + (isGreeting ? 8 : 7)
         width: isGreeting
-               ? Math.max(252, Math.min(root.width * 0.68, systemText.implicitWidth + root.systemTextStartX + root.systemContentPaddingX))
+               ? Math.max(228, Math.min(root.width * 0.64, systemText.implicitWidth + root.systemTextStartX + root.systemContentPaddingX + 2))
                : Math.max(98, Math.min(root.width * 0.9, systemText.implicitWidth + root.systemTextStartX + root.systemContentPaddingX))
         height: Math.max(systemText.contentHeight, root.systemIconSize) + (root.systemContentPaddingY * 2)
         radius: isGreeting ? height / 2 : sizeSystemBubbleRadius
@@ -345,9 +346,10 @@ Item {
         }
 
         Rectangle {
+            objectName: "greetingGradient"
             anchors.fill: parent
             radius: parent.radius
-            visible: showGreetingDecoration
+            visible: root.useGreetingGradient
             gradient: Gradient {
                 GradientStop { position: 0.0; color: chatGreetingBubbleBgStart }
                 GradientStop { position: 1.0; color: chatGreetingBubbleBgEnd }
@@ -392,11 +394,12 @@ Item {
 
                 Image {
                     id: greetingIcon
+                    objectName: "greetingIcon"
                     visible: isGreeting
                     anchors.centerIn: parent
                     width: root.systemIconSize
                     height: root.systemIconSize
-                    source: "../resources/icons/ignite.svg"
+                    source: chatGreetingIconSource
                     sourceSize: Qt.size(root.systemIconSize, root.systemIconSize)
                     fillMode: Image.PreserveAspectFit
                     smooth: true
@@ -442,7 +445,7 @@ Item {
         Rectangle {
             id: greetingSweep
             objectName: "greetingSweep"
-            visible: showGreetingDecoration
+            visible: root.useGreetingGradient
             property real progress: -0.3
             anchors.fill: parent
             radius: parent.radius
@@ -488,13 +491,13 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: root.content
             color: systemTextColor
-            font.pixelSize: isGreeting ? typeBody : typeMeta
-            font.weight: weightMedium
-            font.letterSpacing: letterTight
+            font.pixelSize: isGreeting ? Math.max(typeMeta + 2, typeBody - 1) : typeMeta
+            font.weight: isGreeting ? Font.DemiBold : weightMedium
+            font.letterSpacing: isGreeting ? 0.1 : letterTight
             wrapMode: Text.Wrap
             horizontalAlignment: Text.AlignLeft
             verticalAlignment: Text.AlignVCenter
-            lineHeight: isGreeting ? lineHeightBody : 1.35
+            lineHeight: isGreeting ? 1.2 : 1.35
             textFormat: Text.PlainText
         }
 

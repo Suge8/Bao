@@ -40,14 +40,27 @@ Item {
 
             ToggleSwitch {
                 id: channelToggle
+                objectName: "channelToggle"
                 property string dotpath: root.enabledPath
-                property var currentValue: checked
+                property bool _dirty: false
+                property bool _hasInitialValue: false
+                property bool _loaded: false
+                property var currentValue: (_loaded && (_dirty || _hasInitialValue)) ? checked : undefined
 
                 Component.onCompleted: {
                     if (configService && enabledPath) {
                         var v = configService.getValue(enabledPath)
-                        checked = v === true
+                        if (v === true || v === false) {
+                            checked = v
+                            _hasInitialValue = true
+                        }
                     }
+                    _loaded = true
+                }
+
+                onToggled: function(nextChecked) {
+                    checked = nextChecked
+                    _dirty = true
                 }
             }
         }

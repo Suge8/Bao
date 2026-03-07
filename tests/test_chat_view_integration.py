@@ -11,6 +11,7 @@ pytest = importlib.import_module("pytest")
 QtCore = pytest.importorskip("PySide6.QtCore")
 QtGui = pytest.importorskip("PySide6.QtGui")
 QtQml = pytest.importorskip("PySide6.QtQml")
+QtQuick = pytest.importorskip("PySide6.QtQuick")
 QtTest = pytest.importorskip("PySide6.QtTest")
 
 QAbstractListModel = QtCore.QAbstractListModel
@@ -22,6 +23,7 @@ QObject = QtCore.QObject
 QPoint = QtCore.QPoint
 QPointF = QtCore.QPointF
 Property = QtCore.Property
+QQuickItem = QtQuick.QQuickItem
 QTimer = QtCore.QTimer
 QUrl = QtCore.QUrl
 Qt = QtCore.Qt
@@ -97,17 +99,35 @@ class SessionsModel(QAbstractListModel):
             self.UPDATED_LABEL_ROLE: QByteArray(b"updatedLabel"),
         }
 
+    def replaceRows(self, rows: list[dict[str, object]]) -> None:
+        self.beginResetModel()
+        self._rows = [dict(row) for row in rows]
+        self.endResetModel()
+
 
 class DummyChatService(QObject):
     historyLoadingChanged = Signal(bool)
     messageAppended = Signal(int)
     statusUpdated = Signal(int, str)
     gatewayReady = Signal(bool)
+    activeSessionStateChanged = Signal()
+    sessionViewApplied = Signal(str)
 
-    def __init__(self, messages: QAbstractListModel, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        messages: QAbstractListModel,
+        *,
+        state: str = "running",
+        active_session_ready: bool = False,
+        active_session_has_messages: bool = False,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self._messages = messages
         self._history_loading = False
+        self._state = state
+        self._active_session_ready = active_session_ready
+        self._active_session_has_messages = active_session_has_messages
 
     @Property(QObject, constant=True)
     def messages(self) -> QObject:
@@ -125,7 +145,7 @@ class DummyChatService(QObject):
 
     @Property(str, constant=True)
     def state(self) -> str:
-        return "running"
+        return self._state
 
     @Property(str, constant=True)
     def lastError(self) -> str:
@@ -138,6 +158,31 @@ class DummyChatService(QObject):
     @Property(bool, constant=True)
     def gatewayDetailIsError(self) -> bool:
         return False
+
+    @Property(list, constant=True)
+    def gatewayChannels(self) -> list[dict[str, object]]:
+        return []
+
+    @Property(bool, notify=activeSessionStateChanged)
+    def activeSessionReady(self) -> bool:
+        return self._active_session_ready
+
+    @Property(bool, notify=activeSessionStateChanged)
+    def activeSessionHasMessages(self) -> bool:
+        return self._active_session_has_messages
+
+    def setActiveSessionState(self, ready: bool, has_messages: bool) -> None:
+        if (
+            self._active_session_ready == ready
+            and self._active_session_has_messages == has_messages
+        ):
+            return
+        self._active_session_ready = ready
+        self._active_session_has_messages = has_messages
+        self.activeSessionStateChanged.emit()
+
+    def emitSessionViewApplied(self, key: str) -> None:
+        self.sessionViewApplied.emit(key)
 
     @Slot(str)
     def setLanguage(self, lang: str) -> None:
@@ -170,6 +215,7 @@ class DummyConfigService(QObject):
         language: str = "en",
         model: str | None = None,
         providers: list[dict[str, object]] | None = None,
+        channels: dict[str, object] | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -178,6 +224,10 @@ class DummyConfigService(QObject):
         self._language = language
         self._ui_update: dict[str, object] = {}
         self._providers: list[dict[str, object]] = [dict(item) for item in (providers or [])]
+        plain_channels = self._to_plain(channels or {})
+        self._channels: dict[str, object] = (
+            plain_channels if isinstance(plain_channels, dict) else {}
+        )
         self._agents_defaults: dict[str, object] = {}
         if model is not None:
             self._agents_defaults["model"] = model
@@ -193,6 +243,14 @@ class DummyConfigService(QObject):
             return [self._to_plain(item) for item in value]
         return value
 
+    def _deep_merge(self, target: dict[str, object], patch: dict[str, object]) -> None:
+        for key, value in patch.items():
+            existing = target.get(key)
+            if isinstance(value, dict) and isinstance(existing, dict):
+                self._deep_merge(existing, value)
+            else:
+                target[key] = self._to_plain(value)
+
     @Property(bool, constant=True)
     def isValid(self) -> bool:
         return self._is_valid
@@ -205,6 +263,7 @@ class DummyConfigService(QObject):
     def getValue(self, path: str) -> object | None:
         data = {
             "ui": {"language": self._language, "update": dict(self._ui_update)},
+            "channels": self._to_plain(self._channels),
             "providers": {
                 provider.get("name", f"provider{index + 1}"): {
                     key: value for key, value in provider.items() if key != "name"
@@ -247,6 +306,10 @@ class DummyConfigService(QObject):
                     next_providers.append({"name": name, **provider})
                 self._providers = next_providers
 
+            channels = changes.get("channels")
+            if isinstance(channels, dict):
+                self._deep_merge(self._channels, channels)
+
             agents = changes.get("agents")
             if isinstance(agents, dict):
                 defaults = agents.get("defaults")
@@ -264,26 +327,161 @@ class DummyConfigService(QObject):
         return True
 
 
+class DummyDesktopPreferences(QObject):
+    uiLanguageChanged = Signal()
+    effectiveLanguageChanged = Signal()
+    themeModeChanged = Signal()
+    isDarkChanged = Signal()
+
+    def __init__(
+        self,
+        *,
+        ui_language: str = "en",
+        theme_mode: str = "light",
+        is_dark: bool = False,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._ui_language = ui_language
+        self._theme_mode = theme_mode
+        self._is_dark = is_dark
+
+    @Property(str, notify=uiLanguageChanged)
+    def uiLanguage(self) -> str:
+        return self._ui_language
+
+    @Property(str, notify=effectiveLanguageChanged)
+    def effectiveLanguage(self) -> str:
+        return self._ui_language
+
+    @Property(str, notify=themeModeChanged)
+    def themeMode(self) -> str:
+        return self._theme_mode
+
+    @Property(bool, notify=isDarkChanged)
+    def isDark(self) -> bool:
+        return self._is_dark
+
+    @Slot(str, result=bool)
+    def setUiLanguage(self, value: str) -> bool:
+        self._ui_language = value
+        self.uiLanguageChanged.emit()
+        self.effectiveLanguageChanged.emit()
+        return True
+
+    @Slot(str, result=bool)
+    def setThemeMode(self, value: str) -> bool:
+        self._theme_mode = value
+        self._is_dark = value == "dark"
+        self.themeModeChanged.emit()
+        self.isDarkChanged.emit()
+        return True
+
+    @Slot()
+    def toggleTheme(self) -> None:
+        _ = self.setThemeMode("light" if self._is_dark else "dark")
+
+
+class DummyDiagnosticsService(QObject):
+    changed = Signal()
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._log_file_path = "/tmp/bao-desktop.log"
+        self._recent_log_text = "2026-03-08 03:19:15.301 | INFO | boot"
+        self._events: list[dict[str, object]] = [
+            {
+                "code": "provider_error",
+                "stage": "chat",
+                "message": "provider timeout",
+                "source": "provider",
+                "timestamp": "2026-03-08T03:19:15",
+                "session_key": "desktop:local",
+                "level": "error",
+            }
+        ]
+        self._observability_items: list[dict[str, object]] = [
+            {"label": "Tool calls", "value": "5"},
+            {"label": "Tool errors", "value": "1"},
+        ]
+
+    @Property(str, notify=changed)
+    def logFilePath(self) -> str:
+        return self._log_file_path
+
+    @Property(str, notify=changed)
+    def recentLogText(self) -> str:
+        return self._recent_log_text
+
+    @Property(list, notify=changed)
+    def events(self) -> list[dict[str, object]]:
+        return self._events
+
+    @Property(list, notify=changed)
+    def observabilityItems(self) -> list[dict[str, object]]:
+        return self._observability_items
+
+    @Property(int, notify=changed)
+    def eventCount(self) -> int:
+        return len(self._events)
+
+    @Slot()
+    def refresh(self) -> None:
+        self.changed.emit()
+
+    @Slot()
+    def openLogDirectory(self) -> None:
+        return None
+
+    @Slot(result=str)
+    def buildAssistantPrompt(self) -> str:
+        return "Diagnostics prompt"
+
+
 class DummySessionService(QObject):
     sessionsChanged = Signal()
     activeKeyChanged = Signal(str)
     deleteCompleted = Signal(str, bool, str)
     activeReady = Signal()
+    sessionsLoadingChanged = Signal(bool)
 
     def __init__(self, sessions_model: QAbstractListModel, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._sessions_model = sessions_model
+        self._active_key = ""
+        self._sessions_loading = False
         self.new_session_calls: list[str] = []
         self.select_session_calls: list[str] = []
         self.delete_session_calls: list[str] = []
 
-    @Property(str, constant=True)
+    @Property(str, notify=activeKeyChanged)
     def activeKey(self) -> str:
-        return ""
+        return self._active_key
+
+    def setActiveKey(self, key: str) -> None:
+        if self._active_key == key:
+            return
+        self._active_key = key
+        rows = getattr(self._sessions_model, "_rows", None)
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict) and row.get("key") == key:
+                    row["has_unread"] = False
+        self.activeKeyChanged.emit(key)
 
     @Property(QObject, constant=True)
     def sessionsModel(self) -> QObject:
         return self._sessions_model
+
+    @Property(bool, notify=sessionsLoadingChanged)
+    def sessionsLoading(self) -> bool:
+        return self._sessions_loading
+
+    def setSessionsLoading(self, loading: bool) -> None:
+        if self._sessions_loading == loading:
+            return
+        self._sessions_loading = loading
+        self.sessionsLoadingChanged.emit(loading)
 
     @Slot(str)
     def newSession(self, name: str) -> None:
@@ -386,6 +584,8 @@ def _load_main_window(
     messages_model: QAbstractListModel | None = None,
     session_model: QAbstractListModel | None = None,
     chat_service: DummyChatService | None = None,
+    diagnostics_service: QObject | None = None,
+    desktop_preferences: DummyDesktopPreferences | None = None,
 ) -> tuple[QQmlApplicationEngine, QObject]:
     messages_model = messages_model or EmptyMessagesModel()
     chat_service = chat_service or DummyChatService(messages_model)
@@ -393,8 +593,8 @@ def _load_main_window(
     session_service = DummySessionService(session_model or messages_model)
     update_service = DummyUpdateService()
     update_bridge = DummyUpdateBridge()
-    theme_manager = QObject()
-    clipboard_service = QObject()
+    diagnostics_service = diagnostics_service or QObject()
+    desktop_preferences = desktop_preferences or DummyDesktopPreferences()
     engine = QQmlApplicationEngine()
     engine._test_refs = {
         "messages_model": messages_model,
@@ -403,8 +603,8 @@ def _load_main_window(
         "session_service": session_service,
         "update_service": update_service,
         "update_bridge": update_bridge,
-        "theme_manager": theme_manager,
-        "clipboard_service": clipboard_service,
+        "diagnostics_service": diagnostics_service,
+        "desktop_preferences": desktop_preferences,
     }
     context = engine.rootContext()
     context.setContextProperty("chatService", chat_service)
@@ -412,8 +612,8 @@ def _load_main_window(
     context.setContextProperty("sessionService", session_service)
     context.setContextProperty("updateService", update_service)
     context.setContextProperty("updateBridge", update_bridge)
-    context.setContextProperty("themeManager", theme_manager)
-    context.setContextProperty("clipboardService", clipboard_service)
+    context.setContextProperty("diagnosticsService", diagnostics_service)
+    context.setContextProperty("desktopPreferences", desktop_preferences)
     context.setContextProperty("messagesModel", messages_model)
     context.setContextProperty("systemUiLanguage", "en")
     engine.load(QUrl.fromLocalFile(str(MAIN_QML_PATH)))
@@ -425,6 +625,23 @@ def _load_main_window(
     for _ in range(5):
         _process(30)
     return engine, root
+
+
+def _load_light_main_window(
+    config_service: DummyConfigService | None = None,
+    messages_model: QAbstractListModel | None = None,
+    session_model: QAbstractListModel | None = None,
+    chat_service: DummyChatService | None = None,
+    diagnostics_service: QObject | None = None,
+) -> tuple[QQmlApplicationEngine, QObject]:
+    return _load_main_window(
+        config_service=config_service,
+        messages_model=messages_model,
+        session_model=session_model,
+        chat_service=chat_service,
+        diagnostics_service=diagnostics_service,
+        desktop_preferences=DummyDesktopPreferences(theme_mode="light", is_dark=False),
+    )
 
 
 def _load_inline_qml(
@@ -477,6 +694,86 @@ def _find_object(root: QObject, object_name: str) -> QObject:
     raise AssertionError(f"object not found: {object_name}")
 
 
+def _first_visible_sidebar_session_anchor(
+    root: QObject, session_list: QObject
+) -> tuple[str, float]:
+    _ = root
+    content_y = float(session_list.property("contentY"))
+    content_item = session_list.property("contentItem")
+    if not isinstance(content_item, QQuickItem):
+        raise AssertionError("sidebar content item not found")
+    delegates = []
+    for obj in content_item.childItems():
+        if not bool(obj.property("anchorReady")):
+            continue
+        if bool(obj.property("anchorIsHeader")):
+            continue
+        key = str(obj.property("anchorKey") or "")
+        if not key:
+            continue
+        y = float(obj.property("y"))
+        height = float(obj.property("height"))
+        if height <= 0:
+            continue
+        if y + height <= content_y:
+            continue
+        delegates.append((y, key))
+    if not delegates:
+        raise AssertionError("visible sidebar session anchor not found")
+    delegates.sort(key=lambda item: item[0])
+    y, key = delegates[0]
+    return key, content_y - y
+
+
+def _sidebar_session_anchor_offset(session_list: QObject, key: str) -> float:
+    content_y = float(session_list.property("contentY"))
+    content_item = session_list.property("contentItem")
+    if not isinstance(content_item, QQuickItem):
+        raise AssertionError("sidebar content item not found")
+    for obj in content_item.childItems():
+        if not bool(obj.property("anchorReady")):
+            continue
+        if bool(obj.property("anchorIsHeader")):
+            continue
+        if str(obj.property("anchorKey") or "") != key:
+            continue
+        y = float(obj.property("y"))
+        height = float(obj.property("height"))
+        if height <= 0:
+            continue
+        if y + height <= content_y:
+            continue
+        if y >= content_y + float(session_list.property("height")):
+            continue
+        return content_y - y
+    raise AssertionError(f"sidebar anchor not visible: {key}")
+
+
+def _find_object_by_property(root: QObject, property_name: str, expected: object) -> QObject:
+    for obj in root.findChildren(QObject):
+        try:
+            if obj.property(property_name) == expected:
+                return obj
+        except Exception:
+            continue
+    raise AssertionError(f"object with {property_name}={expected!r} not found")
+
+
+def _find_visible_object_by_property(
+    root: QObject, property_name: str, expected: object
+) -> QObject:
+    for obj in root.findChildren(QObject):
+        try:
+            if obj.property(property_name) != expected:
+                continue
+            if obj.property("visible") is not True:
+                continue
+            return obj
+        except Exception:
+            continue
+    raise AssertionError(f"visible object with {property_name}={expected!r} not found")
+
+
 def _center_point(item: QObject) -> QPoint:
     center = item.mapToScene(QPointF(item.property("width") / 2, item.property("height") / 2))
     return QPoint(int(center.x()), int(center.y()))
@@ -499,6 +796,39 @@ def test_main_chat_view_composer_click_focus_works_with_window_focus_filter(qapp
         _process(0)
 
         assert bool(message_input.property("activeFocus")) is True
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_diagnostics_modal_renders_content(qapp):
+    _ = qapp
+    engine, root = _load_main_window(
+        chat_service=DummyChatService(EmptyMessagesModel(), state="running"),
+        diagnostics_service=DummyDiagnosticsService(),
+    )
+
+    try:
+        modal = _find_object(root, "diagnosticsModal")
+        _ = QMetaObject.invokeMethod(modal, "open")
+        _process(150)
+
+        _find_object_by_property(root, "text", "Gateway State")
+        _find_object_by_property(root, "text", "Running normally")
+        _find_object_by_property(root, "text", "Log file")
+        _find_object_by_property(root, "text", "/tmp/bao-desktop.log")
+        _find_object_by_property(root, "text", "Log tail")
+
+        gateway_card = _find_object(root, "diagnosticsGatewayCard")
+        log_file_card = _find_object(root, "diagnosticsLogFileCard")
+        events_card = _find_object(root, "diagnosticsEventsCard")
+        log_tail_card = _find_object(root, "diagnosticsLogTailCard")
+
+        assert int(gateway_card.property("width")) > 260
+        assert int(log_file_card.property("width")) > 260
+        assert int(events_card.property("width")) > 260
+        assert int(log_tail_card.property("width")) > 260
     finally:
         root.deleteLater()
         engine.deleteLater()
@@ -554,7 +884,10 @@ def test_main_setup_mode_hides_sidebar_and_lands_on_settings(qapp):
 def test_onboarding_invalid_ui_language_stays_on_first_step(qapp):
     _ = qapp
     config_service = DummyConfigService(is_valid=False, needs_setup=True, language="fr")
-    engine, root = _load_main_window(config_service)
+    engine, root = _load_main_window(
+        config_service,
+        desktop_preferences=DummyDesktopPreferences(ui_language="fr"),
+    )
 
     try:
         settings_view = _find_object(root, "settingsView")
@@ -690,6 +1023,174 @@ Item {{
         _process(0)
 
 
+def test_channel_row_toggle_click_updates_checked_state(qapp):
+    _ = qapp
+    engine, root = _load_main_window()
+
+    try:
+        settings_view = _find_object(root, "settingsView")
+        _ = root.setProperty("startView", "settings")
+        _ = settings_view.setProperty("_activeTab", 1)
+        _process(30)
+
+        toggle = _find_object_by_property(root, "dotpath", "channels.telegram.enabled")
+        assert toggle.property("checked") is False
+        assert toggle.property("currentValue") is None
+
+        QTest.mouseClick(root, Qt.LeftButton, Qt.NoModifier, _center_point(toggle))
+        _process(0)
+
+        assert toggle.property("checked") is True
+        assert toggle.property("currentValue") is True
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_channel_section_save_ignores_untouched_disabled_toggle(qapp):
+    _ = qapp
+    config_service = DummyConfigService(channels={"telegram": {"token": "123456:ABC"}})
+    engine, root = _load_main_window(config_service)
+
+    try:
+        settings_view = _find_object(root, "settingsView")
+        _ = root.setProperty("startView", "settings")
+        _ = settings_view.setProperty("_activeTab", 1)
+        _process(30)
+
+        save_button = _find_visible_object_by_property(root, "text", "Save")
+        QTest.mouseClick(root, Qt.LeftButton, Qt.NoModifier, _center_point(save_button))
+        _process(30)
+
+        assert isinstance(config_service.last_saved_changes, dict)
+        assert "channels.telegram.enabled" not in config_service.last_saved_changes
+        assert config_service.last_saved_changes.get("channels.telegram.token") == "123456:ABC"
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_channel_section_save_persists_touched_toggle(qapp):
+    _ = qapp
+    config_service = DummyConfigService(channels={"telegram": {"token": "123456:ABC"}})
+    engine, root = _load_main_window(config_service)
+
+    try:
+        settings_view = _find_object(root, "settingsView")
+        _ = root.setProperty("startView", "settings")
+        _ = settings_view.setProperty("_activeTab", 1)
+        _process(30)
+
+        toggle = _find_object_by_property(root, "dotpath", "channels.telegram.enabled")
+        QTest.mouseClick(root, Qt.LeftButton, Qt.NoModifier, _center_point(toggle))
+        _process(0)
+
+        save_button = _find_visible_object_by_property(root, "text", "Save")
+        QTest.mouseClick(root, Qt.LeftButton, Qt.NoModifier, _center_point(save_button))
+        _process(30)
+
+        assert isinstance(config_service.last_saved_changes, dict)
+        assert config_service.last_saved_changes.get("channels.telegram.enabled") is True
+        assert config_service.last_saved_changes.get("channels.telegram.token") == "123456:ABC"
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_add_new_provider_expands_new_card(qapp):
+    _ = qapp
+    engine, root = _load_main_window()
+
+    try:
+        _ = root.setProperty("startView", "settings")
+        settings_view = _find_object(root, "settingsView")
+        _process(30)
+
+        assert QMetaObject.invokeMethod(settings_view, "_addNewProvider")
+        for _ in range(8):
+            _process(30)
+            provider_list = settings_view.property("_providerList")
+            to_variant = getattr(provider_list, "toVariant", None)
+            if callable(to_variant):
+                provider_list = to_variant()
+            if isinstance(provider_list, list) and len(provider_list) == 1:
+                break
+
+        provider_list = settings_view.property("_providerList")
+        to_variant = getattr(provider_list, "toVariant", None)
+        if callable(to_variant):
+            provider_list = to_variant()
+        assert isinstance(provider_list, list)
+        assert len(provider_list) == 1
+        assert provider_list[0]["name"] == "primary"
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+@pytest.mark.parametrize("initial_enabled", [False, True])
+def test_channel_section_save_preserves_existing_enabled_value(qapp, initial_enabled):
+    _ = qapp
+    config_service = DummyConfigService(
+        channels={"telegram": {"enabled": initial_enabled, "token": "123456:ABC"}}
+    )
+    engine, root = _load_main_window(config_service)
+
+    try:
+        settings_view = _find_object(root, "settingsView")
+        _ = root.setProperty("startView", "settings")
+        _ = settings_view.setProperty("_activeTab", 1)
+        _process(30)
+
+        save_button = _find_visible_object_by_property(root, "text", "Save")
+        QTest.mouseClick(root, Qt.LeftButton, Qt.NoModifier, _center_point(save_button))
+        _process(30)
+
+        assert isinstance(config_service.last_saved_changes, dict)
+        assert config_service.last_saved_changes.get("channels.telegram.enabled") is initial_enabled
+        assert config_service.last_saved_changes.get("channels.telegram.token") == "123456:ABC"
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_onboarding_final_cta_requires_model_selection(qapp):
+    _ = qapp
+    config_service = DummyConfigService(
+        is_valid=False,
+        needs_setup=True,
+        providers=[{"name": "primary", "type": "openai", "apiKey": "sk-ready", "apiBase": ""}],
+    )
+    engine, root = _load_main_window(config_service)
+
+    try:
+        settings_view = _find_object(root, "settingsView")
+        model_section = _find_object_by_property(
+            settings_view, "actionText", "Save and start chatting"
+        )
+        model_field = _find_object(root, "onboardingPrimaryModelField")
+
+        _process(30)
+        assert settings_view.property("providerConfigured") is True
+        assert settings_view.property("onboardingModelReady") is False
+        assert model_section.property("actionEnabled") is False
+
+        model_field.setCurrentText("openai/gpt-4o")
+        _process(30)
+
+        assert settings_view.property("onboardingModelReady") is True
+        assert model_section.property("actionEnabled") is True
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
 def test_sidebar_empty_state_click_creates_new_session(qapp):
     _ = qapp
     engine, root = _load_main_window()
@@ -710,6 +1211,26 @@ def test_sidebar_empty_state_click_creates_new_session(qapp):
         _process(0)
 
 
+def test_sidebar_loading_state_hides_empty_cta(qapp):
+    _ = qapp
+    engine, root = _load_main_window()
+
+    try:
+        session_service = engine._test_refs["session_service"]
+        empty_state = _find_object(root, "sidebarEmptyState")
+        loading_state = _find_object(root, "sidebarLoadingState")
+
+        session_service.setSessionsLoading(True)
+        _process(0)
+
+        assert bool(loading_state.property("visible")) is True
+        assert bool(empty_state.property("visible")) is False
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
 def test_sidebar_new_session_button_click_creates_new_session(qapp):
     _ = qapp
     engine, root = _load_main_window()
@@ -722,6 +1243,98 @@ def test_sidebar_new_session_button_click_creates_new_session(qapp):
         _process(0)
 
         assert session_service.new_session_calls == [""]
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_empty_session_prefers_ready_state_over_gateway_idle_message(qapp):
+    _ = qapp
+    chat_service = DummyChatService(
+        EmptyMessagesModel(),
+        state="idle",
+        active_session_ready=True,
+        active_session_has_messages=False,
+    )
+    engine, root = _load_main_window(chat_service=chat_service)
+
+    try:
+        ready_state = _find_object(root, "chatEmptyReadyState")
+        idle_state = _find_object(root, "chatEmptyIdleState")
+
+        _process(20)
+
+        assert bool(ready_state.property("visible")) is True
+        assert bool(idle_state.property("visible")) is False
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_light_theme_setup_empty_icon_uses_light_asset(qapp):
+    _ = qapp
+    config_service = DummyConfigService(is_valid=False, needs_setup=True)
+    engine, root = _load_light_main_window(config_service=config_service)
+
+    try:
+        icon = _find_object(root, "chatEmptySetupIcon")
+
+        assert "settings-light.svg" in str(icon.property("source"))
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_light_theme_ready_empty_icon_uses_light_asset(qapp):
+    _ = qapp
+    chat_service = DummyChatService(
+        EmptyMessagesModel(),
+        state="running",
+        active_session_ready=True,
+        active_session_has_messages=False,
+    )
+    engine, root = _load_light_main_window(chat_service=chat_service)
+
+    try:
+        icon = _find_object(root, "chatEmptyReadyIcon")
+
+        assert "chat-light.svg" in str(icon.property("source"))
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_light_theme_idle_empty_icons_use_light_assets(qapp):
+    _ = qapp
+    engine, root = _load_light_main_window()
+
+    try:
+        idle_icon = _find_object(root, "chatEmptyIdleIcon")
+        sidebar_empty_icon = _find_object(root, "sidebarEmptyChatIcon")
+        sidebar_title_icon = _find_object(root, "sidebarSessionsTitleIcon")
+
+        assert "zap-light.svg" in str(idle_icon.property("source"))
+        assert "chat-light.svg" in str(sidebar_empty_icon.property("source"))
+        assert "sidebar-sessions-title-light.svg" in str(sidebar_title_icon.property("source"))
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_light_theme_main_greeting_tokens_use_light_values(qapp):
+    _ = qapp
+    engine, root = _load_light_main_window()
+
+    try:
+        assert "ignite-light.svg" in str(root.property("chatGreetingIconSource"))
+        assert root.property("chatGreetingBubbleBgStart") == root.property(
+            "chatGreetingBubbleBgEnd"
+        )
     finally:
         root.deleteLater()
         engine.deleteLater()
@@ -810,8 +1423,17 @@ def test_gateway_detail_bubble_shows_error_without_hover(qapp):
     engine, root = _load_main_window(session_model=session_model, chat_service=chat_service)
 
     try:
+        orb = _find_object(root, "gatewayDetailOrb")
         bubble = _find_object(root, "gatewayDetailBubble")
         text = _find_object(root, "gatewayDetailText")
+
+        assert bool(orb.property("visible")) is True
+        assert bool(bubble.property("visible")) is False
+
+        QTest.mouseMove(root, QPoint(0, 0))
+        _process(20)
+        QTest.mouseMove(root, _center_point(orb))
+        _process(40)
 
         assert bool(bubble.property("visible")) is True
         assert "telegram" in str(text.property("text"))
@@ -854,16 +1476,16 @@ def test_gateway_detail_bubble_shows_summary_on_hover(qapp):
     try:
         bubble = _find_object(root, "gatewayDetailBubble")
         text = _find_object(root, "gatewayDetailText")
-        capsule = _find_object(root, "gatewayCapsule")
 
         assert bool(bubble.property("visible")) is False
 
         QTest.mouseMove(root, QPoint(0, 0))
         _process(20)
-        QTest.mouseMove(root, _center_point(capsule))
+        orb = _find_object(root, "gatewayDetailOrb")
+        QTest.mouseMove(root, _center_point(orb))
         _process(40)
         if not bool(bubble.property("visible")):
-            QTest.mouseMove(root, _center_point(capsule))
+            QTest.mouseMove(root, _center_point(orb))
             _process(40)
 
         assert bool(bubble.property("visible")) is True
@@ -874,7 +1496,7 @@ def test_gateway_detail_bubble_shows_summary_on_hover(qapp):
         _process(0)
 
 
-def test_gateway_detail_bubble_shows_summary_on_focus(qapp):
+def test_gateway_detail_bubble_stays_hidden_on_focus_without_hover(qapp):
     _ = qapp
 
     class GatewaySummaryChatService(DummyChatService):
@@ -905,15 +1527,17 @@ def test_gateway_detail_bubble_shows_summary_on_focus(qapp):
     engine, root = _load_main_window(session_model=session_model, chat_service=chat_service)
 
     try:
+        orb = _find_object(root, "gatewayDetailOrb")
         bubble = _find_object(root, "gatewayDetailBubble")
         capsule = _find_object(root, "gatewayCapsule")
 
         assert bool(bubble.property("visible")) is False
+        assert bool(orb.property("visible")) is True
         capsule.forceActiveFocus()
         _process(20)
 
         assert bool(capsule.property("activeFocus")) is True
-        assert bool(bubble.property("visible")) is True
+        assert bool(bubble.property("visible")) is False
     finally:
         root.deleteLater()
         engine.deleteLater()
@@ -1024,12 +1648,19 @@ def test_gateway_detail_bubble_is_overlay_child_of_capsule(qapp):
     engine, root = _load_main_window(session_model=session_model, chat_service=chat_service)
 
     try:
+        orb = _find_object(root, "gatewayDetailOrb")
         bubble = _find_object(root, "gatewayDetailBubble")
         capsule = _find_object(root, "gatewayCapsule")
 
+        assert bool(orb.property("visible")) is True
+        assert bool(bubble.property("visible")) is False
+        capsule.forceActiveFocus()
+        _process(20)
+        QTest.mouseMove(root, _center_point(capsule))
+        _process(40)
         assert bool(bubble.property("visible")) is True
-        assert bubble.parent() is capsule
-        assert float(bubble.property("y")) <= float(capsule.property("height"))
+        assert bubble.parent().objectName() == "gatewayStatusOrb"
+        assert float(bubble.property("y")) >= float(orb.property("y"))
     finally:
         root.deleteLater()
         engine.deleteLater()
@@ -1067,13 +1698,141 @@ def test_gateway_detail_bubble_caps_long_error_height_and_scrolls(qapp):
     engine, root = _load_main_window(session_model=session_model, chat_service=chat_service)
 
     try:
+        orb = _find_object(root, "gatewayDetailOrb")
         bubble = _find_object(root, "gatewayDetailBubble")
         viewport = _find_object(root, "gatewayDetailViewport")
+
+        assert bool(orb.property("visible")) is True
+        QTest.mouseMove(root, QPoint(0, 0))
+        _process(20)
+        QTest.mouseMove(root, _center_point(orb))
+        _process(40)
 
         assert bool(bubble.property("visible")) is True
         assert float(bubble.property("height")) <= 134.0
         assert bool(viewport.property("interactive")) is True
         assert float(viewport.property("contentHeight")) > float(viewport.property("height"))
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_gateway_detail_orb_shows_overflow_badge_for_many_channels(qapp):
+    _ = qapp
+
+    class GatewayChannelsChatService(DummyChatService):
+        @Property(list, constant=True)
+        def gatewayChannels(self) -> list[dict[str, object]]:
+            return [
+                {"channel": "telegram", "state": "running", "detail": ""},
+                {"channel": "imessage", "state": "running", "detail": ""},
+                {"channel": "email", "state": "idle", "detail": ""},
+            ]
+
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            }
+        ]
+    )
+    chat_service = GatewayChannelsChatService(EmptyMessagesModel())
+    engine, root = _load_main_window(session_model=session_model, chat_service=chat_service)
+
+    try:
+        orb = _find_object(root, "gatewayDetailOrb")
+        overflow = _find_object(root, "gatewayDetailOrbOverflow")
+
+        assert bool(orb.property("visible")) is True
+        assert bool(overflow.property("visible")) is True
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_gateway_detail_orb_uses_pill_shape_for_multiple_channels(qapp):
+    _ = qapp
+
+    class GatewayChannelsChatService(DummyChatService):
+        @Property(list, constant=True)
+        def gatewayChannels(self) -> list[dict[str, object]]:
+            return [
+                {"channel": "telegram", "state": "running", "detail": ""},
+                {"channel": "imessage", "state": "running", "detail": ""},
+            ]
+
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            }
+        ]
+    )
+    chat_service = GatewayChannelsChatService(EmptyMessagesModel())
+    engine, root = _load_main_window(session_model=session_model, chat_service=chat_service)
+
+    try:
+        orb = _find_object(root, "gatewayDetailOrb")
+
+        assert bool(orb.property("visible")) is True
+        assert float(orb.property("width")) > float(orb.property("height"))
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_gateway_detail_bubble_width_adapts_for_short_summary(qapp):
+    _ = qapp
+
+    class GatewaySummaryChatService(DummyChatService):
+        def __init__(self, messages: QAbstractListModel) -> None:
+            super().__init__(messages)
+            self._gateway_detail_value = "短摘要"
+
+        @Property(str, constant=True)
+        def gatewayDetail(self) -> str:
+            return self._gateway_detail_value
+
+        @Property(bool, constant=True)
+        def gatewayDetailIsError(self) -> bool:
+            return False
+
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            }
+        ]
+    )
+    chat_service = GatewaySummaryChatService(EmptyMessagesModel())
+    engine, root = _load_main_window(session_model=session_model, chat_service=chat_service)
+
+    try:
+        bubble = _find_object(root, "gatewayDetailBubble")
+        orb = _find_object(root, "gatewayDetailOrb")
+
+        QTest.mouseMove(root, QPoint(0, 0))
+        _process(20)
+        QTest.mouseMove(root, _center_point(orb))
+        _process(40)
+
+        assert bool(bubble.property("visible")) is True
+        assert float(bubble.property("width")) < 248.0
     finally:
         root.deleteLater()
         engine.deleteLater()
@@ -1178,6 +1937,138 @@ def test_sidebar_header_unread_badge_aggregates_unread_sessions(qapp):
         _process(0)
 
 
+def test_sidebar_header_unread_badge_drops_active_session_immediately(qapp):
+    _ = qapp
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            },
+            {
+                "key": "telegram:room1",
+                "title": "Telegram",
+                "updated_at": "2026-03-06T10:01:00",
+                "channel": "telegram",
+                "has_unread": True,
+            },
+        ]
+    )
+    engine, root = _load_main_window(session_model=session_model)
+
+    try:
+        session_service = engine._test_refs["session_service"]
+        badge = _find_object(root, "sessionsHeaderUnreadBadge")
+        badge_text = _find_object(root, "sessionsHeaderUnreadText")
+
+        session_service.sessionsChanged.emit()
+        for _ in range(4):
+            _process(30)
+
+        assert bool(badge.property("visible")) is True
+        assert str(badge_text.property("text")) == "1"
+
+        session_service.setActiveKey("telegram:room1")
+        for _ in range(2):
+            _process(30)
+
+        assert bool(badge.property("visible")) is False
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_sidebar_unread_does_not_revive_after_switching_away(qapp):
+    _ = qapp
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            },
+            {
+                "key": "telegram:room1",
+                "title": "Telegram",
+                "updated_at": "2026-03-06T10:01:00",
+                "channel": "telegram",
+                "has_unread": True,
+            },
+        ]
+    )
+    engine, root = _load_main_window(session_model=session_model)
+
+    try:
+        session_service = engine._test_refs["session_service"]
+        badge = _find_object(root, "sessionsHeaderUnreadBadge")
+
+        session_service.sessionsChanged.emit()
+        _process(40)
+        session_service.setActiveKey("telegram:room1")
+        _process(40)
+        session_service.setActiveKey("desktop:local::default")
+        _process(40)
+
+        assert bool(badge.property("visible")) is False
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_sidebar_delete_above_viewport_preserves_visible_anchor(qapp):
+    _ = qapp
+    rows = []
+    for i in range(12):
+        rows.append(
+            {
+                "key": f"desktop:local::s{i}",
+                "title": f"Session {i}",
+                "updated_at": f"2026-03-06T10:{i:02d}:00",
+                "channel": "desktop",
+                "has_unread": False,
+            }
+        )
+    session_model = SessionsModel(rows)
+    engine, root = _load_main_window(session_model=session_model)
+
+    try:
+        session_service = engine._test_refs["session_service"]
+        session_list = _find_object(root, "sidebarSessionList")
+
+        session_service.sessionsChanged.emit()
+        for _ in range(4):
+            _process(30)
+
+        session_list.setProperty("contentY", 220)
+        _process(30)
+        before_key, before_offset = _first_visible_sidebar_session_anchor(root, session_list)
+        before_y = float(session_list.property("contentY"))
+
+        session_model.replaceRows(rows[1:])
+        session_service.sessionsChanged.emit()
+        for _ in range(4):
+            _process(30)
+
+        after_offset = _sidebar_session_anchor_offset(session_list, before_key)
+        after_y = float(session_list.property("contentY"))
+        origin_y = float(session_list.property("originY"))
+        assert isinstance(before_offset, float)
+        assert isinstance(after_offset, float)
+        assert after_y < before_y
+        assert after_y >= origin_y
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
 def test_main_chat_view_system_message_append_forces_follow_to_end(qapp):
     _ = qapp
     from app.backend.chat import ChatMessageModel
@@ -1216,10 +2107,12 @@ def test_main_chat_view_system_message_append_forces_follow_to_end(qapp):
             0.0,
             float(message_list.property("contentHeight")) - float(message_list.property("height")),
         )
+        follow_upper_bound = max_y_after + float(message_list.property("topMargin")) + 2.0
         content_y = float(message_list.property("contentY"))
 
         assert max_y_after > 1.0
         assert content_y >= max_y_after - 2.0
+        assert content_y <= follow_upper_bound
     finally:
         root.deleteLater()
         engine.deleteLater()
@@ -1283,10 +2176,12 @@ def test_main_chat_view_appended_messages_force_follow_to_end(qapp, append_messa
             0.0,
             float(message_list.property("contentHeight")) - float(message_list.property("height")),
         )
+        follow_upper_bound = max_y_after + float(message_list.property("topMargin")) + 2.0
         content_y = float(message_list.property("contentY"))
 
         assert max_y_after > 1.0
         assert content_y >= max_y_after - 2.0
+        assert content_y <= follow_upper_bound
     finally:
         root.deleteLater()
         engine.deleteLater()
@@ -1428,6 +2323,295 @@ def test_main_chat_view_history_merge_after_send_result_does_not_jump_to_top(qap
 
         content_y = float(message_list.property("contentY"))
         assert content_y > 2.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_main_chat_view_preserves_viewport_on_model_reset(qapp):
+    _ = qapp
+    from app.backend.chat import ChatMessageModel
+
+    messages_model = ChatMessageModel()
+    messages_model.load_prepared(
+        ChatMessageModel.prepare_history(
+            [{"role": "user", "content": f"message {i}"} for i in range(72)]
+        )
+    )
+
+    engine, root = _load_main_window(messages_model=messages_model)
+
+    try:
+        message_list = _find_object(root, "chatMessageList")
+
+        for _ in range(6):
+            _process(30)
+
+        max_y_before = max(
+            0.0,
+            float(message_list.property("contentHeight")) - float(message_list.property("height")),
+        )
+        assert max_y_before > 20.0
+
+        target_y = max_y_before / 2.0
+        _ = message_list.setProperty("contentY", target_y)
+        _process(30)
+
+        messages_model.load_prepared(
+            ChatMessageModel.prepare_history(
+                [{"role": "assistant", "content": f"reply {i}"} for i in range(72)]
+            )
+        )
+
+        for _ in range(6):
+            _process(30)
+
+        content_y = float(message_list.property("contentY"))
+        assert content_y > 20.0
+        assert abs(content_y - target_y) < 24.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_main_chat_view_keyboard_shortcuts_scroll_history(qapp):
+    _ = qapp
+    from app.backend.chat import ChatMessageModel
+
+    messages_model = ChatMessageModel()
+    messages_model.load_prepared(
+        ChatMessageModel.prepare_history(
+            [{"role": "user", "content": f"message {i}"} for i in range(72)]
+        )
+    )
+
+    engine, root = _load_main_window(messages_model=messages_model)
+
+    try:
+        message_input = _find_object(root, "chatMessageInput")
+        message_list = _find_object(root, "chatMessageList")
+        root.requestActivate()
+
+        for _ in range(6):
+            _process(30)
+
+        max_y = max(
+            0.0,
+            float(message_list.property("contentHeight")) - float(message_list.property("height")),
+        )
+        assert max_y > 20.0
+
+        _ = message_list.setProperty("contentY", 0.0)
+        message_list.forceActiveFocus()
+        _process(20)
+
+        for _ in range(2):
+            QTest.keyClick(root, Qt.Key_Down)
+            _process(30)
+            if float(message_list.property("contentY")) > 0.0:
+                break
+            root.requestActivate()
+            message_list.forceActiveFocus()
+            _process(20)
+
+        scrolled_down = float(message_list.property("contentY"))
+        assert scrolled_down > 0.0
+
+        for _ in range(2):
+            QTest.keyClick(root, Qt.Key_Up)
+            _process(30)
+            if float(message_list.property("contentY")) < scrolled_down:
+                break
+            root.requestActivate()
+            message_list.forceActiveFocus()
+            _process(20)
+
+        scrolled_up = float(message_list.property("contentY"))
+        assert scrolled_up < scrolled_down
+
+        message_input.forceActiveFocus()
+        _process(20)
+        _ = message_list.setProperty("contentY", 0.0)
+        _process(20)
+
+        QTest.keyClick(root, Qt.Key_Down)
+        _process(30)
+
+        assert float(message_list.property("contentY")) < 1.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_main_chat_view_keyboard_scroll_respects_list_bounds(qapp):
+    _ = qapp
+    from app.backend.chat import ChatMessageModel
+
+    messages_model = ChatMessageModel()
+    messages_model.load_prepared(
+        ChatMessageModel.prepare_history(
+            [{"role": "user", "content": f"message {i}"} for i in range(96)]
+        )
+    )
+
+    engine, root = _load_main_window(messages_model=messages_model)
+
+    try:
+        message_list = _find_object(root, "chatMessageList")
+        root.requestActivate()
+
+        for _ in range(6):
+            _process(30)
+
+        message_list.forceActiveFocus()
+        _process(20)
+
+        QTest.keyClick(root, Qt.Key_End)
+        _process(40)
+        bottom_y = float(message_list.property("contentY"))
+
+        QTest.keyClick(root, Qt.Key_Down)
+        _process(30)
+        QTest.keyClick(root, Qt.Key_PageDown)
+        _process(30)
+
+        assert abs(float(message_list.property("contentY")) - bottom_y) < 2.0
+
+        for _ in range(160):
+            QTest.keyClick(root, Qt.Key_Up)
+            _process(8)
+
+        QTest.keyClick(root, Qt.Key_Home)
+        _process(40)
+        top_y = float(message_list.property("contentY"))
+
+        QTest.keyClick(root, Qt.Key_Up)
+        _process(30)
+        QTest.keyClick(root, Qt.Key_PageUp)
+        _process(30)
+
+        assert abs(float(message_list.property("contentY")) - top_y) < 2.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_main_chat_view_active_session_switch_follows_to_end_after_reset(qapp):
+    _ = qapp
+    from app.backend.chat import ChatMessageModel
+
+    messages_model = ChatMessageModel()
+    messages_model.load_prepared(
+        ChatMessageModel.prepare_history(
+            [{"role": "user", "content": f"message {i}"} for i in range(72)]
+        )
+    )
+
+    engine, root = _load_main_window(messages_model=messages_model)
+
+    try:
+        chat_service = engine._test_refs["chat_service"]
+        message_list = _find_object(root, "chatMessageList")
+        session_service = engine._test_refs["session_service"]
+
+        for _ in range(6):
+            _process(30)
+
+        _ = message_list.setProperty("contentY", 0.0)
+        _process(20)
+
+        session_service.setActiveKey("desktop:local::other")
+        messages_model.load_prepared(
+            ChatMessageModel.prepare_history(
+                [{"role": "assistant", "content": f"reply {i}"} for i in range(72)]
+            )
+        )
+        chat_service.emitSessionViewApplied("desktop:local::other")
+
+        for _ in range(12):
+            _process(30)
+            max_y = max(
+                0.0,
+                float(message_list.property("contentHeight"))
+                - float(message_list.property("height")),
+            )
+            content_y = float(message_list.property("contentY"))
+            if max_y <= 20.0 or content_y < max_y - 2.0:
+                continue
+            break
+
+        max_y = max(
+            0.0,
+            float(message_list.property("contentHeight")) - float(message_list.property("height")),
+        )
+        follow_lower_bound = max_y - float(message_list.property("topMargin")) - 2.0
+        follow_upper_bound = max_y + float(message_list.property("topMargin")) + 2.0
+        content_y = float(message_list.property("contentY"))
+
+        assert max_y > 20.0
+        assert content_y >= follow_lower_bound
+        assert content_y <= follow_upper_bound
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_main_chat_view_render_equivalent_session_switch_keeps_future_restore(qapp):
+    _ = qapp
+    from app.backend.chat import ChatMessageModel
+
+    prepared = ChatMessageModel.prepare_history(
+        [{"role": "user", "content": f"message {i}"} for i in range(72)]
+    )
+    messages_model = ChatMessageModel()
+    messages_model.load_prepared(prepared)
+
+    engine, root = _load_main_window(messages_model=messages_model)
+
+    try:
+        chat_service = engine._test_refs["chat_service"]
+        session_service = engine._test_refs["session_service"]
+        message_list = _find_object(root, "chatMessageList")
+
+        for _ in range(6):
+            _process(30)
+
+        session_service.setActiveKey("desktop:local::other")
+        chat_service.setHistoryLoading(True)
+        messages_model.load_prepared(prepared)
+        chat_service.emitSessionViewApplied("desktop:local::other")
+        _process(20)
+        chat_service.setHistoryLoading(False)
+
+        for _ in range(8):
+            _process(30)
+
+        max_y = max(
+            0.0,
+            float(message_list.property("contentHeight")) - float(message_list.property("height")),
+        )
+        assert max_y > 20.0
+
+        target_y = max_y / 2.0
+        _ = message_list.setProperty("contentY", target_y)
+        _process(30)
+
+        messages_model.load_prepared(
+            ChatMessageModel.prepare_history(
+                [{"role": "assistant", "content": f"reply {i}"} for i in range(72)]
+            )
+        )
+
+        for _ in range(8):
+            _process(30)
+
+        content_y = float(message_list.property("contentY"))
+        assert abs(content_y - target_y) < 24.0
     finally:
         root.deleteLater()
         engine.deleteLater()
