@@ -30,9 +30,9 @@ ApplicationWindow {
     color: useNativeTitleBar ? root.bgBase : "transparent"
 
     property string startView: "chat"
-    property bool isDark: true
+    readonly property bool isDark: desktopPreferences ? desktopPreferences.isDark : true
 
-    property string uiLanguage: "auto" // auto | zh | en
+    readonly property string uiLanguage: desktopPreferences ? desktopPreferences.uiLanguage : "auto"
     readonly property string autoLanguage: {
         if (typeof systemUiLanguage === "string") {
             var sys = systemUiLanguage.toLowerCase()
@@ -47,12 +47,17 @@ ApplicationWindow {
         "sidebar_empty_title": "开始一个新对话",
         "sidebar_empty_hint": "点击即可新建会话",
         "sidebar_empty_cta": "新建对话",
+        "sidebar_loading_title": "正在加载会话",
+        "sidebar_loading_hint": "稍等一下，历史会话马上出现",
         "chat_empty_title": "开始对话",
         "chat_empty_hint": "在下面输入消息",
         "chat_gateway": "网关",
         "gateway_starting": "启动中…",
         "gateway_running": "运行中",
         "gateway_error": "错误",
+        "gateway_channels_idle": "将启动的渠道",
+        "gateway_channels_running": "活跃渠道",
+        "gateway_channels_error": "异常渠道",
         "button_start_gateway": "启动",
         "chat_placeholder": "给 Bao 发消息…",
         "chat_loading_history": "加载会话中…",
@@ -69,6 +74,10 @@ ApplicationWindow {
         "ui_language_auto": "自动（跟随系统）",
         "ui_language_zh": "中文",
         "ui_language_en": "English",
+        "ui_theme": "界面主题",
+        "ui_theme_system": "自动（跟随系统）",
+        "ui_theme_light": "浅色",
+        "ui_theme_dark": "深色",
         "update_auto_check": "自动更新",
         "update_status_up_to_date": "当前已是最新版本",
         "update_status_error": "更新失败",
@@ -90,6 +99,7 @@ ApplicationWindow {
         "empty_error_btn": "重试",
         "empty_chat_title": "准备就绪",
         "empty_chat_hint": "在下方输入消息开始对话",
+        "empty_chat_idle_hint": "启动网关后即可在这里继续对话",
         "empty_idle_title": "网关未启动",
         "empty_idle_hint": "点击左侧网关胶囊启动网关",
         "session_delete_ok": "会话已删除",
@@ -113,7 +123,27 @@ ApplicationWindow {
         "bubble_2": "点我进入设置~",
         "bubble_3": "嘿！你好呀 (◕ᴗ◕)",
         "bubble_4": "我在这里等你哦~",
+        "sidebar_diagnostics": "日志",
+        "sidebar_diagnostics_hint": "诊断",
         "copied_ok": "已复制",
+        "diagnostics_title": "运行诊断与日志",
+        "diagnostics_close": "关闭",
+        "diagnostics_empty_events": "当前没有结构化诊断事件。",
+        "diagnostics_empty_logs": "当前还没有日志输出。",
+        "diagnostics_recent_events": "最近诊断",
+        "diagnostics_log_tail": "日志尾部",
+        "diagnostics_log_file": "日志文件",
+        "diagnostics_refresh": "刷新",
+        "diagnostics_open_folder": "打开目录",
+        "diagnostics_copy_tail": "复制尾部",
+        "diagnostics_ask_bao": "发给 Bao",
+        "diagnostics_sent": "诊断已发送",
+        "diagnostics_gateway_title": "网关状态",
+        "diagnostics_gateway_idle": "还没启动",
+        "diagnostics_gateway_starting": "正在启动",
+        "diagnostics_gateway_running": "运行正常",
+        "diagnostics_gateway_error": "启动异常",
+        "diagnostics_metrics_title": "运行观测",
     })
 
     readonly property var stringsEn: ({
@@ -121,12 +151,17 @@ ApplicationWindow {
         "sidebar_empty_title": "Start a new chat",
         "sidebar_empty_hint": "Click to create one",
         "sidebar_empty_cta": "New chat",
+        "sidebar_loading_title": "Loading sessions",
+        "sidebar_loading_hint": "Your recent conversations will appear in a moment",
         "chat_empty_title": "Start a conversation",
         "chat_empty_hint": "Type a message below",
         "chat_gateway": "Gateway",
         "gateway_starting": "Starting\u2026",
         "gateway_running": "Running",
         "gateway_error": "Error",
+        "gateway_channels_idle": "Channels to start",
+        "gateway_channels_running": "Active channels",
+        "gateway_channels_error": "Channel issues",
         "button_start_gateway": "Start",
         "chat_placeholder": "Message Bao\u2026",
         "chat_loading_history": "Loading session\u2026",
@@ -143,6 +178,10 @@ ApplicationWindow {
         "ui_language_auto": "Auto (System)",
         "ui_language_zh": "Chinese",
         "ui_language_en": "English",
+        "ui_theme": "Theme",
+        "ui_theme_system": "Auto (System)",
+        "ui_theme_light": "Light",
+        "ui_theme_dark": "Dark",
         "update_auto_check": "Auto Update",
         "update_status_up_to_date": "You're on the latest version",
         "update_status_error": "Update failed",
@@ -164,6 +203,7 @@ ApplicationWindow {
         "empty_error_btn": "Retry",
         "empty_chat_title": "Ready to go",
         "empty_chat_hint": "Type a message below to start chatting",
+        "empty_chat_idle_hint": "Start the gateway to continue chatting here",
         "empty_idle_title": "Gateway not started",
         "empty_idle_hint": "Click the gateway capsule in the sidebar to start",
         "session_delete_ok": "Session deleted",
@@ -187,20 +227,143 @@ ApplicationWindow {
         "bubble_2": "Click me for settings~",
         "bubble_3": "Hey there! (◕ᴗ◕)",
         "bubble_4": "I'm here for you~",
+        "sidebar_diagnostics": "Logs",
+        "sidebar_diagnostics_hint": "Inspect",
         "copied_ok": "Copied",
+        "diagnostics_title": "Runtime Diagnostics & Logs",
+        "diagnostics_close": "Close",
+        "diagnostics_empty_events": "No structured runtime diagnostics yet.",
+        "diagnostics_empty_logs": "No log output has been captured yet.",
+        "diagnostics_recent_events": "Recent diagnostics",
+        "diagnostics_log_tail": "Log tail",
+        "diagnostics_log_file": "Log file",
+        "diagnostics_refresh": "Refresh",
+        "diagnostics_open_folder": "Open Folder",
+        "diagnostics_copy_tail": "Copy Tail",
+        "diagnostics_ask_bao": "Ask Bao",
+        "diagnostics_sent": "Diagnostics sent",
+        "diagnostics_gateway_title": "Gateway State",
+        "diagnostics_gateway_idle": "Not started",
+        "diagnostics_gateway_starting": "Starting",
+        "diagnostics_gateway_running": "Running normally",
+        "diagnostics_gateway_error": "Startup issue",
     })
 
-    readonly property var strings: (
-        uiLanguage === "zh" ? stringsZh
-        : uiLanguage === "en" ? stringsEn
-        : (autoLanguage === "zh" ? stringsZh : stringsEn)
-    )
-
-    function _applyUiLanguageFromConfig() {
-        if (!configService) return
-        var v = configService.getValue("ui.language")
-        if (v === "auto" || v === "zh" || v === "en") uiLanguage = v
+    readonly property var strings: {
+        if (uiLanguage === "zh")
+            return stringsZh
+        if (uiLanguage === "en")
+            return stringsEn
+        return autoLanguage === "zh" ? stringsZh : stringsEn
     }
+
+    function copyPlainText(text) {
+        diagnosticsClipHelper.text = text || ""
+        diagnosticsClipHelper.selectAll()
+        diagnosticsClipHelper.copy()
+        diagnosticsClipHelper.deselect()
+    }
+
+    function themedIconSource(name, darkSuffix) {
+        var resolvedDarkSuffix = typeof darkSuffix === "string" ? darkSuffix : ""
+        return "../resources/icons/" + name + (isDark ? resolvedDarkSuffix : "-light") + ".svg"
+    }
+
+    function diagnosticsGatewayState() {
+        if (!chatService || typeof chatService.state !== "string" || !chatService.state)
+            return "idle"
+        if (chatService.state === "running")
+            return "running"
+        if (chatService.state === "starting")
+            return "starting"
+        if (chatService.state === "error")
+            return "error"
+        return "idle"
+    }
+
+    function diagnosticsGatewayLabel() {
+        var state = diagnosticsGatewayState()
+        if (state === "running")
+            return strings.diagnostics_gateway_running
+        if (state === "starting")
+            return strings.diagnostics_gateway_starting
+        if (state === "error")
+            return strings.diagnostics_gateway_error
+        return strings.diagnostics_gateway_idle
+    }
+
+    function diagnosticsGatewayIcon() {
+        var state = diagnosticsGatewayState()
+        if (state === "running")
+            return "../resources/icons/gateway-running.svg"
+        if (state === "starting")
+            return "../resources/icons/gateway-starting.svg"
+        if (state === "error")
+            return "../resources/icons/gateway-error.svg"
+        return "../resources/icons/gateway-idle.svg"
+    }
+
+    function diagnosticsGatewayBadgeColor() {
+        var state = diagnosticsGatewayState()
+        if (state === "running")
+            return isDark ? "#1F8A5B" : "#16A34A"
+        if (state === "starting")
+            return isDark ? "#A45E15" : "#EA8A12"
+        if (state === "error")
+            return isDark ? "#B14C43" : "#DC5B4F"
+        return isDark ? "#725542" : "#C68642"
+    }
+
+    function diagnosticsObservabilityItemsSafe() {
+        if (!diagnosticsService || !diagnosticsService.observabilityItems)
+            return []
+        return diagnosticsService.observabilityItems
+    }
+
+    function diagnosticsEventsSafe() {
+        if (!diagnosticsService || !diagnosticsService.events)
+            return []
+        return diagnosticsService.events
+    }
+
+    function diagnosticsEventCountSafe() {
+        if (!diagnosticsService || typeof diagnosticsService.eventCount !== "number")
+            return 0
+        return diagnosticsService.eventCount
+    }
+
+    function diagnosticsLogFilePathSafe() {
+        if (!diagnosticsService || typeof diagnosticsService.logFilePath !== "string")
+            return ""
+        return diagnosticsService.logFilePath
+    }
+
+    function diagnosticsRecentLogTextSafe() {
+        if (!diagnosticsService || typeof diagnosticsService.recentLogText !== "string")
+            return ""
+        return diagnosticsService.recentLogText
+    }
+
+    function diagnosticsSectionIcon(section) {
+        var suffix = isDark ? "dark" : "light"
+        if (section === "gateway")
+            return "../resources/icons/diag-section-gateway-" + suffix + ".svg"
+        if (section === "file")
+            return "../resources/icons/diag-section-file-" + suffix + ".svg"
+        if (section === "events")
+            return "../resources/icons/diag-section-events-" + suffix + ".svg"
+        return "../resources/icons/diag-section-logtail-" + suffix + ".svg"
+    }
+
+    function diagnosticsObservabilitySummary() {
+        var items = diagnosticsObservabilityItemsSafe()
+        if (!items.length)
+            return ""
+        return items.map(function(item) {
+            return String(item.label || "") + " " + String(item.value || "")
+        }).join("  ·  ")
+    }
+
     // Resolved language for backend (never "auto")
     readonly property string effectiveLang: {
         if (uiLanguage === "zh" || uiLanguage === "en") return uiLanguage
@@ -218,18 +381,10 @@ ApplicationWindow {
             return 1
         return 0
     }
-    onEffectiveLangChanged: if (chatService) chatService.setLanguage(effectiveLang)
     onSetupModeChanged: {
         if (_previousSetupMode && !setupMode)
             setupCompletionToken += 1
         _previousSetupMode = setupMode
-    }
-
-    Component.onCompleted: _applyUiLanguageFromConfig()
-
-    Connections {
-        target: configService
-        function onConfigLoaded() { root._applyUiLanguageFromConfig() }
     }
 
     Connections {
@@ -243,8 +398,6 @@ ApplicationWindow {
     }
 
     // ── Design Tokens ─────────────────────────────────────────────────
-    readonly property string fontFamily: "Helvetica Neue"
-
     // Surface colors
     readonly property color bgBase:          isDark ? "#130E0B" : "#FCF8F4"
     readonly property color bgSidebar:       isDark ? "#0F0B09" : "#F3ECE6"
@@ -379,7 +532,7 @@ ApplicationWindow {
     readonly property int sizeCapsuleHeight: 64
     readonly property int sizeBubbleRadius: 18
     readonly property int sizeSystemBubbleRadius: 11
-    readonly property int sizeAppIcon: 44
+    readonly property int sizeAppIcon: 46
     readonly property int sizeGatewayAction: 44
     readonly property int sizeGatewayActionIcon: 28
     readonly property int windowContentInsetTop: useMacTransparentTitleBar ? 72 : spacingLg
@@ -438,27 +591,27 @@ ApplicationWindow {
     readonly property color chatSystemBubbleOverlay: isDark ? "#22FFA11A" : "#18FFA11A"
     readonly property color chatSystemBubbleErrorOverlay: "#08F05A5A"
     readonly property color chatSystemText: isDark ? "#F6DEBA" : "#77471A"
-    readonly property color chatGreetingAuraFar: isDark ? "#22FFD6A1" : "#18E7B46A"
-    readonly property color chatGreetingAuraNear: isDark ? "#34FFE7C2" : "#20F0C98E"
-    readonly property color chatGreetingBubbleBgStart: isDark ? "#FF2B2118" : "#FFFCF8F1"
-    readonly property color chatGreetingBubbleBgEnd: isDark ? "#FF201812" : "#FFF8EEDC"
-    readonly property color chatGreetingBubbleBorder: isDark ? "#50FFD19A" : "#30D8A563"
-    readonly property color chatGreetingBubbleOverlay: isDark ? "#10FFFFFF" : "#10FFFFFF"
-    readonly property color chatGreetingBubbleHighlight: isDark ? "#88FFF5DF" : "#B8FFFFFF"
-    readonly property color chatGreetingSweep: isDark ? "#16FFFFFF" : "#18FFFFFF"
-    readonly property color chatGreetingAccent: isDark ? "#F6C889" : "#B86A1F"
-    readonly property color chatGreetingText: isDark ? "#FFF6EA" : "#3F2A17"
+    readonly property color chatGreetingAuraFar: isDark ? "#22FFD6A1" : "#0EE0BE93"
+    readonly property color chatGreetingAuraNear: isDark ? "#34FFE7C2" : "#18E8C79F"
+    readonly property color chatGreetingBubbleBgStart: isDark ? "#FF2B2118" : "#FFF7F3EC"
+    readonly property color chatGreetingBubbleBgEnd: isDark ? "#FF201812" : "#FFF7F3EC"
+    readonly property color chatGreetingBubbleBorder: isDark ? "#50FFD19A" : "#1F8F6A47"
+    readonly property color chatGreetingBubbleOverlay: isDark ? "#10FFFFFF" : "#06FFFFFF"
+    readonly property color chatGreetingBubbleHighlight: isDark ? "#88FFF5DF" : "#42FFFFFF"
+    readonly property color chatGreetingSweep: isDark ? "#16FFFFFF" : "#10FFFFFF"
+    readonly property color chatGreetingAccent: isDark ? "#F6C889" : "#A8641F"
+    readonly property color chatGreetingText: isDark ? "#FFF6EA" : "#402715"
+    readonly property string chatGreetingIconSource: themedIconSource("ignite", "-dark")
     readonly property color chatBubbleCopyFlashUser: "#40FFFFFF"
     readonly property color chatBubbleErrorTint: "#15F05A5A"
-    readonly property color chatEmptyIconBg: isDark ? "#10FFFFFF" : "#08000000"
+    readonly property color chatEmptyIconBg: isDark ? "#10FFFFFF" : "#1C9A6328"
+    readonly property color chatEmptyIconBorder: isDark ? "transparent" : "#2E9A6328"
     readonly property color chatErrorBadgeBg: isDark ? "#18F87171" : "#10F87171"
     readonly property color chatComposerSendGlow: isDark ? "#2EFFB33D" : "#24FF971A"
     readonly property color chatComposerSendHighlight: isDark ? "#2CFFFFFF" : "#20FFFFFF"
     readonly property color chatComposerSendDisabled: isDark ? "#1A1A26" : "#E5E7EB"
 
 
-
-    font.family: fontFamily
 
     // Rounded "chrome". This is the only visible surface.
     Rectangle {
@@ -591,11 +744,13 @@ ApplicationWindow {
                         id: sidebar
                         Layout.preferredWidth: 240
                         Layout.fillHeight: true
+                        z: 20
                         visible: !root.setupMode
                         showingSettings: root.currentPageIndex === 1
                         activeSessionKey: sessionService ? sessionService.activeKey : ""
                         showChatSelection: root.currentPageIndex === 0
                         onSettingsRequested: root.startView = "settings"
+                        onDiagnosticsRequested: diagnosticsModal.open()
                         onNewSessionRequested: if (sessionService) sessionService.newSession("")
                         onSessionSelected: function(key) {
                             if (sessionService) sessionService.selectSession(key)
@@ -864,5 +1019,568 @@ ApplicationWindow {
         errorBg: isDark ? "#B84040" : "#DC2626"
         textColor: "#FFFFFF"
         duration: toastDuration
+    }
+
+    TextEdit {
+        id: diagnosticsClipHelper
+        visible: false
+        textFormat: TextEdit.PlainText
+    }
+
+    AppModal {
+        id: diagnosticsModal
+        objectName: "diagnosticsModal"
+        title: strings.diagnostics_title
+        closeText: strings.diagnostics_close
+        maxModalWidth: 920
+        maxModalHeight: 760
+        darkMode: root.isDark
+        bodyScrollable: false
+        showDefaultCloseAction: false
+        onOpened: if (diagnosticsService) diagnosticsService.refresh()
+
+        Item {
+            id: diagnosticsBody
+            width: parent.width
+            height: diagnosticsModal.height - 92
+
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 16
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 134
+                    spacing: 16
+
+                    Rectangle {
+                        objectName: "diagnosticsGatewayCard"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 134
+                        radius: 16
+                        color: isDark ? "#15110F" : "#FBF7F2"
+                        border.width: 1
+                        border.color: borderSubtle
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 16
+                            spacing: 12
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+
+                                Rectangle {
+                                    Layout.preferredWidth: 30
+                                    Layout.preferredHeight: 30
+                                    radius: 10
+                                    color: isDark ? "#1F1814" : "#F1E8DF"
+
+                                    Image {
+                                        width: 24
+                                        height: 24
+                                        anchors.centerIn: parent
+                                        source: diagnosticsSectionIcon("gateway")
+                                        sourceSize: Qt.size(24, 24)
+                                        fillMode: Image.PreserveAspectFit
+                                        smooth: true
+                                        mipmap: true
+                                    }
+                                }
+
+                                Text {
+                                    text: strings.diagnostics_gateway_title
+                                    color: textSecondary
+                                    font.pixelSize: typeMeta
+                                    font.weight: weightBold
+                                }
+
+                                Item { Layout.fillWidth: true }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                height: 1
+                                color: borderSubtle
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 12
+
+                                Image {
+                                    Layout.alignment: Qt.AlignTop
+                                    source: diagnosticsGatewayIcon()
+                                    sourceSize: Qt.size(28, 28)
+                                    width: 28
+                                    height: 28
+                                    fillMode: Image.PreserveAspectFit
+                                    smooth: true
+                                    mipmap: true
+                                }
+
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 0
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+
+                                        Text {
+                                            text: diagnosticsGatewayLabel()
+                                            color: textPrimary
+                                            font.pixelSize: typeBody + 2
+                                            font.weight: weightBold
+                                        }
+
+                                        Rectangle {
+                                            Layout.alignment: Qt.AlignVCenter
+                                            width: 8
+                                            height: 8
+                                            radius: 4
+                                            color: diagnosticsGatewayBadgeColor()
+                                        }
+
+                                        Item { Layout.fillWidth: true }
+
+                                        Text {
+                                            visible: diagnosticsObservabilitySummary() !== ""
+                                            text: diagnosticsObservabilitySummary()
+                                            color: textSecondary
+                                            font.pixelSize: typeMeta - 1
+                                            elide: Text.ElideRight
+                                            Layout.preferredWidth: 250
+                                        }
+                                    }
+
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        objectName: "diagnosticsLogFileCard"
+                        Layout.preferredWidth: 340
+                        Layout.preferredHeight: 134
+                        radius: 16
+                        color: isDark ? "#15110F" : "#FBF7F2"
+                        border.width: 1
+                        border.color: borderSubtle
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 16
+                            spacing: 12
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+
+                                Rectangle {
+                                    Layout.preferredWidth: 30
+                                    Layout.preferredHeight: 30
+                                    radius: 10
+                                    color: isDark ? "#1F1814" : "#F1E8DF"
+
+                                    Image {
+                                        width: 24
+                                        height: 24
+                                        anchors.centerIn: parent
+                                        source: diagnosticsSectionIcon("file")
+                                        sourceSize: Qt.size(24, 24)
+                                        fillMode: Image.PreserveAspectFit
+                                        smooth: true
+                                        mipmap: true
+                                    }
+                                }
+
+                                Text {
+                                    text: strings.diagnostics_log_file
+                                    color: textSecondary
+                                    font.pixelSize: typeMeta
+                                    font.weight: weightBold
+                                }
+
+                                Item { Layout.fillWidth: true }
+
+                                PillActionButton {
+                                    text: strings.diagnostics_refresh
+                                    minHeight: 26
+                                    horizontalPadding: 14
+                                    fillColor: accentGlow
+                                    hoverFillColor: accent
+                                    outlineColor: accent
+                                    hoverOutlineColor: accent
+                                    textColor: isDark ? bgSidebar : "#FFFFFF"
+                                    onClicked: if (diagnosticsService) diagnosticsService.refresh()
+                                }
+
+                                PillActionButton {
+                                    text: strings.diagnostics_open_folder
+                                    minHeight: 26
+                                    horizontalPadding: 14
+                                    fillColor: isDark ? "#1D1611" : "#FFF4E8"
+                                    hoverFillColor: isDark ? "#251B14" : "#FFECD8"
+                                    outlineColor: borderSubtle
+                                    hoverOutlineColor: accent
+                                    textColor: textPrimary
+                                    outlined: true
+                                    onClicked: if (diagnosticsService) diagnosticsService.openLogDirectory()
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                height: 1
+                                color: borderSubtle
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: diagnosticsLogFilePathSafe()
+                                color: textPrimary
+                                wrapMode: Text.WrapAnywhere
+                                font.pixelSize: typeMeta + 1
+                                font.family: Qt.platform.os === "osx" ? "Menlo" : "Monospace"
+                            }
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    spacing: 16
+
+                    Rectangle {
+                        objectName: "diagnosticsEventsCard"
+                        Layout.preferredWidth: 392
+                        Layout.fillHeight: true
+                        radius: 16
+                        color: isDark ? "#15110F" : "#FBF7F2"
+                        border.width: 1
+                        border.color: borderSubtle
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 16
+                            spacing: 12
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+
+                                Rectangle {
+                                    Layout.preferredWidth: 30
+                                    Layout.preferredHeight: 30
+                                    radius: 10
+                                    color: isDark ? "#1F1814" : "#F1E8DF"
+
+                                    Image {
+                                        width: 24
+                                        height: 24
+                                        anchors.centerIn: parent
+                                        source: diagnosticsSectionIcon("events")
+                                        sourceSize: Qt.size(24, 24)
+                                        fillMode: Image.PreserveAspectFit
+                                        smooth: true
+                                        mipmap: true
+                                    }
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: strings.diagnostics_recent_events
+                                    color: textPrimary
+                                    font.pixelSize: typeBody + 1
+                                    font.weight: weightBold
+                                }
+
+                                PillActionButton {
+                                    text: strings.diagnostics_ask_bao
+                                    visible: diagnosticsEventCountSafe() > 0
+                                    minHeight: 26
+                                    horizontalPadding: 14
+                                    fillColor: accentGlow
+                                    hoverFillColor: accent
+                                    outlineColor: accent
+                                    hoverOutlineColor: accent
+                                    textColor: isDark ? bgSidebar : "#FFFFFF"
+                                    onClicked: {
+                                        if (!diagnosticsService || !chatService)
+                                            return
+                                        var prompt = diagnosticsService.buildAssistantPrompt()
+                                        if (!prompt)
+                                            return
+                                        diagnosticsModal.close()
+                                        root.startView = "chat"
+                                        chatService.sendMessage(prompt)
+                                        globalToast.show(strings.diagnostics_sent, true)
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                height: 1
+                                color: borderSubtle
+                            }
+
+                            Item {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+
+                                Column {
+                                    anchors.centerIn: parent
+                                    spacing: 10
+                                    visible: diagnosticsEventCountSafe() === 0
+
+                                    Rectangle {
+                                        width: 40
+                                        height: 40
+                                        radius: 14
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        color: isDark ? "#1F1814" : "#F1E8DF"
+
+                                        Image {
+                                            width: 24
+                                            height: 24
+                                            anchors.centerIn: parent
+                                            source: diagnosticsSectionIcon("events")
+                                            sourceSize: Qt.size(24, 24)
+                                            fillMode: Image.PreserveAspectFit
+                                            smooth: true
+                                            mipmap: true
+                                        }
+                                    }
+
+                                    Text {
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        text: strings.diagnostics_empty_events
+                                        color: textSecondary
+                                        wrapMode: Text.WordWrap
+                                        horizontalAlignment: Text.AlignHCenter
+                                        font.pixelSize: typeMeta + 1
+                                    }
+                                }
+
+                                ScrollView {
+                                    anchors.fill: parent
+                                    visible: diagnosticsEventCountSafe() > 0
+                                    clip: true
+
+                                    Column {
+                                        width: parent.width
+                                        spacing: 0
+
+                                        Repeater {
+                                            model: diagnosticsEventsSafe()
+
+                                            delegate: Item {
+                                                required property var modelData
+                                                width: parent.width
+                                                height: eventBody.implicitHeight + 18
+
+                                                Rectangle {
+                                                    anchors.left: parent.left
+                                                    anchors.top: parent.top
+                                                    anchors.bottom: parent.bottom
+                                                    width: 3
+                                                    radius: 1.5
+                                                    color: {
+                                                        var level = String(modelData.level || "")
+                                                        if (level === "error") return isDark ? "#D06A5B" : "#D65C45"
+                                                        if (level === "warning") return isDark ? "#D5A44A" : "#D58B23"
+                                                        return isDark ? "#7C6A58" : "#C8B5A2"
+                                                    }
+                                                }
+
+                                                Column {
+                                                    id: eventBody
+                                                    anchors.left: parent.left
+                                                    anchors.right: parent.right
+                                                    anchors.leftMargin: 14
+                                                    anchors.rightMargin: 4
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    spacing: 4
+
+                                                    RowLayout {
+                                                        width: parent.width
+                                                        spacing: 8
+
+                                                        Text {
+                                                            text: String(modelData.code || modelData.stage || "event")
+                                                            color: textPrimary
+                                                            font.pixelSize: typeMeta
+                                                            font.weight: weightBold
+                                                        }
+
+                                                        Item { Layout.fillWidth: true }
+
+                                                        Text {
+                                                            text: String(modelData.timestamp || "")
+                                                            color: textTertiary
+                                                            font.pixelSize: typeMeta - 1
+                                                        }
+                                                    }
+
+                                                    Text {
+                                                        width: parent.width
+                                                        text: String(modelData.message || "")
+                                                        color: textPrimary
+                                                        wrapMode: Text.WordWrap
+                                                        font.pixelSize: typeMeta + 1
+                                                        font.weight: weightDemiBold
+                                                    }
+
+                                                    Text {
+                                                        width: parent.width
+                                                        text: [String(modelData.source || ""), String(modelData.session_key || "")].filter(Boolean).join(" · ")
+                                                        color: textSecondary
+                                                        wrapMode: Text.WordWrap
+                                                        font.pixelSize: typeMeta - 1
+                                                    }
+                                                }
+
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        objectName: "diagnosticsLogTailCard"
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        radius: 16
+                        color: isDark ? "#15110E" : "#FBF7F2"
+                        border.width: 1
+                        border.color: borderSubtle
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 16
+                            spacing: 12
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+
+                                Rectangle {
+                                    Layout.preferredWidth: 30
+                                    Layout.preferredHeight: 30
+                                    radius: 10
+                                    color: isDark ? "#1F1814" : "#F1E8DF"
+
+                                    Image {
+                                        width: 24
+                                        height: 24
+                                        anchors.centerIn: parent
+                                        source: diagnosticsSectionIcon("logtail")
+                                        sourceSize: Qt.size(24, 24)
+                                        fillMode: Image.PreserveAspectFit
+                                        smooth: true
+                                        mipmap: true
+                                    }
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: strings.diagnostics_log_tail
+                                    color: textPrimary
+                                    font.pixelSize: typeBody + 1
+                                    font.weight: weightBold
+                                }
+
+                                PillActionButton {
+                                    text: strings.diagnostics_copy_tail
+                                    minHeight: 26
+                                    horizontalPadding: 14
+                                    fillColor: isDark ? "#1D1611" : "#FFF4E8"
+                                    hoverFillColor: isDark ? "#251B14" : "#FFECD8"
+                                    outlineColor: borderSubtle
+                                    hoverOutlineColor: accent
+                                    textColor: textPrimary
+                                    outlined: true
+                                    onClicked: {
+                                        root.copyPlainText(diagnosticsRecentLogTextSafe())
+                                        globalToast.show(strings.copied_ok, true)
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                height: 1
+                                color: borderSubtle
+                            }
+
+                            Item {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+
+                                Column {
+                                    anchors.centerIn: parent
+                                    spacing: 10
+                                    visible: !diagnosticsRecentLogTextSafe()
+
+                                    Rectangle {
+                                        width: 40
+                                        height: 40
+                                        radius: 14
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        color: isDark ? "#1F1814" : "#F1E8DF"
+
+                                        Image {
+                                            width: 24
+                                            height: 24
+                                            anchors.centerIn: parent
+                                            source: diagnosticsSectionIcon("logtail")
+                                            sourceSize: Qt.size(24, 24)
+                                            fillMode: Image.PreserveAspectFit
+                                            smooth: true
+                                            mipmap: true
+                                        }
+                                    }
+
+                                    Text {
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        text: strings.diagnostics_empty_logs
+                                        color: textSecondary
+                                        wrapMode: Text.WordWrap
+                                        horizontalAlignment: Text.AlignHCenter
+                                        font.pixelSize: typeMeta + 1
+                                    }
+                                }
+
+                                ScrollView {
+                                    anchors.fill: parent
+                                    visible: !!diagnosticsRecentLogTextSafe()
+                                    clip: true
+
+                                    TextArea {
+                                        readOnly: true
+                                        width: parent.width
+                                        text: diagnosticsRecentLogTextSafe()
+                                        color: textPrimary
+                                        wrapMode: TextArea.NoWrap
+                                        selectByMouse: true
+                                        textFormat: TextEdit.PlainText
+                                        font.pixelSize: typeMeta
+                                        font.family: Qt.platform.os === "osx" ? "Menlo" : "Monospace"
+                                        background: null
+                                        padding: 0
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
