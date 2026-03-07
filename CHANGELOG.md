@@ -6,6 +6,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.12] - 2026-03-07
+
+### Changed
+
+- **SessionManager 冷启动路径进一步收口** — LanceDB 连接与 `session_meta/session_messages` 表改为真正按职责懒打开，仅在首次访问对应表时初始化；建索引也只在新表创建时执行，避免 Desktop/UI 线程把会话存储提前拉热。
+- **Desktop 构建依赖改为单一事实源** — `nuitka`、`ordered-set`、`zstandard` 被收口到新的 `desktop-build` extra，macOS/Windows 本地脚本与轻量 CI 统一改用 `uv sync --extra desktop-build --frozen`，不再混用 `uv sync` 与额外 `uv pip install`。
+
+### Fixed
+
+- **Session 持久化追加路径不再误保留旧消息** — `SessionManager.save()` 现在会先验证已落库消息是否仍与当前消息前缀一致；一旦中间消息被改写，就走整表重写而不是错误追加，避免 reload 后读到旧内容。
+- **Windows 安装器打包不再假设 `iscc` 已在 PATH** — `package_win_installer.bat` 会先通过 `resolve_inno_setup.py` 解析可用的 Inno Setup 编译器，并校验必需语言文件存在，缺失时直接给出明确错误。
+- **Desktop Release 无需重新打 tag 也能重建产物** — release workflow 新增 `workflow_dispatch.release_ref` 入口，可在修复 workflow 后直接针对既有 tag 重建同版本产物，并在 Windows 正式构建前先做 Inno Setup toolchain 预检。
+
 ## [0.3.11] - 2026-03-07
 
 ### Fixed
