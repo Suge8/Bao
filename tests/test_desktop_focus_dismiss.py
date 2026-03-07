@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from pathlib import Path
 
 pytest = importlib.import_module("pytest")
 
@@ -22,12 +23,17 @@ QTimer = QtCore.QTimer
 QUrl = QtCore.QUrl
 Qt = QtCore.Qt
 QGuiApplication = QtGui.QGuiApplication
+QFont = QtGui.QFont
 QMouseEvent = QtGui.QMouseEvent
 QQmlComponent = QtQml.QQmlComponent
 QQmlEngine = QtQml.QQmlEngine
 QTest = QtTest.QTest
 
-from app.main import WindowFocusDismissFilter
+from app.main import (
+    BUNDLED_APP_FONT_FAMILY_PREFIX,
+    WindowFocusDismissFilter,
+    resolve_app_font_family,
+)
 
 
 @pytest.fixture(scope="session")
@@ -338,5 +344,69 @@ def test_window_focus_dismiss_posts_pointer_refresh_after_mouse_release(qapp):
     finally:
         if recorder is not None:
             root.removeEventFilter(recorder)
+        root.deleteLater()
+        _process(0)
+
+
+def test_resolve_app_font_family_prefers_bundled_font(qapp):
+    family = resolve_app_font_family()
+
+    assert family is not None
+    assert family.startswith(BUNDLED_APP_FONT_FAMILY_PREFIX)
+
+
+def test_resolve_app_font_family_falls_back_when_bundled_font_missing(qapp, monkeypatch):
+    _ = qapp
+    monkeypatch.setattr("app.main.resolve_bundled_app_font_path", lambda: None)
+    monkeypatch.setattr("app.main.preferred_system_font_family", lambda: "Segoe UI")
+
+    assert resolve_app_font_family() == "Segoe UI"
+
+
+def test_resolve_app_font_family_falls_back_when_font_registration_fails(qapp, monkeypatch):
+    _ = qapp
+    monkeypatch.setattr(
+        "app.main.resolve_bundled_app_font_path", lambda: Path("/tmp/OPPO Sans.ttf")
+    )
+    monkeypatch.setattr("app.main.QFontDatabase.addApplicationFont", lambda _path: -1)
+    monkeypatch.setattr("app.main.preferred_system_font_family", lambda: "Segoe UI")
+
+    assert resolve_app_font_family() == "Segoe UI"
+
+
+def test_resolve_app_font_family_falls_back_when_registered_font_has_no_family(qapp, monkeypatch):
+    _ = qapp
+    monkeypatch.setattr(
+        "app.main.resolve_bundled_app_font_path", lambda: Path("/tmp/OPPO Sans.ttf")
+    )
+    monkeypatch.setattr("app.main.QFontDatabase.addApplicationFont", lambda _path: 1)
+    monkeypatch.setattr("app.main.QFontDatabase.applicationFontFamilies", lambda _font_id: [])
+    monkeypatch.setattr("app.main.preferred_system_font_family", lambda: "Segoe UI")
+
+    assert resolve_app_font_family() == "Segoe UI"
+
+
+def test_qml_control_inherits_application_font(qapp):
+    family = resolve_app_font_family()
+    assert family is not None
+
+    original_font = qapp.font()
+    qapp.setFont(QFont(family))
+    engine = QQmlEngine()
+    component = QQmlComponent(engine)
+    component.setData(
+        b"import QtQuick 2.15\nimport QtQuick.Controls 2.15\nControl { property string familyName: font.family }",
+        QUrl("inline:FontHarness.qml"),
+    )
+    _wait_until_ready(component)
+
+    assert component.status() == QQmlComponent.Ready, component.errors()
+    root = component.create()
+    assert root is not None, component.errors()
+
+    try:
+        assert str(root.property("familyName")) == family
+    finally:
+        qapp.setFont(original_font)
         root.deleteLater()
         _process(0)

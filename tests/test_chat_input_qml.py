@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from pathlib import Path
 
 pytest = importlib.import_module("pytest")
 
@@ -20,6 +21,8 @@ QGuiApplication = QtGui.QGuiApplication
 QQmlComponent = QtQml.QQmlComponent
 QQmlEngine = QtQml.QQmlEngine
 QTest = QtTest.QTest
+
+QML_DIR = Path(__file__).resolve().parents[1] / "app" / "qml"
 
 
 @pytest.fixture(scope="session")
@@ -122,3 +125,11 @@ def test_chat_composer_click_target_covers_full_field(qapp):
     finally:
         root.deleteLater()
         _process(0)
+
+
+def test_chat_view_composer_uses_capped_radius_and_clipping() -> None:
+    text = (QML_DIR / "ChatView.qml").read_text(encoding="utf-8")
+
+    assert "readonly property real composerFieldRadius: composerMinHeight / 2" in text
+    assert "radius: root.composerFieldRadius" in text
+    assert "clip: true" in text

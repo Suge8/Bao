@@ -7,9 +7,14 @@ Rectangle {
     property string sessionTitle: ""
     property string sessionRelativeTime: ""
     property string filledIconSource: "../resources/icons/sidebar-chat-solid.svg"
+    property color iconTintColor: textSecondary
+    property bool useIconTint: false
     property bool isActive: false
     property bool dimmed: false
     property bool hasUnread: false
+    readonly property string deleteIconSource: isDark
+                                               ? "../resources/icons/sidebar-close.svg"
+                                               : "../resources/icons/sidebar-close-light.svg"
     signal selected()
     signal deleteRequested()
 
@@ -51,6 +56,7 @@ Rectangle {
             Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
 
             Image {
+                id: iconImage
                 anchors.centerIn: parent
                 source: root.filledIconSource
                 sourceSize: Qt.size(root.isActive ? 16 : 14, root.isActive ? 16 : 14)
@@ -60,6 +66,24 @@ Rectangle {
                 smooth: true
                 mipmap: true
                 opacity: root.isActive ? 1.0 : 0.94
+                scale: root.isActive ? 1.05 : 1.0
+                visible: !root.useIconTint
+
+                Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
+                Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
+            }
+
+            Image {
+                anchors.centerIn: parent
+                width: iconImage.width
+                height: iconImage.height
+                source: root.filledIconSource
+                sourceSize: Qt.size(iconImage.width, iconImage.height)
+                fillMode: Image.PreserveAspectFit
+                smooth: true
+                mipmap: true
+                opacity: root.isActive ? 1.0 : 0.94
+                visible: root.useIconTint
                 scale: root.isActive ? 1.05 : 1.0
 
                 Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
@@ -122,8 +146,9 @@ Rectangle {
         Behavior on scale { NumberAnimation { duration: motionMicro; easing.type: easeStandard } }
 
         Image {
+            objectName: "sessionDeleteIcon"
             anchors.centerIn: parent
-            source: "../resources/icons/sidebar-close.svg"
+            source: root.deleteIconSource
             sourceSize: Qt.size(12, 12)
             width: 12
             height: 12
@@ -147,16 +172,14 @@ Rectangle {
         }
     }
 
-    // Unread indicator dot
-    Rectangle {
+    UnreadBadge {
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        anchors.rightMargin: 14
-        width: 7; height: 7; radius: 3.5
-        color: sessionUnreadDot
-        opacity: (root.hasUnread && !root.isActive && !hoverArea.containsMouse) ? 1.0 : 0.0
-        visible: opacity > 0
-        Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
+        anchors.rightMargin: 12
+        active: root.hasUnread && !root.isActive && !hoverArea.containsMouse
+        mode: "dot"
+        fillColor: sessionUnreadDot
+        haloOpacity: isActive ? 0.0 : 0.28
     }
 
     MouseArea {
