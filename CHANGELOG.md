@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.17] - 2026-03-08
+
+### Added
+
+- **Runtime diagnostics 已形成单一路径闭环** — 新增 `runtime_diagnostics` 事实源与同名只读工具，Agent/子代理可记录结构化内部错误、tool observability 与日志尾部；Desktop 侧新增 Diagnostics 工作台，可查看 recent diagnostics、log tail、log file，并按需把结构化摘要发给 Bao。
+- **Agent Browser 工具接入主/子代理** — 新增 `agent_browser` 内置工具与配套 skill，主代理、子代理和 `web_fetch` 现在都能在遇到交互式页面、表单或 challenge 页面时复用同一条浏览器执行路径。
+
+### Changed
+
+- **Desktop 界面语言与主题偏好改为本地持久化** — `ui.language` 不再作为共享 runtime config 字段；Desktop 改由 `QSettings` 驱动 `desktopPreferences` 单一事实源，同步管理界面语言、浅深色主题与系统主题跟随语义。
+- **Desktop 打包主链切换为 PyInstaller onedir** — 新增 `desktop-build-pyinstaller` extra、macOS/Windows PyInstaller 构建脚本与对应 CI/workflow；Nuitka 保留为备用链路，installer 资源、图标与字体也统一收口到新的打包事实源。
+
+### Fixed
+
+- **子代理完成回传收口为内部结构化事件** — `subagent.py` 与 `loop.py` 现在通过共享的 `subagent_result` schema 交接完成态：子代理只发布 `metadata.system_event`，父代理消费后仅保留面向用户的 assistant 摘要；Desktop 不再回显 raw 子代理 system 气泡。
+- **Desktop 会话冷开、未读与历史贴合路径进一步稳定** — `SessionManager` 新增 `session_display_tail` companion 表与内存 tail cache，`ChatService`/`SessionService` 改为围绕 active session summary、known-empty session 与 latest-only history apply 收口，减少切会话黑屏、红点复活和历史回放抖动。
+- **Desktop 浅色主题 icon 与欢迎胶囊继续收口** — `Main.qml` 现在统一产出浅色空态/侧栏装饰 icon 的主题 source 与相关 token，`ChatView.qml`、`Sidebar.qml` 只消费解析后的结果；浅色 greeting 胶囊和 light icon 资源也改为更高对比的单一路径。
+
 ## [0.3.16] - 2026-03-07
 
 ### Fixed
@@ -160,7 +178,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 - **Desktop 新消息红点残留** — 未读判定收敛为 AI 时间戳单一路径（`desktop_last_ai_at` vs `desktop_last_seen_ai_at`），移除 `updated_at` 比较、模型层 `clear_unread` 与刷新合并补丁；修复“已查看后重启仍出现红点”问题，并保持跨渠道新 AI 消息提示一致
 - **Desktop 启动期 pointer 偶发丢失** — `Sidebar` 会话分组重建改为单触发直连（`onSessionsChanged` 直接重建），移除延迟 `Timer` 与 `sessionList.model = null` detach/reattach 路径，降低启动中间态导致的 hover/cursor 空窗
 - **Desktop 删除反馈延迟** — 会话删除成功提示改为点击即显；失败仍由异步回包覆盖提示，避免“删除成功 toast 明显滞后”
-- **Desktop 删除后侧栏位移** — Sidebar 在 `sessionsChanged` 重建前后恢复 `contentY`（边界夹取），删除会话后视口保持原地，减少列表跳动
+- **Desktop 删除后侧栏位移** — 本地乐观删除命中的 `deleted` 提交事件不再触发第二次列表重建；若删除已落盘但 active marker 后续同步失败，也直接按持久化事实刷新收口，不再把已删会话回滚回 UI。Sidebar 同时从机械恢复 `contentY` 改为按当前可见行锚点恢复视口，删除上方会话时可见内容更稳定
 - **Desktop 输入框首击偶发无效** — 移除输入容器覆盖层 `MouseArea`，点击焦点收敛到 `TextArea` 原生路径
 - **Desktop 输入框垂直偏移** — 调整 `TextArea` 内边距为 `topPadding=6 / bottomPadding=2`，对齐 ring 视觉中心
 
