@@ -466,7 +466,6 @@ class UIConfig(Base):
         channel: str = "stable"
         feed_url: str = "https://suge8.github.io/Bao/desktop-update.json"
 
-    language: str = "auto"
     update: UpdateConfig = Field(default_factory=UpdateConfig)
 
 
