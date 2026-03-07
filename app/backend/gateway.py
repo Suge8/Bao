@@ -11,9 +11,11 @@ Internal signals marshal results back to the Qt main thread.
 from __future__ import annotations
 
 import asyncio
+import copy
 import os
 import queue
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -31,12 +33,38 @@ _DEBUG_SWITCH = os.getenv("BAO_DESKTOP_DEBUG_SWITCH") == "1"
 _PROFILE = os.getenv("BAO_DESKTOP_PROFILE") == "1"
 
 _HISTORY_FULL_LIMIT = 200
+_HISTORY_CACHE_LIMIT = 16
+_GATEWAY_CHANNEL_ORDER = (
+    "telegram",
+    "discord",
+    "whatsapp",
+    "feishu",
+    "slack",
+    "email",
+    "qq",
+    "dingtalk",
+    "imessage",
+)
 _CHANNEL_ERROR_LABELS = {
     "unavailable": ("通道不可用", "Channel unavailable"),
     "start_failed": ("通道启动失败", "Channel start failed"),
     "send_failed": ("通道发送失败", "Channel send failed"),
     "stop_failed": ("通道停止失败", "Channel stop failed"),
 }
+
+
+def _normalize_gateway_channels(channels: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for name in _GATEWAY_CHANNEL_ORDER:
+        if name in channels and name not in seen:
+            ordered.append(name)
+            seen.add(name)
+    for name in channels:
+        if name not in seen:
+            ordered.append(name)
+            seen.add(name)
+    return ordered
 
 
 @dataclass(frozen=True)
@@ -62,15 +90,25 @@ class _QueuedUiMessage:
         return replace(self, session_key=session_key)
 
 
+@dataclass(frozen=True)
+class _HistorySnapshot:
+    fingerprint: tuple[int, str]
+    prepared_messages: list[dict[str, Any]]
+    has_messages: bool
+
+
 class ChatService(QObject):
     stateChanged = Signal(str)
     errorChanged = Signal(str)
     gatewayDetailChanged = Signal(str)
+    gatewayChannelsChanged = Signal()
     messageAppended = Signal(int)
     contentUpdated = Signal(int, str)
     statusUpdated = Signal(int, str)
     gatewayReady = Signal(object, list)  # session_manager, enabled_channels
     historyLoadingChanged = Signal(bool)
+    activeSessionStateChanged = Signal()
+    sessionViewApplied = Signal(str)
 
     # Internal signals: asyncio thread → Qt main thread marshaling
     _initResult = Signal(int, bool, str, object, list)
@@ -90,6 +128,10 @@ class ChatService(QObject):
         self._state = "idle"
         self._last_error = ""
         self._gateway_detail = ""
+        self._gateway_channels: list[dict[str, Any]] = []
+        self._configured_gateway_channels: list[str] = []
+        self._enabled_gateway_channels: list[str] = []
+        self._channel_errors: dict[str, str] = {}
         self._agent: Any = None
         self._channels: Any = None
         self._cron: Any = None
@@ -102,7 +144,13 @@ class ChatService(QObject):
         self._startup_pending: list[_QueuedUiMessage] = []
         self._history_initialized = False
         self._history_fingerprint: tuple[int, str] | None = None
+        self._history_cache: OrderedDict[str, _HistorySnapshot] = OrderedDict()
         self._history_loading = False
+        self._active_session_ready = False
+        self._active_session_has_messages = False
+        self._active_summary_key = ""
+        self._active_summary_message_count: int | None = None
+        self._active_summary_has_messages: bool | None = None
         self._current_nav_id = 0
         self._history_future: Any = None
         self._send_queue: queue.Queue[tuple[str, str]] = queue.Queue()
@@ -111,6 +159,7 @@ class ChatService(QObject):
         self._lock = threading.Lock()
         self._cron_status: dict[str, Any] = {}
         self._session_manager: Any = None
+        self._config_data: dict[str, Any] | None = None
         self._pending_notifications: list[_QueuedUiMessage] = []
         self._active_streaming_row: int = -1
         self._active_streaming_session_key: str | None = None
@@ -149,6 +198,10 @@ class ChatService(QObject):
     def gatewayDetail(self) -> str:
         return self._gateway_detail
 
+    @Property(list, notify=gatewayChannelsChanged)
+    def gatewayChannels(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self._gateway_channels]
+
     @Property(QObject, constant=True)
     def messages(self) -> ChatMessageModel:
         return self._model
@@ -156,6 +209,14 @@ class ChatService(QObject):
     @Property(bool, notify=historyLoadingChanged)
     def historyLoading(self) -> bool:
         return self._history_loading
+
+    @Property(bool, notify=activeSessionStateChanged)
+    def activeSessionReady(self) -> bool:
+        return self._active_session_ready
+
+    @Property(bool, notify=activeSessionStateChanged)
+    def activeSessionHasMessages(self) -> bool:
+        return self._active_session_has_messages
 
     # ------------------------------------------------------------------
     # Public slots
@@ -165,12 +226,33 @@ class ChatService(QObject):
     def setLanguage(self, lang: str) -> None:
         self._lang = lang if lang in ("zh", "en") else "en"
 
+    @Slot(list)
+    def setConfiguredGatewayChannels(self, channels: list[str]) -> None:
+        normalized = _normalize_gateway_channels(
+            [
+                channel.strip()
+                for channel in channels
+                if isinstance(channel, str) and channel.strip()
+            ]
+        )
+        if self._configured_gateway_channels == normalized:
+            return
+        self._configured_gateway_channels = normalized
+        if self._state in ("idle", "stopped", "starting"):
+            self._refresh_gateway_channels()
+
+    @Slot("QVariant")
+    def setConfigData(self, data: object) -> None:
+        self._config_data = copy.deepcopy(data) if isinstance(data, dict) else None
+
     @Slot()
     def start(self) -> None:
         if self._state in ("starting", "running"):
             return
+        self._channel_errors.clear()
         self._clear_gateway_detail()
         self._set_state("starting")
+        self._refresh_gateway_channels()
         self._runner.start()
         self._lifecycle_request_id += 1
         request_id = self._lifecycle_request_id
@@ -182,9 +264,12 @@ class ChatService(QObject):
     def stop(self) -> None:
         if self._state == "stopped":
             return
+        self._channel_errors.clear()
+        self._enabled_gateway_channels = []
         self._clear_gateway_detail()
         self._lifecycle_request_id += 1
         self._set_state("stopped")
+        self._refresh_gateway_channels()
         if self._agent is not None:
             try:
                 self._runner.submit(self._shutdown_gateway())
@@ -212,6 +297,8 @@ class ChatService(QObject):
                     remove_listener(self._on_session_change)
                 except Exception as exc:
                     logger.debug("Skip session listener removal: {}", exc)
+        self._history_cache.clear()
+        self._set_active_session_state(False, False)
         self._session_manager = sm
         add_listener = getattr(sm, "add_change_listener", None)
         if callable(add_listener):
@@ -235,6 +322,14 @@ class ChatService(QObject):
         self._cancel_history_future()
         self._current_nav_id += 1
         self._apply_session_key(key, self._current_nav_id)
+
+    @Slot(str, object, object)
+    def setSessionSummary(self, key: str, message_count: object, has_messages: object) -> None:
+        self._active_summary_key = key
+        self._active_summary_message_count = (
+            message_count if isinstance(message_count, int) and message_count >= 0 else None
+        )
+        self._active_summary_has_messages = has_messages if isinstance(has_messages, bool) else None
 
     @Slot(str)
     def notifyStartupSessionReady(self, key: str) -> None:
@@ -286,16 +381,49 @@ class ChatService(QObject):
     def _handle_session_change(self, event: object) -> None:
         if not isinstance(event, SessionChangeEvent):
             return
+        if event.kind == "deleted":
+            self._history_cache.pop(event.session_key, None)
+            return
         if event.kind != "messages":
             return
         active_key = self._desired_session_key or self._committed_session_key
         if not active_key or event.session_key != active_key:
+            self._history_cache.pop(event.session_key, None)
             return
         self._cancel_history_future()
         self._request_history_load(active_key, self._current_nav_id, show_loading=False)
 
     def _apply_session_key(self, key: str, nav_id: int) -> None:
         previous_committed = self._committed_session_key
+        switched_session = previous_committed != key
+        needs_seen_commit = bool(key) and (
+            previous_committed != key or not self._history_initialized
+        )
+        cached_snapshot = self._history_cache.get(key) if key else None
+        raw_tail_snapshot: list[dict[str, Any]] | None = None
+        summary_knows_empty = (
+            key
+            and key == self._active_summary_key
+            and (
+                self._active_summary_message_count == 0
+                or self._active_summary_has_messages is False
+            )
+        )
+        if cached_snapshot is not None and key:
+            self._history_cache.move_to_end(key)
+        elif self._session_manager is not None and key and not summary_knows_empty:
+            peek_tail_messages = getattr(self._session_manager, "peek_tail_messages", None)
+            if callable(peek_tail_messages):
+                try:
+                    tail_messages_obj: object = peek_tail_messages(key, _HISTORY_FULL_LIMIT)
+                    if isinstance(tail_messages_obj, list):
+                        next_tail_snapshot: list[dict[str, Any]] = []
+                        for message in tail_messages_obj:
+                            if isinstance(message, dict):
+                                next_tail_snapshot.append(dict(message))
+                        raw_tail_snapshot = next_tail_snapshot
+                except Exception:
+                    raw_tail_snapshot = None
         self._desired_session_key = key
         self._committed_session_key = key
         self._session_key = key
@@ -312,16 +440,56 @@ class ChatService(QObject):
             self._active_has_content = False
             self._pending_split = False
 
-        if self._session_manager is not None and key:
-            self._set_history_loading(True)
-        else:
-            self._set_history_loading(False)
+        if self._session_manager is not None and needs_seen_commit:
+            self._mark_session_seen_ai(key)
 
-        self._history_initialized = False
-        self._history_fingerprint = None
-        self._model.clear()
-        if self._session_manager is not None and key:
-            self._request_history_load(key, nav_id, show_loading=False)
+        if self._session_manager is None or not key:
+            self._set_history_loading(False)
+            self._history_initialized = False
+            self._history_fingerprint = None
+            self._set_active_session_state(False, False)
+            self._model.clear()
+            self._emit_session_view_applied(key, switched_session=switched_session)
+            return
+
+        if cached_snapshot is None and raw_tail_snapshot is None:
+            if summary_knows_empty:
+                fingerprint = self._history_signature([])
+                self._history_initialized = True
+                self._history_fingerprint = fingerprint
+                self._set_active_session_state(True, False)
+                self._cache_history_snapshot(key, fingerprint, [], False)
+                self._model.clear()
+                self._set_history_loading(False)
+                self._emit_session_view_applied(key, switched_session=switched_session)
+                self._request_history_load(key, nav_id, show_loading=False)
+                return
+            self._history_initialized = False
+            self._history_fingerprint = None
+            self._set_active_session_state(False, False)
+            self._model.clear()
+        elif cached_snapshot is None:
+            prepared_messages = ChatMessageModel.prepare_history(raw_tail_snapshot or [])
+            fingerprint = self._history_signature(prepared_messages)
+            has_messages = bool(raw_tail_snapshot)
+            self._history_initialized = True
+            self._history_fingerprint = fingerprint
+            self._set_active_session_state(True, has_messages)
+            self._cache_history_snapshot(key, fingerprint, prepared_messages, has_messages)
+            self._model.load_prepared([dict(msg) for msg in prepared_messages])
+        else:
+            self._history_initialized = True
+            self._history_fingerprint = cached_snapshot.fingerprint
+            self._set_active_session_state(True, cached_snapshot.has_messages)
+            self._model.load_prepared([dict(msg) for msg in cached_snapshot.prepared_messages])
+
+        self._emit_session_view_applied(key, switched_session=switched_session)
+
+        self._request_history_load(
+            key,
+            nav_id,
+            show_loading=(cached_snapshot is None and raw_tail_snapshot is None),
+        )
 
     def _request_history_load(
         self, key: str, nav_id: int, *, show_loading: bool | None = None
@@ -338,7 +506,7 @@ class ChatService(QObject):
 
     async def _load_history(
         self, key: str, nav_id: int, limit: int
-    ) -> tuple[str, int, tuple[int, str], list[dict[str, Any]]]:
+    ) -> tuple[str, int, tuple[int, str], list[dict[str, Any]], bool]:
         """Load session message history from SessionManager (runs on asyncio thread)."""
         import time
 
@@ -372,7 +540,7 @@ class ChatService(QObject):
         t_end = time.perf_counter() if _PROFILE else 0
         if _PROFILE:
             logger.debug("📊 History prepare: {:.3f}s", t_end - t1)
-        return key, nav_id, fingerprint, prepared_messages
+        return key, nav_id, fingerprint, prepared_messages, bool(raw_messages)
 
     def _on_history_done(self, future: Any) -> None:
         """Runs on asyncio thread — only emits signal."""
@@ -396,17 +564,31 @@ class ChatService(QObject):
         loaded_nav_id = 0
         loaded_messages = messages or []
         loaded_fingerprint: tuple[int, str] | None = None
+        loaded_has_messages = False
         loaded_prepared = False
-        if isinstance(messages, tuple) and len(messages) == 4:
+        if isinstance(messages, tuple) and len(messages) == 5:
+            (
+                loaded_key,
+                loaded_nav_id,
+                loaded_fingerprint,
+                loaded_messages,
+                loaded_has_messages,
+            ) = messages
+            loaded_messages = loaded_messages or []
+            loaded_prepared = True
+        elif isinstance(messages, tuple) and len(messages) == 4:
             loaded_key, loaded_nav_id, loaded_fingerprint, loaded_messages = messages
             loaded_messages = loaded_messages or []
+            loaded_has_messages = bool(loaded_messages)
             loaded_prepared = True
         elif isinstance(messages, tuple) and len(messages) == 3:
             loaded_key, loaded_nav_id, loaded_messages = messages
             loaded_messages = loaded_messages or []
+            loaded_has_messages = bool(loaded_messages)
         elif isinstance(messages, tuple) and len(messages) == 2:
             loaded_key, loaded_messages = messages
             loaded_messages = loaded_messages or []
+            loaded_has_messages = bool(loaded_messages)
         if loaded_nav_id and loaded_nav_id != self._current_nav_id:
             if _DEBUG_SWITCH:
                 logger.debug(
@@ -425,8 +607,12 @@ class ChatService(QObject):
         self._history_fingerprint = fingerprint
         self._committed_session_key = loaded_key
         self._session_key = loaded_key
+        self._set_active_session_state(True, loaded_has_messages)
         if loaded_prepared:
             prepared_messages = [dict(msg) for msg in loaded_messages]
+            self._cache_history_snapshot(
+                loaded_key, fingerprint, prepared_messages, loaded_has_messages
+            )
             preserve_transient_tail = (
                 self._processing and loaded_key == self._active_streaming_session_key
             )
@@ -455,18 +641,48 @@ class ChatService(QObject):
                 self._model.rowCount(),
                 loaded_nav_id,
             )
-        should_mark_seen = loaded_key == self._committed_session_key
         self._set_history_loading(False)
         if loaded_key == self._startup_target_key:
             self._drain_startup_pending()
-        if should_mark_seen:
-            self._mark_session_seen_ai(loaded_key)
 
     @staticmethod
     def _history_signature(messages: list[dict[str, Any]]) -> tuple[int, str]:
         if not messages:
             return (0, "")
         return (len(messages), repr(messages))
+
+    def _set_active_session_state(self, ready: bool, has_messages: bool) -> None:
+        if (
+            self._active_session_ready == ready
+            and self._active_session_has_messages == has_messages
+        ):
+            return
+        self._active_session_ready = ready
+        self._active_session_has_messages = has_messages
+        self.activeSessionStateChanged.emit()
+
+    def _emit_session_view_applied(self, key: str, *, switched_session: bool) -> None:
+        if not switched_session:
+            return
+        self.sessionViewApplied.emit(key)
+
+    def _cache_history_snapshot(
+        self,
+        key: str,
+        fingerprint: tuple[int, str],
+        prepared_messages: list[dict[str, Any]],
+        has_messages: bool,
+    ) -> None:
+        if not key:
+            return
+        self._history_cache[key] = _HistorySnapshot(
+            fingerprint=fingerprint,
+            prepared_messages=[dict(msg) for msg in prepared_messages],
+            has_messages=has_messages,
+        )
+        self._history_cache.move_to_end(key)
+        while len(self._history_cache) > _HISTORY_CACHE_LIMIT:
+            self._history_cache.popitem(last=False)
 
     # ------------------------------------------------------------------
     # Internal: full gateway init (mirrors CLI run_gateway)
@@ -482,10 +698,13 @@ class ChatService(QObject):
         # --- config ---
         ensure_first_run()
         config_path = get_config_path()
-        try:
-            config = load_config(config_path)
-        except SystemExit:
-            config = Config()
+        if self._config_data is not None:
+            config = Config.model_validate(copy.deepcopy(self._config_data))
+        else:
+            try:
+                config = load_config(config_path)
+            except SystemExit as exc:
+                raise RuntimeError(f"Config unavailable at {config_path}") from exc
 
         # --- build shared gateway stack ---
         provider = make_provider(config)
@@ -513,18 +732,6 @@ class ChatService(QObject):
         self._cron = stack.cron
         self._heartbeat = stack.heartbeat
 
-        # Register callback for subagent completion notifications
-        async def _on_system_response(msg: Any) -> None:
-            if msg.content and msg.channel == "desktop":
-                session_key = ""
-                metadata = getattr(msg, "metadata", None)
-                if isinstance(metadata, dict):
-                    raw_key = metadata.get("session_key")
-                    if isinstance(raw_key, str):
-                        session_key = raw_key
-                self._systemResponse.emit(msg.content, session_key)
-
-        stack.agent.on_system_response = _on_system_response
         # --- start background services on the asyncio loop ---
         loop = asyncio.get_running_loop()
         await stack.cron.start()
@@ -548,6 +755,8 @@ class ChatService(QObject):
 
     def _handle_channel_error(self, stage: str, name: str, detail: str) -> None:
         error_message = self._format_channel_error(stage, name, detail)
+        self._channel_errors[name] = detail
+        self._refresh_gateway_channels()
         self._controlPlaneError.emit(error_message)
 
     def _handle_control_plane_error(self, message: str) -> None:
@@ -578,6 +787,8 @@ class ChatService(QObject):
             self._set_error(error_msg)
             return
         self._set_state("running")
+        self._enabled_gateway_channels = _normalize_gateway_channels(channels)
+        self._refresh_gateway_channels()
         # Build localized status message
         is_zh = self._lang == "zh"
         parts = ["✓ 网关已启动" if is_zh else "✓ Gateway started"]
@@ -896,7 +1107,13 @@ class ChatService(QObject):
         if not content:
             return
         target_session_key = session_key or self._session_key
-        self._schedule_assistant_message_persist(target_session_key, content, status)
+        is_visible_active_session = show_in_ui and target_session_key == self._committed_session_key
+        self._schedule_assistant_message_persist(
+            target_session_key,
+            content,
+            status,
+            mark_seen=is_visible_active_session,
+        )
         if not show_in_ui:
             return
         row = self._model.append_assistant(
@@ -923,7 +1140,7 @@ class ChatService(QObject):
             _source="desktop-system",
             entrance_style=entrance_style,
         )
-        session_manager.save(session)
+        session_manager.save(session, emit_change=False)
 
     async def _persist_system_message_async(
         self,
@@ -957,7 +1174,7 @@ class ChatService(QObject):
     ) -> None:
         session = session_manager.get_or_create(session_key)
         session.add_message("assistant", content, status=status, format="markdown")
-        session_manager.save(session)
+        session_manager.save(session, emit_change=False)
 
     async def _persist_assistant_message_async(
         self,
@@ -974,11 +1191,20 @@ class ChatService(QObject):
             status,
         )
 
-    def _on_assistant_persist_done(self, future: Any) -> None:
+    def _on_assistant_persist_done(
+        self,
+        future: Any,
+        *,
+        session_key: str = "",
+        mark_seen: bool = False,
+    ) -> None:
         try:
             future.result()
         except Exception as exc:
             logger.warning("Failed to persist desktop startup assistant message: {}", exc)
+            return
+        if mark_seen and session_key:
+            self._mark_session_seen_ai(session_key)
 
     def _schedule_system_message_persist(
         self,
@@ -1019,6 +1245,8 @@ class ChatService(QObject):
         session_key: str,
         content: str,
         status: str,
+        *,
+        mark_seen: bool = False,
     ) -> None:
         session_manager = self._session_manager
         if session_manager is None:
@@ -1031,7 +1259,15 @@ class ChatService(QObject):
                         session_manager, session_key, content, status
                     )
                 )
-                future.add_done_callback(self._on_assistant_persist_done)
+                future.add_done_callback(
+                    lambda done, key=session_key, should_mark=mark_seen: (
+                        self._on_assistant_persist_done(
+                            done,
+                            session_key=key,
+                            mark_seen=should_mark,
+                        )
+                    )
+                )
                 return
             except RuntimeError:
                 pass
@@ -1042,6 +1278,9 @@ class ChatService(QObject):
             )
         except Exception as exc:
             logger.warning("Failed to persist desktop startup assistant message: {}", exc)
+            return
+        if mark_seen:
+            self._mark_session_seen_ai(session_key)
 
     def _should_render_active_stream(self) -> bool:
         return self._active_streaming_session_key in (None, self._committed_session_key)
@@ -1054,6 +1293,7 @@ class ChatService(QObject):
         if self._state != state:
             self._state = state
             self.stateChanged.emit(state)
+            self._refresh_gateway_channels()
 
     def _cancel_history_future(self) -> None:
         future = self._history_future
@@ -1114,6 +1354,33 @@ class ChatService(QObject):
     def _clear_gateway_detail(self) -> None:
         self._set_gateway_detail("")
 
+    def _refresh_gateway_channels(self) -> None:
+        channels = self._build_gateway_channels_projection()
+        if self._gateway_channels == channels:
+            return
+        self._gateway_channels = channels
+        self.gatewayChannelsChanged.emit()
+
+    def _build_gateway_channels_projection(self) -> list[dict[str, Any]]:
+        base_channels = self._enabled_gateway_channels or self._configured_gateway_channels
+        ordered = _normalize_gateway_channels(base_channels + list(self._channel_errors.keys()))
+        if not ordered:
+            return []
+
+        if self._state in ("idle", "stopped", "error"):
+            default_state = "idle"
+        elif self._state == "starting":
+            default_state = "starting"
+        else:
+            default_state = "running"
+
+        projection: list[dict[str, Any]] = []
+        for channel in ordered:
+            detail = self._channel_errors.get(channel, "")
+            state = "error" if detail else default_state
+            projection.append({"channel": channel, "state": state, "detail": detail})
+        return projection
+
     def _mark_session_seen_ai(self, key: str) -> None:
         if not key or self._session_manager is None:
             return
@@ -1124,7 +1391,11 @@ class ChatService(QObject):
         if isinstance(self._runner, AsyncioRunner):
             try:
                 future = self._runner.submit(
-                    self._run_bg_io(session_manager.update_metadata_only, key, payload)
+                    self._run_bg_io(
+                        lambda: session_manager.update_metadata_only(
+                            key, payload, emit_change=False
+                        )
+                    )
                 )
                 future.add_done_callback(self._on_mark_session_seen_ai_done)
                 return
@@ -1134,7 +1405,7 @@ class ChatService(QObject):
                 logger.debug("Skip mark seen ai {}: {}", key, exc)
 
         try:
-            session_manager.update_metadata_only(key, payload)
+            session_manager.update_metadata_only(key, payload, emit_change=False)
         except Exception as exc:
             logger.debug("Skip mark seen ai {}: {}", key, exc)
 
