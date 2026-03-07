@@ -30,15 +30,7 @@ env:
 
 jobs:
   validate-mac-deps:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-14
-            arch: arm64
-          - runner: macos-15-intel
-            arch: x86_64
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
@@ -52,9 +44,7 @@ jobs:
           enable-cache: true
 
       - name: Install desktop dependencies
-        run: |
-          uv sync --extra desktop
-          uv pip install nuitka ordered-set zstandard
+        run: uv sync --extra desktop-build --frozen
 
       - name: Validate import graph
         run: uv run python -c "import bao, PySide6, lancedb"
@@ -77,9 +67,7 @@ jobs:
           enable-cache: true
 
       - name: Install desktop dependencies
-        run: |
-          uv sync --extra desktop
-          uv pip install nuitka ordered-set zstandard
+        run: uv sync --extra desktop-build --frozen
 
       - name: Validate Windows build script continuation
         run: python app/scripts/validate_build_win_bat.py

@@ -244,17 +244,16 @@ dependencies = [
 desktop = [
     { name = "pyside6-essentials" },
 ]
+desktop-build = [
+    { name = "nuitka" },
+    { name = "ordered-set" },
+    { name = "pyside6-essentials" },
+    { name = "zstandard" },
+]
 dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "nuitka" },
-    { name = "ordered-set" },
-    { name = "zstandard" },
 ]
 
 [package.metadata]
@@ -271,8 +270,10 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.26.0,<2.0.0" },
     { name = "msgpack", specifier = ">=1.1.0,<2.0.0" },
     { name = "mss", specifier = ">=9.0.0" },
+    { name = "nuitka", marker = "extra == 'desktop-build'", specifier = ">=4.0.2,<5.0.0" },
     { name = "oauth-cli-kit", specifier = ">=0.1.3,<1.0.0" },
     { name = "openai", specifier = ">=1.83.0,<3.0.0" },
+    { name = "ordered-set", marker = "extra == 'desktop-build'", specifier = ">=4.1.0" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "pillow-heif", specifier = ">=0.18.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.50,<4.0.0" },
@@ -280,6 +281,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.12.0,<3.0.0" },
     { name = "pydantic-settings", specifier = ">=2.12.0,<3.0.0" },
     { name = "pyside6-essentials", marker = "extra == 'desktop'", specifier = ">=6.7.0,<7.0.0" },
+    { name = "pyside6-essentials", marker = "extra == 'desktop-build'", specifier = ">=6.7.0,<7.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.0,<10.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.3.0,<2.0.0" },
     { name = "python-socketio", specifier = ">=5.16.0,<6.0.0" },
@@ -295,15 +297,9 @@ requires-dist = [
     { name = "typer", specifier = ">=0.20.0,<1.0.0" },
     { name = "websocket-client", specifier = ">=1.9.0,<2.0.0" },
     { name = "websockets", specifier = ">=13.0,<17.0" },
+    { name = "zstandard", marker = "extra == 'desktop-build'", specifier = ">=0.25.0" },
 ]
-provides-extras = ["desktop", "dev"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "nuitka", specifier = ">=4.0.1" },
-    { name = "ordered-set", specifier = ">=4.1.0" },
-    { name = "zstandard", specifier = ">=0.25.0" },
-]
+provides-extras = ["desktop", "desktop-build", "dev"]
 
 [[package]]
 name = "bidict"
@@ -1391,9 +1387,9 @@ wheels = [
 
 [[package]]
 name = "nuitka"
-version = "4.0.1"
+version = "4.0.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/bf/f2/26729cc4e2a893dcabdab4f171e43b2d082756fde1af7cde31f616fc3a31/nuitka-4.0.1.tar.gz", hash = "sha256:8a8dedd549049a145e1545206a082bfbe0bc610457a71d837e560e7cf015635c", size = 4417011, upload-time = "2026-02-14T20:51:34.903Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ba/f1/ef78e6915c025d2c4e28dff253f617cc8c030435234c187ce8900c08535f/nuitka-4.0.3.tar.gz", hash = "sha256:284a4b3e7d670bb2833fdc0a29134d2e598f3cedf45142ebc29c808e6b0c1e44", size = 4420169, upload-time = "2026-03-06T14:32:27.622Z" }
 
 [[package]]
 name = "numpy"
