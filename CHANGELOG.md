@@ -6,6 +6,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.15] - 2026-03-07
+
+### Fixed
+
+- **Windows 安装器不再依赖 runner 自带简体中文语言包** — `app/scripts/bao_installer.iss` 改为直接引用仓库内的 `app/resources/installer/ChineseSimplified.isl`，`resolve_inno_setup.py` 也同步只要求宿主机具备 `Default.isl`，避免 GitHub-hosted Windows runner 因 Inno Setup 安装内容差异在编译阶段报缺少 `ChineseSimplified.isl`。
+- **Desktop Nuitka 打包收口到单一路径模板资源声明** — macOS/Windows 构建脚本删除了对 `bao.templates.workspace*` 的重复 `--include-package` 声明，仅保留 `--include-package-data`，避免再次把编译产物与复制的数据文件同时写进 `bao/templates` 命名空间，重现 `.app` 构建阶段的 `NotADirectoryError`。
+
 ## [0.3.14] - 2026-03-07
 
 ### Fixed
