@@ -61,6 +61,10 @@ desktop-build = [
     "ordered-set>=4.1.0",
     "zstandard>=0.25.0",
 ]
+desktop-build-pyinstaller = [
+    "PySide6-Essentials>=6.7.0,<7.0.0",
+    "pyinstaller>=6.19.0,<7.0.0",
+]
 dev = [
     "pytest>=9.0.0,<10.0.0",
     "pytest-asyncio>=1.3.0,<2.0.0",

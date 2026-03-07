@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────
 # Bao Desktop — macOS DMG Installer Creator
-# Usage: bash app/scripts/create_dmg.sh [--arch arm64|x86_64]
+# Usage: bash app/scripts/create_dmg.sh [--arch arm64|x86_64] [--app-path /path/to/Bao.app]
 # Requires: brew install create-dmg
 # ──────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -12,9 +12,11 @@ cd "$PROJECT_ROOT"
 
 # ── Parse args ──
 ARCH="$(uname -m)"
+APP_PATH=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --arch) ARCH="$2"; shift 2 ;;
+        --app-path) APP_PATH="$2"; shift 2 ;;
         *) shift ;;
     esac
 done
@@ -25,7 +27,15 @@ case "$ARCH" in
 esac
 
 APP_NAME="Bao"
-APP_PATH="$PROJECT_ROOT/dist/$APP_NAME.app"
+if [[ -z "$APP_PATH" ]]; then
+    PYINSTALLER_APP_PATH="$PROJECT_ROOT/dist-pyinstaller/dist/$APP_NAME.app"
+    NUITKA_APP_PATH="$PROJECT_ROOT/dist/$APP_NAME.app"
+    if [[ -d "$PYINSTALLER_APP_PATH" ]]; then
+        APP_PATH="$PYINSTALLER_APP_PATH"
+    else
+        APP_PATH="$NUITKA_APP_PATH"
+    fi
+fi
 DMG_TEMP="$PROJECT_ROOT/dist/dmg-staging"
 
 # ── Pre-flight ──
@@ -35,13 +45,13 @@ command -v create-dmg >/dev/null 2>&1 || {
 }
 
 if [[ ! -d "$APP_PATH" ]]; then
-    echo "❌ $APP_PATH not found. Run build_mac.sh first."
+    echo "❌ $APP_PATH not found. Run the mac build first."
     exit 1
 fi
 
 INFO_PLIST="$APP_PATH/Contents/Info.plist"
 if [[ ! -f "$INFO_PLIST" ]]; then
-    echo "❌ $INFO_PLIST not found. Rebuild the app with build_mac.sh first."
+    echo "❌ $INFO_PLIST not found. Rebuild the app first."
     exit 1
 fi
 

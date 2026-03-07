@@ -125,12 +125,12 @@ def _save_icns(base, output: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Generate rounded macOS/Windows app icons from a JPG logo"
+        description="Generate rounded macOS/Windows desktop icons from a JPG logo"
     )
     parser.add_argument(
         "--source", default="assets/logo.jpg", help="Source image path (default: assets/logo.jpg)"
     )
-    parser.add_argument("--ico", default="assets/logo.ico", help="Output .ico path")
+    parser.add_argument("--ico", default="app/resources/logo.ico", help="Output .ico path")
     parser.add_argument("--icns", default="assets/logo.icns", help="Output .icns path")
     args = parser.parse_args()
 

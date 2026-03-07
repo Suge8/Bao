@@ -52,7 +52,7 @@ uv run python -m nuitka ^
     --standalone ^
     --windows-console-mode=disable ^
     --jobs=%JOBS% ^
-    --windows-icon-from-ico="%PROJECT_ROOT%\assets\logo.ico" ^
+    --windows-icon-from-ico="%PROJECT_ROOT%\app\resources\logo.ico" ^
     --windows-company-name="Bao" ^
     --windows-product-name="Bao" ^
     --windows-product-version="%VERSION%" ^

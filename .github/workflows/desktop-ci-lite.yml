@@ -27,6 +27,8 @@ concurrency:
 
 env:
   PYTHON_VERSION: '3.11'
+  PYTHONUTF8: '1'
+  INNOSETUP_VERSION: '6.7.1'
 
 jobs:
   validate-mac-deps:
@@ -44,13 +46,13 @@ jobs:
           enable-cache: true
 
       - name: Install desktop dependencies
-        run: uv sync --extra desktop-build --frozen
+        run: uv sync --extra desktop-build-pyinstaller --frozen
 
       - name: Validate import graph
         run: uv run python -c "import bao, PySide6, lancedb"
 
       - name: Validate shell scripts
-        run: bash -n app/scripts/build_mac.sh app/scripts/create_dmg.sh
+        run: bash -n app/scripts/build_mac_pyinstaller.sh app/scripts/create_dmg.sh app/scripts/create_update_zip.sh
 
   validate-windows-deps:
     runs-on: windows-latest
@@ -67,10 +69,41 @@ jobs:
           enable-cache: true
 
       - name: Install desktop dependencies
-        run: uv sync --extra desktop-build --frozen
+        run: uv sync --extra desktop-build-pyinstaller --frozen
 
-      - name: Validate Windows build script continuation
-        run: python app/scripts/validate_build_win_bat.py
+      - name: Validate Windows packaging scripts exist
+        run: python -c "from pathlib import Path; assert Path('app/scripts/build_win_pyinstaller.bat').is_file(); assert Path('app/scripts/package_win_installer.bat').is_file()"
+
+      - name: Ensure Inno Setup
+        shell: pwsh
+        run: |
+          $resolved = python app/scripts/resolve_inno_setup.py 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            choco install innosetup --version=${{ env.INNOSETUP_VERSION }} -y
+            $resolved = python app/scripts/resolve_inno_setup.py
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Inno Setup compiler with required language files not found.'
+            }
+          }
+          Write-Host "Using Inno Setup compiler: $resolved"
+          "BAO_ISCC_EXE=$resolved" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Validate import graph
         run: uv run python -c "import bao, PySide6, lancedb"
+
+      - name: Build with PyInstaller
+        run: app\scripts\build_win_pyinstaller.bat
+
+      - name: Create installer smoke artifact
+        env:
+          BAO_DESKTOP_REQUIRE_PRIMARY: '1'
+        run: app\scripts\package_win_installer.bat --require-primary --build-root dist-pyinstaller\dist\Bao
+
+      - name: Validate installer artifact exists
+        shell: pwsh
+        run: |
+          $artifact = Get-ChildItem dist\Bao-*-windows-x64-setup.exe | Select-Object -First 1
+          if (-not $artifact) {
+            throw 'Windows installer artifact not found after smoke packaging.'
+          }
+          Write-Host "Installer smoke artifact: $($artifact.FullName)"
