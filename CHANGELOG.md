@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.14] - 2026-03-07
+
+### Fixed
+
+- **Desktop Release 仍会误拒绝 Chocolatey 的 `iscc.exe` shim** — `resolve_inno_setup.py` 现在把 Chocolatey `bin` 下可执行的 shim 视为有效编译器入口，不再要求 shim 同目录存在 `Default.isl` 或语言文件；这与 `package_win_installer.bat` 直接执行返回路径的真实用法保持一致。
+
 ## [0.3.13] - 2026-03-07
 
 ### Fixed
