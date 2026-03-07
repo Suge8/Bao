@@ -47,7 +47,7 @@ LicenseFile=..\..\LICENSE
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+Name: "chinesesimplified"; MessagesFile: "..\resources\installer\ChineseSimplified.isl"
 
 [Messages]
 english.WelcomeLabel1=Welcome to Bao
