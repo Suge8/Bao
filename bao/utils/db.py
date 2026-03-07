@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
-from collections.abc import Mapping, Sequence
 
 if TYPE_CHECKING:
     import lancedb
