@@ -24,8 +24,8 @@ echo.
 REM ── Pre-flight ──
 echo ^> Checking dependencies...
 where uv >nul 2>nul || (echo [ERROR] uv not installed. Install uv first: https://astral.sh/uv/ & exit /b 1)
-uv run python -c "import nuitka" 2>nul || (echo [ERROR] Nuitka not installed. Run: uv pip install nuitka ordered-set zstandard & exit /b 1)
-uv run python -c "import PySide6" 2>nul || (echo [ERROR] PySide6 not installed. Run: uv sync --extra desktop & exit /b 1)
+uv run python -c "import nuitka" 2>nul || (echo [ERROR] Nuitka not installed. Run: uv sync --extra desktop-build & exit /b 1)
+uv run python -c "import PySide6" 2>nul || (echo [ERROR] PySide6 not installed. Run: uv sync --extra desktop-build & exit /b 1)
 REM Fix PySide6.__file__=None for Nuitka compatibility
 for /f "tokens=*" %%v in ('uv run python -c "import PySide6; print(PySide6.__file__)"') do set "PF=%%v"
 if "%PF%"=="None" (

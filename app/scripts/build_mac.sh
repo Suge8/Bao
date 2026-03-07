@@ -45,8 +45,8 @@ echo ""
 
 # ── Pre-flight checks ──
 echo "▸ Checking dependencies..."
-uv run python -c "import nuitka" 2>/dev/null || { echo "❌ Nuitka not installed. Run: uv pip install nuitka ordered-set zstandard"; exit 1; }
-uv run python -c "import PySide6" 2>/dev/null || { echo "❌ PySide6 not installed. Run: uv sync --extra desktop"; exit 1; }
+uv run python -c "import nuitka" 2>/dev/null || { echo "❌ Nuitka not installed. Run: uv sync --extra desktop-build"; exit 1; }
+uv run python -c "import PySide6" 2>/dev/null || { echo "❌ PySide6 not installed. Run: uv sync --extra desktop-build"; exit 1; }
 
 # Nuitka's pyside6 plugin requires PySide6.__file__ to be set.
 # PySide6-Essentials alone leaves __file__=None (no __init__.py).
