@@ -64,10 +64,15 @@ def _make_compiler(root: Path, *, with_languages: bool = True) -> Path:
     return compiler
 
 
-def test_missing_inno_files_reports_required_language_files(tmp_path: Path) -> None:
-    compiler = _make_compiler(tmp_path / "Inno Setup 6", with_languages=False)
+def test_missing_inno_files_reports_missing_default_isl(tmp_path: Path) -> None:
+    compiler = tmp_path / "Inno Setup 6" / "ISCC.exe"
+    compiler.parent.mkdir(parents=True, exist_ok=True)
+    _ = compiler.write_text("", encoding="utf-8")
+    lang_dir = compiler.parent / "Languages"
+    lang_dir.mkdir(parents=True, exist_ok=True)
+    _ = (lang_dir / "ChineseSimplified.isl").write_text("", encoding="utf-8")
 
-    assert missing_inno_files(compiler) == ["Languages/ChineseSimplified.isl"]
+    assert missing_inno_files(compiler) == ["Default.isl"]
 
 
 def test_resolve_inno_setup_prefers_valid_override(tmp_path: Path) -> None:
@@ -80,7 +85,9 @@ def test_resolve_inno_setup_prefers_valid_override(tmp_path: Path) -> None:
 
 
 def test_resolve_inno_setup_skips_incomplete_path_candidate(tmp_path: Path) -> None:
-    invalid = _make_compiler(tmp_path / "broken" / "Inno Setup 6", with_languages=False)
+    invalid = tmp_path / "broken" / "Inno Setup 6" / "ISCC.exe"
+    invalid.parent.mkdir(parents=True, exist_ok=True)
+    _ = invalid.write_text("", encoding="utf-8")
     valid = _make_compiler(tmp_path / "Program Files (x86)" / "Inno Setup 6")
     env = {
         "BAO_ISCC_EXE": str(invalid),

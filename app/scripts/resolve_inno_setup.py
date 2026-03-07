@@ -6,10 +6,7 @@ import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-_REQUIRED_RELATIVE_FILES = (
-    Path("Default.isl"),
-    Path("Languages") / "ChineseSimplified.isl",
-)
+_REQUIRED_RELATIVE_FILES = (Path("Default.isl"),)
 
 
 def _append_unique(candidates: list[Path], seen: set[str], candidate: Path) -> None:
