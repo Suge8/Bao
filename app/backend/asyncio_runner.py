@@ -13,12 +13,11 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import functools
-import logging
 import threading
 from collections.abc import Coroutine
 from typing import Any, TypeVar
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 T = TypeVar("T")
 
@@ -114,7 +113,7 @@ class AsyncioRunner:
                 )
                 drain_future.result(timeout=timeout_s)
             except Exception:
-                logger.debug("AsyncioRunner drain timed out or failed", exc_info=True)
+                logger.opt(exception=True).debug("AsyncioRunner drain timed out or failed")
             finally:
                 try:
                     loop.call_soon_threadsafe(loop.stop)
@@ -124,12 +123,12 @@ class AsyncioRunner:
         if thread:
             thread.join(timeout=timeout_s)
             if thread.is_alive():
-                logger.warning("AsyncioRunner thread did not stop within %.2fs", timeout_s)
+                logger.warning("AsyncioRunner thread did not stop within {:.2f}s", timeout_s)
         self._user_executor.shutdown(wait=False, cancel_futures=True)
         try:
             self._bg_executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
-            logger.debug("AsyncioRunner bg executor shutdown skipped", exc_info=True)
+            logger.opt(exception=True).debug("AsyncioRunner bg executor shutdown skipped")
 
     # ------------------------------------------------------------------
     # Submission
@@ -161,6 +160,6 @@ class AsyncioRunner:
         exc = context.get("exception")
         msg = context.get("message", "unknown asyncio error")
         if exc:
-            logger.error("Unhandled asyncio exception: %s", msg, exc_info=exc)
+            logger.opt(exception=exc).error("Unhandled asyncio exception: {}", msg)
         else:
-            logger.error("Asyncio error: %s", msg)
+            logger.error("Asyncio error: {}", msg)

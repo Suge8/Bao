@@ -7,9 +7,10 @@ Internal signals marshal results back to the Qt main thread.
 from __future__ import annotations
 
 import asyncio
-import os
 from collections.abc import Coroutine
+from concurrent.futures import CancelledError as FutureCancelledError
 from datetime import datetime
+import os
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +31,6 @@ from app.backend.asyncio_runner import AsyncioRunner
 from bao.session.manager import SessionChangeEvent
 
 _DEBUG_SWITCH = os.getenv("BAO_DESKTOP_DEBUG_SWITCH") == "1"
-
 _ROLE_BASE = int(Qt.ItemDataRole.UserRole)
 _ROLE_KEY = _ROLE_BASE + 1
 _ROLE_TITLE = _ROLE_BASE + 2
@@ -39,6 +39,8 @@ _ROLE_UPDATED_AT = _ROLE_BASE + 4
 _ROLE_CHANNEL = _ROLE_BASE + 5
 _ROLE_HAS_UNREAD = _ROLE_BASE + 6
 _ROLE_UPDATED_LABEL = _ROLE_BASE + 7
+_ROLE_MESSAGE_COUNT = _ROLE_BASE + 8
+_ROLE_HAS_MESSAGES = _ROLE_BASE + 9
 
 
 def _format_display_title(key: str, title: Any, *, natural_key: str = "desktop:local") -> str:
@@ -117,7 +119,17 @@ def _build_session_item(
     channel: str = "desktop",
     has_unread: bool = False,
     title: Any = None,
+    message_count: Any = None,
+    has_messages: Any = None,
 ) -> dict[str, Any]:
+    normalized_count = (
+        message_count if isinstance(message_count, int) and message_count >= 0 else None
+    )
+    normalized_has_messages = (
+        has_messages
+        if isinstance(has_messages, bool)
+        else (normalized_count > 0 if normalized_count is not None else None)
+    )
     return {
         "key": key,
         "title": _format_display_title(key, title, natural_key=natural_key),
@@ -125,7 +137,25 @@ def _build_session_item(
         "updated_label": _format_updated_label(updated_at),
         "channel": channel,
         "has_unread": has_unread,
+        "message_count": normalized_count,
+        "has_messages": normalized_has_messages,
     }
+
+
+def _filter_session_dicts(raw_sessions: list[Any]) -> list[dict[str, Any]]:
+    return [item for item in raw_sessions if isinstance(item, dict)]
+
+
+def _visible_session_key(
+    candidates: tuple[str, ...],
+    *,
+    available_keys: set[str],
+    pending_create_keys: set[str],
+) -> str:
+    for candidate in candidates:
+        if candidate and (candidate in pending_create_keys or candidate in available_keys):
+            return candidate
+    return ""
 
 
 class SessionListModel(QAbstractListModel):
@@ -139,6 +169,8 @@ class SessionListModel(QAbstractListModel):
         _ROLE_CHANNEL: QByteArray(b"channel"),
         _ROLE_HAS_UNREAD: QByteArray(b"hasUnread"),
         _ROLE_UPDATED_LABEL: QByteArray(b"updatedLabel"),
+        _ROLE_MESSAGE_COUNT: QByteArray(b"messageCount"),
+        _ROLE_HAS_MESSAGES: QByteArray(b"hasMessages"),
     }
 
     def __init__(self, parent: Any = None) -> None:
@@ -176,6 +208,10 @@ class SessionListModel(QAbstractListModel):
             return bool(s.get("has_unread", False))
         if role == _ROLE_UPDATED_LABEL:
             return s.get("updated_label", "")
+        if role == _ROLE_MESSAGE_COUNT:
+            return s.get("message_count")
+        if role == _ROLE_HAS_MESSAGES:
+            return s.get("has_messages")
         return None
 
     def roleNames(self) -> dict[int, QByteArray]:
@@ -197,15 +233,20 @@ class SessionListModel(QAbstractListModel):
         old_key = self._active_key
         self._active_key = key
         for i, s in enumerate(self._sessions):
-            if s.get("key") in (old_key, key):
+            session_key = s.get("key")
+            if session_key == key and s.get("has_unread"):
+                s["has_unread"] = False
+            if session_key in (old_key, key):
                 idx = self.index(i)
-                self.dataChanged.emit(idx, idx, [_ROLE_IS_ACTIVE])
+                self.dataChanged.emit(idx, idx, [_ROLE_IS_ACTIVE, _ROLE_HAS_UNREAD])
 
 
 class SessionService(QObject):
     sessionsChanged = Signal()
     activeKeyChanged = Signal(str)
+    activeSummaryChanged = Signal(str, object, object)
     activeReady = Signal(str)
+    sessionsLoadingChanged = Signal(bool)
     errorOccurred = Signal(str)
     deleteCompleted = Signal(str, bool, str)
     sessionManagerReady = Signal(object)
@@ -232,6 +273,8 @@ class SessionService(QObject):
         self._pending_creates: set[str] = set()
         self._list_request_seq = 0
         self._list_latest_seq = 0
+        self._list_inflight_count = 0
+        self._sessions_loading = False
         self._active_commit_seq = 0
         self._disposed = False
 
@@ -250,6 +293,10 @@ class SessionService(QObject):
     def activeKey(self) -> str:
         return self._active_key
 
+    @Property(bool, notify=sessionsLoadingChanged)
+    def sessionsLoading(self) -> bool:
+        return self._sessions_loading
+
     def initialize(self, session_manager: Any) -> None:
         if self._disposed:
             return
@@ -263,8 +310,10 @@ class SessionService(QObject):
         raw_path = workspace_path.strip()
         if not raw_path:
             return
+        self._set_sessions_loading(True)
         fut = self._submit_safe(self._create_session_manager(raw_path))
         if fut is None:
+            self._set_sessions_loading(False)
             return
         fut.add_done_callback(self._on_bootstrap_done)
 
@@ -276,6 +325,8 @@ class SessionService(QObject):
         self._pending_select_key = None
         self._pending_deletes.clear()
         self._pending_creates.clear()
+        self._list_inflight_count = 0
+        self._set_sessions_loading(False)
         self._detach_session_manager(self._session_manager)
         self._session_manager = None
 
@@ -289,6 +340,11 @@ class SessionService(QObject):
     async def _run_user_io(self, fn: Any, *args: Any) -> Any:
         if isinstance(self._runner, AsyncioRunner):
             return await self._runner.run_user_io(fn, *args)
+        return await asyncio.to_thread(fn, *args)
+
+    async def _run_bg_io(self, fn: Any, *args: Any) -> Any:
+        if isinstance(self._runner, AsyncioRunner):
+            return await self._runner.run_bg_io(fn, *args)
         return await asyncio.to_thread(fn, *args)
 
     async def _create_session_manager(self, workspace_path: str) -> Any:
@@ -307,8 +363,25 @@ class SessionService(QObject):
             return
         self._bootstrapResult.emit(True, "", future.result())
 
+    async def _backfill_listed_session_tails(self, keys: list[str]) -> None:
+        sm = self._session_manager
+        if sm is None or not keys:
+            return
+        backfill = getattr(sm, "backfill_display_tail_rows", None)
+        if not callable(backfill):
+            return
+        await self._run_bg_io(backfill, keys, 200)
+
+    def _on_backfill_done(self, future: Any) -> None:
+        if future.cancelled():
+            return
+        exc = self._future_exception_or_none(future)
+        if exc is not None:
+            logger.debug("Skip display tail backfill: {}", exc)
+
     def _handle_bootstrap_result(self, ok: bool, error: str, session_manager: Any) -> None:
         if not ok:
+            self._set_sessions_loading(False)
             logger.debug("Skip early session bootstrap: {}", error)
             return
         if self._disposed or self._session_manager is not None:
@@ -343,6 +416,38 @@ class SessionService(QObject):
             self.activeKeyChanged.emit(new_key)
             self._emit_active_ready_if_applicable(new_key)
 
+    def _active_summary(self, key: str) -> tuple[int | None, bool | None]:
+        if not key:
+            return None, None
+        for session in self._model._sessions:
+            if str(session.get("key", "")) != key:
+                continue
+            message_count = session.get("message_count")
+            has_messages = session.get("has_messages")
+            return (
+                message_count if isinstance(message_count, int) and message_count >= 0 else None,
+                has_messages if isinstance(has_messages, bool) else None,
+            )
+        return None, None
+
+    def _emit_active_summary(self, key: str) -> None:
+        message_count, has_messages = self._active_summary(key)
+        self.activeSummaryChanged.emit(key, message_count, has_messages)
+
+    def _set_sessions_loading(self, loading: bool) -> None:
+        if self._sessions_loading == loading:
+            return
+        self._sessions_loading = loading
+        self.sessionsLoadingChanged.emit(loading)
+
+    def _begin_list_request(self) -> None:
+        self._list_inflight_count += 1
+        self._set_sessions_loading(True)
+
+    def _finish_list_request(self) -> None:
+        self._list_inflight_count = max(0, self._list_inflight_count - 1)
+        self._set_sessions_loading(self._list_inflight_count > 0)
+
     def _next_active_commit_seq(self) -> int:
         self._active_commit_seq += 1
         return self._active_commit_seq
@@ -369,6 +474,7 @@ class SessionService(QObject):
         self._model.set_active(key)
         if _DEBUG_SWITCH:
             logger.debug("session_select_commit key={}", key)
+        self._emit_active_summary(key)
         self._emit_active_key_if_changed(key)
 
     def _finalize_active_resolution(self, active_for_view: str, stored_active: str) -> None:
@@ -384,6 +490,8 @@ class SessionService(QObject):
 
     def _handle_session_change(self, event: object) -> None:
         if self._disposed or not isinstance(event, SessionChangeEvent):
+            return
+        if event.kind == "deleted" and event.session_key in self._pending_deletes:
             return
         self.refresh()
 
@@ -427,11 +535,13 @@ class SessionService(QObject):
             return
         if self._session_manager is None:
             return
+        self._begin_list_request()
         self._list_request_seq += 1
         seq = self._list_request_seq
         self._list_latest_seq = seq
         fut = self._submit_safe(self._list_sessions(seq))
         if fut is None:
+            self._finish_list_request()
             return
         fut.add_done_callback(self._on_list_done)
 
@@ -573,6 +683,8 @@ class SessionService(QObject):
                     channel=channel,
                     has_unread=has_unread,
                     title=meta.get("title"),
+                    message_count=s.get("message_count"),
+                    has_messages=s.get("has_messages"),
                 )
             )
         return seq, result, active
@@ -643,7 +755,7 @@ class SessionService(QObject):
         await self._commit_active_selection(key, seq)
         return key
 
-    async def _delete_session(self, key: str, new_active: str, seq: int | None) -> None:
+    async def _delete_session(self, key: str, new_active: str, seq: int | None) -> str:
         sm = self._session_manager
 
         def _delete() -> bool:
@@ -661,20 +773,33 @@ class SessionService(QObject):
 
         was_active = await self._run_user_io(_delete)
         if not was_active or seq is None:
-            return
-        if new_active:
-            await self._commit_active_selection(new_active, seq)
-        else:
-            await self._clear_active_selection(seq)
+            return ""
+        try:
+            if new_active:
+                await self._commit_active_selection(new_active, seq)
+            else:
+                await self._clear_active_selection(seq)
+        except Exception as exc:
+            logger.warning("Session deleted but active sync failed: {}", exc)
+            return str(exc)
+        return ""
 
     # ------------------------------------------------------------------
     # Callbacks (asyncio thread — emit signals only, no Qt ops)
     # ------------------------------------------------------------------
 
+    def _future_exception_or_none(self, future: Any) -> Exception | None:
+        try:
+            return future.exception()
+        except FutureCancelledError:
+            return None
+
     def _on_list_done(self, future: Any) -> None:
         if self._disposed:
             return
-        exc = future.exception()
+        if future.cancelled():
+            return
+        exc = self._future_exception_or_none(future)
         if exc:
             self._listResult.emit(False, str(exc), None)
         else:
@@ -683,7 +808,9 @@ class SessionService(QObject):
     def _on_select_done(self, future: Any) -> None:
         if self._disposed:
             return
-        exc = future.exception()
+        if future.cancelled():
+            return
+        exc = self._future_exception_or_none(future)
         if exc:
             self._selectResult.emit(False, str(exc), "")
         else:
@@ -692,14 +819,18 @@ class SessionService(QObject):
     def _on_sync_family_active_done(self, future: Any) -> None:
         if self._disposed:
             return
-        exc = future.exception()
+        if future.cancelled():
+            return
+        exc = self._future_exception_or_none(future)
         if exc:
             logger.debug("Skip active selection sync: {}", exc)
 
     def _on_create_done(self, key: str, future: Any) -> None:
         if self._disposed:
             return
-        exc = future.exception()
+        if future.cancelled():
+            return
+        exc = self._future_exception_or_none(future)
         if exc:
             self._createResult.emit(False, str(exc), key)
         else:
@@ -708,11 +839,13 @@ class SessionService(QObject):
     def _on_delete_done(self, key: str, future: Any) -> None:
         if self._disposed:
             return
-        exc = future.exception()
+        if future.cancelled():
+            return
+        exc = self._future_exception_or_none(future)
         if exc:
             self._deleteResult.emit(key, False, str(exc))
         else:
-            self._deleteResult.emit(key, True, "")
+            self._deleteResult.emit(key, True, str(future.result() or ""))
 
     # ------------------------------------------------------------------
     # Main-thread handlers (connected via signals)
@@ -721,6 +854,7 @@ class SessionService(QObject):
     def _handle_list_result(self, ok: bool, error: str, data: Any) -> None:
         if self._disposed:
             return
+        self._finish_list_request()
         if not ok:
             self.errorOccurred.emit(error)
             return
@@ -739,7 +873,7 @@ class SessionService(QObject):
             raw_sessions, raw_active = data
             if not isinstance(raw_sessions, list):
                 return
-            sessions = [s for s in raw_sessions if isinstance(s, dict)]
+            sessions = _filter_session_dicts(raw_sessions)
             if isinstance(raw_active, str):
                 stored_active = raw_active
         pending_keys = set(self._pending_deletes.keys())
@@ -760,19 +894,13 @@ class SessionService(QObject):
 
         available_keys = {str(s.get("key", "")) for s in sessions}
 
-        def _is_visible_key(key: str) -> bool:
-            return bool(key) and (key in pending_create_keys or key in available_keys)
-
         active_for_view = ""
         auto_selected_key = ""
-        for candidate in (
-            self._pending_select_key or "",
-            self._active_key,
-            stored_active,
-        ):
-            if _is_visible_key(candidate):
-                active_for_view = candidate
-                break
+        active_for_view = _visible_session_key(
+            (self._pending_select_key or "", self._active_key, stored_active),
+            available_keys=available_keys,
+            pending_create_keys=pending_create_keys,
+        )
 
         if self._gateway_ready and not sessions and not pending_create_keys:
             if self._session_manager is not None:
@@ -801,6 +929,14 @@ class SessionService(QObject):
         self._active_key = active_for_view
         self._model.reset_sessions(sessions, active_for_view)
         self.sessionsChanged.emit()
+        self._emit_active_summary(active_for_view)
+        fut = self._submit_safe(
+            self._backfill_listed_session_tails(
+                [str(item.get("key", "")).strip() for item in sessions]
+            )
+        )
+        if fut is not None:
+            fut.add_done_callback(self._on_backfill_done)
         self._emit_active_key_if_changed(active_for_view)
         self._finalize_active_resolution(active_for_view, stored_active)
         if auto_selected_key and self._session_manager is not None:
@@ -859,4 +995,6 @@ class SessionService(QObject):
             return
         # Optimistic update already reflects correct state — skip refresh
         # to avoid a redundant full rebuild that causes list flicker.
+        if error:
+            self.refresh()
         self.deleteCompleted.emit(key, True, "")

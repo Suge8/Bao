@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import importlib
 import json
 import sys
@@ -99,7 +100,16 @@ def test_model_reset_sessions():
 
 def test_model_data_roles():
     m = _new_session_model()
-    sessions = [{"key": "k1", "title": "T1", "updated_at": 42, "updated_label": "<1m"}]
+    sessions = [
+        {
+            "key": "k1",
+            "title": "T1",
+            "updated_at": 42,
+            "updated_label": "<1m",
+            "message_count": 0,
+            "has_messages": False,
+        }
+    ]
     m.reset_sessions(sessions, "k1")
     idx = m.index(0)
     assert m.data(idx, Qt.UserRole + 1) == "k1"  # key
@@ -107,6 +117,8 @@ def test_model_data_roles():
     assert m.data(idx, Qt.UserRole + 3) is True  # isActive
     assert m.data(idx, Qt.UserRole + 4) == 42  # updatedAt
     assert m.data(idx, Qt.UserRole + 7) == "<1m"
+    assert m.data(idx, Qt.UserRole + 8) == 0
+    assert m.data(idx, Qt.UserRole + 9) is False
 
 
 def test_model_inactive_session():
@@ -165,6 +177,7 @@ def _make_mock_session_manager(
     fail_delete=False,
     delete_returns_false=False,
     delete_returns_false_after_delete=False,
+    fail_set_active=False,
 ):
     sm = MagicMock()
     listeners: list[Any] = []
@@ -177,6 +190,8 @@ def _make_mock_session_manager(
             "key": s["key"],
             "updated_at": s.get("updated_at", 0),
             "metadata": {"title": s.get("title", s["key"]), **dict(s.get("metadata", {}))},
+            "message_count": s.get("message_count"),
+            "has_messages": s.get("has_messages"),
         }
         for s in sessions
     ]
@@ -187,6 +202,8 @@ def _make_mock_session_manager(
                 "key": s["key"],
                 "updated_at": s.get("updated_at", 0),
                 "metadata": dict(s.get("metadata", {})),
+                "message_count": s.get("message_count"),
+                "has_messages": s.get("has_messages"),
             }
             for s in state_sessions
         ]
@@ -195,6 +212,8 @@ def _make_mock_session_manager(
     sm.get_active_session_key.side_effect = lambda _natural_key: state["active"]
 
     def _set_active(_natural_key, key):
+        if fail_set_active:
+            raise RuntimeError("set active failed")
         state["active"] = key
 
     def _clear_active(_natural_key):
@@ -299,6 +318,23 @@ def test_service_shutdown_clears_runtime_state():
         runner.shutdown(grace_s=1.0)
 
 
+def test_done_callbacks_ignore_cancelled_future():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        future = concurrent.futures.Future()
+        future.cancel()
+
+        svc._on_list_done(future)
+        svc._on_select_done(future)
+        svc._on_sync_family_active_done(future)
+        svc._on_create_done("desktop:local::new", future)
+        svc._on_delete_done("desktop:local::old", future)
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
 def test_initialize_registers_and_shutdown_removes_change_listener():
     runner = AsyncioRunner()
     runner.start()
@@ -328,12 +364,14 @@ def test_bootstrap_workspace_initializes_session_manager_async(qt_app, tmp_path)
 
         with patch("bao.session.manager.SessionManager", return_value=sm):
             svc.bootstrapWorkspace(str(tmp_path / "workspace"))
+            assert svc.sessionsLoading is True
             loop = QEventLoop()
             QTimer.singleShot(300, loop.quit)
             loop.exec()
 
         assert svc._session_manager is sm
         assert ready == [sm]
+        assert svc.sessionsLoading is False
     finally:
         runner.shutdown(grace_s=1.0)
 
@@ -400,6 +438,74 @@ def test_session_change_event_refreshes_session_list(qt_app):
         runner.shutdown(grace_s=1.0)
 
 
+def test_refresh_exposes_sessions_loading_state(qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        svc._session_manager = object()
+
+        async def _slow_list(seq: int):
+            await asyncio.sleep(0.05)
+            return seq, [], ""
+
+        loading_events: list[bool] = []
+        svc.sessionsLoadingChanged.connect(loading_events.append)
+
+        with patch.object(svc, "_list_sessions", side_effect=_slow_list):
+            svc.refresh()
+            assert svc.sessionsLoading is True
+
+            loop = QEventLoop()
+            QTimer.singleShot(200, loop.quit)
+            loop.exec()
+
+        assert svc.sessionsLoading is False
+        assert loading_events[0] is True
+        assert loading_events[-1] is False
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_set_local_active_key_clears_unread_for_selected_session(qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        svc._model.reset_sessions(
+            [
+                {
+                    "key": "desktop:local::default",
+                    "title": "default",
+                    "is_active": False,
+                    "updated_at": "",
+                    "channel": "desktop",
+                    "has_unread": False,
+                    "updated_label": "",
+                },
+                {
+                    "key": "telegram:room1",
+                    "title": "room1",
+                    "is_active": False,
+                    "updated_at": "",
+                    "channel": "telegram",
+                    "has_unread": True,
+                    "updated_label": "",
+                },
+            ],
+            "",
+        )
+
+        svc._set_local_active_key("telegram:room1")
+        svc._set_local_active_key("desktop:local::default")
+
+        unread_role = int(Qt.ItemDataRole.UserRole) + 6
+        telegram_index = svc._model.index(1, 0)
+        assert svc._model.data(telegram_index, unread_role) is False
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
 def test_session_change_event_ignores_after_shutdown(qt_app):
     runner = AsyncioRunner()
     runner.start()
@@ -414,6 +520,65 @@ def test_session_change_event_ignores_after_shutdown(qt_app):
         qt_app.processEvents()
 
         assert svc.activeKey == ""
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_list_result_triggers_background_display_tail_backfill(qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = MagicMock()
+        svc._session_manager = sm
+        sessions = [
+            {"key": "desktop:local::s1", "title": "One", "updated_at": 1, "channel": "desktop"},
+            {"key": "desktop:local::s2", "title": "Two", "updated_at": 2, "channel": "desktop"},
+        ]
+
+        svc._handle_list_result(True, "", ([dict(s) for s in sessions], "desktop:local::s1"))
+
+        loop = QEventLoop()
+        QTimer.singleShot(250, loop.quit)
+        loop.exec()
+
+        sm.backfill_display_tail_rows.assert_called_once_with(
+            ["desktop:local::s1", "desktop:local::s2"], 200
+        )
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_active_summary_changed_emits_current_session_summary(qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        svc.setGatewayReady()
+        summaries: list[tuple[str, object, object]] = []
+        svc.activeSummaryChanged.connect(
+            lambda key, count, has_messages: summaries.append((key, count, has_messages))
+        )
+
+        svc._handle_list_result(
+            True,
+            "",
+            (
+                [
+                    {
+                        "key": "desktop:local::empty",
+                        "title": "Empty",
+                        "updated_at": 1,
+                        "channel": "desktop",
+                        "message_count": 0,
+                        "has_messages": False,
+                    }
+                ],
+                "desktop:local::empty",
+            ),
+        )
+
+        assert summaries[-1] == ("desktop:local::empty", 0, False)
     finally:
         runner.shutdown(grace_s=1.0)
 
@@ -474,9 +639,11 @@ def test_external_family_active_sync_keeps_active_chat_realtime(tmp_path, qt_app
 
         runner.submit(_inbound_like_core()).result(timeout=2)
 
-        loop2 = QEventLoop()
-        QTimer.singleShot(400, loop2.quit)
-        loop2.exec()
+        deadline = datetime.now() + timedelta(seconds=1)
+        while model.rowCount() == 0 and datetime.now() < deadline:
+            loop2 = QEventLoop()
+            QTimer.singleShot(50, loop2.quit)
+            loop2.exec()
 
         assert model.rowCount() == 1
         assert model._messages[-1]["content"] == "incoming external"
@@ -1437,9 +1604,9 @@ def test_service_refresh_during_pending_delete_does_not_resurrect_session():
 
         original_delete = svc._delete_session
 
-        async def _delayed_delete(key: str, new_active: str, seq: int | None) -> None:
+        async def _delayed_delete(key: str, new_active: str, seq: int | None) -> str:
             await asyncio.sleep(0.15)
-            await original_delete(key, new_active, seq)
+            return await original_delete(key, new_active, seq)
 
         svc._delete_session = _delayed_delete
 
@@ -1462,6 +1629,56 @@ def test_service_refresh_during_pending_delete_does_not_resurrect_session():
         assert _sessions_model(svc).rowCount() == 1
         idx2 = _sessions_model(svc).index(0)
         assert _sessions_model(svc).data(idx2, Qt.UserRole + 1) == "desktop:local::s2"
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_local_delete_ignores_followup_deleted_change_event(qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(
+            sessions=[
+                {"key": "desktop:local::s1", "title": "Chat 1"},
+                {"key": "desktop:local::s2", "title": "Chat 2"},
+            ],
+            active_key="desktop:local::s1",
+        )
+        original_delete = sm.delete_session.side_effect
+
+        def _delete_with_change(key: str) -> bool:
+            assert callable(original_delete)
+            result = bool(original_delete(key))
+            sm._emit_change(key, "deleted")
+            return result
+
+        sm.delete_session.side_effect = _delete_with_change
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        sessions_changed_count = 0
+
+        def _count_sessions_changed() -> None:
+            nonlocal sessions_changed_count
+            sessions_changed_count += 1
+
+        svc.sessionsChanged.connect(_count_sessions_changed)
+
+        svc.deleteSession("desktop:local::s1")
+
+        loop2 = QEventLoop()
+        QTimer.singleShot(300, loop2.quit)
+        loop2.exec()
+
+        assert _sessions_model(svc).rowCount() == 1
+        idx = _sessions_model(svc).index(0)
+        assert _sessions_model(svc).data(idx, Qt.UserRole + 1) == "desktop:local::s2"
+        assert sessions_changed_count == 1
     finally:
         runner.shutdown(grace_s=1.0)
 
@@ -1500,6 +1717,81 @@ def test_service_delete_failure_rollback_respects_other_pending_deletes():
         assert "desktop:local::s2" not in keys
         assert "desktop:local::s1" in keys
         assert "desktop:local::s3" in keys
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_external_deleted_change_event_still_refreshes_visible_session(qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(
+            sessions=[
+                {"key": "desktop:local::s1", "title": "Chat 1"},
+                {"key": "desktop:local::s2", "title": "Chat 2"},
+            ],
+            active_key="desktop:local::s1",
+        )
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        sm.list_sessions.side_effect = lambda: [
+            {"key": "desktop:local::s1", "updated_at": "2", "metadata": {}},
+        ]
+
+        svc._handle_session_change(
+            SessionChangeEvent(session_key="desktop:local::s2", kind="deleted")
+        )
+
+        loop2 = QEventLoop()
+        QTimer.singleShot(300, loop2.quit)
+        loop2.exec()
+
+        assert _sessions_model(svc).rowCount() == 1
+        idx = _sessions_model(svc).index(0)
+        assert _sessions_model(svc).data(idx, Qt.UserRole + 1) == "desktop:local::s1"
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_delete_success_with_active_sync_failure_keeps_deleted_session_gone(qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(
+            sessions=[
+                {"key": "desktop:local::s1", "title": "Chat 1"},
+                {"key": "desktop:local::s2", "title": "Chat 2"},
+            ],
+            active_key="desktop:local::s1",
+            fail_set_active=True,
+        )
+        events = []
+        svc.deleteCompleted.connect(lambda key, ok, _err: events.append((key, ok)))
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        svc.deleteSession("desktop:local::s1")
+
+        loop2 = QEventLoop()
+        QTimer.singleShot(300, loop2.quit)
+        loop2.exec()
+
+        assert _sessions_model(svc).rowCount() == 1
+        idx = _sessions_model(svc).index(0)
+        assert _sessions_model(svc).data(idx, Qt.UserRole + 1) == "desktop:local::s2"
+        assert svc.activeKey == "desktop:local::s2"
+        assert ("desktop:local::s1", True) in events
     finally:
         runner.shutdown(grace_s=1.0)
 

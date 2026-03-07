@@ -1,5 +1,6 @@
 import json
 import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -41,6 +42,16 @@ _MSG_SAMPLE = [
         "extra_json": "{}",
     }
 ]
+_DISPLAY_TAIL_SAMPLE = [
+    {
+        "session_key": "_init_",
+        "updated_at": "",
+        "tail_json": "[]",
+        "message_count": 0,
+    }
+]
+_DISPLAY_TAIL_CACHE_LIMIT = 200
+_DISPLAY_TAIL_SESSION_CACHE_LIMIT = 128
 
 
 def _escape(val: str) -> str:
@@ -52,7 +63,7 @@ def _synchronized(method: Any) -> Any:
     def _wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
         method_name = method.__name__
         lock = self._meta_lock
-        key_lock_methods = {"save", "invalidate", "delete_session"}
+        key_lock_methods = {"save", "invalidate", "delete_session", "update_metadata_only"}
         if method_name in key_lock_methods and args:
             first = args[0]
             if isinstance(first, Session):
@@ -154,7 +165,11 @@ class Session:
                 and content.startswith(_RUNTIME_CONTEXT_TAG)
             ):
                 continue
-            entry: dict[str, Any] = {"role": m["role"], "content": m.get("content", "")}
+            entry: dict[str, Any] = {
+                "role": m["role"],
+                "content": m.get("content", ""),
+                "timestamp": m.get("timestamp", ""),
+            }
             for k in (
                 "tool_calls",
                 "tool_call_id",
@@ -181,7 +196,9 @@ class SessionManager:
         self._db = None
         self._meta_tbl = None
         self._msg_tbl = None
+        self._display_tail_tbl = None
         self._cache: dict[str, Session] = {}
+        self._display_tail_cache: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
         self._active_cache: dict[str, str] = {}
         self._meta_lock = threading.RLock()
         self._init_lock = threading.RLock()
@@ -231,6 +248,21 @@ class SessionManager:
                     self._ensure_msg_indexes(table)
             return table
 
+    def _display_tail_table(self):
+        table = self._display_tail_tbl
+        if table is not None:
+            return table
+        with self._init_lock:
+            table = self._display_tail_tbl
+            if table is None:
+                table, created = open_or_create_table(
+                    self._db_connection(), "session_display_tail", _DISPLAY_TAIL_SAMPLE
+                )
+                self._display_tail_tbl = table
+                if created:
+                    self._ensure_display_tail_index(table)
+            return table
+
     @_synchronized
     def add_change_listener(self, listener: Callable[[SessionChangeEvent], None]) -> None:
         if listener not in self._change_listeners:
@@ -257,6 +289,143 @@ class SessionManager:
                 self._session_locks[key] = lock
             return lock
 
+    def _display_tail_from_session(self, session: Session) -> list[dict[str, Any]]:
+        return session.get_display_history(max_messages=_DISPLAY_TAIL_CACHE_LIMIT)
+
+    def _store_display_tail_cache(self, key: str, messages: list[dict[str, Any]]) -> None:
+        self._display_tail_cache[key] = [
+            dict(message) for message in messages[-_DISPLAY_TAIL_CACHE_LIMIT:]
+        ]
+        self._display_tail_cache.move_to_end(key)
+        while len(self._display_tail_cache) > _DISPLAY_TAIL_SESSION_CACHE_LIMIT:
+            self._display_tail_cache.popitem(last=False)
+
+    def _clear_display_tail_cache(self, key: str) -> None:
+        self._display_tail_cache.pop(key, None)
+
+    def _write_display_tail_row(
+        self, key: str, messages: list[dict[str, Any]], message_count: int, updated_at: str
+    ) -> None:
+        safe = _escape(key)
+        table = self._display_tail_table()
+        table.delete(f"session_key = '{safe}'")
+        table.add(
+            [
+                {
+                    "session_key": key,
+                    "updated_at": updated_at,
+                    "tail_json": json.dumps(messages, ensure_ascii=False),
+                    "message_count": max(0, int(message_count)),
+                }
+            ]
+        )
+
+    def _read_display_tail_row(self, key: str) -> tuple[str, list[dict[str, Any]]] | None:
+        safe = _escape(key)
+        table = self._display_tail_table()
+        rows = table.search().where(f"session_key = '{safe}'").limit(1).to_list()
+        if not rows:
+            return None
+        row = rows[0]
+        tail_json = row.get("tail_json") or "[]"
+        try:
+            payload = json.loads(tail_json)
+        except Exception:
+            return None
+        if not isinstance(payload, list):
+            return None
+        messages: list[dict[str, Any]] = []
+        for item in payload:
+            if isinstance(item, dict):
+                messages.append(dict(item))
+        return str(row.get("updated_at") or ""), messages
+
+    def _meta_updated_at(self, key: str) -> str:
+        rows = (
+            self._meta_table().search().where(f"session_key = '{_escape(key)}'").limit(1).to_list()
+        )
+        if not rows:
+            return ""
+        return str(rows[0].get("updated_at") or "")
+
+    @staticmethod
+    def _coerce_message_count(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return max(0, value)
+        if isinstance(value, float):
+            return max(0, int(value))
+        if isinstance(value, str) and value.strip().isdigit():
+            return max(0, int(value.strip()))
+        return None
+
+    def _session_message_summary(self, key: str, updated_at: str) -> tuple[int | None, bool | None]:
+        cached = self._cache.get(key)
+        if cached is not None:
+            count = len(cached.messages)
+            return count, count > 0
+
+        persisted = self._read_display_tail_row(key)
+        if persisted is None:
+            return None, None
+        persisted_updated_at, _messages = persisted
+        if persisted_updated_at != updated_at:
+            return None, None
+
+        rows = (
+            self._display_tail_table()
+            .search()
+            .where(f"session_key = '{_escape(key)}'")
+            .limit(1)
+            .to_list()
+        )
+        if not rows:
+            return None, None
+        count = self._coerce_message_count(rows[0].get("message_count"))
+        if count is None:
+            return None, None
+        return count, count > 0
+
+    def _delete_display_tail_row(self, key: str) -> None:
+        table = self._display_tail_table()
+        table.delete(f"session_key = '{_escape(key)}'")
+
+    @staticmethod
+    def _best_effort_delete(table: Any, where_clause: str) -> None:
+        try:
+            table.delete(where_clause)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _best_effort_add(table: Any, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        try:
+            table.add(rows)
+        except Exception:
+            pass
+
+    def peek_tail_messages(self, key: str, limit: int) -> list[dict[str, Any]] | None:
+        max_messages = limit if limit > 0 else _DISPLAY_TAIL_CACHE_LIMIT
+        lock = self._lock_for(key)
+        if not lock.acquire(blocking=False):
+            return None
+        try:
+            cached = self._cache.get(key)
+            if cached is not None:
+                return cached.get_display_history(max_messages=max_messages)
+            cached_tail = self._display_tail_cache.get(key)
+            if cached_tail is None:
+                return None
+            self._display_tail_cache.move_to_end(key)
+            if limit > 0:
+                cached_tail = cached_tail[-limit:]
+            return [dict(message) for message in cached_tail]
+        finally:
+            lock.release()
+
     def _ensure_meta_index(self, table: Any) -> None:
         try:
             table.create_scalar_index("session_key", replace=False)
@@ -271,6 +440,13 @@ class SessionManager:
                 logger.debug("📊 索引已创建 / indexes created: session_messages.{}", column)
             except Exception as e:
                 logger.debug("⚠️ 索引创建跳过 / index creation skipped: {}", e)
+
+    def _ensure_display_tail_index(self, table: Any) -> None:
+        try:
+            table.create_scalar_index("session_key", replace=False)
+            logger.debug("📊 索引已创建 / indexes created: session_display_tail.session_key")
+        except Exception as e:
+            logger.debug("⚠️ 索引创建跳过 / index creation skipped: {}", e)
 
     def _migrate_legacy(self, workspace: Path, meta_tbl: Any) -> None:
         for d in (workspace / "sessions", Path.home() / ".bao" / "sessions"):
@@ -394,7 +570,8 @@ class SessionManager:
                 meta = meta_rows[0]
                 t1 = time.perf_counter() if _profile else 0
 
-                msg_tbl = self._msg_table()
+                msg_tbl: Any = self._msg_table()
+                assert msg_tbl is not None
                 msg_rows = msg_tbl.search().where(f"session_key = '{safe}'").to_list()
                 msg_rows.sort(key=lambda r: r["idx"])
                 t2 = time.perf_counter() if _profile else 0
@@ -446,28 +623,44 @@ class SessionManager:
         import os
         import time
 
-        with self._lock_for(key):
-            cached = self._cache.get(key)
-            if cached is not None:
-                max_messages = limit if limit > 0 else 500
-                return cached.get_display_history(max_messages=max_messages)
+        cached_messages = self.peek_tail_messages(key, limit)
+        if cached_messages is not None:
+            return cached_messages
 
         _profile = os.getenv("BAO_DESKTOP_PROFILE") == "1"
         t0 = time.perf_counter() if _profile else 0
         safe = _escape(key)
         where_clause = f"session_key = '{safe}'"
-        msg_tbl = self._msg_table()
+        msg_tbl: Any = self._msg_table()
+        assert msg_tbl is not None
         with self._lock_for(key):
             try:
+                current_updated_at = self._meta_updated_at(key)
+                persisted = self._read_display_tail_row(key)
+                if persisted is not None:
+                    persisted_updated_at, persisted_messages = persisted
+                    if persisted_updated_at == current_updated_at:
+                        self._store_display_tail_cache(key, persisted_messages)
+                        if limit > 0:
+                            return [dict(message) for message in persisted_messages[-limit:]]
+                        return [dict(message) for message in persisted_messages]
                 if limit > 0:
                     total = msg_tbl.count_rows(filter=where_clause)
                     if total <= 0:
+                        if current_updated_at:
+                            self._write_display_tail_row(key, [], 0, current_updated_at)
+                            self._store_display_tail_cache(key, [])
                         return []
                     start_idx = max(total - limit, 0)
                     where_clause = f"{where_clause} AND idx >= {start_idx}"
+                else:
+                    total = 0
 
                 msg_rows = msg_tbl.search().where(where_clause).to_list()
                 if not msg_rows:
+                    if current_updated_at:
+                        self._write_display_tail_row(key, [], 0, current_updated_at)
+                        self._store_display_tail_cache(key, [])
                     return []
                 msg_rows.sort(key=lambda r: r["idx"])
                 if limit > 0:
@@ -492,22 +685,50 @@ class SessionManager:
                         t2 - t1,
                         len(messages),
                     )
+                if limit <= 0 or limit >= _DISPLAY_TAIL_CACHE_LIMIT:
+                    self._store_display_tail_cache(key, messages)
+                    if current_updated_at:
+                        persisted_count = total if limit > 0 else len(messages)
+                        self._write_display_tail_row(
+                            key, messages, persisted_count, current_updated_at
+                        )
                 return messages
             except Exception as e:
                 logger.warning("⚠️ get_tail_messages failed: {} — {}", key, e)
                 return []
 
+    def backfill_display_tail_rows(self, keys: list[str], limit: int) -> None:
+        seen: set[str] = set()
+        for raw_key in keys:
+            key = str(raw_key).strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            current_updated_at = self._meta_updated_at(key)
+            if not current_updated_at:
+                continue
+            persisted = self._read_display_tail_row(key)
+            if persisted is not None and persisted[0] == current_updated_at:
+                continue
+            self.get_tail_messages(key, limit)
+
     @_synchronized
-    def save(self, session: Session) -> None:
+    def save(self, session: Session, *, emit_change: bool = True) -> None:
         safe = _escape(session.key)
         meta_tbl = self._meta_table()
+        tail_tbl = self._display_tail_table()
         msg_tbl: Any | None = None
         prev_meta: list[dict[str, Any]] = []
         prev_msgs: list[dict[str, Any]] = []
+        prev_tail: list[dict[str, Any]] = []
         try:
             prev_meta = meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
         except Exception:
             prev_meta = []
+        try:
+            prev_tail = tail_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
+        except Exception:
+            prev_tail = []
 
         def _row_from_message(idx: int, msg: dict[str, Any]) -> dict[str, Any]:
             extra = {k: v for k, v in msg.items() if k not in ("role", "content", "timestamp")}
@@ -553,11 +774,12 @@ class SessionManager:
             nonlocal msg_tbl
             if msg_tbl is None:
                 msg_tbl = self._msg_table()
+            assert msg_tbl is not None
             return msg_tbl
 
         try:
             message_count = len(session.messages)
-            if message_count > 0:
+            if message_count > 0 or prev_meta:
                 try:
                     prev_msgs = (
                         _msg_table_for_write().search().where(f"session_key = '{safe}'").to_list()
@@ -592,7 +814,7 @@ class SessionManager:
                     }
                 ]
             )
-
+            display_tail = self._display_tail_from_session(session)
             if message_count == 0:
                 if existing_count > 0:
                     _msg_table_for_write().delete(f"session_key = '{safe}'")
@@ -612,27 +834,34 @@ class SessionManager:
                 _msg_table_for_write().add(
                     [_row_from_message(i, msg) for i, msg in enumerate(session.messages)]
                 )
+            self._write_display_tail_row(
+                session.key,
+                display_tail,
+                message_count,
+                session.updated_at.isoformat(),
+            )
         except Exception:
-            try:
-                meta_tbl.delete(f"session_key = '{safe}'")
-            except Exception:
-                pass
+            self._best_effort_delete(meta_tbl, f"session_key = '{safe}'")
+            self._best_effort_delete(tail_tbl, f"session_key = '{safe}'")
             if msg_tbl is not None:
-                try:
-                    msg_tbl.delete(f"session_key = '{safe}'")
-                except Exception:
-                    pass
-            if prev_meta:
-                meta_tbl.add(prev_meta)
-            if prev_msgs and msg_tbl is not None:
-                msg_tbl.add(prev_msgs)
+                self._best_effort_delete(msg_tbl, f"session_key = '{safe}'")
+            self._best_effort_add(meta_tbl, prev_meta)
+            self._best_effort_add(tail_tbl, prev_tail)
+            if msg_tbl is not None:
+                self._best_effort_add(msg_tbl, prev_msgs)
+            self._cache.pop(session.key, None)
+            self._clear_display_tail_cache(session.key)
             raise
 
         self._cache[session.key] = session
-        self._emit_change(SessionChangeEvent(session_key=session.key, kind="messages"))
+        self._store_display_tail_cache(session.key, display_tail)
+        if emit_change:
+            self._emit_change(SessionChangeEvent(session_key=session.key, kind="messages"))
 
     @_synchronized
-    def update_metadata_only(self, key: str, metadata_updates: dict[str, Any]) -> None:
+    def update_metadata_only(
+        self, key: str, metadata_updates: dict[str, Any], *, emit_change: bool = True
+    ) -> None:
         """Update session metadata without loading/saving messages (lightweight)."""
         safe = _escape(key)
         meta_tbl = self._meta_table()
@@ -657,13 +886,15 @@ class SessionManager:
             )
             if key in self._cache:
                 self._cache[key].metadata.update(metadata_updates)
-            self._emit_change(SessionChangeEvent(session_key=key, kind="metadata"))
+            if emit_change:
+                self._emit_change(SessionChangeEvent(session_key=key, kind="metadata"))
         except Exception as e:
             logger.warning("⚠️ metadata update failed: {} — {}", key, e)
 
     @_synchronized
     def invalidate(self, key: str) -> None:
         self._cache.pop(key, None)
+        self._clear_display_tail_cache(key)
 
     @_synchronized
     def _delete_meta_row(self, key: str) -> bool:
@@ -678,9 +909,12 @@ class SessionManager:
     def delete_session(self, key: str) -> bool:
         safe = _escape(key)
         meta_tbl = self._meta_table()
-        msg_tbl = self._msg_table()
+        tail_tbl = self._display_tail_table()
+        msg_tbl: Any = self._msg_table()
+        assert msg_tbl is not None
         prev_meta: list[dict[str, Any]] = []
         prev_msgs: list[dict[str, Any]] = []
+        prev_tail: list[dict[str, Any]] = []
         try:
             prev_meta = meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
         except Exception:
@@ -689,34 +923,31 @@ class SessionManager:
             prev_msgs = msg_tbl.search().where(f"session_key = '{safe}'").to_list()
         except Exception:
             prev_msgs = []
+        try:
+            prev_tail = tail_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
+        except Exception:
+            prev_tail = []
 
         ok = self._delete_meta_row(key)
         try:
             msg_tbl.delete(f"session_key = '{safe}'")
         except Exception:
             ok = False
+        try:
+            self._delete_display_tail_row(key)
+        except Exception:
+            ok = False
         if not ok:
-            try:
-                meta_tbl.delete(f"session_key = '{safe}'")
-            except Exception:
-                pass
-            try:
-                msg_tbl.delete(f"session_key = '{safe}'")
-            except Exception:
-                pass
-            if prev_meta:
-                try:
-                    meta_tbl.add(prev_meta)
-                except Exception:
-                    pass
-            if prev_msgs:
-                try:
-                    msg_tbl.add(prev_msgs)
-                except Exception:
-                    pass
+            self._best_effort_delete(meta_tbl, f"session_key = '{safe}'")
+            self._best_effort_delete(msg_tbl, f"session_key = '{safe}'")
+            self._best_effort_add(meta_tbl, prev_meta)
+            self._best_effort_add(msg_tbl, prev_msgs)
+            self._best_effort_add(tail_tbl, prev_tail)
             self._cache.pop(key, None)
+            self._clear_display_tail_cache(key)
             return False
         self._cache.pop(key, None)
+        self._clear_display_tail_cache(key)
         # Defensive: clear _active_cache if it points to the deleted session
         for nk, ak in list(self._active_cache.items()):
             if ak == key:
@@ -794,16 +1025,23 @@ class SessionManager:
         meta_tbl = self._meta_table()
         try:
             rows = meta_tbl.search().where("session_key != '_init_'").to_list()
-            sessions = [
-                {
-                    "key": row["session_key"],
-                    "created_at": row.get("created_at"),
-                    "updated_at": row.get("updated_at"),
-                    "metadata": json.loads(row.get("metadata_json") or "{}"),
-                }
-                for row in rows
-                if not row["session_key"].startswith("_active:")
-            ]
+            sessions = []
+            for row in rows:
+                key = str(row.get("session_key") or "")
+                if key.startswith("_active:"):
+                    continue
+                updated_at = str(row.get("updated_at") or "")
+                message_count, has_messages = self._session_message_summary(key, updated_at)
+                sessions.append(
+                    {
+                        "key": key,
+                        "created_at": row.get("created_at"),
+                        "updated_at": updated_at,
+                        "metadata": json.loads(row.get("metadata_json") or "{}"),
+                        "message_count": message_count,
+                        "has_messages": has_messages,
+                    }
+                )
             return sorted(sessions, key=lambda session: session.get("updated_at", ""), reverse=True)
         except Exception:
             return []
