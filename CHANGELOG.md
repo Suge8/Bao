@@ -6,6 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.21] - 2026-03-09
+
+### Fixed
+
+- **iMessage 发送失败现在会给出明确的自动化授权提示** — 当 AppleScript 因 `-1743` 被 TCC 拒绝时，日志会直接提示为 Bao 授予 `Automation -> Messages` 权限，减少桌面打包后排查 iMessage 不可用的成本。
+- **桌面更新检查区分自动静默与手动反馈** — 自动检查时仍把 `desktop-update.json` 的 `404` 视为“尚未发布”，但用户手动点击检查时会明确提示 update feed 未发布，避免把配置缺口误报成“已是最新版本”。
+- **macOS Desktop 打包链路补齐稳定的包标识与 Automation 权限声明** — Nuitka/PyInstaller 两条构建脚本都会写回统一的 `CFBundleIdentifier` 与 `NSAppleEventsUsageDescription`，让 Bao.app 更稳定地申请 Messages 自动化权限。
+- **Desktop Release workflow 现会直接创建正式 GitHub Release** — tag 构建成功后不再默认留在 draft 状态，后续 update feed 可以沿同一发布链路继续消费正式 release 资产。
+
 ## [0.3.20] - 2026-03-09
 
 ### Added
