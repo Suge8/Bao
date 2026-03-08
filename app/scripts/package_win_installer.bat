@@ -2,6 +2,7 @@
 setlocal enabledelayedexpansion
 
 set "PROJECT_ROOT=%~dp0..\.."
+for %%i in ("%PROJECT_ROOT%") do set "PROJECT_ROOT=%%~fi"
 set "PYINSTALLER_BUILD_ROOT=%PROJECT_ROOT%\dist-pyinstaller\dist\Bao"
 set "NUITKA_BUILD_ROOT=%PROJECT_ROOT%\dist\build-win-x64\main.dist"
 set "REQUIRE_PRIMARY=0"
@@ -37,6 +38,8 @@ goto parse_args
 
 :args_done
 pushd "%PROJECT_ROOT%"
+
+for %%i in ("%BUILD_ROOT%") do set "BUILD_ROOT=%%~fi"
 
 where uv >nul 2>nul || (
     echo [ERROR] uv not installed. Install uv first: https://astral.sh/uv/

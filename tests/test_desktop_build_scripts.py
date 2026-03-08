@@ -135,6 +135,7 @@ def test_mac_packaging_scripts_prefer_pyinstaller_output_by_default() -> None:
 def test_windows_installer_prefers_pyinstaller_output_by_default() -> None:
     text = _read("app/scripts/package_win_installer.bat")
 
+    assert 'for %%i in ("%PROJECT_ROOT%") do set "PROJECT_ROOT=%%~fi"' in text
     assert 'set "PYINSTALLER_BUILD_ROOT=%PROJECT_ROOT%\\dist-pyinstaller\\dist\\Bao"' in text
     assert 'set "NUITKA_BUILD_ROOT=%PROJECT_ROOT%\\dist\\build-win-x64\\main.dist"' in text
     assert 'if exist "%PYINSTALLER_BUILD_ROOT%\\Bao.exe" (' in text
@@ -142,6 +143,7 @@ def test_windows_installer_prefers_pyinstaller_output_by_default() -> None:
     assert 'set "BUILD_ROOT=%NUITKA_BUILD_ROOT%"' in text
     assert 'set "REQUIRE_PRIMARY=0"' in text
     assert 'if /I "%~1"=="--require-primary" (' in text
+    assert 'for %%i in ("%BUILD_ROOT%") do set "BUILD_ROOT=%%~fi"' in text
     assert 'if /I "%BAO_DESKTOP_REQUIRE_PRIMARY%"=="1" (' in text
 
 
