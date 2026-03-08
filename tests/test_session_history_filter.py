@@ -38,3 +38,23 @@ def test_session_get_history_allows_explicit_system_events() -> None:
         },
         {"role": "assistant", "content": "ack"},
     ]
+
+
+def test_session_get_history_skips_visible_assistant_progress_turns() -> None:
+    from bao.session.manager import Session
+
+    s = Session("k")
+    s.add_message("user", "hi")
+    s.add_message("assistant", "我先查一下。", _source="assistant-progress")
+    s.add_message("assistant", "结果如下")
+
+    assert s.get_history() == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "结果如下"},
+    ]
+
+    assert [entry["content"] for entry in s.get_display_history()] == [
+        "hi",
+        "我先查一下。",
+        "结果如下",
+    ]

@@ -74,6 +74,10 @@ def _sessions_model(svc: Any) -> Any:
     return svc.sessionsModel
 
 
+def _sidebar_model(svc: Any) -> Any:
+    return svc.sidebarModel
+
+
 def _index_by_key(svc: Any, key: str) -> Any:
     model = _sessions_model(svc)
     for i in range(model.rowCount()):
@@ -81,6 +85,24 @@ def _index_by_key(svc: Any, key: str) -> Any:
         if model.data(idx, Qt.UserRole + 1) == key:
             return idx
     return QModelIndex()
+
+
+def _spin_until(predicate: Any, *, timeout_ms: int = 1000, tick_ms: int = 50) -> None:
+    deadline = datetime.now() + timedelta(milliseconds=timeout_ms)
+    while datetime.now() < deadline:
+        if bool(predicate()):
+            return
+        loop = QEventLoop()
+        QTimer.singleShot(tick_ms, loop.quit)
+        loop.exec()
+    assert bool(predicate())
+
+
+def _sidebar_role(model: Any, name: bytes) -> int:
+    for role, role_name in model.roleNames().items():
+        if bytes(role_name) == name:
+            return int(role)
+    raise AssertionError(f"sidebar role not found: {name!r}")
 
 
 def test_model_empty_initially():
@@ -119,6 +141,32 @@ def test_model_data_roles():
     assert m.data(idx, Qt.UserRole + 7) == "<1m"
     assert m.data(idx, Qt.UserRole + 8) == 0
     assert m.data(idx, Qt.UserRole + 9) is False
+    assert m.data(idx, Qt.UserRole + 15) is False
+
+
+def test_model_exposes_child_session_roles():
+    m = _new_session_model()
+    sessions = [
+        {
+            "key": "subagent:desktop:local::child-1",
+            "title": "research",
+            "updated_at": 42,
+            "session_kind": "subagent_child",
+            "is_read_only": True,
+            "parent_session_key": "desktop:local::main",
+            "parent_title": "main",
+            "child_status": "running",
+            "is_running": True,
+        }
+    ]
+    m.reset_sessions(sessions, "subagent:desktop:local::child-1")
+    idx = m.index(0)
+    assert m.data(idx, Qt.UserRole + 10) == "subagent_child"
+    assert m.data(idx, Qt.UserRole + 11) is True
+    assert m.data(idx, Qt.UserRole + 12) == "desktop:local::main"
+    assert m.data(idx, Qt.UserRole + 13) == "main"
+    assert m.data(idx, Qt.UserRole + 14) == "running"
+    assert m.data(idx, Qt.UserRole + 15) is True
 
 
 def test_model_inactive_session():
@@ -266,6 +314,7 @@ def _make_mock_session_manager(
     sm.set_active_session_key.side_effect = _set_active
     sm.clear_active_session_key.side_effect = _clear_active
     sm.delete_session.side_effect = _delete_session
+    sm.delete_session_tree.side_effect = _delete_session
     sm.get_or_create.side_effect = _get_or_create
     sm.save.side_effect = _save
     sm.add_change_listener.side_effect = listeners.append
@@ -305,6 +354,8 @@ def test_service_shutdown_clears_runtime_state():
             active_key="desktop:local::s1",
         )
         svc.initialize(sm)
+        svc.setGatewayReady()
+        svc.selectSession("desktop:local::main")
 
         loop = QEventLoop()
         QTimer.singleShot(300, loop.quit)
@@ -314,6 +365,134 @@ def test_service_shutdown_clears_runtime_state():
         assert svc._disposed is True
         assert svc._session_manager is None
         svc.refresh()
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_service_projects_child_session_metadata(qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(
+            sessions=[
+                {
+                    "key": "desktop:local::main",
+                    "title": "Main",
+                    "updated_at": datetime.now().isoformat(),
+                },
+                {
+                    "key": "subagent:desktop:local::child-1",
+                    "title": "Research",
+                    "updated_at": datetime.now().isoformat(),
+                    "metadata": {
+                        "session_kind": "subagent_child",
+                        "read_only": True,
+                        "parent_session_key": "desktop:local::main",
+                        "task_label": "Research",
+                        "child_status": "running",
+                    },
+                },
+            ],
+            active_key="desktop:local::main",
+        )
+        svc.initialize(sm)
+        svc.setGatewayReady()
+        svc.selectSession("desktop:local::main")
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        idx = _index_by_key(svc, "subagent:desktop:local::child-1")
+        assert idx.isValid()
+        model = _sessions_model(svc)
+        assert model.data(idx, Qt.UserRole + 10) == "subagent_child"
+        assert model.data(idx, Qt.UserRole + 11) is True
+        assert model.data(idx, Qt.UserRole + 13) == "Main"
+        assert svc.property("activeSessionReadOnly") is False
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_service_marks_parent_running_when_child_running(qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(
+            sessions=[
+                {
+                    "key": "imessage:chat-1::main",
+                    "title": "Main",
+                    "updated_at": datetime.now().isoformat(),
+                    "metadata": {"session_running": False},
+                },
+                {
+                    "key": "subagent:imessage:chat-1::child-1",
+                    "title": "Worker",
+                    "updated_at": datetime.now().isoformat(),
+                    "metadata": {
+                        "session_kind": "subagent_child",
+                        "read_only": True,
+                        "parent_session_key": "imessage:chat-1::main",
+                        "child_status": "running",
+                    },
+                },
+            ],
+            active_key="imessage:chat-1::main",
+        )
+        svc.initialize(sm)
+        svc.setGatewayReady()
+        svc.selectSession("imessage:chat-1::main")
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        model = _sessions_model(svc)
+        parent_idx = _index_by_key(svc, "imessage:chat-1::main")
+        child_idx = _index_by_key(svc, "subagent:imessage:chat-1::child-1")
+        assert model.data(parent_idx, Qt.UserRole + 5) == "imessage"
+        assert model.data(child_idx, Qt.UserRole + 5) == "imessage"
+        assert model.data(parent_idx, Qt.UserRole + 15) is True
+        assert model.data(child_idx, Qt.UserRole + 15) is True
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_delete_session_ignores_read_only_child(qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(
+            sessions=[
+                {
+                    "key": "subagent:desktop:local::child-1",
+                    "title": "Research",
+                    "updated_at": datetime.now().isoformat(),
+                    "metadata": {
+                        "session_kind": "subagent_child",
+                        "read_only": True,
+                        "parent_session_key": "desktop:local::main",
+                        "child_status": "running",
+                    },
+                }
+            ],
+            active_key="subagent:desktop:local::child-1",
+        )
+        svc.initialize(sm)
+        svc.setGatewayReady()
+        svc.selectSession("subagent:desktop:local::child-1")
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        svc.deleteSession("subagent:desktop:local::child-1")
+        assert sm.delete_session.call_count == 0
+        assert sm.delete_session_tree.call_count == 0
     finally:
         runner.shutdown(grace_s=1.0)
 
@@ -639,11 +818,7 @@ def test_external_family_active_sync_keeps_active_chat_realtime(tmp_path, qt_app
 
         runner.submit(_inbound_like_core()).result(timeout=2)
 
-        deadline = datetime.now() + timedelta(seconds=1)
-        while model.rowCount() == 0 and datetime.now() < deadline:
-            loop2 = QEventLoop()
-            QTimer.singleShot(50, loop2.quit)
-            loop2.exec()
+        _spin_until(lambda: model.rowCount() == 1)
 
         assert model.rowCount() == 1
         assert model._messages[-1]["content"] == "incoming external"
@@ -653,6 +828,249 @@ def test_external_family_active_sync_keeps_active_chat_realtime(tmp_path, qt_app
                 chat.deleteLater()
             except Exception:
                 pass
+        runner.shutdown(grace_s=1.0)
+
+
+def test_external_new_session_appears_in_sidebar_realtime(tmp_path, qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = SessionManager(tmp_path)
+        sm.save(sm.get_or_create("desktop:local::main"))
+        sm.set_active_session_key("desktop:local", "desktop:local::main")
+
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        assert _sessions_model(svc).rowCount() == 1
+        assert svc.activeKey == "desktop:local::main"
+
+        async def _inbound_new_session() -> None:
+            session = sm.get_or_create("imessage:+86100")
+            session.add_message("user", "hello from phone")
+            sm.save(session)
+
+        runner.submit(_inbound_new_session()).result(timeout=2)
+
+        _spin_until(
+            lambda: (
+                _index_by_key(svc, "imessage:+86100").isValid()
+                and _sessions_model(svc).rowCount() == 2
+            )
+        )
+
+        idx = _index_by_key(svc, "imessage:+86100")
+        assert idx.isValid()
+        assert _sessions_model(svc).rowCount() == 2
+        assert svc.activeKey == "desktop:local::main"
+        assert _sessions_model(svc).data(idx, Qt.UserRole + 5) == "imessage"
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_external_session_update_does_not_steal_current_active_selection(tmp_path, qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = SessionManager(tmp_path)
+
+        desktop = sm.get_or_create("desktop:local::main")
+        desktop.add_message("assistant", "desktop history")
+        sm.save(desktop)
+        external = sm.get_or_create("telegram:room")
+        external.add_message("user", "old external")
+        sm.save(external)
+        sm.set_active_session_key("desktop:local", "desktop:local::main")
+
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        assert svc.activeKey == "desktop:local::main"
+
+        async def _inbound_existing_session() -> None:
+            session = sm.get_or_create("telegram:room")
+            session.add_message("user", "new external")
+            sm.save(session)
+
+        runner.submit(_inbound_existing_session()).result(timeout=2)
+
+        _spin_until(
+            lambda: (
+                (idx := _index_by_key(svc, "telegram:room")).isValid()
+                and bool(_sessions_model(svc).data(idx, Qt.UserRole + 4))
+            )
+        )
+
+        idx = _index_by_key(svc, "telegram:room")
+        assert idx.isValid()
+        assert svc.activeKey == "desktop:local::main"
+        top_idx = _sessions_model(svc).index(0)
+        assert _sessions_model(svc).data(top_idx, Qt.UserRole + 1) == "telegram:room"
+        assert _sessions_model(svc).data(idx, Qt.UserRole + 5) == "telegram"
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_sidebar_model_groups_sessions_in_backend_projection(tmp_path, qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = SessionManager(tmp_path)
+
+        desktop = sm.get_or_create("desktop:local::main")
+        desktop.metadata["title"] = "Main"
+        desktop.add_message("assistant", "desktop")
+        sm.save(desktop)
+
+        telegram = sm.get_or_create("telegram:room")
+        telegram.metadata["title"] = "Room"
+        telegram.metadata["desktop_last_ai_at"] = "2026-03-06T11:00:00"
+        telegram.metadata["desktop_last_seen_ai_at"] = "2026-03-06T10:00:00"
+        telegram.add_message("assistant", "telegram")
+        sm.save(telegram)
+
+        child = sm.get_or_create("subagent:desktop:local::child")
+        child.metadata["session_kind"] = "subagent_child"
+        child.metadata["read_only"] = True
+        child.metadata["parent_session_key"] = "desktop:local::main"
+        child.metadata["child_status"] = "running"
+        child.metadata["title"] = "child"
+        child.add_message("assistant", "child")
+        sm.save(child)
+
+        sm.set_active_session_key("desktop:local", "desktop:local::main")
+
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        _spin_until(lambda: _sidebar_model(svc).rowCount() == 4)
+
+        model = _sidebar_model(svc)
+        is_header_role = _sidebar_role(model, b"isHeader")
+        channel_role = _sidebar_role(model, b"channel")
+        item_key_role = _sidebar_role(model, b"itemKey")
+        item_unread_role = _sidebar_role(model, b"itemHasUnread")
+        visual_channel_role = _sidebar_role(model, b"visualChannel")
+        group_running_role = _sidebar_role(model, b"groupHasRunning")
+
+        assert model.data(model.index(0), is_header_role) is True
+        assert model.data(model.index(0), channel_role) == "desktop"
+        assert model.data(model.index(0), group_running_role) is True
+        assert model.data(model.index(1), item_key_role) == "desktop:local::main"
+        assert model.data(model.index(2), item_key_role) == "subagent:desktop:local::child"
+        assert model.data(model.index(2), visual_channel_role) == "subagent"
+        assert model.data(model.index(3), is_header_role) is True
+        assert model.data(model.index(3), channel_role) == "telegram"
+        svc.toggleSidebarGroup("telegram")
+        _spin_until(lambda: _sidebar_model(svc).rowCount() == 5)
+        model = _sidebar_model(svc)
+        assert model.data(model.index(4), item_unread_role) is True
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_toggle_sidebar_group_updates_backend_row_visibility(tmp_path, qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = SessionManager(tmp_path)
+
+        desktop = sm.get_or_create("desktop:local::main")
+        desktop.add_message("assistant", "desktop")
+        sm.save(desktop)
+
+        telegram = sm.get_or_create("telegram:room")
+        telegram.add_message("assistant", "telegram")
+        sm.save(telegram)
+
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        _spin_until(lambda: _sidebar_model(svc).rowCount() >= 3)
+
+        model = _sidebar_model(svc)
+        item_key_role = _sidebar_role(model, b"itemKey")
+        assert all(
+            model.data(model.index(i), item_key_role) != "telegram:room"
+            for i in range(model.rowCount())
+        )
+
+        svc.toggleSidebarGroup("telegram")
+
+        _spin_until(
+            lambda: any(
+                _sidebar_model(svc).data(_sidebar_model(svc).index(i), item_key_role)
+                == "telegram:room"
+                for i in range(_sidebar_model(svc).rowCount())
+            )
+        )
+        model = _sidebar_model(svc)
+
+        assert any(
+            model.data(model.index(i), item_key_role) == "telegram:room"
+            for i in range(model.rowCount())
+        )
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_active_sidebar_row_stays_within_its_group_when_rows_above_change(tmp_path, qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = SessionManager(tmp_path)
+
+        sm.save(sm.get_or_create("desktop:local::main"))
+        sm.save(sm.get_or_create("desktop:local::scratch"))
+        sm.save(sm.get_or_create("telegram:room1"))
+        sm.save(sm.get_or_create("telegram:room2"))
+        sm.set_active_session_key("desktop:local", "telegram:room2")
+
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        _spin_until(lambda: _sidebar_model(svc).rowCount() >= 4)
+        svc.toggleSidebarGroup("desktop")
+        _spin_until(lambda: _sidebar_model(svc).rowCount() >= 6)
+
+        extra = sm.get_or_create("desktop:local::newer")
+        extra.add_message("assistant", "desktop update")
+        sm.save(extra)
+
+        item_key_role = _sidebar_role(_sidebar_model(svc), b"itemKey")
+        channel_role = _sidebar_role(_sidebar_model(svc), b"channel")
+        is_header_role = _sidebar_role(_sidebar_model(svc), b"isHeader")
+
+        def _telegram_layout_ok() -> bool:
+            model = _sidebar_model(svc)
+            header_index = -1
+            active_index = -1
+            for i in range(model.rowCount()):
+                index = model.index(i)
+                if (
+                    model.data(index, is_header_role) is True
+                    and model.data(index, channel_role) == "telegram"
+                ):
+                    header_index = i
+                if model.data(index, item_key_role) == "telegram:room2":
+                    active_index = i
+            return header_index >= 0 and active_index > header_index
+
+        _spin_until(_telegram_layout_ok)
+    finally:
         runner.shutdown(grace_s=1.0)
 
 
@@ -993,6 +1411,112 @@ def test_list_refresh_active_only_change_keeps_local_active_source_of_truth():
         assert active_keys == ["desktop:local::s2"]
         assert _sessions_model(svc).data(_sessions_model(svc).index(0), Qt.UserRole + 3) is False
         assert _sessions_model(svc).data(_sessions_model(svc).index(1), Qt.UserRole + 3) is True
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_stale_select_result_does_not_override_current_active_key():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        svc.setGatewayReady()
+        sessions = [
+            {"key": "desktop:local::s1", "title": "Chat 1", "updated_at": 1, "channel": "desktop"},
+            {"key": "desktop:local::s2", "title": "Chat 2", "updated_at": 2, "channel": "desktop"},
+        ]
+        svc._active_key = "desktop:local::s2"
+        svc._last_emitted_active_key = "desktop:local::s2"
+        svc._model.reset_sessions([dict(s) for s in sessions], "desktop:local::s2")
+
+        svc._pending_select_key = None
+        svc._handle_select_result(True, "", "desktop:local::s1")
+
+        assert svc.activeKey == "desktop:local::s2"
+        assert _sessions_model(svc).data(_sessions_model(svc).index(0), Qt.UserRole + 3) is False
+        assert _sessions_model(svc).data(_sessions_model(svc).index(1), Qt.UserRole + 3) is True
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_child_session_refresh_keeps_parent_active_selection(tmp_path, qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = SessionManager(tmp_path)
+        parent = sm.get_or_create("desktop:local::main")
+        parent.metadata["title"] = "Main"
+        sm.save(parent)
+        other = sm.get_or_create("desktop:local::other")
+        other.metadata["title"] = "Other"
+        sm.save(other)
+        sm.set_active_session_key("desktop:local", "desktop:local::main")
+
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        loop = QEventLoop()
+        QTimer.singleShot(300, loop.quit)
+        loop.exec()
+
+        child = sm.get_or_create("subagent:desktop:local::main::child-1")
+        child.metadata.update(
+            {
+                "title": "Child",
+                "session_kind": "subagent_child",
+                "read_only": True,
+                "parent_session_key": "desktop:local::main",
+                "child_status": "running",
+            }
+        )
+        sm.save(child)
+
+        loop2 = QEventLoop()
+        QTimer.singleShot(300, loop2.quit)
+        loop2.exec()
+
+        assert svc.activeKey == "desktop:local::main"
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_runtime_refresh_ignores_stored_child_active_when_local_parent_is_valid():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        svc.setGatewayReady()
+        sessions = [
+            {
+                "key": "desktop:local::main",
+                "title": "Main",
+                "updated_at": 1,
+                "channel": "desktop",
+            },
+            {
+                "key": "subagent:desktop:local::main::child-1",
+                "title": "Child",
+                "updated_at": 2,
+                "channel": "desktop",
+                "session_kind": "subagent_child",
+                "is_read_only": True,
+                "parent_session_key": "desktop:local::main",
+                "child_status": "running",
+                "is_running": True,
+            },
+        ]
+        svc._active_key = "desktop:local::main"
+        svc._last_emitted_active_key = "desktop:local::main"
+        svc._model.reset_sessions([dict(s) for s in sessions], "desktop:local::main")
+
+        svc._handle_list_result(
+            True,
+            "",
+            ([dict(s) for s in sessions], "subagent:desktop:local::main::child-1"),
+        )
+
+        assert svc.activeKey == "desktop:local::main"
     finally:
         runner.shutdown(grace_s=1.0)
 
