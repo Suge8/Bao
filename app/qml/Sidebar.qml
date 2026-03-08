@@ -35,14 +35,20 @@ Rectangle {
         }
     }
 
-    ListModel { id: groupModel }
-
-    property var expandedGroups: ({})
-    property bool gatewayIdle: !chatService || chatService.state === "idle" || chatService.state === "stopped"
-    property int sessionsUnreadCount: 0
-    property string unreadFingerprint: ""
+    readonly property bool hasChatService: typeof chatService !== "undefined" && chatService !== null
+    readonly property bool hasSessionService: typeof sessionService !== "undefined" && sessionService !== null
+    readonly property bool hasDiagnosticsService: typeof diagnosticsService !== "undefined" && diagnosticsService !== null
+    property bool gatewayIdle: !hasChatService || chatService.state === "idle" || chatService.state === "stopped"
+    property string lastSidebarUnreadFingerprint: ""
     property real headerPulseScale: 0.0
     property real headerBadgeScale: 0.0
+    property bool stickyHeaderVisible: false
+    property string stickyHeaderChannel: ""
+    property bool stickyHeaderExpanded: false
+    property int stickyHeaderItemCount: 0
+    property int stickyHeaderUnreadCount: 0
+    property bool stickyHeaderHasRunning: false
+    property real stickyHeaderOffset: 0.0
     property bool uiIsDark: isDark
     property color uiBgCanvas: "transparent"
     property color uiTextPrimary: textPrimary
@@ -79,6 +85,8 @@ Rectangle {
                        ? "../resources/icons/sidebar-monitor-solid-dark.svg"
                        : "../resources/icons/sidebar-monitor-solid.svg"
             return isDark ? "../resources/icons/sidebar-monitor-dark.svg" : "../resources/icons/sidebar-monitor.svg"
+        case "subagent":
+            return isDark ? "../resources/icons/ignite-dark.svg" : "../resources/icons/ignite.svg"
         case "system":
             return filled ? "../resources/icons/sidebar-settings-solid.svg" : "../resources/icons/sidebar-settings.svg"
         case "heartbeat":
@@ -136,6 +144,8 @@ Rectangle {
             return isDark ? Qt.rgba(0.54, 0.70, 1.0, 1.0) : Qt.rgba(0.12, 0.62, 1.0, 1.0)
         case "desktop":
             return isDark ? Qt.rgba(1.0, 0.78, 0.29, 1.0) : Qt.rgba(0.97, 0.63, 0.05, 1.0)
+        case "subagent":
+            return isDark ? Qt.rgba(1.0, 0.72, 0.24, 1.0) : Qt.rgba(0.96, 0.57, 0.00, 1.0)
         case "system":
             return isDark ? Qt.rgba(0.53, 0.82, 1.0, 1.0) : Qt.rgba(0.18, 0.67, 0.98, 1.0)
         case "heartbeat":
@@ -149,126 +159,16 @@ Rectangle {
         }
     }
 
-    function channelSurface(channel, expanded, hovered) {
-        return expanded ? sidebarGroupExpandedBg : (hovered ? sidebarGroupHoverBg : sidebarGroupBg)
-    }
-
-    function applyGroupExpanded(channel, expanded) {
-        root.expandedGroups[channel] = expanded
-        for (var i = 0; i < groupModel.count; i++) {
-            var item = groupModel.get(i)
-            if (item.channel !== channel)
-                continue
-            if (item.isHeader)
-                groupModel.setProperty(i, "expanded", expanded)
-            else
-                groupModel.setProperty(i, "itemVisible", expanded)
-        }
-    }
-
-    function updateUnreadState(unreadCount, unreadFingerprintParts) {
-        unreadFingerprintParts.sort()
-        var nextUnreadFingerprint = unreadFingerprintParts.join("|")
-        if (root.unreadFingerprint !== "" && nextUnreadFingerprint !== root.unreadFingerprint && unreadCount > 0)
-            sessionsHeaderPulse.restart()
-        root.sessionsUnreadCount = unreadCount
-        root.unreadFingerprint = nextUnreadFingerprint
-    }
-
-    function groupContainsKey(items, key) {
-        if (!key)
-            return false
-        for (var i = 0; i < items.length; i++) {
-            if (items[i].key === key)
-                return true
-        }
-        return false
-    }
-
-    function initialGroupExpanded(channel, items, activeKey) {
-        if (groupContainsKey(items, activeKey))
-            return true
-        if (activeKey)
-            return false
-        return channel === "desktop"
-    }
-
-    function rebuildGroupModel() {
-        if (!sessionService) return
-        var sm = sessionService.sessionsModel
-        if (!sm) return
-        var activeKey = root.activeSessionKey || ""
-
-        var groups = {}
-        var order = []
-        var unreadCount = 0
-        var unreadFingerprintParts = []
-        for (var i = 0; i < sm.rowCount(); i++) {
-            var idx = sm.index(i, 0)
-            var key     = sm.data(idx, Qt.UserRole + 1) || ""
-            var title   = sm.data(idx, Qt.UserRole + 2) || key
-            var channel = sm.data(idx, Qt.UserRole + 5) || "other"
-            var unread  = (sm.data(idx, Qt.UserRole + 6) || false) && key !== activeKey
-            var updatedText = sm.data(idx, Qt.UserRole + 7) || ""
-            if (!groups[channel]) { groups[channel] = []; order.push(channel) }
-            groups[channel].push({ key: key, title: title, channel: channel, hasUnread: unread, updatedText: updatedText })
-            if (unread) {
-                unreadCount += 1
-                unreadFingerprintParts.push(String(key))
-            }
-        }
-
-        order.sort(function(a, b) {
-            if (a === b) return 0
-            if (a === "desktop") return -1
-            if (b === "desktop") return 1
-            if (a === "heartbeat") return 1
-            if (b === "heartbeat") return -1
-            return a < b ? -1 : 1
-        })
-
-        for (var ci = 0; ci < order.length; ci++) {
-            var ch = order[ci]
-            if (!(ch in root.expandedGroups))
-                root.expandedGroups[ch] = initialGroupExpanded(ch, groups[ch], activeKey)
-        }
-
-        groupModel.clear()
-        for (var gi = 0; gi < order.length; gi++) {
-            var grp = order[gi]
-            var exp = root.expandedGroups[grp] === true
-            var items = groups[grp]
-            var unreadInGroup = 0
-            for (var ui = 0; ui < items.length; ui++) {
-                if (items[ui].hasUnread)
-                    unreadInGroup += 1
-            }
-            groupModel.append({ isHeader: true,  channel: grp, expanded: exp,
-                                 itemKey: "", itemTitle: "", itemUpdatedText: "", itemVisible: true, itemHasUnread: false,
-                                 itemCount: items.length, groupUnreadCount: unreadInGroup,
-                                 isLastInGroup: false, isFirstInGroup: false })
-            for (var si = 0; si < items.length; si++) {
-                var s = items[si]
-                groupModel.append({ isHeader: false, channel: grp, expanded: false,
-                                     itemKey: s.key, itemTitle: s.title, itemUpdatedText: s.updatedText,
-                                     itemVisible: exp, itemHasUnread: s.hasUnread, itemCount: 0,
-                                     isLastInGroup: si === items.length - 1,
-                                     isFirstInGroup: si === 0 })
-            }
-        }
-        updateUnreadState(unreadCount, unreadFingerprintParts)
-    }
-
-    function rebuildGroupModelPreservingScroll() {
-        if (!sessionList) {
-            root.rebuildGroupModel()
+    function syncUnreadState() {
+        if (!hasSessionService) {
+            root.lastSidebarUnreadFingerprint = ""
             return
         }
-        var anchor = root.captureScrollAnchor()
-        root.rebuildGroupModel()
-        Qt.callLater(function() {
-            root.restoreScrollAnchor(anchor)
-        })
+        var nextFingerprint = sessionService.sidebarUnreadFingerprint || ""
+        var unreadCount = sessionService.sidebarUnreadCount || 0
+        if (root.lastSidebarUnreadFingerprint !== "" && nextFingerprint !== root.lastSidebarUnreadFingerprint && unreadCount > 0)
+            sessionsHeaderPulse.restart()
+        root.lastSidebarUnreadFingerprint = nextFingerprint
     }
 
     function listContentYBounds() {
@@ -282,6 +182,98 @@ Rectangle {
     function clampListContentY(y) {
         var bounds = root.listContentYBounds()
         return Math.max(bounds.minY, Math.min(y, bounds.maxY))
+    }
+
+    function sidebarRowData(rowIndex) {
+        if (!hasSessionService)
+            return null
+        var model = sessionService.sidebarModel
+        if (!model || rowIndex < 0 || rowIndex >= model.rowCount())
+            return null
+        var idx = model.index(rowIndex, 0)
+        return {
+            isHeader: model.data(idx, Qt.UserRole + 102) || false,
+            channel: model.data(idx, Qt.UserRole + 103) || "other",
+            expanded: model.data(idx, Qt.UserRole + 104) || false,
+            itemCount: model.data(idx, Qt.UserRole + 115) || 0,
+            groupUnreadCount: model.data(idx, Qt.UserRole + 116) || 0,
+            groupHasRunning: model.data(idx, Qt.UserRole + 117) || false,
+        }
+    }
+
+    function resetStickyHeader() {
+        root.stickyHeaderVisible = false
+        root.stickyHeaderChannel = ""
+        root.stickyHeaderExpanded = false
+        root.stickyHeaderItemCount = 0
+        root.stickyHeaderUnreadCount = 0
+        root.stickyHeaderHasRunning = false
+        root.stickyHeaderOffset = 0.0
+    }
+
+    function refreshStickyHeader() {
+        if (!sessionList || !hasSessionService || sessionList.count === 0) {
+            root.resetStickyHeader()
+            return
+        }
+        var delegates = root.visibleDelegates()
+        var contentY = sessionList.contentY
+        var first = null
+        for (var i = 0; i < delegates.length; i++) {
+            var delegate = delegates[i]
+            if (delegate.height <= 0)
+                continue
+            if (delegate.y + delegate.height <= contentY)
+                continue
+            first = delegate
+            break
+        }
+        if (!first || !first.anchorChannel) {
+            root.resetStickyHeader()
+            return
+        }
+
+        var stickyNeeded = !first.anchorIsHeader || first.y < contentY + 0.5
+        if (!stickyNeeded) {
+            root.resetStickyHeader()
+            return
+        }
+
+        var stickyRow = null
+        for (var rowIndex = 0; rowIndex < sessionList.count; rowIndex++) {
+            var row = root.sidebarRowData(rowIndex)
+            if (!row || !row.isHeader || row.channel !== first.anchorChannel)
+                continue
+            stickyRow = row
+            break
+        }
+        if (!stickyRow) {
+            root.resetStickyHeader()
+            return
+        }
+
+        var nextHeaderViewportY = Number.POSITIVE_INFINITY
+        for (var j = i + 1; j < delegates.length; j++) {
+            var nextDelegate = delegates[j]
+            if (!nextDelegate.anchorIsHeader)
+                continue
+            if (nextDelegate.anchorChannel === first.anchorChannel)
+                continue
+            nextHeaderViewportY = nextDelegate.y - contentY
+            break
+        }
+
+        var stickyOffset = 0.0
+        if (nextHeaderViewportY < sizeSidebarHeader)
+            stickyOffset = nextHeaderViewportY - sizeSidebarHeader
+
+        root.stickyHeaderVisible = true
+        root.stickyHeaderChannel = stickyRow.channel
+        root.stickyHeaderExpanded = stickyRow.expanded
+        root.stickyHeaderItemCount = stickyRow.itemCount
+        root.stickyHeaderUnreadCount = stickyRow.groupUnreadCount
+        root.stickyHeaderHasRunning = stickyRow.groupHasRunning
+        root.stickyHeaderOffset = Math.min(0.0, stickyOffset)
     }
 
     function visibleDelegates() {
@@ -328,11 +320,13 @@ Rectangle {
     }
 
     function captureScrollAnchor() {
-        if (!sessionList || groupModel.count === 0)
+        if (!sessionList || sessionList.count === 0)
             return { contentY: sessionList ? sessionList.contentY : 0, key: "", channel: "", isHeader: false, offset: 0 }
         var targetY = sessionList.contentY
         var anchorDelegate = root.findVisibleAnchorDelegate(targetY)
         if (anchorDelegate) {
+            if (!anchorDelegate.anchorIsHeader && anchorDelegate.anchorKey === (root.activeSessionKey || ""))
+                return { contentY: targetY, key: "", channel: "", isHeader: false, offset: 0 }
             return {
                 contentY: targetY,
                 key: anchorDelegate.anchorIsHeader ? "" : (anchorDelegate.anchorKey || ""),
@@ -353,88 +347,42 @@ Rectangle {
         if (anchorDelegate)
             targetY = anchorDelegate.y + (anchor.offset || 0)
         sessionList.contentY = root.clampListContentY(targetY)
-    }
-
-    function refreshUnreadProjection() {
-        if (!sessionService)
-            return
-        var sm = sessionService.sessionsModel
-        if (!sm)
-            return
-        var activeKey = root.activeSessionKey || ""
-        var unreadByKey = ({})
-        for (var i = 0; i < sm.rowCount(); i++) {
-            var idx = sm.index(i, 0)
-            var key = sm.data(idx, Qt.UserRole + 1) || ""
-            unreadByKey[key] = (sm.data(idx, Qt.UserRole + 6) || false) && key !== activeKey
-        }
-
-        var headerIndex = -1
-        var unreadInGroup = 0
-        var unreadCount = 0
-        var unreadFingerprintParts = []
-        for (var gi = 0; gi < groupModel.count; gi++) {
-            var item = groupModel.get(gi)
-            if (item.isHeader) {
-                if (headerIndex >= 0)
-                    groupModel.setProperty(headerIndex, "groupUnreadCount", unreadInGroup)
-                headerIndex = gi
-                unreadInGroup = 0
-                continue
-            }
-
-            var nextUnread = unreadByKey[item.itemKey] === true
-            if (item.itemHasUnread !== nextUnread)
-                groupModel.setProperty(gi, "itemHasUnread", nextUnread)
-            if (nextUnread) {
-                unreadInGroup += 1
-                unreadCount += 1
-                unreadFingerprintParts.push(String(item.itemKey))
-            }
-        }
-        if (headerIndex >= 0)
-            groupModel.setProperty(headerIndex, "groupUnreadCount", unreadInGroup)
-        updateUnreadState(unreadCount, unreadFingerprintParts)
-    }
-
-    function ensureGroupExpandedFor(key) {
-        if (!key)
-            return
-        var activeChannel = ""
-        for (var i = 0; i < groupModel.count; i++) {
-            var item = groupModel.get(i)
-            if (!item.isHeader && item.itemKey === key) {
-                activeChannel = item.channel
-                break
-            }
-        }
-        if (!activeChannel || root.expandedGroups[activeChannel] === true)
-            return
-        applyGroupExpanded(activeChannel, true)
-    }
-
-    onActiveSessionKeyChanged: {
-        ensureGroupExpandedFor(activeSessionKey)
-        root.refreshUnreadProjection()
+        root.refreshStickyHeader()
     }
 
     function toggleGroup(channel) {
-        var newExp = !(root.expandedGroups[channel] === true)
-        applyGroupExpanded(channel, newExp)
+        if (!hasSessionService)
+            return
+        sessionService.toggleSidebarGroup(channel)
     }
 
     Connections {
-        target: sessionService
-        function onSessionsChanged() {
+        target: hasSessionService ? sessionService : null
+        property var pendingAnchor: null
+
+        function onSidebarProjectionWillChange() {
+            pendingAnchor = root.captureScrollAnchor()
+        }
+
+        function onSidebarProjectionChanged() {
+            root.syncUnreadState()
+            if (!pendingAnchor) {
+                root.refreshStickyHeader()
+                return
+            }
+            var anchor = pendingAnchor
+            pendingAnchor = null
             Qt.callLater(function() {
-                root.rebuildGroupModelPreservingScroll()
+                sessionList.forceLayout()
+                root.restoreScrollAnchor(anchor)
             })
         }
     }
 
     Component.onCompleted: {
         Qt.callLater(function() {
-            root.rebuildGroupModelPreservingScroll()
+            root.syncUnreadState()
+            root.refreshStickyHeader()
         })
     }
 
@@ -451,12 +399,12 @@ Rectangle {
             Layout.topMargin: 16; Layout.bottomMargin: 0
             implicitHeight: sizeCapsuleHeight
             radius: height / 2
-            visible: chatService !== null
+                visible: hasChatService
 
-            property string currentState: chatService ? chatService.state : "idle"
-            property bool isRunning: chatService && chatService.state === "running"
-            property bool isStarting: chatService && chatService.state === "starting"
-            property bool isError: chatService && chatService.state === "error"
+                    property string currentState: hasChatService ? chatService.state : "idle"
+                    property bool isRunning: hasChatService && chatService.state === "running"
+                    property bool isStarting: hasChatService && chatService.state === "starting"
+                    property bool isError: hasChatService && chatService.state === "error"
             property bool isIdleVisual: !isRunning && !isStarting && !isError
             property bool isHovered: gwHover.containsMouse
             property real actionPulse: 0.0
@@ -516,9 +464,9 @@ Rectangle {
             property color dotColor: stateSpec.dotColor
             property string primaryLabel: stateSpec.primaryLabel
             property string actionIconSource: stateSpec.actionIconSource
-            property string detailText: chatService ? (chatService.gatewayDetail || "") : ""
-            property var gatewayChannels: chatService ? (chatService.gatewayChannels || []) : []
-            property bool hasErrorDetail: chatService ? Boolean(chatService.gatewayDetailIsError) : false
+                    property string detailText: hasChatService ? (chatService.gatewayDetail || "") : ""
+                    property var gatewayChannels: hasChatService ? (chatService.gatewayChannels || []) : []
+                    property bool hasErrorDetail: hasChatService ? Boolean(chatService.gatewayDetailIsError) : false
             z: 6
 
             function resetVisualState() {
@@ -530,8 +478,8 @@ Rectangle {
                 gwDot.scale = 1.0
             }
             function triggerGatewayAction() {
-                if (!chatService || gwCapsule.isStarting)
-                    return
+                        if (!hasChatService || gwCapsule.isStarting)
+                            return
                 if (gwCapsule.isRunning)
                     chatService.stop()
                 else
@@ -845,8 +793,8 @@ Rectangle {
                             badgeObjectName: "sessionsHeaderUnreadBadge"
                             textObjectName: "sessionsHeaderUnreadText"
                             anchors.verticalCenter: parent.verticalCenter
-                            active: root.sessionsUnreadCount > 0
-                            count: root.sessionsUnreadCount
+                            active: hasSessionService && (sessionService.sidebarUnreadCount || 0) > 0
+                            count: hasSessionService ? (sessionService.sidebarUnreadCount || 0) : 0
                             mode: "count"
                             fillColor: sidebarHeaderBadgeBg
                             textColor: sidebarHeaderBadgeText
@@ -899,8 +847,17 @@ Rectangle {
                 anchors.bottomMargin: 0
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
-                model: groupModel
+                boundsMovement: Flickable.StopAtBounds
+                model: hasSessionService ? sessionService.sidebarModel : null
                 spacing: 0
+                onContentHeightChanged: {
+                    contentY = root.clampListContentY(contentY)
+                    root.refreshStickyHeader()
+                }
+                onHeightChanged: {
+                    contentY = root.clampListContentY(contentY)
+                    root.refreshStickyHeader()
+                }
                 ScrollBar.vertical: ScrollBar {
                     policy: ScrollBar.AsNeeded
                     width: 4
@@ -917,151 +874,36 @@ Rectangle {
                     height: 0
                 }
 
+                onContentYChanged: root.refreshStickyHeader()
+
                 delegate: Item {
                     property bool anchorReady: true
                     property bool anchorIsHeader: model.isHeader === true
                     property string anchorKey: model.itemKey || ""
                     property string anchorChannel: model.channel || ""
+                    readonly property real sessionTopGap: model.isFirstInGroup ? sizeSidebarHeaderToRowGap : 0
+                    readonly property real sessionBottomGap: model.isLastInGroup ? sizeSidebarGroupGap : sizeSidebarGroupInnerGap
                     width: sessionList.width
                     height: model.isHeader
                             ? (sizeSidebarHeader + (!model.expanded ? sizeSidebarGroupGap : 0))
-                            : sessionRow.height
+                            : (sizeSessionRow + sessionTopGap + sessionBottomGap)
 
                     // ── Group header row ──────────────────────────────────────
-                    Rectangle {
+                    SidebarGroupHeader {
                         id: groupHeaderCard
                         visible: model.isHeader
                         anchors { left: parent.left; right: parent.right; top: parent.top }
                         height: sizeSidebarHeader
-                        radius: 14
-                        color: groupHeaderArea.pressed
-                               ? sidebarGroupExpandedBg
-                               : (groupHeaderArea.containsMouse
-                                  ? sidebarGroupHoverBg
-                                  : (model.expanded ? sidebarGroupExpandedBg : sidebarGroupBg))
-                        border.width: 0
-                        border.color: model.expanded ? sidebarGroupExpandedBorder : sidebarGroupBorder
-                        scale: groupHeaderArea.pressed ? 0.992 : 1.0
-
-                        Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-                        Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
-                        Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
-
-                        Rectangle {
-                            anchors.fill: parent
-                            radius: parent.radius
-                            color: root.channelSurface(model.channel, model.expanded, groupHeaderArea.containsMouse)
-                            opacity: 1.0
-                        }
-
-                        RowLayout {
-                            anchors { fill: parent; leftMargin: 10; rightMargin: 8 }
-                            spacing: 7
-
-                            Item {
-                                Layout.preferredWidth: 20
-                                Layout.preferredHeight: 20
-
-                                Image {
-                                    width: 16
-                                    height: 16
-                                    anchors.centerIn: parent
-                                    source: root.channelIconSource(model.channel)
-                                    sourceSize: Qt.size(16, 16)
-                                    fillMode: Image.PreserveAspectFit
-                                    smooth: true
-                                    mipmap: true
-                                    opacity: model.expanded ? 1.0 : 0.92
-                                }
-                            }
-
-                            Text {
-                                text: strings["channel_" + (model.channel || "other")] || model.channel || "other"
-                                color: textPrimary
-                                font.pixelSize: typeLabel + 1
-                                font.weight: weightDemiBold
-                                font.letterSpacing: 0.2
-                                textFormat: Text.PlainText
-                                Layout.fillWidth: true
-                                verticalAlignment: Text.AlignVCenter
-                                opacity: model.expanded ? 0.99 : 0.94
-                            }
-
-                            RowLayout {
-                                Layout.alignment: Qt.AlignVCenter
-                                spacing: 4
-
-                                UnreadBadge {
-                                    badgeObjectName: "sidebarGroupUnreadBadge_" + (model.channel || "other")
-                                    textObjectName: "sidebarGroupUnreadText_" + (model.channel || "other")
-                                    Layout.alignment: Qt.AlignVCenter
-                                    active: (model.groupUnreadCount || 0) > 0
-                                    count: model.groupUnreadCount || 0
-                                    mode: "count"
-                                    fillColor: sessionUnreadDot
-                                    textColor: "#FFFFFFFF"
-                                    borderColor: isDark ? "#26FFFFFF" : "#22FFFFFF"
-                                    visualScale: 1.0
-                                }
-
-                                Rectangle {
-                                    visible: (model.itemCount || 0) > 0
-                                    Layout.preferredWidth: countText.implicitWidth + 12
-                                    Layout.preferredHeight: 22
-                                    radius: 11
-                                    color: sidebarGroupCountBg
-                                    border.width: 1
-                                    border.color: sidebarGroupChevronBorder
-                                    opacity: (model.groupUnreadCount || 0) > 0 ? 0.66 : 0.82
-
-                                    Text {
-                                        id: countText
-                                        anchors.centerIn: parent
-                                        text: model.itemCount || 0
-                                        color: sidebarGroupCountText
-                                        font.pixelSize: typeCaption
-                                        font.weight: weightDemiBold
-                                        opacity: (model.groupUnreadCount || 0) > 0 ? 0.8 : 0.92
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                Layout.preferredWidth: 22
-                                Layout.preferredHeight: 22
-                                radius: 11
-                                color: sidebarGroupChevronBg
-                                border.width: 1
-                                border.color: sidebarGroupChevronBorder
-
-                                Image {
-                                    objectName: "sidebarGroupChevronIcon_" + (model.channel || "other")
-                                    anchors.centerIn: parent
-                                    width: 12
-                                    height: 12
-                                    source: themedIconSource("sidebar-chevron")
-                                    sourceSize: Qt.size(12, 12)
-                                    fillMode: Image.PreserveAspectFit
-                                    smooth: true
-                                    mipmap: true
-                                    rotation: model.expanded ? 0 : -90
-                                    opacity: groupHeaderArea.containsMouse ? 1.0 : 0.86
-
-                                    Behavior on rotation { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
-                                    Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
-                                }
-                            }
-                        }
-
-                        MouseArea {
-                            id: groupHeaderArea
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            acceptedButtons: Qt.LeftButton
-                            preventStealing: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleGroup(model.channel)
-                        }
+                        channel: model.channel || "other"
+                        expanded: model.expanded ?? false
+                        itemCount: model.itemCount || 0
+                        unreadCount: model.groupUnreadCount || 0
+                        groupHasRunning: model.groupHasRunning ?? false
+                        iconSource: root.channelIconSource(model.channel)
+                        chevronObjectName: "sidebarGroupChevronIcon_" + (model.channel || "other")
+                        unreadBadgeObjectName: "sidebarGroupUnreadBadge_" + (model.channel || "other")
+                        unreadTextObjectName: "sidebarGroupUnreadText_" + (model.channel || "other")
+                        onClicked: root.toggleGroup(model.channel)
                     }
 
                     // ── Session item row ──────────────────────────────────────
@@ -1069,34 +911,56 @@ Rectangle {
                         id: sessionRow
                         visible: !model.isHeader
                         anchors { left: parent.left; right: parent.right; top: parent.top }
-                        y: model.isFirstInGroup ? sizeSidebarHeaderToRowGap : 0
-                        height: model.itemVisible
-                                ? (inner.height
-                                   + (model.isFirstInGroup ? sizeSidebarHeaderToRowGap : 0)
-                                   + (model.isLastInGroup ? sizeSidebarGroupGap : sizeSidebarGroupInnerGap))
-                                : 0
+                        y: sessionTopGap
+                        height: sizeSessionRow + sessionBottomGap
                         clip: true
-                        Behavior on height { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
 
                         SessionItem {
                             id: inner
-                            width: parent.width - 16
-                            x: 8
-                            opacity: model.itemVisible ? 1.0 : 0.0
-                            Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+                            width: parent.width - 16 - ((model.isChildSession ?? false) ? 12 : 0)
+                            x: 8 + ((model.isChildSession ?? false) ? 12 : 0)
                             sessionKey:   model.itemKey   ?? ""
                             sessionTitle: model.itemTitle ?? model.itemKey ?? ""
                             sessionRelativeTime: model.itemUpdatedText ?? ""
-                            filledIconSource: root.channelFilledIconSource(model.channel)
-                            iconTintColor: root.channelAccent(model.channel)
-                            useIconTint: root.channelUsesTint(model.channel)
+                            filledIconSource: (model.isChildSession ?? false)
+                                              ? "../resources/icons/sidebar-subagent.svg"
+                                              : root.channelFilledIconSource(model.visualChannel ?? model.channel)
+                            iconTintColor: root.channelAccent(model.visualChannel ?? model.channel)
+                            useIconTint: (model.isChildSession ?? false)
+                                         ? false
+                                         : root.channelUsesTint(model.visualChannel ?? model.channel)
+                            isRunning:    model.isRunning ?? false
+                            childIndent: (model.isChildSession ?? false) ? 2 : 0
                             isActive:     root.showChatSelection && sessionKey === root.activeSessionKey
                             dimmed:       root.gatewayIdle
                             hasUnread:    model.itemHasUnread ?? false
+                            readOnlySession: model.isReadOnly ?? false
                             onSelected:       root.sessionSelected(sessionKey)
                             onDeleteRequested: root.sessionDeleteRequested(sessionKey)
                         }
                     }
+                }
+
+                SidebarGroupHeader {
+                    id: stickyHeader
+                    objectName: "sidebarStickyHeader"
+                    parent: sessionList.parent
+                    visible: root.stickyHeaderVisible
+                    z: 3
+                    anchors.left: sessionList.left
+                    anchors.right: sessionList.right
+                    y: sessionList.y + root.stickyHeaderOffset
+                    height: sizeSidebarHeader
+                    channel: root.stickyHeaderChannel
+                    expanded: root.stickyHeaderExpanded
+                    itemCount: root.stickyHeaderItemCount
+                    unreadCount: root.stickyHeaderUnreadCount
+                    groupHasRunning: root.stickyHeaderHasRunning
+                    iconSource: root.channelIconSource(root.stickyHeaderChannel)
+                    chevronObjectName: "sidebarStickyGroupChevronIcon_" + (root.stickyHeaderChannel || "other")
+                    unreadBadgeObjectName: "sidebarStickyGroupUnreadBadge_" + (root.stickyHeaderChannel || "other")
+                    unreadTextObjectName: "sidebarStickyGroupUnreadText_" + (root.stickyHeaderChannel || "other")
+                    onClicked: root.toggleGroup(root.stickyHeaderChannel)
                 }
 
 
@@ -1109,7 +973,7 @@ Rectangle {
                     anchors.horizontalCenter: parent.horizontalCenter
                     width: Math.min(sessionList.width - 20, 216)
                     height: loadingStateCard.implicitHeight
-                    visible: groupModel.count === 0 && sessionService && sessionService.sessionsLoading
+                visible: sessionList.count === 0 && hasSessionService && sessionService.sessionsLoading
 
                     Rectangle {
                         id: loadingStateCard
@@ -1178,7 +1042,7 @@ Rectangle {
                     anchors.horizontalCenter: parent.horizontalCenter
                     width: Math.min(sessionList.width - 28, 196)
                     height: emptyStateCard.implicitHeight
-                    visible: groupModel.count === 0 && !(sessionService && sessionService.sessionsLoading)
+                visible: sessionList.count === 0 && !(hasSessionService && sessionService.sessionsLoading)
 
                     Rectangle {
                         id: emptyStateCard
@@ -1502,7 +1366,7 @@ Rectangle {
                 }
 
                 Rectangle {
-                    visible: diagnosticsService && diagnosticsService.eventCount > 0
+            visible: hasDiagnosticsService && diagnosticsService.eventCount > 0
                     width: 17
                     height: 17
                     radius: 8.5
@@ -1515,7 +1379,7 @@ Rectangle {
 
                     Text {
                         anchors.centerIn: parent
-                        text: diagnosticsService && diagnosticsService.eventCount > 9 ? "9+" : String(diagnosticsService ? diagnosticsService.eventCount : 0)
+                    text: hasDiagnosticsService && diagnosticsService.eventCount > 9 ? "9+" : String(hasDiagnosticsService ? diagnosticsService.eventCount : 0)
                         color: isDark ? "#241106" : "#FFFFFF"
                         font.pixelSize: 8
                         font.weight: weightBold

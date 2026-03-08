@@ -30,9 +30,14 @@ ApplicationWindow {
     color: useNativeTitleBar ? root.bgBase : "transparent"
 
     property string startView: "chat"
-    readonly property bool isDark: desktopPreferences ? desktopPreferences.isDark : true
+    readonly property bool hasDesktopPreferences: typeof desktopPreferences !== "undefined" && desktopPreferences !== null
+    readonly property bool hasConfigService: typeof configService !== "undefined" && configService !== null
+    readonly property bool hasSessionService: typeof sessionService !== "undefined" && sessionService !== null
+    readonly property bool hasChatService: typeof chatService !== "undefined" && chatService !== null
+    readonly property bool hasDiagnosticsService: typeof diagnosticsService !== "undefined" && diagnosticsService !== null
+    readonly property bool isDark: hasDesktopPreferences ? desktopPreferences.isDark : true
 
-    readonly property string uiLanguage: desktopPreferences ? desktopPreferences.uiLanguage : "auto"
+    readonly property string uiLanguage: hasDesktopPreferences ? desktopPreferences.uiLanguage : "auto"
     readonly property string autoLanguage: {
         if (typeof systemUiLanguage === "string") {
             var sys = systemUiLanguage.toLowerCase()
@@ -105,6 +110,7 @@ ApplicationWindow {
         "session_delete_ok": "会话已删除",
         "session_delete_fail": "删除失败",
         "channel_desktop": "桌面",
+        "channel_subagent": "子代理",
         "channel_system": "系统",
         "channel_heartbeat": "心跳",
         "channel_cron": "定时任务",
@@ -126,6 +132,15 @@ ApplicationWindow {
         "sidebar_diagnostics": "日志",
         "sidebar_diagnostics_hint": "诊断",
         "copied_ok": "已复制",
+        "child_session_read_only": "子代理线程为只读视图，请回到主对话继续追加提示。",
+        "child_session_from_parent": "来源主会话",
+        "child_session_running": "运行中",
+        "child_session_failed": "失败",
+        "child_session_completed": "已完成",
+        "child_session_cancelled": "已取消",
+        "parent_active_children": "当前子代理",
+        "parent_linked_children": "已链接子代理",
+        "parent_open_child_session": "打开子线程",
         "diagnostics_title": "运行诊断与日志",
         "diagnostics_close": "关闭",
         "diagnostics_empty_events": "当前没有结构化诊断事件。",
@@ -209,6 +224,7 @@ ApplicationWindow {
         "session_delete_ok": "Session deleted",
         "session_delete_fail": "Delete failed",
         "channel_desktop": "Desktop",
+        "channel_subagent": "Subagent",
         "channel_system": "System",
         "channel_heartbeat": "Heartbeat",
         "channel_cron": "Cron",
@@ -230,6 +246,15 @@ ApplicationWindow {
         "sidebar_diagnostics": "Logs",
         "sidebar_diagnostics_hint": "Inspect",
         "copied_ok": "Copied",
+        "child_session_read_only": "This subagent thread is read-only. Continue from the parent conversation.",
+        "child_session_from_parent": "Spawned from",
+        "child_session_running": "Running",
+        "child_session_failed": "Failed",
+        "child_session_completed": "Completed",
+        "child_session_cancelled": "Cancelled",
+        "parent_active_children": "Active subagents",
+        "parent_linked_children": "Linked subagents",
+        "parent_open_child_session": "Open child thread",
         "diagnostics_title": "Runtime Diagnostics & Logs",
         "diagnostics_close": "Close",
         "diagnostics_empty_events": "No structured runtime diagnostics yet.",
@@ -369,7 +394,7 @@ ApplicationWindow {
         if (uiLanguage === "zh" || uiLanguage === "en") return uiLanguage
         return autoLanguage
     }
-    readonly property bool setupMode: configService
+    readonly property bool setupMode: hasConfigService
                                      ? (!configService.isValid || configService.needsSetup)
                                      : true
     property bool _previousSetupMode: true
@@ -388,7 +413,7 @@ ApplicationWindow {
     }
 
     Connections {
-        target: sessionService
+        target: hasSessionService ? sessionService : null
         function onDeleteCompleted(_key, ok, error) {
             if (ok)
                 globalToast.show(strings.session_delete_ok, true)
@@ -747,17 +772,17 @@ ApplicationWindow {
                         z: 20
                         visible: !root.setupMode
                         showingSettings: root.currentPageIndex === 1
-                        activeSessionKey: sessionService ? sessionService.activeKey : ""
+                        activeSessionKey: hasSessionService ? sessionService.activeKey : ""
                         showChatSelection: root.currentPageIndex === 0
                         onSettingsRequested: root.startView = "settings"
                         onDiagnosticsRequested: diagnosticsModal.open()
-                        onNewSessionRequested: if (sessionService) sessionService.newSession("")
+                        onNewSessionRequested: if (hasSessionService) sessionService.newSession("")
                         onSessionSelected: function(key) {
-                            if (sessionService) sessionService.selectSession(key)
+                            if (hasSessionService) sessionService.selectSession(key)
                             root.startView = "chat"
                         }
                         onSessionDeleteRequested: function(key) {
-                            if (!sessionService)
+                            if (!hasSessionService)
                                 return
                             sessionService.deleteSession(key)
                         }
@@ -805,7 +830,7 @@ ApplicationWindow {
                             }
 
                             Connections {
-                                target: sessionService
+                                target: hasSessionService ? sessionService : null
                                 function onActiveKeyChanged(_key) {
                                     if (chatPage.active)
                                         chatPage.playReveal(1, motionPageShiftSubtle)
@@ -1309,7 +1334,7 @@ ApplicationWindow {
                                     hoverOutlineColor: accent
                                     textColor: isDark ? bgSidebar : "#FFFFFF"
                                     onClicked: {
-                                        if (!diagnosticsService || !chatService)
+                                        if (!hasDiagnosticsService || !hasChatService)
                                             return
                                         var prompt = diagnosticsService.buildAssistantPrompt()
                                         if (!prompt)

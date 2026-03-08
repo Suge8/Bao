@@ -105,6 +105,13 @@ def test_send_empty_message_ignored():
     assert model.rowCount() == 0
 
 
+def test_send_message_ignored_for_read_only_session():
+    svc, model = make_service()
+    svc.setActiveSessionReadOnly(True)
+    svc.sendMessage("hello")
+    assert model.rowCount() == 0
+
+
 def test_send_message_emits_signal():
     svc, model = make_service()
     emitted = []
@@ -112,6 +119,35 @@ def test_send_message_emits_signal():
     svc.sendMessage("test")
     assert len(emitted) == 1
     assert emitted[0] == 0  # row 0
+
+
+def test_send_message_marks_session_running_when_queue_starts() -> None:
+    svc, model = make_service()
+    sm = MagicMock()
+    svc._session_manager = sm
+    svc._state = "running"
+    svc._session_key = "desktop:local::s1"
+
+    svc.sendMessage("test")
+
+    assert model.rowCount() == 2
+    assert sm.update_metadata_only.call_args_list[0].args == (
+        "desktop:local::s1",
+        {"session_running": True},
+    )
+    assert sm.update_metadata_only.call_args_list[0].kwargs == {"emit_change": True}
+
+
+def test_on_send_done_emits_cancelled_result() -> None:
+    svc, _model = make_service()
+    results: list[tuple[int, bool, str]] = []
+    svc._sendResult.connect(lambda row, ok, content: results.append((row, ok, content)))
+    future: concurrent.futures.Future[str] = concurrent.futures.Future()
+    future.cancel()
+
+    svc._on_send_done(future, 3)
+
+    assert results == [(3, False, "Cancelled.")]
 
 
 def test_stop_from_idle_is_noop():
@@ -632,13 +668,15 @@ def test_tool_hint_after_content_creates_dedicated_typing_bubble():
     svc._active_streaming_row = row0
     svc._active_has_content = True
 
-    svc._handle_tool_hint_update("running tool")
+    svc._handle_tool_hint_update("🔎 Search Web: latest ai news")
 
-    assert model.rowCount() == 2
+    assert model.rowCount() == 3
     assert model._messages[0]["status"] == "done"
-    assert model._messages[1]["status"] == "typing"
-    assert model._messages[1]["content"] == ""
-    assert svc._active_streaming_row == 1
+    assert model._messages[1]["status"] == "done"
+    assert model._messages[1]["content"] == "🔎 Search Web: latest ai news"
+    assert model._messages[2]["status"] == "typing"
+    assert model._messages[2]["content"] == ""
+    assert svc._active_streaming_row == 2
     assert svc._active_has_content is False
 
 
@@ -648,24 +686,32 @@ def test_tool_hint_without_content_does_not_create_extra_bubble():
     svc._active_streaming_row = row0
     svc._active_has_content = False
 
-    svc._handle_tool_hint_update("running tool")
+    svc._handle_tool_hint_update("🌐 Fetch Web Page: example.com/news")
 
-    assert model.rowCount() == 1
-    assert svc._active_streaming_row == 0
+    assert model.rowCount() == 2
+    assert model._messages[0]["content"] == "🌐 Fetch Web Page: example.com/news"
+    assert model._messages[0]["status"] == "done"
+    assert model._messages[1]["status"] == "typing"
+    assert svc._active_streaming_row == 1
+    assert svc._active_has_content is False
 
 
-def test_tool_hint_ignored_when_pending_split():
+def test_tool_hint_during_pending_split_keeps_hint_separate_from_next_turn():
     svc, model = make_service()
     row0 = model.append_assistant("working", status="typing")
     svc._active_streaming_row = row0
     svc._active_has_content = True
     svc._pending_split = True
 
-    svc._handle_tool_hint_update("running tool")
+    svc._handle_tool_hint_update("🤖 Delegate Task: run subagent")
 
-    assert model.rowCount() == 1
-    assert model._messages[0]["status"] == "typing"
-    assert svc._active_streaming_row == 0
+    assert model.rowCount() == 3
+    assert model._messages[0]["status"] == "done"
+    assert model._messages[1]["content"] == "🤖 Delegate Task: run subagent"
+    assert model._messages[1]["status"] == "done"
+    assert model._messages[2]["status"] == "typing"
+    assert svc._active_streaming_row == 2
+    assert svc._pending_split is False
 
 
 def test_send_result_pending_split_with_final_content_creates_new_final_bubble():
@@ -743,11 +789,29 @@ def test_send_result_marks_seen_for_active_session():
     row = model.append_assistant("", status="typing")
     svc._active_streaming_row = row
     svc._active_streaming_session_key = "desktop:active"
+    svc._active_send_future = MagicMock()
 
     svc._handle_send_result(row, True, "ok")
 
+    assert svc._active_send_future is None
     sm.update_metadata_only.assert_called_once()
-    assert sm.update_metadata_only.call_args.kwargs == {"emit_change": False}
+    assert sm.update_metadata_only.call_args.args[0] == "desktop:active"
+    payload = sm.update_metadata_only.call_args.args[1]
+    assert payload["session_running"] is False
+    assert isinstance(payload.get("desktop_last_seen_ai_at"), str)
+    assert sm.update_metadata_only.call_args.kwargs == {"emit_change": True}
+
+
+def test_handle_session_deleted_keeps_streaming_key_for_cancel_cleanup() -> None:
+    svc, _model = make_service()
+    active_future = MagicMock()
+    svc._active_streaming_session_key = "desktop:local::s1"
+    svc._active_send_future = active_future
+
+    svc.handle_session_deleted("desktop:local::s1", True, "")
+
+    active_future.cancel.assert_called_once()
+    assert svc._active_streaming_session_key == "desktop:local::s1"
 
 
 def test_set_session_manager_registers_change_listener():
@@ -1490,6 +1554,24 @@ def test_handle_history_result_updates_active_assistant_without_reset_on_finaliz
     assert model._messages[1]["status"] == "done"
 
 
+def test_prepare_history_preserves_assistant_progress_source() -> None:
+    from app.backend.chat import ChatMessageModel
+
+    prepared = ChatMessageModel.prepare_history(
+        [
+            {
+                "role": "assistant",
+                "content": "🔎 搜索网页: latest ai news",
+                "status": "done",
+                "format": "markdown",
+                "_source": "assistant-progress",
+            }
+        ]
+    )
+
+    assert prepared[0]["_source"] == "assistant-progress"
+
+
 def test_handle_history_result_preserves_transient_tail_after_tool_row_without_reset():
     svc, model = make_service()
     svc._session_key = "desktop:local"
@@ -1741,7 +1823,56 @@ def test_switch_back_to_streaming_session_rebinds_active_row_to_last_assistant()
     svc._handle_history_result(True, "", ("desktop:old", svc._current_nav_id, sig, prepared))
     svc._handle_send_result(row, True, "second")
 
+    assert model.rowCount() == 2
+    assert model._messages[0]["content"] == "first"
+    assert model._messages[1]["content"] == "second"
     assert statuses[-1] == (1, "done")
+
+
+def test_switch_back_to_streaming_session_does_not_overwrite_display_only_hint():
+    svc, model = make_service()
+    svc._session_manager = object()
+    svc._session_key = "desktop:old"
+    svc._desired_session_key = "desktop:old"
+    svc._committed_session_key = "desktop:old"
+    svc._active_streaming_session_key = "desktop:old"
+    svc._processing = True
+    row = model.append_assistant("我先看一下。", status="typing")
+    svc._active_streaming_row = row
+
+    svc.setSessionKey("desktop:new")
+    svc.setSessionKey("desktop:old")
+
+    from app.backend.chat import ChatMessageModel
+
+    prepared = ChatMessageModel.prepare_history(
+        [
+            {
+                "role": "assistant",
+                "content": "我先看一下。",
+                "status": "done",
+                "format": "markdown",
+            },
+            {
+                "role": "assistant",
+                "content": "🔎 搜索网页: latest ai news",
+                "status": "done",
+                "format": "markdown",
+                "_source": "assistant-progress",
+            },
+        ]
+    )
+    sig = svc._history_signature(prepared)
+
+    svc._handle_history_result(True, "", ("desktop:old", svc._current_nav_id, sig, prepared))
+    svc._handle_send_result(row, True, "整理好了，这是结果。")
+
+    assert model.rowCount() == 3
+    assert model._messages[0]["content"] == "我先看一下。"
+    assert model._messages[1]["content"] == "🔎 搜索网页: latest ai news"
+    assert model._messages[1]["status"] == "done"
+    assert model._messages[2]["content"] == "整理好了，这是结果。"
+    assert model._messages[2]["status"] == "done"
 
 
 def test_switch_back_to_streaming_session_restores_typing_placeholder_after_latest_user():

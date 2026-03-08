@@ -497,14 +497,18 @@ def _apply_windows_titlebar_colors(
 
 def main() -> int:
     smoke, qml, smoke_theme_toggle, start_view, seed_messages, smoke_screenshot = parse_args()
-    qml_path = resolve_qml_path(qml)
-    if not qml_path.exists():
-        print(f"QML load failed: file not found: {qml_path}", file=sys.stderr)
-        return 1
-
-    from bao.runtime_diagnostics import configure_desktop_logging
+    from bao.runtime_diagnostics import configure_desktop_logging, report_startup_failure
 
     _ = configure_desktop_logging()
+
+    qml_path = resolve_qml_path(qml)
+    if not qml_path.exists():
+        report_startup_failure(
+            f"QML load failed: file not found: {qml_path}",
+            code="qml_missing",
+            details={"qml_path": str(qml_path)},
+        )
+        return 1
 
     os.environ["QT_QUICK_CONTROLS_STYLE"] = "Basic"
     os.environ["QML_DISABLE_DISK_CACHE"] = "1"
@@ -545,12 +549,15 @@ def main() -> int:
     update_service = UpdateService(runner, config_service)
     diagnostics_service = DiagnosticsService()
     update_bridge = UpdateBridge()
+    try:
+        config_service.load()
+    except Exception as exc:
+        report_startup_failure(
+            f"First-run setup failed: {exc}",
+            code="first_run_failed",
+        )
+        return 1
 
-    from bao.config.loader import ensure_first_run
-
-    _ = ensure_first_run()
-
-    config_service.load()
     system_ui_language = detect_system_ui_language()
     legacy_ui_language = config_service.get("ui.language", "auto")
     desktop_preferences = DesktopPreferences(
@@ -600,6 +607,15 @@ def main() -> int:
         Callable[[str, object, object], None], chat_service.setSessionSummary
     )
     _ = session_service.activeSummaryChanged.connect(set_session_summary)
+    set_active_session_read_only = cast(
+        Callable[[bool], None], chat_service.setActiveSessionReadOnly
+    )
+
+    def sync_active_session_meta() -> None:
+        set_active_session_read_only(session_service.property("activeSessionReadOnly"))
+
+    sync_active_session_meta()
+    _ = session_service.activeSessionMetaChanged.connect(sync_active_session_meta)
     notify_startup_session_ready = cast(Callable[[], None], chat_service.notifyStartupSessionReady)
     _ = session_service.activeReady.connect(notify_startup_session_ready)
     # Wire session deletion → gateway: cancel streaming if needed
@@ -625,7 +641,11 @@ def main() -> int:
 
     engine.load(str(qml_path))
     if not engine.rootObjects():
-        print(f"QML load failed: {qml_path}", file=sys.stderr)
+        report_startup_failure(
+            f"QML load failed: {qml_path}",
+            code="qml_load_failed",
+            details={"qml_path": str(qml_path)},
+        )
         return 1
 
     root = engine.rootObjects()[0]

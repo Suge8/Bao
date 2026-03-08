@@ -225,8 +225,9 @@ class ChatMessageModel(QAbstractListModel):
         entrance_style: str = "none",
         fmt: str = "plain",
         created_at: int = 0,
+        source: str | None = None,
     ) -> dict[str, Any]:
-        return {
+        prepared = {
             "id": index + 1,
             "createdat": created_at,
             "role": role,
@@ -237,6 +238,9 @@ class ChatMessageModel(QAbstractListModel):
             "entrancepending": False,
             "dividertext": "",
         }
+        if isinstance(source, str) and source:
+            prepared["_source"] = source
+        return prepared
 
     @staticmethod
     def _normalize_created_at(value: Any) -> int:
@@ -332,6 +336,7 @@ class ChatMessageModel(QAbstractListModel):
                         status=status,
                         fmt=fmt,
                         created_at=created_at,
+                        source=m.get("_source"),
                     )
                 )
             elif role == "system":
@@ -347,6 +352,7 @@ class ChatMessageModel(QAbstractListModel):
                         entrance_style=entrance_style,
                         fmt=fmt,
                         created_at=created_at,
+                        source=m.get("_source"),
                     )
                 )
             elif role == "user":
@@ -363,6 +369,7 @@ class ChatMessageModel(QAbstractListModel):
                             entrance_style=entrance_style,
                             fmt=fmt,
                             created_at=created_at,
+                            source=m.get("_source"),
                         )
                     )
                 else:
