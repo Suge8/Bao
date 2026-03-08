@@ -188,11 +188,7 @@ class ProgressBuffer:
     ) -> None:
         """Route an outbound message through buffer + dedup."""
         if clear_only:
-            self._buf.pop(chat_id, None)
-            self._open.pop(chat_id, None)
-            self._sent.pop(chat_id, None)
-            self._last_text.pop(chat_id, None)
-            self._last_time.pop(chat_id, None)
+            self._clear_chat(chat_id)
             return
 
         if is_progress and not is_tool_hint:
@@ -208,8 +204,10 @@ class ProgressBuffer:
 
         if is_progress and is_tool_hint:
             await self._flush(chat_id, force=True)
+            self._clear_chat(chat_id)
             if text:
                 await self._send_checked(chat_id, text)
+            self._clear_chat(chat_id)
             return
 
         self._buf.pop(chat_id, None)
@@ -237,6 +235,13 @@ class ProgressBuffer:
         self._sent.clear()
         self._last_text.clear()
         self._last_time.clear()
+
+    def _clear_chat(self, chat_id: str) -> None:
+        self._buf.pop(chat_id, None)
+        self._open.pop(chat_id, None)
+        self._sent.pop(chat_id, None)
+        self._last_text.pop(chat_id, None)
+        self._last_time.pop(chat_id, None)
 
     # -- internals --
 
@@ -365,9 +370,12 @@ class EditingProgress:
 
         if is_progress and is_tool_hint:
             await self.flush(chat_id, force=True)
+            self._clear_chat(chat_id, keep_handles=False)
             hint = sanitize_progress_chunk(text).strip()
             if hint:
-                await self._send(chat_id, hint)
+                await self._render(chat_id, hint)
+                self._last_time[chat_id] = self._now()
+                self._clear_chat(chat_id, keep_handles=False)
             return
 
         self._buf.pop(chat_id, None)

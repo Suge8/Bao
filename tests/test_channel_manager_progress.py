@@ -97,6 +97,12 @@ def test_tool_hint_suppressed_keeps_iteration_boundary() -> None:
     assert sent.metadata.get("_tool_hint_suppressed") is True
 
 
+def test_tool_hints_enabled_by_default() -> None:
+    cfg = Config()
+
+    assert cfg.agents.defaults.send_tool_hints is True
+
+
 def test_tool_hint_dropped_when_progress_also_disabled() -> None:
     bus = MessageBus()
     cfg = Config()

@@ -1,6 +1,7 @@
 import asyncio
 
 from bao.channels.progress_text import (
+    EditingProgress,
     IterationBuffer,
     ProgressBuffer,
     final_remainder,
@@ -85,6 +86,74 @@ def test_progress_buffer_final_includes_unsent_pending_prefix_once() -> None:
     asyncio.run(_run())
 
     assert sent == [("chat", "你好")]
+
+
+def test_progress_buffer_tool_hint_seals_previous_turn() -> None:
+    sent: list[tuple[str, str]] = []
+
+    async def _send(chat_id: str, text: str) -> None:
+        sent.append((chat_id, text))
+
+    buf = ProgressBuffer(_send, min_chars=8)
+
+    async def _run() -> None:
+        await buf.handle(
+            "chat",
+            "这是一个足够长的进度句子，会先发出去。",
+            is_progress=True,
+            is_tool_hint=False,
+        )
+        await buf.handle(
+            "chat",
+            "🔎 Search Web: latest ai news",
+            is_progress=True,
+            is_tool_hint=True,
+        )
+        await buf.handle(
+            "chat",
+            "整理好了，这是最终答案。",
+            is_progress=False,
+            is_tool_hint=False,
+        )
+
+    asyncio.run(_run())
+
+    assert sent == [
+        ("chat", "这是一个足够长的进度句子，会先发出去。"),
+        ("chat", "🔎 Search Web: latest ai news"),
+        ("chat", "整理好了，这是最终答案。"),
+    ]
+
+
+def test_editing_progress_tool_hint_is_not_overwritten_by_final() -> None:
+    created: list[str] = []
+    updated: list[tuple[int, str]] = []
+
+    async def _create(_chat_id: str, text: str) -> int:
+        created.append(text)
+        return len(created)
+
+    async def _update(_chat_id: str, handle: int, text: str) -> int:
+        updated.append((handle, text))
+        return handle
+
+    async def _send(_chat_id: str, text: str) -> None:
+        raise AssertionError(f"unexpected plain send: {text}")
+
+    handler = EditingProgress(_create, _update, _send, min_chars=8)
+
+    async def _run() -> None:
+        await handler.handle("chat", "我现在去看看。", is_progress=True, is_tool_hint=False)
+        await handler.flush("chat", force=True)
+        await handler.handle(
+            "chat", "🤖 Delegate Task: run subagent", is_progress=True, is_tool_hint=True
+        )
+        await handler.handle("chat", "第二个也起好了。", is_progress=False, is_tool_hint=False)
+
+    asyncio.run(_run())
+
+    assert created == ["我现在去看看。", "🤖 Delegate Task: run subagent", "第二个也起好了。"]
+    assert updated == []
 
 
 def test_progress_buffer_tail_keeps_space_boundary_without_duplicate_prefix() -> None:
