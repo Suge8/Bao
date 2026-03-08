@@ -1,6 +1,6 @@
 ---
 name: pptx
-description: Create, read, edit, or manipulate PowerPoint presentations (.pptx files).
+description: Use for slides, decks, presentations, pitch decks, or .pptx files.
 license: Proprietary. LICENSE.txt has complete terms
 ---
 

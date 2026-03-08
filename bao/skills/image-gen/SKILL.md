@@ -1,6 +1,6 @@
 ---
 name: image-gen
-description: Generate images from text prompts using AI.
+description: Use to draw, generate, design, or create images, art, or illustrations.
 metadata: {"bao":{"emoji":"🎨"}}
 ---
 

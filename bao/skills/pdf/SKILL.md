@@ -1,6 +1,6 @@
 ---
 name: pdf
-description: Read, merge, split, create, OCR, and manipulate PDF files.
+description: Use for PDFs, scans, OCR, forms, extraction, merge, or split tasks.
 license: Proprietary. LICENSE.txt has complete terms
 ---
 

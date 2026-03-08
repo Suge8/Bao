@@ -1,6 +1,6 @@
 ---
 name: weather
-description: Get current weather and forecasts (no API key required).
+description: Use for current weather, forecasts, or weather questions by location.
 homepage: https://wttr.in/:help
 metadata: {"bao":{"emoji":"🌤️","requires":{"bins":["curl"]}}}
 ---

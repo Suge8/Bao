@@ -1,6 +1,6 @@
 ---
 name: copywriting
-description: Write, rewrite, or improve marketing copy for landing pages, homepages, and product pages.
+description: Use for marketing copy, headlines, CTAs, and page rewrites.
 ---
 
 # Copywriting

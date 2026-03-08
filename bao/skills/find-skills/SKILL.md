@@ -1,6 +1,6 @@
 ---
 name: find-skills
-description: Discover and install agent skills from the open skills ecosystem.
+description: Use when asked to find, install, or recommend a skill or new capability.
 ---
 
 # Find Skills

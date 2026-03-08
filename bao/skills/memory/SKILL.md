@@ -1,6 +1,6 @@
 ---
 name: memory
-description: LanceDB-backed categorized memory with automatic recall, consolidation, and explicit memory tools.
+description: Use for memory recall, consolidation, preferences, or project context.
 always: true
 ---
 

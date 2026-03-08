@@ -1,6 +1,6 @@
 ---
 name: agent-browser
-description: Automate browser interactions: navigate, click, fill forms, take screenshots, extract data.
+description: Use for browser automation, screenshots, form filling, web testing, or scraping.
 metadata: {"bao":{"emoji":"🌐","requires":{"bins":["agent-browser"]}}}
 allowed-tools: Bash(agent-browser:*)
 ---

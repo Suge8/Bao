@@ -22,6 +22,7 @@ class SkillsLoader:
         self.workspace = workspace
         self.workspace_skills = workspace / "skills"
         self.builtin_skills = builtin_skills_dir or BUILTIN_SKILLS_DIR
+        self._skill_content_cache: dict[Path, tuple[tuple[int, int, int], str]] = {}
 
     def list_skills(self, filter_unavailable: bool = True) -> list[dict[str, str]]:
         """
@@ -73,15 +74,25 @@ class SkillsLoader:
         # Check workspace first
         workspace_skill = self.workspace_skills / name / "SKILL.md"
         if workspace_skill.exists():
-            return workspace_skill.read_text(encoding="utf-8")
+            return self._read_skill_file(workspace_skill)
 
         # Check built-in
         if self.builtin_skills:
             builtin_skill = self.builtin_skills / name / "SKILL.md"
             if builtin_skill.exists():
-                return builtin_skill.read_text(encoding="utf-8")
+                return self._read_skill_file(builtin_skill)
 
         return None
+
+    def _read_skill_file(self, path: Path) -> str:
+        stat = path.stat()
+        cache_key = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+        cached = self._skill_content_cache.get(path)
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
+        content = path.read_text(encoding="utf-8")
+        self._skill_content_cache[path] = (cache_key, content)
+        return content
 
     def load_skills_for_context(self, skill_names: list[str]) -> str:
         """
@@ -103,15 +114,6 @@ class SkillsLoader:
         return "\n\n---\n\n".join(parts) if parts else ""
 
     def build_skills_summary(self) -> str:
-        """
-        Build a compact index of all skills (name + short description + availability).
-
-        This is used for progressive loading - the agent can read the full
-        skill content using read_file when needed.
-
-        Returns:
-            XML-formatted skills summary.
-        """
         all_skills = self.list_skills(filter_unavailable=False)
         if not all_skills:
             return ""
@@ -131,7 +133,9 @@ class SkillsLoader:
             available = self._check_requirements(skill_meta)
             desc = self._get_skill_description(name)
             short_desc = self._truncate_description(desc)
-            attrs = f'available="{str(available).lower()}"'
+            source = escape_xml(s["source"])
+            path = escape_xml(s["path"])
+            attrs = f'path="{path}" source="{source}" available="{str(available).lower()}"'
 
             if not available:
                 missing = self._get_missing_requirements(skill_meta)

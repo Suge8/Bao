@@ -1,6 +1,6 @@
 ---
 name: xlsx
-description: Create, read, edit, or analyze spreadsheet files (.xlsx, .csv, .tsv).
+description: Use for spreadsheets, Excel, CSV/TSV cleanup, tables, or .xlsx files.
 license: Proprietary. LICENSE.txt has complete terms
 ---
 

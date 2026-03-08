@@ -1,6 +1,6 @@
 ---
 name: coding-agent
-description: "Delegate coding tasks to AI coding agents (OpenCode, Codex, Claude Code). Use when the user asks to write, refactor, debug, fix, or test code. Supports multi-turn sessions, retries, and structured output."
+description: Use for general coding tasks when no more specific coding skill matches.
 metadata: {"bao":{"emoji":"⌨️","requires":{"bins_any":["opencode","codex","claude"]}}}
 ---
 

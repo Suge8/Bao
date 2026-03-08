@@ -1,6 +1,6 @@
 ---
 name: docx
-description: Create, read, edit, or manipulate Word documents (.docx files).
+description: Use for Word docs, reports, memos, letters, contracts, or .docx files.
 license: Proprietary. LICENSE.txt has complete terms
 ---
 
