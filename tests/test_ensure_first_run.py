@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from bao.config.loader import ensure_first_run, load_config
+from bao.config.loader import ensure_first_run, get_config_path, load_config
+from bao.utils.helpers import get_media_path
 
 
 @pytest.fixture()
@@ -51,3 +52,16 @@ def test_load_config_first_run_exits(fake_home):
     assert exc_info.value.code == 0
     assert (fake_home / ".bao" / "config.jsonc").exists()
     assert (fake_home / ".bao" / "workspace").is_dir()
+
+
+def test_get_config_path_uses_shared_data_root(fake_home):
+    config_path = get_config_path()
+
+    assert config_path == fake_home / ".bao" / "config.json"
+
+
+def test_get_media_path_uses_shared_data_root(fake_home):
+    media_path = get_media_path()
+
+    assert media_path == fake_home / ".bao" / "media"
+    assert media_path.is_dir()

@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -14,6 +13,7 @@ from bao.bus.queue import MessageBus
 from bao.channels.base import BaseChannel
 from bao.channels.progress_text import EditingProgress
 from bao.config.schema import DiscordConfig
+from bao.utils.helpers import get_media_path
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024  # 20MB
@@ -314,7 +314,7 @@ class DiscordChannel(BaseChannel):
 
         content_parts = [content] if content else []
         media_paths: list[str] = []
-        media_dir = Path.home() / ".bao" / "media"
+        media_dir = get_media_path()
 
         for attachment in payload.get("attachments") or []:
             url = attachment.get("url")

@@ -20,6 +20,7 @@ from bao.bus.queue import MessageBus
 from bao.channels.base import BaseChannel
 from bao.channels.progress_text import EditingProgress
 from bao.config.schema import TelegramConfig
+from bao.utils.helpers import get_media_path
 
 _T = TypeVar("_T")
 _UPDATER_CLEANUP_LOG = (
@@ -563,11 +564,7 @@ class TelegramChannel(BaseChannel):
                 media_kind = media_type or "file"
                 ext = self._get_extension(media_kind, getattr(media_file, "mime_type", None))
 
-                # Save to workspace/media/
-                from pathlib import Path
-
-                media_dir = Path.home() / ".bao" / "media"
-                media_dir.mkdir(parents=True, exist_ok=True)
+                media_dir = get_media_path()
 
                 file_path = media_dir / f"{media_file.file_id[:16]}{ext}"
                 await file.download_to_drive(str(file_path))

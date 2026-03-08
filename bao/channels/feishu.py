@@ -6,7 +6,6 @@ import os
 import re
 import threading
 from collections import OrderedDict
-from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -16,6 +15,7 @@ from bao.bus.queue import MessageBus
 from bao.channels.base import BaseChannel
 from bao.channels.progress_text import EditingProgress
 from bao.config.schema import FeishuConfig
+from bao.utils.helpers import get_media_path
 
 lark: Any = None
 CreateFileRequest: Any = None
@@ -638,8 +638,7 @@ class FeishuChannel(BaseChannel):
             (file_path, content_text) - file_path is None if download failed
         """
         loop = asyncio.get_running_loop()
-        media_dir = Path.home() / ".bao" / "media"
-        media_dir.mkdir(parents=True, exist_ok=True)
+        media_dir = get_media_path()
 
         data, filename = None, None
 

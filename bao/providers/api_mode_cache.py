@@ -13,19 +13,25 @@ from typing import Any
 
 from loguru import logger
 
-_CACHE_FILE = Path.home() / ".bao" / "api_mode_cache.json"
+from bao.utils.helpers import get_data_path
+
 _TTL_SECONDS = 7 * 24 * 3600
 
 _cache: dict[str, Any] | None = None
+
+
+def _cache_file() -> Path:
+    return get_data_path() / "api_mode_cache.json"
 
 
 def _load() -> dict[str, Any]:
     global _cache
     if _cache is None:
         loaded: dict[str, Any] = {}
-        if _CACHE_FILE.exists():
+        cache_file = _cache_file()
+        if cache_file.exists():
             try:
-                loaded = json.loads(_CACHE_FILE.read_text(encoding="utf-8"))
+                loaded = json.loads(cache_file.read_text(encoding="utf-8"))
             except Exception:
                 pass
         _cache = loaded
@@ -34,8 +40,9 @@ def _load() -> dict[str, Any]:
 
 def _save() -> None:
     try:
-        _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _CACHE_FILE.write_text(json.dumps(_load(), indent=2, ensure_ascii=False), encoding="utf-8")
+        cache_file = _cache_file()
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(_load(), indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception as e:
         logger.debug("🤖 缓存保存失败 / save failed: {}", e)
 

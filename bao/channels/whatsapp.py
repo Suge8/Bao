@@ -5,7 +5,6 @@ import base64
 import json
 import mimetypes
 from collections import OrderedDict
-from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -15,6 +14,7 @@ from bao.bus.queue import MessageBus
 from bao.channels.base import BaseChannel
 from bao.channels.progress_text import ProgressBuffer
 from bao.config.schema import WhatsAppConfig
+from bao.utils.helpers import get_media_path
 
 
 class WhatsAppChannel(BaseChannel):
@@ -116,8 +116,7 @@ class WhatsAppChannel(BaseChannel):
             if not filename:
                 ext = mimetypes.guess_extension(mimetype) or ""
                 filename = f"wa_{sender_id}_{id(raw):x}{ext}"
-            media_dir = Path.home() / ".bao" / "media"
-            media_dir.mkdir(parents=True, exist_ok=True)
+            media_dir = get_media_path()
             path = media_dir / filename.replace("/", "_")
             path.write_bytes(raw)
             logger.debug("Saved WhatsApp media: {}", path)

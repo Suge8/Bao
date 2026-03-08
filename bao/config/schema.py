@@ -292,7 +292,7 @@ class AgentDefaults(Base):
     context_compact_keep_recent_tool_blocks: int = 6
     artifact_retention_days: int = 7
     send_progress: bool = True
-    send_tool_hints: bool = False
+    send_tool_hints: bool = True
 
     @model_validator(mode="after")
     def _warn_policies(self) -> "AgentDefaults":

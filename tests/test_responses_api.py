@@ -146,12 +146,13 @@ def test_api_mode_cache(tmp_path):
     import bao.providers.api_mode_cache as cache_mod
 
     old_cache = cache_mod._cache
-    old_file = cache_mod._CACHE_FILE
+    cache_file = tmp_path / "api_mode_cache.json"
     cache_mod._cache = None
-    cache_mod._CACHE_FILE = tmp_path / "api_mode_cache.json"
+    old_cache_file = cache_mod._cache_file
+    cache_mod._cache_file = lambda: cache_file
     try:
-        if cache_mod._CACHE_FILE.exists():
-            cache_mod._CACHE_FILE.unlink()
+        if cache_file.exists():
+            cache_file.unlink()
         cache_mod._cache = None
 
         assert get_cached_mode("https://example.com/v1") is None
@@ -160,25 +161,26 @@ def test_api_mode_cache(tmp_path):
         assert get_cached_mode("https://example.com/v1/") == "responses"
         assert get_cached_mode("https://OTHER.com/v1") is None
 
-        assert cache_mod._CACHE_FILE.exists()
-        data = json.loads(cache_mod._CACHE_FILE.read_text())
+        assert cache_file.exists()
+        data = json.loads(cache_file.read_text())
         assert "https://example.com/v1" in data
         print("✓ api_mode_cache (set/get/persist)")
     finally:
         cache_mod._cache = old_cache
-        cache_mod._CACHE_FILE = old_file
-        cache_mod._CACHE_FILE.unlink(missing_ok=True)
+        cache_mod._cache_file = old_cache_file
+        cache_file.unlink(missing_ok=True)
 
 
 def test_provider_resolve_effective_mode(tmp_path):
     import bao.providers.api_mode_cache as cache_mod
 
     old_cache = cache_mod._cache
-    old_file = cache_mod._CACHE_FILE
+    cache_file = tmp_path / "api_mode_resolve.json"
+    old_cache_file = cache_mod._cache_file
     cache_mod._cache = None
-    cache_mod._CACHE_FILE = tmp_path / "api_mode_resolve.json"
+    cache_mod._cache_file = lambda: cache_file
     try:
-        cache_mod._CACHE_FILE.unlink(missing_ok=True)
+        cache_file.unlink(missing_ok=True)
         p = OpenAICompatibleProvider(api_key="k", api_base="https://test.com/v1")
         assert p._resolve_effective_mode() == "auto"
         set_cached_mode("https://test.com/v1", "responses")
@@ -187,8 +189,8 @@ def test_provider_resolve_effective_mode(tmp_path):
         assert p._resolve_effective_mode() == "completions"
     finally:
         cache_mod._cache = old_cache
-        cache_mod._CACHE_FILE = old_file
-        cache_mod._CACHE_FILE.unlink(missing_ok=True)
+        cache_mod._cache_file = old_cache_file
+        cache_file.unlink(missing_ok=True)
     print("✓ provider _resolve_effective_mode")
 
 
@@ -217,12 +219,13 @@ def test_utility_model_uses_same_provider_path(tmp_path):
     from bao.providers import make_provider
 
     old_cache = cache_mod._cache
-    old_file = cache_mod._CACHE_FILE
+    cache_file = tmp_path / "api_mode_utility.json"
+    old_cache_file = cache_mod._cache_file
     cache_mod._cache = None
-    cache_mod._CACHE_FILE = tmp_path / "api_mode_utility.json"
+    cache_mod._cache_file = lambda: cache_file
 
     try:
-        cache_mod._CACHE_FILE.unlink(missing_ok=True)
+        cache_file.unlink(missing_ok=True)
         cfg = Config()
         cfg.providers["openai"] = ProviderConfig(
             type="openai",
@@ -238,8 +241,8 @@ def test_utility_model_uses_same_provider_path(tmp_path):
         assert utility_provider._effective_base == "https://www.right.codes/codex/v1"
     finally:
         cache_mod._cache = old_cache
-        cache_mod._CACHE_FILE = old_file
-        cache_mod._CACHE_FILE.unlink(missing_ok=True)
+        cache_mod._cache_file = old_cache_file
+        cache_file.unlink(missing_ok=True)
     print("\u2713 utility model uses same provider path")
 
 
@@ -295,9 +298,10 @@ def test_responses_parse_error_falls_back_without_caching_responses(monkeypatch,
     import bao.providers.api_mode_cache as cache_mod
 
     old_cache = cache_mod._cache
-    old_file = cache_mod._CACHE_FILE
+    cache_file = tmp_path / "api_mode_cache.json"
+    old_cache_file = cache_mod._cache_file
     cache_mod._cache = None
-    cache_mod._CACHE_FILE = tmp_path / "api_mode_cache.json"
+    cache_mod._cache_file = lambda: cache_file
 
     p = OpenAICompatibleProvider(api_key="k", api_base="https://x.com/v1")
 
@@ -335,16 +339,17 @@ def test_responses_parse_error_falls_back_without_caching_responses(monkeypatch,
         assert get_cached_mode("https://x.com/v1") is None
     finally:
         cache_mod._cache = old_cache
-        cache_mod._CACHE_FILE = old_file
+        cache_mod._cache_file = old_cache_file
 
 
 def test_responses_non_200_falls_back_without_caching_responses(monkeypatch, tmp_path):
     import bao.providers.api_mode_cache as cache_mod
 
     old_cache = cache_mod._cache
-    old_file = cache_mod._CACHE_FILE
+    cache_file = tmp_path / "api_mode_cache.json"
+    old_cache_file = cache_mod._cache_file
     cache_mod._cache = None
-    cache_mod._CACHE_FILE = tmp_path / "api_mode_cache.json"
+    cache_mod._cache_file = lambda: cache_file
 
     p = OpenAICompatibleProvider(api_key="k", api_base="https://y.com/v1")
 
@@ -382,7 +387,7 @@ def test_responses_non_200_falls_back_without_caching_responses(monkeypatch, tmp
         assert get_cached_mode("https://y.com/v1") is None
     finally:
         cache_mod._cache = old_cache
-        cache_mod._CACHE_FILE = old_file
+        cache_mod._cache_file = old_cache_file
 
 
 def test_chat_responses_streams_output_deltas(monkeypatch):

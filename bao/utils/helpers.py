@@ -15,6 +15,14 @@ def get_data_path() -> Path:
     return ensure_dir(Path.home() / ".bao")
 
 
+def get_data_subdir(*parts: str) -> Path:
+    return ensure_dir(get_data_path().joinpath(*parts))
+
+
+def get_media_path() -> Path:
+    return get_data_subdir("media")
+
+
 def timestamp() -> str:
     """Get current timestamp in ISO format."""
     return datetime.now().isoformat()
@@ -27,4 +35,3 @@ def safe_filename(name: str) -> str:
     for char in unsafe:
         name = name.replace(char, "_")
     return name.strip()
-

@@ -164,6 +164,51 @@ async def test_telegram_final_only_sends_tail_after_progress_flush() -> None:
 
 
 @pytest.mark.asyncio
+async def test_telegram_tool_hint_starts_new_editable_turn() -> None:
+    channel = TelegramChannel(TelegramConfig(enabled=True, token=SecretStr("t")), MagicMock())
+    bot = SimpleNamespace(
+        send_message=AsyncMock(
+            side_effect=[
+                SimpleNamespace(message_id=321),
+                SimpleNamespace(message_id=654),
+                SimpleNamespace(message_id=987),
+            ]
+        ),
+        edit_message_text=AsyncMock(),
+    )
+    channel._app = SimpleNamespace(bot=bot)
+
+    await channel.send(
+        OutboundMessage(
+            channel="telegram",
+            chat_id="12345",
+            content="我现在去看看。",
+            metadata={"_progress": True},
+        )
+    )
+    await channel.send(
+        OutboundMessage(
+            channel="telegram",
+            chat_id="12345",
+            content="🔎 Search Web: latest ai news",
+            metadata={"_progress": True, "_tool_hint": True},
+        )
+    )
+    await channel.send(
+        OutboundMessage(channel="telegram", chat_id="12345", content="整理好了，这是最终答案。")
+    )
+
+    assert bot.send_message.await_count == 3
+    assert bot.edit_message_text.await_count == 0
+    first_send = bot.send_message.await_args_list[0].kwargs
+    second_send = bot.send_message.await_args_list[1].kwargs
+    third_send = bot.send_message.await_args_list[2].kwargs
+    assert first_send["text"] == "我现在去看看。"
+    assert second_send["text"] == "🔎 Search Web: latest ai news"
+    assert third_send["text"] == "整理好了，这是最终答案。"
+
+
+@pytest.mark.asyncio
 async def test_telegram_network_error_does_not_fallback_to_plain_resend() -> None:
     channel = TelegramChannel(TelegramConfig(enabled=True, token=SecretStr("t")), MagicMock())
     bot = SimpleNamespace(

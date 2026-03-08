@@ -61,9 +61,9 @@ _JSONC_TEMPLATE = """\
       // 是否向聊天渠道发送进度文本（默认开启）
       // Whether to send progress text to chat channels (enabled by default)
       "sendProgress": true,
-      // 是否向聊天渠道发送工具调用提示（默认关闭）
-      // Whether to send tool-call hints to chat channels (disabled by default)
-      "sendToolHints": false
+      // 是否向聊天渠道发送工具调用提示（默认开启）
+      // Whether to send tool-call hints to chat channels (enabled by default)
+      "sendToolHints": true
     }
   },
   // ───────────────────────────────────────────────────────────────
@@ -290,7 +290,9 @@ _JSONC_TEMPLATE = """\
 
 
 def get_config_path() -> Path:
-    base = Path.home() / ".bao"
+    from bao.utils.helpers import get_data_path
+
+    base = get_data_path()
     jsonc = base / "config.jsonc"
     if jsonc.exists():
         return jsonc
