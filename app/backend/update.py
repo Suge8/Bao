@@ -140,7 +140,14 @@ class UpdateService(QObject):
             async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
                 response = await client.get(self._feed_url, headers={"Accept": "application/json"})
                 if response.status_code == 404:
-                    self._checkFinished.emit(True, "", None)
+                    if self._show_check_errors:
+                        self._checkFinished.emit(
+                            False,
+                            "Update feed is not published yet (desktop-update.json returned 404).",
+                            None,
+                        )
+                    else:
+                        self._checkFinished.emit(True, "", None)
                     return
                 _ = response.raise_for_status()
                 feed = cast(dict[str, object], response.json())

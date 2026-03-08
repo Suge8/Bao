@@ -32,6 +32,12 @@ def test_build_mac_script_includes_workspace_package_data() -> None:
     assert "workspace=bao/templates/workspace" not in text
     assert "--noinclude-qt-plugins=tls" in text
     assert "imageformats/libqpdf.dylib" in text
+    assert 'BUNDLE_IDENTIFIER="io.github.suge8.bao"' in text
+    assert 'plist_set_or_add "$INFO_PLIST" "CFBundleIdentifier" "$BUNDLE_IDENTIFIER"' in text
+    assert (
+        'plist_set_or_add "$INFO_PLIST" "NSAppleEventsUsageDescription" "$APPLE_EVENTS_USAGE_DESCRIPTION"'
+        in text
+    )
 
 
 def test_build_mac_pyinstaller_script_includes_desktop_resources() -> None:
@@ -45,8 +51,30 @@ def test_build_mac_pyinstaller_script_includes_desktop_resources() -> None:
     assert '--add-data "$PROJECT_ROOT/bao/templates/workspace:bao/templates/workspace"' in text
     assert "--collect-submodules bao.channels" in text
     assert "--collect-submodules bao.providers" in text
+    assert '--osx-bundle-identifier "$BUNDLE_IDENTIFIER"' in text
     assert 'plist_set_or_add "$INFO_PLIST" "CFBundleShortVersionString" "$VERSION"' in text
     assert 'plist_set_or_add "$INFO_PLIST" "CFBundleVersion" "$VERSION"' in text
+    assert 'plist_set_or_add "$INFO_PLIST" "CFBundleIdentifier" "$BUNDLE_IDENTIFIER"' in text
+    assert (
+        'plist_set_or_add "$INFO_PLIST" "NSAppleEventsUsageDescription" "$APPLE_EVENTS_USAGE_DESCRIPTION"'
+        in text
+    )
+
+
+def test_app_readme_documents_mac_imessage_permissions() -> None:
+    text = _read("app/README.md")
+
+    assert "NSAppleEventsUsageDescription" in text
+    assert "Full Disk Access" in text
+    assert "Messages" in text
+
+
+def test_desktop_packaging_doc_covers_mac_imessage_permissions() -> None:
+    text = _read("docs/desktop-packaging.md")
+
+    assert "NSAppleEventsUsageDescription" in text
+    assert "Full Disk Access" in text
+    assert "Privacy & Security > Automation" in text
 
 
 def test_build_win_pyinstaller_script_includes_desktop_resources() -> None:
