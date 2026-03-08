@@ -20,6 +20,18 @@ CHAT_DB = Path.home() / "Library" / "Messages" / "chat.db"
 APPLE_EPOCH_OFFSET = 978307200
 
 
+def permission_target_label(executable: str) -> str:
+    return Path(executable).name or executable
+
+
+def automation_permission_hint(error_text: str, executable: str) -> str | None:
+    if "-1743" not in error_text:
+        return None
+    return (
+        "grant Automation for {} -> Messages in System Settings > Privacy & Security > Automation"
+    ).format(permission_target_label(executable))
+
+
 class IMessageChannel(BaseChannel):
     name = "imessage"
 
@@ -42,7 +54,7 @@ class IMessageChannel(BaseChannel):
         if self._last_rowid == 0:
             logger.warning(
                 "⚠️ iMessage 无法读库 / db unreadable: ROWID=0, grant Full Disk Access for {}",
-                sys.executable,
+                permission_target_label(sys.executable),
             )
         logger.debug("iMessage channel started (polling from ROWID {})", self._last_rowid)
         while self._running:
@@ -89,7 +101,10 @@ class IMessageChannel(BaseChannel):
             )
             _, stderr = await proc.communicate()
             if proc.returncode != 0:
-                logger.error("❌ iMessage 文本发送失败 / send failed: {}", stderr.decode().strip())
+                error_text = stderr.decode().strip()
+                logger.error("❌ iMessage 文本发送失败 / send failed: {}", error_text)
+                if hint := automation_permission_hint(error_text, sys.executable):
+                    logger.warning("⚠️ iMessage 自动化未授权 / automation denied: {}", hint)
         except Exception as e:
             logger.error("❌ iMessage 文本发送异常 / send error: {}", e)
 
@@ -114,7 +129,10 @@ class IMessageChannel(BaseChannel):
             )
             _, stderr = await proc.communicate()
             if proc.returncode != 0:
-                logger.error("❌ iMessage 文件发送失败 / send failed: {}", stderr.decode().strip())
+                error_text = stderr.decode().strip()
+                logger.error("❌ iMessage 文件发送失败 / send failed: {}", error_text)
+                if hint := automation_permission_hint(error_text, sys.executable):
+                    logger.warning("⚠️ iMessage 自动化未授权 / automation denied: {}", hint)
         except Exception as e:
             logger.error("❌ iMessage 文件发送异常 / send error: {}", e)
 

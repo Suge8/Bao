@@ -1,13 +1,28 @@
 import asyncio
+from collections.abc import Callable
 from typing import cast
 
 from bao.agent.loop import AgentLoop
 from bao.bus.events import OutboundMessage
 from bao.bus.queue import MessageBus
+from bao.channels import imessage as imessage_module
 from bao.channels.imessage import IMessageChannel
 from bao.channels.progress_text import ProgressBuffer
 from bao.config.schema import IMessageConfig
 from bao.providers.base import ToolCallRequest
+
+AUTOMATION_PERMISSION_HINT = cast(
+    Callable[[str, str], str | None],
+    getattr(imessage_module, "automation_permission_hint"),
+)
+PERMISSION_TARGET_LABEL = cast(
+    Callable[[str], str],
+    getattr(imessage_module, "permission_target_label"),
+)
+
+
+def test_permission_target_label_uses_app_name() -> None:
+    assert PERMISSION_TARGET_LABEL("/Applications/Bao.app/Contents/MacOS/Bao") == "Bao"
 
 
 class _FakeProc:
@@ -16,6 +31,22 @@ class _FakeProc:
 
     async def communicate(self) -> tuple[bytes, bytes]:
         return b"", b""
+
+
+def test_automation_permission_hint_detects_tcc_denial() -> None:
+    result = AUTOMATION_PERMISSION_HINT(
+        "51:92: execution error: 未获得授权将Apple事件发送给Messages。 (-1743)",
+        "/Applications/Bao.app/Contents/MacOS/Bao",
+    )
+
+    assert result is not None
+    assert "Automation" in result
+    assert "Messages" in result
+    assert "Bao" in result
+
+
+def test_automation_permission_hint_ignores_other_errors() -> None:
+    assert AUTOMATION_PERMISSION_HINT("some other osascript error", "/tmp/Bao") is None
 
 
 def test_imessage_progress_flushes_before_final(monkeypatch) -> None:
