@@ -34,6 +34,7 @@ Rectangle {
     property var _onboardingProviderApiKeyFieldRef: null
     property var _onboardingProviderTypeFieldRef: null
     property var _onboardingProviderApiBaseFieldRef: null
+    readonly property string configFilePath: configService ? configService.getConfigFilePath() : ""
     readonly property bool languageConfigured: {
         if (!desktopPreferences)
             return false
@@ -2031,6 +2032,50 @@ Rectangle {
                                 {"label": tr("会话列表", "Sessions"), "dotpath": "channels.mochat.sessions", "placeholder": "session1, session2", "isList": true},
                                 {"label": tr("面板列表", "Panels"), "dotpath": "channels.mochat.panels", "placeholder": "panel1, panel2", "isList": true}
                             ]
+                        }
+                    }
+                }
+
+                SettingsSection {
+                    id: configFileSection
+                    Layout.fillWidth: true
+                    visible: !root.onboardingMode && root._activeTab === 2
+                    title: tr("配置文件", "Configuration")
+                    description: tr("Bao 的桌面配置保存在这里。需要手动编辑 JSONC 或排查问题时，可以直接打开目录。", "Bao stores its desktop configuration here. Open the folder when you need to edit the JSONC manually or inspect setup issues.")
+                    actionText: tr("打开配置目录", "Open Config Folder")
+                    actionEnabled: root.configFilePath !== ""
+                    actionHandler: function() { configService.openConfigDirectory() }
+
+                    ColumnLayout {
+                        width: parent.width
+                        spacing: 8
+
+                        Text {
+                            text: tr("当前配置文件", "Current config file")
+                            color: textSecondary
+                            font.pixelSize: 13
+                            font.weight: Font.DemiBold
+                        }
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            radius: radiusMd
+                            color: isDark ? "#0DFFFFFF" : "#06000000"
+                            border.color: borderSubtle
+                            border.width: 1
+                            implicitHeight: configPathText.implicitHeight + 24
+
+                            Text {
+                                id: configPathText
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.margins: 12
+                                text: root.configFilePath
+                                color: textPrimary
+                                font.pixelSize: typeLabel
+                                wrapMode: Text.WrapAnywhere
+                            }
                         }
                     }
                 }

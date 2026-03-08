@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import tempfile
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -173,16 +174,63 @@ def get_runtime_diagnostics_store() -> RuntimeDiagnosticsStore:
     return _STORE
 
 
-def configure_desktop_logging(log_file_path: str | Path | None = None) -> Path:
+def _fallback_log_target() -> Path:
+    target = Path(tempfile.gettempdir()) / "bao" / "logs" / "desktop.log"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _resolve_log_target(log_file_path: str | Path | None) -> tuple[Path, str | None]:
+    if log_file_path:
+        target = Path(log_file_path).expanduser()
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            return target, None
+        except OSError as exc:
+            fallback = _fallback_log_target()
+            return fallback, f"Configured log path unavailable: {target} ({exc})"
 
     from bao.config.loader import get_data_dir
 
-    target = (
-        Path(log_file_path).expanduser()
-        if log_file_path
-        else get_data_dir() / "logs" / "desktop.log"
+    try:
+        target = get_data_dir() / "logs" / "desktop.log"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return target, None
+    except OSError as exc:
+        fallback = _fallback_log_target()
+        return fallback, f"Default data dir unavailable; using temp log dir ({exc})"
+
+
+def _resolve_console_sink() -> Any | None:
+    for candidate in (getattr(sys, "stderr", None), getattr(sys, "__stderr__", None)):
+        if candidate is None:
+            continue
+        if callable(getattr(candidate, "write", None)):
+            return candidate
+    return None
+
+
+def report_startup_failure(
+    message: str,
+    *,
+    code: str = "desktop_startup_failed",
+    details: dict[str, Any] | None = None,
+) -> None:
+    store = get_runtime_diagnostics_store()
+    store.record_event(
+        source="desktop_startup",
+        stage="startup",
+        message=message,
+        level="error",
+        code=code,
+        retryable=False,
+        details=details,
     )
-    target.parent.mkdir(parents=True, exist_ok=True)
+    logger.error(message)
+
+
+def configure_desktop_logging(log_file_path: str | Path | None = None) -> Path:
+    target, fallback_reason = _resolve_log_target(log_file_path)
     store = get_runtime_diagnostics_store()
     store.set_log_file_path(target)
 
@@ -194,7 +242,9 @@ def configure_desktop_logging(log_file_path: str | Path | None = None) -> Path:
     console_format = "{time:HH:mm:ss} | {message}"
     file_format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {message}"
 
-    logger.add(sys.stderr, level="INFO", format=console_format)
+    console_sink = _resolve_console_sink()
+    if console_sink is not None:
+        logger.add(console_sink, level="INFO", format=console_format)
     logger.add(
         str(target),
         level="DEBUG",
@@ -208,4 +258,15 @@ def configure_desktop_logging(log_file_path: str | Path | None = None) -> Path:
         level="DEBUG",
         format=file_format,
     )
+    if fallback_reason:
+        store.record_event(
+            source="desktop_startup",
+            stage="logging",
+            message=fallback_reason,
+            level="warning",
+            code="desktop_log_fallback",
+            retryable=False,
+            details={"log_file_path": str(target)},
+        )
+        logger.warning("{}", fallback_reason)
     return target

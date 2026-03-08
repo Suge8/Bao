@@ -10,7 +10,8 @@ import tempfile
 from pathlib import Path
 from typing import Callable, ClassVar, TypeVar, cast
 
-from PySide6.QtCore import Property, QObject, Signal, Slot
+from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
+from PySide6.QtGui import QDesktopServices
 
 from app.backend.jsonc_patch import patch_jsonc, strip_comments
 from bao.config.schema import Config as RuntimeConfig
@@ -202,14 +203,11 @@ class ConfigService(QObject):
 
     @_typed_slot()
     def load(self) -> None:
-        from bao.config.loader import get_config_path
+        from bao.runtime_diagnostics import get_runtime_diagnostics_store
 
-        self._config_path = get_config_path()
-        if not self._config_path.exists():
-            self._valid = False
-            return
+        path = self._bootstrap_config_path()
         try:
-            self._raw_text = self._config_path.read_text(encoding="utf-8")
+            self._raw_text = path.read_text(encoding="utf-8")
             stripped = strip_comments(self._raw_text)
             raw_data = cast(object, json.loads(stripped))
             parsed_data = _as_dict(raw_data)
@@ -223,6 +221,15 @@ class ConfigService(QObject):
             self.configLoaded.emit()
         except Exception as e:
             self._valid = False
+            get_runtime_diagnostics_store().record_event(
+                source="config",
+                stage="load",
+                message=f"Failed to load config: {e}",
+                level="error",
+                code="config_load_failed",
+                retryable=False,
+                details={"config_path": str(path)},
+            )
             self.saveError.emit(f"Failed to load config: {e}")
 
     def get(self, dotpath: str, default: _T | None = None) -> object | _T | None:
@@ -280,6 +287,15 @@ class ConfigService(QObject):
     @_typed_slot(result="QVariant")
     def exportData(self) -> dict[str, object]:
         return copy.deepcopy(self._data)
+
+    @_typed_slot(result=str)
+    def getConfigFilePath(self) -> str:
+        return str(self._resolved_config_path())
+
+    @_typed_slot()
+    def openConfigDirectory(self) -> None:
+        config_path = self._resolved_config_path()
+        _ = QDesktopServices.openUrl(QUrl.fromLocalFile(str(config_path.parent)))
 
     @_typed_slot(str, result=bool)
     def removeProvider(self, name: str) -> bool:
@@ -412,6 +428,24 @@ class ConfigService(QObject):
         _ = update_node.setdefault("autoCheck", defaults.auto_check)
         _ = update_node.setdefault("channel", defaults.channel)
         _ = update_node.setdefault("feedUrl", defaults.feed_url)
+
+    def _resolved_config_path(self) -> Path:
+        if self._config_path is None:
+            from bao.config.loader import get_config_path
+
+            self._config_path = get_config_path()
+        return self._config_path
+
+    def _bootstrap_config_path(self) -> Path:
+        path = self._resolved_config_path()
+        if path.exists():
+            return path
+
+        from bao.config.loader import ensure_first_run, get_config_path
+
+        _ = ensure_first_run()
+        self._config_path = get_config_path()
+        return self._config_path
 
     def _collapse_missing_intermediates(self, changes: dict[str, object]) -> dict[str, object]:
         """Collapse dotpaths whose intermediate keys don't exist in self._data.
