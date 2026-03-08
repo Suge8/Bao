@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.20] - 2026-03-09
+
+### Added
+
+- **Desktop 侧边栏现可把子代理线程投影为只读子会话** — 子线程会按父会话所在渠道归组、紧跟父会话显示，并在 sticky group header 与会话项上统一展示运行态，避免 UI 层再维护第二套临时线程状态。
+- **主/子代理的 tool hint 与 child session 结果现在会落成可见的协作上下文** — tool hint 会以 display-only assistant turn 的形式留在时间线里，子会话也会持久化 label/status/result summary，桌面端可以稳定展示过程提示而不吞掉最终回复。
+
+### Changed
+
+- **Skills 索引升级为精确路径元数据入口** — skill summary 现在携带 `path/source/available`，并缓存 bootstrap/skill 文件读取结果；命中后代理可直接按索引路径读取最匹配的 `SKILL.md`。
+- **Bao 数据目录收口为共享 helper** — 配置文件、媒体下载目录与 OpenAI-compatible API mode cache 统一走 `~/.bao` 数据根路径；Desktop 设置页也新增配置文件路径展示与“打开配置目录”入口。
+
+### Fixed
+
+- **Desktop 会话投影与 metadata 改写稳态进一步收口** — `SessionManager` 不再让 `session_meta` 暴露 delete→add 中间态，外部渠道入站时桌面侧边栏不会再因为 metadata 瞬时不可见而让会话短暂消失。
+- **渠道 progress/tool hint 边界不再残留旧缓冲状态** — tool hint 发送前后会清空 progress buffer，Telegram/Discord/飞书/WhatsApp 的媒体落盘路径也统一走共享媒体目录，减少跨渠道提示与附件路径漂移。
+- **Desktop 启动与配置失败现在有统一运行诊断落点** — 配置加载失败、日志目录 fallback 与桌面启动早期错误都会写入 runtime diagnostics，便于在 Settings/Diagnostics 中直接定位问题。
+
 ## [0.3.19] - 2026-03-08
 
 ### Fixed
