@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -140,6 +141,49 @@ def test_update_bridge_signal_triggers_safe_check_path() -> None:
 
     assert runner.submitted == 1
     assert svc.state == "checking"
+
+
+def test_current_app_bundle_detects_frozen_macos_bundle_path() -> None:
+    from app.backend.update import UpdateService
+
+    class _Config(QObject):
+        def get(self, dotpath: str, default: object = None) -> object:
+            return default
+
+    runner = _FakeRunner()
+    svc = UpdateService(runner, _Config())
+
+    with (
+        patch("app.backend.update.sys.frozen", True, create=True),
+        patch(
+            "app.backend.update.sys.executable",
+            "/Applications/Bao.app/Contents/MacOS/Bao",
+            create=True,
+        ),
+    ):
+        bundle = svc._current_app_bundle()
+
+    assert bundle == Path("/Applications/Bao.app")
+
+
+def test_config_service_load_records_runtime_diagnostic_for_invalid_config(tmp_path: Path) -> None:
+    from app.backend.config import ConfigService
+    from bao.runtime_diagnostics import get_runtime_diagnostics_store
+
+    cfg = tmp_path / "config.jsonc"
+    cfg.write_text(json.dumps({"providers": []}), encoding="utf-8")
+    store = get_runtime_diagnostics_store()
+    store.clear()
+
+    svc = ConfigService()
+    with patch("bao.config.loader.get_config_path", return_value=cfg):
+        svc.load()
+
+    snapshot = store.snapshot(max_events=4, max_log_lines=0)
+
+    assert snapshot["event_count"] == 1
+    assert snapshot["recent_events"][0]["source"] == "config"
+    assert snapshot["recent_events"][0]["code"] == "config_load_failed"
 
 
 @pytest.mark.asyncio

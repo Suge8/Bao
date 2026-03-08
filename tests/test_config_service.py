@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 pytest = importlib.import_module("pytest")
@@ -41,10 +42,22 @@ MINIMAL_CONFIG = """{
 def test_load_missing_file(tmp_path):
     from app.backend.config import ConfigService
 
+    cfg = tmp_path / "config.jsonc"
+
+    def _bootstrap() -> bool:
+        cfg.write_text(MINIMAL_CONFIG, encoding="utf-8")
+        return True
+
     svc = ConfigService()
-    with patch("bao.config.loader.get_config_path", return_value=tmp_path / "missing.jsonc"):
+    with (
+        patch("bao.config.loader.get_config_path", return_value=cfg),
+        patch("bao.config.loader.ensure_first_run", side_effect=_bootstrap) as bootstrap,
+    ):
         svc.load()
-    assert svc.isValid is False
+
+    bootstrap.assert_called_once()
+    assert svc.isValid is True
+    assert cfg.exists()
 
 
 def test_load_valid_config(tmp_path):
@@ -80,6 +93,36 @@ def test_get_value_slot(tmp_path):
     with patch("bao.config.loader.get_config_path", return_value=cfg):
         svc.load()
     assert svc.getValue("agents.defaults.temperature") == 0.7
+
+
+def test_get_config_file_path_after_load(tmp_path):
+    from app.backend.config import ConfigService
+
+    cfg = tmp_path / "config.jsonc"
+    cfg.write_text(MINIMAL_CONFIG, encoding="utf-8")
+    svc = ConfigService()
+    with patch("bao.config.loader.get_config_path", return_value=cfg):
+        svc.load()
+
+    assert svc.getConfigFilePath() == str(cfg)
+
+
+def test_open_config_directory_uses_parent_folder(tmp_path):
+    from app.backend.config import ConfigService
+
+    cfg = tmp_path / "config.jsonc"
+    cfg.write_text(MINIMAL_CONFIG, encoding="utf-8")
+    svc = ConfigService()
+    with patch("bao.config.loader.get_config_path", return_value=cfg):
+        svc.load()
+
+    with patch("app.backend.config.QDesktopServices.openUrl") as open_url:
+        svc.openConfigDirectory()
+
+    open_url.assert_called_once()
+    url = open_url.call_args.args[0]
+    assert url.isLocalFile()
+    assert Path(url.toLocalFile()) == cfg.parent
 
 
 def test_export_data_returns_detached_snapshot(tmp_path):
@@ -172,13 +215,35 @@ def test_save_after_missing_load_marks_valid(tmp_path):
 
     cfg = tmp_path / "config.jsonc"
     svc = ConfigService()
-    with patch("bao.config.loader.get_config_path", return_value=cfg):
+
+    def _bootstrap() -> bool:
+        cfg.write_text(MINIMAL_CONFIG, encoding="utf-8")
+        return True
+
+    with (
+        patch("bao.config.loader.get_config_path", return_value=cfg),
+        patch("bao.config.loader.ensure_first_run", side_effect=_bootstrap),
+    ):
         svc.load()
-    assert svc.isValid is False
+    assert svc.isValid is True
 
     ok = svc.save({"ui": {"update": {"autoCheck": True}}})
     assert ok is True
     assert svc.isValid is True
+
+
+def test_load_missing_file_propagates_bootstrap_failure(tmp_path):
+    from app.backend.config import ConfigService
+
+    cfg = tmp_path / "config.jsonc"
+    svc = ConfigService()
+
+    with (
+        patch("bao.config.loader.get_config_path", return_value=cfg),
+        patch("bao.config.loader.ensure_first_run", side_effect=RuntimeError("boom")),
+        pytest.raises(RuntimeError, match="boom"),
+    ):
+        svc.load()
 
 
 def test_load_legacy_ui_language_is_accepted_but_not_promoted(tmp_path):
