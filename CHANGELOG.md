@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.19] - 2026-03-08
+
+### Fixed
+
+- **Windows 安装器打包入口现在会把 build root 统一归一化为绝对路径** — `app/scripts/package_win_installer.bat` 会先把 `PROJECT_ROOT` 与最终 `BUILD_ROOT` 解析成完整路径后再传给 Inno Setup，因此无论 workflow 或本地命令传的是 `dist-pyinstaller\dist\Bao` 这种相对路径，`bao_installer.iss` 都不会再把它误解为相对 `app/scripts/` 的目录，避免 Release/CI 在 `Create installer` 阶段报 `No files found matching ...`。
+
 ## [0.3.18] - 2026-03-08
 
 ### Fixed
