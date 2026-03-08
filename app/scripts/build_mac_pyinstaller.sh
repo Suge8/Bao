@@ -23,14 +23,26 @@ case "$ARCH" in
 esac
 
 VERSION=$(uv run python app/scripts/read_version.py)
+BUNDLE_IDENTIFIER="io.github.suge8.bao"
+APPLE_EVENTS_USAGE_DESCRIPTION="Bao needs Automation permission to send messages and media through Messages.app."
 
 plist_set_or_add() {
     local plist_path="$1"
     local key="$2"
     local value="$3"
 
-    /usr/libexec/PlistBuddy -c "Set :$key $value" "$plist_path" >/dev/null 2>&1 || \
-        /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist_path"
+    /usr/libexec/PlistBuddy -c "Set :$key \"$value\"" "$plist_path" >/dev/null 2>&1 || \
+        /usr/libexec/PlistBuddy -c "Add :$key string \"$value\"" "$plist_path"
+}
+
+plist_require_key() {
+    local plist_path="$1"
+    local key="$2"
+
+    /usr/libexec/PlistBuddy -c "Print :$key" "$plist_path" >/dev/null 2>&1 || {
+        echo "❌ Missing required Info.plist key: $key"
+        exit 1
+    }
 }
 
 APP_NAME="Bao"
@@ -75,6 +87,7 @@ uv run pyinstaller \
     --workpath "$WORK_DIR" \
     --specpath "$SPEC_DIR" \
     --target-architecture "$ARCH" \
+    --osx-bundle-identifier "$BUNDLE_IDENTIFIER" \
     --icon "$PROJECT_ROOT/assets/logo.icns" \
     --add-data "$PROJECT_ROOT/app/qml:app/qml" \
     --add-data "$PROJECT_ROOT/app/resources:app/resources" \
@@ -109,6 +122,13 @@ INFO_PLIST="$OUTPUT_APP/Contents/Info.plist"
 if [[ -f "$INFO_PLIST" ]]; then
     plist_set_or_add "$INFO_PLIST" "CFBundleShortVersionString" "$VERSION"
     plist_set_or_add "$INFO_PLIST" "CFBundleVersion" "$VERSION"
+    plist_set_or_add "$INFO_PLIST" "CFBundleIdentifier" "$BUNDLE_IDENTIFIER"
+    plist_set_or_add "$INFO_PLIST" "NSAppleEventsUsageDescription" "$APPLE_EVENTS_USAGE_DESCRIPTION"
+    plist_require_key "$INFO_PLIST" "CFBundleIdentifier"
+    plist_require_key "$INFO_PLIST" "NSAppleEventsUsageDescription"
+else
+    echo "❌ Build failed: $INFO_PLIST not found"
+    exit 1
 fi
 
 END_TS=$(python3 -c 'import time; print(int(time.time()))')
