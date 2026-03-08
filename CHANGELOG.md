@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.22] - 2026-03-09
+
+### Changed
+
+- **Desktop 启动问候与 greeting 视觉语义改为统一的 assistant 单一路径** — desktop 与外部渠道的 startup/onboarding 问候现在都会按 assistant 消息持久化，并保留 `entrance_style` 供 UI 投影 greeting 外观，避免会话历史、未读与启动目标在 system/assistant 两套语义之间漂移。
+- **Desktop 打包指南正式纳入仓库发布文档链路** — `docs/desktop-packaging.md` 现在作为受版本控制的正式文档保留，同时 `.gitignore` 继续默认忽略其他本地 `docs/*`，只显式放行这份发布文档，消除“README 可见但 CI checkout 缺失”的状态分裂。
+
+### Fixed
+
+- **Desktop 启动问候不再误落到当前外部会话或丢失持久化 entrance_style** — `SessionService` 与 `ChatService` 现在会优先解析 desktop 启动目标，会话持久化同步保留 greeting/assistant entrance style，切到外部渠道时也不会把启动问候写错会话或在 reload 后退化成普通 assistant 气泡。
+- **Gateway/CLI 的 startup greeting 会同步落库到对应会话** — 外部 ready/onboarding 问候在发送到 channel 的同时也会写入 `SessionManager`，桌面端 reload、未读与历史回放能看到一致的启动消息，不再只存在瞬时 outbound 路径。
+
 ## [0.3.21] - 2026-03-09
 
 ### Fixed

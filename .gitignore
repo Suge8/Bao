@@ -29,6 +29,9 @@ htmlcov/
 
 # Docs (local engineering notes, not published)
 docs/
+!docs/
+docs/*
+!docs/desktop-packaging.md
 
 # Runtime workspace (template is bao/templates/workspace/)
 /workspace/

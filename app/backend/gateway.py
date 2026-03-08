@@ -363,10 +363,10 @@ class ChatService(QObject):
         self._queue_or_show_ui_message(_QueuedUiMessage.from_startup(message, session_key=key))
 
     def _default_startup_session_key(self) -> str:
-        if self._session_key and self._session_key != "desktop:local":
-            return self._session_key
         if self._startup_target_key:
             return self._startup_target_key
+        if self._session_key and self._session_key.startswith("desktop:"):
+            return self._session_key
         return ""
 
     def _should_defer_startup_message(self, session_key: str) -> bool:
@@ -754,6 +754,7 @@ class ChatService(QObject):
                     stack.config,
                     on_desktop_startup_message=lambda msg: self._startupMessage.emit(msg),
                     channels=stack.channels,
+                    session_manager=stack.session_manager,
                 )
             ),
         ]
@@ -1099,7 +1100,11 @@ class ChatService(QObject):
 
     def _show_ui_message(self, message: _QueuedUiMessage) -> None:
         if message.role == "assistant":
-            self._show_assistant_response(message.content, session_key=message.session_key)
+            self._show_assistant_response(
+                message.content,
+                session_key=message.session_key,
+                entrance_style=message.entrance_style,
+            )
             return
         self._show_system_response(
             message.content,
@@ -1123,12 +1128,19 @@ class ChatService(QObject):
             show_in_ui=self._should_show_startup_message(target_session_key),
         )
 
-    def _show_assistant_response(self, content: str, *, session_key: str = "") -> None:
+    def _show_assistant_response(
+        self,
+        content: str,
+        *,
+        session_key: str = "",
+        entrance_style: str = "assistantReceived",
+    ) -> None:
         target_session_key = session_key or self._session_key
         self._append_transient_assistant_message(
             content,
             status="done",
             session_key=target_session_key,
+            entrance_style=entrance_style,
             show_in_ui=self._should_show_startup_message(target_session_key),
         )
 
@@ -1170,6 +1182,7 @@ class ChatService(QObject):
         *,
         status: str = "done",
         session_key: str = "",
+        entrance_style: str = "assistantReceived",
         show_in_ui: bool = True,
     ) -> None:
         if not content:
@@ -1180,6 +1193,8 @@ class ChatService(QObject):
             target_session_key,
             content,
             status,
+            entrance_style=entrance_style,
+            emit_change=not is_visible_active_session,
             mark_seen=is_visible_active_session,
         )
         if not show_in_ui:
@@ -1187,7 +1202,7 @@ class ChatService(QObject):
         row = self._model.append_assistant(
             content,
             status=status,
-            entrance_style="assistantReceived",
+            entrance_style=entrance_style,
             entrance_pending=True,
         )
         self.messageAppended.emit(row)
@@ -1239,10 +1254,18 @@ class ChatService(QObject):
         session_key: str,
         content: str,
         status: str,
+        entrance_style: str,
+        emit_change: bool,
     ) -> None:
         session = session_manager.get_or_create(session_key)
-        session.add_message("assistant", content, status=status, format="markdown")
-        session_manager.save(session, emit_change=False)
+        session.add_message(
+            "assistant",
+            content,
+            status=status,
+            format="markdown",
+            entrance_style=entrance_style,
+        )
+        session_manager.save(session, emit_change=emit_change)
 
     async def _persist_assistant_message_async(
         self,
@@ -1250,6 +1273,8 @@ class ChatService(QObject):
         session_key: str,
         content: str,
         status: str,
+        entrance_style: str,
+        emit_change: bool,
     ) -> None:
         await self._run_bg_io(
             self._persist_assistant_message_with_manager,
@@ -1257,6 +1282,8 @@ class ChatService(QObject):
             session_key,
             content,
             status,
+            entrance_style,
+            emit_change,
         )
 
     def _on_assistant_persist_done(
@@ -1314,6 +1341,8 @@ class ChatService(QObject):
         content: str,
         status: str,
         *,
+        entrance_style: str = "assistantReceived",
+        emit_change: bool = False,
         mark_seen: bool = False,
     ) -> None:
         session_manager = self._session_manager
@@ -1324,7 +1353,12 @@ class ChatService(QObject):
             try:
                 future = self._runner.submit(
                     self._persist_assistant_message_async(
-                        session_manager, session_key, content, status
+                        session_manager,
+                        session_key,
+                        content,
+                        status,
+                        entrance_style,
+                        emit_change,
                     )
                 )
                 future.add_done_callback(
@@ -1342,7 +1376,12 @@ class ChatService(QObject):
 
         try:
             self._persist_assistant_message_with_manager(
-                session_manager, session_key, content, status
+                session_manager,
+                session_key,
+                content,
+                status,
+                entrance_style,
+                emit_change=emit_change,
             )
         except Exception as exc:
             logger.warning("Failed to persist desktop startup assistant message: {}", exc)

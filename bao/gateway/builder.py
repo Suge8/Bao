@@ -113,6 +113,26 @@ def _log_startup_out(logger: Any, channel_name: str, chat_id: str, content: str)
     logger.info("💬 启动问候已入队 / queued: {}:{}: {}", channel_name, chat_id, preview)
 
 
+def _persist_startup_message(
+    session_manager: Any,
+    *,
+    session_key: str,
+    content: str,
+    entrance_style: str,
+) -> None:
+    if session_manager is None or not session_key or not content:
+        return
+    session = session_manager.get_or_create(session_key)
+    session.add_message(
+        "assistant",
+        content,
+        status="done",
+        format="markdown",
+        entrance_style=entrance_style,
+    )
+    session_manager.save(session)
+
+
 def _extract_persona_language_tag(text: str) -> str | None:
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -391,6 +411,7 @@ async def send_startup_greeting(
     *,
     on_desktop_startup_message: Any | None = None,
     channels: Any | None = None,
+    session_manager: Any | None = None,
 ) -> None:
     from loguru import logger
 
@@ -440,6 +461,12 @@ async def send_startup_greeting(
             await bus.publish_outbound(
                 OutboundMessage(channel=channel_name, chat_id=chat_id, content=text)
             )
+            _persist_startup_message(
+                session_manager,
+                session_key=f"{channel_name}:{chat_id}",
+                content=text,
+                entrance_style="greeting",
+            )
             _log_startup_out(logger, channel_name, chat_id, text)
         except Exception as e:
             logger.warning("⚠️ 问候发送失败 / send failed: {}:{} — {}", channel_name, chat_id, e)
@@ -471,6 +498,12 @@ async def send_startup_greeting(
                 await bus.publish_outbound(
                     OutboundMessage(channel=ch, chat_id=cid, content=content)
                 )
+                _persist_startup_message(
+                    session_manager,
+                    session_key=f"{ch}:{cid}",
+                    content=content,
+                    entrance_style="assistantReceived",
+                )
                 _log_startup_out(logger, ch, cid, content)
             except Exception as e:
                 logger.warning("⚠️ 入门问候失败 / onboarding failed: {}:{} — {}", ch, cid, e)
@@ -495,7 +528,7 @@ async def send_startup_greeting(
         )
         if text:
             await _emit_desktop_startup_message(
-                DesktopStartupMessage(content=text, role="system", entrance_style="greeting"),
+                DesktopStartupMessage(content=text, role="assistant", entrance_style="greeting"),
                 "Desktop startup",
             )
 

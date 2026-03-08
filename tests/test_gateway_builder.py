@@ -1113,11 +1113,138 @@ async def test_startup_greeting_desktop_not_blocked_by_external_publish() -> Non
     on_desktop.assert_awaited_once_with(
         DesktopStartupMessage(
             content="desktop-hi",
-            role="system",
+            role="assistant",
             entrance_style="greeting",
         )
     )
     assert fake_bus.publish_outbound.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_startup_greeting_persists_external_ready_message_to_session_manager() -> None:
+    fake_bus = MagicMock()
+    fake_bus.publish_outbound = AsyncMock()
+
+    fake_agent = MagicMock()
+    fake_agent.model = "right-gpt/gpt-5.3-codex"
+    fake_agent.max_tokens = 4096
+    fake_agent.temperature = 0.1
+    fake_agent.provider = MagicMock()
+    fake_agent.provider.chat = AsyncMock(return_value=MagicMock(content="hello"))
+
+    class StubSession:
+        def __init__(self, key: str) -> None:
+            self.key = key
+            self.messages: list[dict[str, object]] = []
+
+        def add_message(self, role: str, content: str, **kwargs: object) -> None:
+            self.messages.append({"role": role, "content": content, **kwargs})
+
+    session = StubSession("feishu:ou_123")
+    session_manager = MagicMock()
+    session_manager.get_or_create.return_value = session
+
+    config = MagicMock()
+    config.workspace_path = "/tmp/test"
+
+    channels = MagicMock()
+    channels.telegram.enabled = False
+    channels.telegram.allow_from = []
+    channels.feishu.enabled = True
+    channels.feishu.allow_from = ["ou_123"]
+    channels.dingtalk.enabled = False
+    channels.dingtalk.allow_from = []
+    channels.imessage.enabled = False
+    channels.imessage.allow_from = []
+    channels.qq.enabled = False
+    channels.qq.allow_from = []
+    channels.email.enabled = False
+    channels.email.allow_from = []
+    channels.whatsapp.enabled = False
+    channels.whatsapp.allow_from = []
+    config.channels = channels
+
+    with patch("bao.config.onboarding.detect_onboarding_stage", return_value="ready"):
+        await send_startup_greeting(
+            fake_agent,
+            fake_bus,
+            config,
+            session_manager=session_manager,
+        )
+
+    session_manager.get_or_create.assert_called_once_with("feishu:ou_123")
+    session_manager.save.assert_called_once_with(session)
+    assert session.messages == [
+        {
+            "role": "assistant",
+            "content": "hello",
+            "status": "done",
+            "format": "markdown",
+            "entrance_style": "greeting",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_startup_onboarding_persists_external_message_to_session_manager() -> None:
+    fake_bus = MagicMock()
+    fake_bus.publish_outbound = AsyncMock()
+
+    class StubSession:
+        def __init__(self, key: str) -> None:
+            self.key = key
+            self.messages: list[dict[str, object]] = []
+
+        def add_message(self, role: str, content: str, **kwargs: object) -> None:
+            self.messages.append({"role": role, "content": content, **kwargs})
+
+    session = StubSession("imessage:13800138000")
+    session_manager = MagicMock()
+    session_manager.get_or_create.return_value = session
+
+    config = MagicMock()
+    config.workspace_path = "/tmp/test"
+
+    channels = MagicMock()
+    channels.telegram.enabled = False
+    channels.telegram.allow_from = []
+    channels.feishu.enabled = False
+    channels.feishu.allow_from = []
+    channels.dingtalk.enabled = False
+    channels.dingtalk.allow_from = []
+    channels.imessage.enabled = True
+    channels.imessage.allow_from = ["13800138000"]
+    channels.qq.enabled = False
+    channels.qq.allow_from = []
+    channels.email.enabled = False
+    channels.email.allow_from = []
+    channels.whatsapp.enabled = False
+    channels.whatsapp.allow_from = []
+    config.channels = channels
+
+    with (
+        patch("bao.gateway.builder.asyncio.sleep", new=AsyncMock()),
+        patch("bao.config.onboarding.detect_onboarding_stage", return_value="lang_select"),
+        patch("bao.config.onboarding.LANG_PICKER", "picker"),
+    ):
+        await send_startup_greeting(
+            MagicMock(),
+            fake_bus,
+            config,
+            session_manager=session_manager,
+        )
+
+    session_manager.get_or_create.assert_called_once_with("imessage:13800138000")
+    session_manager.save.assert_called_once_with(session)
+    assert session.messages == [
+        {
+            "role": "assistant",
+            "content": "picker",
+            "status": "done",
+            "format": "markdown",
+            "entrance_style": "assistantReceived",
+        }
+    ]
 
 
 @pytest.mark.asyncio

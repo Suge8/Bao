@@ -616,8 +616,10 @@ def main() -> int:
 
     sync_active_session_meta()
     _ = session_service.activeSessionMetaChanged.connect(sync_active_session_meta)
-    notify_startup_session_ready = cast(Callable[[], None], chat_service.notifyStartupSessionReady)
-    _ = session_service.activeReady.connect(notify_startup_session_ready)
+    notify_startup_session_ready = cast(
+        Callable[[str], None], chat_service.notifyStartupSessionReady
+    )
+    _ = session_service.startupTargetReady.connect(notify_startup_session_ready)
     # Wire session deletion → gateway: cancel streaming if needed
     handle_deleted = cast(Callable[[str, bool, str], None], chat_service.handle_session_deleted)
     _ = session_service.deleteCompleted.connect(handle_deleted)
