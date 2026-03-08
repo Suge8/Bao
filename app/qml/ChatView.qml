@@ -18,7 +18,8 @@ Rectangle {
     readonly property int composerBottomMargin: Math.max(spacingXs, windowContentInsetBottom - spacingSm)
     readonly property int composerDockGap: windowContentInsetBottom
     readonly property int composerEdgeInset: spacingSm
-
+    readonly property bool hasSessionService: typeof sessionService !== "undefined" && sessionService !== null
+    readonly property bool activeSessionReadOnly: hasSessionService ? sessionService.activeSessionReadOnly : false
     signal messageCopied()
 
     // Message list and composer share one inset source so content never gets
@@ -545,7 +546,7 @@ Rectangle {
     // ── Input bar ────────────────────────────────────────────────────
     Item {
         id: composerBar
-        readonly property bool active: chatService && chatService.state === "running"
+        readonly property bool active: chatService && chatService.state === "running" && !root.activeSessionReadOnly
         readonly property real visibleHeight: inputRow.implicitHeight + 24
         readonly property real listBottomInset: active
                                              ? visibleHeight + root.composerBottomMargin + root.composerDockGap

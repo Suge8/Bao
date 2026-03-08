@@ -151,6 +151,7 @@ class ChatService(QObject):
         self._active_summary_key = ""
         self._active_summary_message_count: int | None = None
         self._active_summary_has_messages: bool | None = None
+        self._active_session_read_only = False
         self._current_nav_id = 0
         self._history_future: Any = None
         self._send_queue: queue.Queue[tuple[str, str]] = queue.Queue()
@@ -308,6 +309,8 @@ class ChatService(QObject):
     def sendMessage(self, text: str) -> None:
         if not text.strip():
             return
+        if self._active_session_read_only:
+            return
         row = self._model.append_user(text)
         self.messageAppended.emit(row)
         self._enqueue(text)
@@ -330,6 +333,10 @@ class ChatService(QObject):
             message_count if isinstance(message_count, int) and message_count >= 0 else None
         )
         self._active_summary_has_messages = has_messages if isinstance(has_messages, bool) else None
+
+    @Slot(bool)
+    def setActiveSessionReadOnly(self, read_only: bool) -> None:
+        self._active_session_read_only = bool(read_only)
 
     @Slot(str)
     def notifyStartupSessionReady(self, key: str) -> None:
@@ -621,7 +628,7 @@ class ChatService(QObject):
                 prepared_messages, preserve_transient_tail=preserve_transient_tail
             )
             if loaded_key == self._active_streaming_session_key:
-                rebound_row = self._restore_active_streaming_row(emit_append_signal=True)
+                rebound_row = self._rebind_active_streaming_row_after_history()
                 active_message = self._model.message_at(rebound_row)
                 if active_message is not None:
                     if self._pending_split and (
@@ -826,12 +833,13 @@ class ChatService(QObject):
                 return
             self._processing = True
 
-        assistant_row = self._model.append_assistant("", status="typing")
+        self._set_session_running(session_key, True)
+
+        assistant_row = self._append_typing_row()
         self._active_streaming_row = assistant_row
         self._active_streaming_session_key = session_key
         self._active_has_content = False
         self._pending_split = False
-        self.messageAppended.emit(assistant_row)
 
         fut = self._runner.submit(self._call_agent(text, session_key))
         self._active_send_future = fut
@@ -839,6 +847,9 @@ class ChatService(QObject):
 
     def _on_send_done(self, future: Any, row: int) -> None:
         """Runs on asyncio thread — only emits signal."""
+        if future.cancelled():
+            self._sendResult.emit(row, False, "Cancelled.")
+            return
         exc = future.exception()
         if exc:
             self._sendResult.emit(row, False, f"Error: {exc}")
@@ -847,6 +858,7 @@ class ChatService(QObject):
 
     def _handle_send_result(self, _row: int, ok: bool, content: str) -> None:
         """Runs on Qt main thread. Finalizes the active streaming bubble."""
+        self._active_send_future = None
         is_provider_error = ok and isinstance(content, str) and content.startswith("Error calling ")
         final_status = "error" if (not ok or is_provider_error) else "done"
         should_render_in_ui = self._should_render_active_stream()
@@ -862,10 +874,9 @@ class ChatService(QObject):
         ):
             if active >= 0:
                 self._model.set_status(active, "done")
-                active = self._model.append_assistant("", status="typing")
+                active = self._append_typing_row()
                 self._active_streaming_row = active
                 self._active_has_content = False
-                self.messageAppended.emit(active)
         if not ok:
             if active >= 0:
                 self._model.set_format(active, "plain")
@@ -887,13 +898,21 @@ class ChatService(QObject):
         self._active_streaming_session_key = None
         self._active_has_content = False
         self._pending_split = False
-        if (
+        should_mark_seen = (
             ok
             and not is_provider_error
             and completed_session_key
             and completed_session_key == self._committed_session_key
-        ):
-            self._mark_session_seen_ai(completed_session_key)
+        )
+        if completed_session_key and not should_mark_seen:
+            self._set_session_running(completed_session_key, False)
+        completed_key = completed_session_key if isinstance(completed_session_key, str) else ""
+        if should_mark_seen and completed_key:
+            self._mark_session_seen_ai(
+                completed_key,
+                emit_change=True,
+                extra_updates={"session_running": False},
+            )
         self.statusUpdated.emit(active, final_status)
         # Drain pending system responses before releasing lock
         pending: list[_QueuedUiMessage] = []
@@ -925,7 +944,7 @@ class ChatService(QObject):
         async def _on_event(event: Any) -> None:
             if getattr(event, "type", "") == StreamEventType.TOOL_HINT:
                 hint_text = getattr(event, "text", "")
-                if isinstance(hint_text, str) and hint_text.strip():
+                if isinstance(hint_text, str) and hint_text.strip() and self._tool_hints_enabled():
                     self._toolHintUpdate.emit(hint_text)
 
         result = await self._agent.process_direct(
@@ -950,9 +969,8 @@ class ChatService(QObject):
                 if cur >= 0 and should_render_in_ui:
                     self._model.set_status(cur, "done")
                 if should_render_in_ui:
-                    new_row = self._model.append_assistant("", status="typing")
+                    new_row = self._append_typing_row()
                     self._active_streaming_row = new_row
-                    self.messageAppended.emit(new_row)
                 else:
                     self._active_streaming_row = -1
                 self._active_has_content = False
@@ -976,31 +994,81 @@ class ChatService(QObject):
             self._active_has_content = bool(last_message.get("content"))
             return last_row
 
-        new_row = self._model.append_assistant("", status="typing")
+        new_row = (
+            self._append_typing_row()
+            if emit_append_signal
+            else self._model.append_assistant("", status="typing")
+        )
         self._active_streaming_row = new_row
         self._active_has_content = False
-        if emit_append_signal:
-            self.messageAppended.emit(new_row)
         return new_row
 
-    def _handle_tool_hint_update(self, _hint: str) -> None:
+    def _rebind_active_streaming_row_after_history(self) -> int:
+        if not self._should_render_active_stream():
+            self._active_streaming_row = -1
+            self._active_has_content = False
+            return -1
+
+        last_row = self._model.rowCount() - 1
+        last_message = self._model.message_at(last_row)
+        if last_message is not None and last_message.get("role") == "assistant":
+            if last_message.get("_source") == "assistant-progress":
+                new_row = self._append_typing_row()
+                self._active_streaming_row = new_row
+                self._active_has_content = False
+                return new_row
+            self._active_streaming_row = last_row
+            self._active_has_content = bool(last_message.get("content"))
+            return last_row
+
+        new_row = self._append_typing_row()
+        self._active_streaming_row = new_row
+        self._active_has_content = False
+        return new_row
+
+    def _append_typing_row(self) -> int:
+        row = self._model.append_assistant("", status="typing")
+        self.messageAppended.emit(row)
+        return row
+
+    def _handle_tool_hint_update(self, hint: str) -> None:
+        should_render_in_ui = self._should_render_active_stream()
+        if self._active_streaming_row < 0 and should_render_in_ui:
+            self._restore_active_streaming_row(emit_append_signal=True)
         if self._active_streaming_row < 0:
             return
-        if not self._active_has_content:
-            return
-        if self._pending_split:
-            return
-        should_render_in_ui = self._should_render_active_stream()
         current_row = self._active_streaming_row
-        if should_render_in_ui:
+        if self._active_has_content:
+            if should_render_in_ui:
+                self._model.set_status(current_row, "done")
+                new_row = self._append_typing_row()
+                self._active_streaming_row = new_row
+                current_row = new_row
+            else:
+                self._active_streaming_row = -1
+                self._active_has_content = False
+                return
+        clean_hint = hint.strip()
+        if should_render_in_ui and clean_hint:
+            self._model.update_content(current_row, clean_hint)
+            self.contentUpdated.emit(current_row, clean_hint)
             self._model.set_status(current_row, "done")
-            new_row = self._model.append_assistant("", status="typing")
-            self._active_streaming_row = new_row
-            self.messageAppended.emit(new_row)
+            next_row = self._append_typing_row()
+            self._active_streaming_row = next_row
+            self._active_has_content = False
         else:
             self._active_streaming_row = -1
-        self._active_has_content = False
+            self._active_has_content = False
         self._pending_split = False
+
+    def _tool_hints_enabled(self) -> bool:
+        data = self._config_data or {}
+        agents = data.get("agents") if isinstance(data, dict) else None
+        defaults = agents.get("defaults") if isinstance(agents, dict) else None
+        if not isinstance(defaults, dict):
+            return True
+        value = defaults.get("sendToolHints", defaults.get("send_tool_hints", True))
+        return value if isinstance(value, bool) else True
 
     def _handle_system_response(self, content: str, session_key: str = "") -> None:
         """Runs on Qt main thread. Queue if streaming, else show immediately."""
@@ -1361,6 +1429,45 @@ class ChatService(QObject):
         self._gateway_channels = channels
         self.gatewayChannelsChanged.emit()
 
+    def _update_session_metadata(
+        self,
+        key: str,
+        payload: dict[str, Any],
+        *,
+        emit_change: bool,
+    ) -> None:
+        if not key or self._session_manager is None or not isinstance(payload, dict) or not payload:
+            return
+
+        session_manager = self._session_manager
+        update_fn = getattr(session_manager, "update_metadata_only", None)
+        if not callable(update_fn):
+            return
+
+        if isinstance(self._runner, AsyncioRunner):
+            try:
+                future = self._runner.submit(
+                    self._run_bg_io(lambda: update_fn(key, payload, emit_change=emit_change))
+                )
+                future.add_done_callback(self._on_metadata_update_done)
+                return
+            except RuntimeError:
+                pass
+            except Exception as exc:
+                logger.debug("Skip metadata update {}: {}", key, exc)
+
+        try:
+            update_fn(key, payload, emit_change=emit_change)
+        except Exception as exc:
+            logger.debug("Skip metadata update {}: {}", key, exc)
+
+    def _set_session_running(self, key: str, is_running: bool) -> None:
+        self._update_session_metadata(
+            key,
+            {"session_running": bool(is_running)},
+            emit_change=True,
+        )
+
     def _build_gateway_channels_projection(self) -> list[dict[str, Any]]:
         base_channels = self._enabled_gateway_channels or self._configured_gateway_channels
         ordered = _normalize_gateway_channels(base_channels + list(self._channel_errors.keys()))
@@ -1381,40 +1488,24 @@ class ChatService(QObject):
             projection.append({"channel": channel, "state": state, "detail": detail})
         return projection
 
-    def _mark_session_seen_ai(self, key: str) -> None:
-        if not key or self._session_manager is None:
-            return
-
-        session_manager = self._session_manager
-        payload = {"desktop_last_seen_ai_at": datetime.now().isoformat()}
-
-        if isinstance(self._runner, AsyncioRunner):
-            try:
-                future = self._runner.submit(
-                    self._run_bg_io(
-                        lambda: session_manager.update_metadata_only(
-                            key, payload, emit_change=False
-                        )
-                    )
-                )
-                future.add_done_callback(self._on_mark_session_seen_ai_done)
-                return
-            except RuntimeError:
-                pass
-            except Exception as exc:
-                logger.debug("Skip mark seen ai {}: {}", key, exc)
-
-        try:
-            session_manager.update_metadata_only(key, payload, emit_change=False)
-        except Exception as exc:
-            logger.debug("Skip mark seen ai {}: {}", key, exc)
+    def _mark_session_seen_ai(
+        self,
+        key: str,
+        *,
+        emit_change: bool = False,
+        extra_updates: dict[str, Any] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {"desktop_last_seen_ai_at": datetime.now().isoformat()}
+        if isinstance(extra_updates, dict):
+            payload.update(extra_updates)
+        self._update_session_metadata(key, payload, emit_change=emit_change)
 
     @staticmethod
-    def _on_mark_session_seen_ai_done(future: Any) -> None:
+    def _on_metadata_update_done(future: Any) -> None:
         try:
             future.result()
         except Exception as exc:
-            logger.debug("Skip mark seen ai: {}", exc)
+            logger.debug("Skip metadata update: {}", exc)
 
     async def _shutdown_gateway(self) -> None:
         """Full shutdown mirroring CLI finally block."""
@@ -1441,5 +1532,3 @@ class ChatService(QObject):
                 self._active_send_future.cancel()
             except Exception:
                 pass
-            self._active_streaming_session_key = None
-            self._active_send_future = None

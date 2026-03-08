@@ -216,6 +216,7 @@ class DummyConfigService(QObject):
         model: str | None = None,
         providers: list[dict[str, object]] | None = None,
         channels: dict[str, object] | None = None,
+        config_file_path: str = "/tmp/.bao/config.jsonc",
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -229,6 +230,8 @@ class DummyConfigService(QObject):
             plain_channels if isinstance(plain_channels, dict) else {}
         )
         self._agents_defaults: dict[str, object] = {}
+        self._config_file_path = config_file_path
+        self.opened_config_directory = False
         if model is not None:
             self._agents_defaults["model"] = model
         self.last_saved_changes: object | None = None
@@ -325,6 +328,14 @@ class DummyConfigService(QObject):
     def removeProvider(self, name: str) -> bool:
         _ = name
         return True
+
+    @Slot(result=str)
+    def getConfigFilePath(self) -> str:
+        return self._config_file_path
+
+    @Slot()
+    def openConfigDirectory(self) -> None:
+        self.opened_config_directory = True
 
 
 class DummyDesktopPreferences(QObject):
@@ -440,6 +451,8 @@ class DummyDiagnosticsService(QObject):
 
 class DummySessionService(QObject):
     sessionsChanged = Signal()
+    sidebarProjectionWillChange = Signal()
+    sidebarProjectionChanged = Signal()
     activeKeyChanged = Signal(str)
     deleteCompleted = Signal(str, bool, str)
     activeReady = Signal()
@@ -447,12 +460,20 @@ class DummySessionService(QObject):
 
     def __init__(self, sessions_model: QAbstractListModel, parent: QObject | None = None) -> None:
         super().__init__(parent)
+        from app.backend.session import SidebarRowsModel
+
         self._sessions_model = sessions_model
+        self._sidebar_model = SidebarRowsModel()
         self._active_key = ""
         self._sessions_loading = False
+        self._sidebar_expanded_groups: dict[str, bool] = {}
+        self._sidebar_unread_count = 0
+        self._sidebar_unread_fingerprint = ""
         self.new_session_calls: list[str] = []
         self.select_session_calls: list[str] = []
         self.delete_session_calls: list[str] = []
+        self.sessionsChanged.connect(self._rebuild_sidebar_model)
+        self._rebuild_sidebar_model()
 
     @Property(str, notify=activeKeyChanged)
     def activeKey(self) -> str:
@@ -467,11 +488,25 @@ class DummySessionService(QObject):
             for row in rows:
                 if isinstance(row, dict) and row.get("key") == key:
                     row["has_unread"] = False
+        self._ensure_group_expanded_for(key)
+        self._rebuild_sidebar_model()
         self.activeKeyChanged.emit(key)
 
     @Property(QObject, constant=True)
     def sessionsModel(self) -> QObject:
         return self._sessions_model
+
+    @Property(QObject, constant=True)
+    def sidebarModel(self) -> QObject:
+        return self._sidebar_model
+
+    @Property(int, notify=sidebarProjectionChanged)
+    def sidebarUnreadCount(self) -> int:
+        return self._sidebar_unread_count
+
+    @Property(str, notify=sidebarProjectionChanged)
+    def sidebarUnreadFingerprint(self) -> str:
+        return self._sidebar_unread_fingerprint
 
     @Property(bool, notify=sessionsLoadingChanged)
     def sessionsLoading(self) -> bool:
@@ -494,6 +529,211 @@ class DummySessionService(QObject):
     @Slot(str)
     def deleteSession(self, key: str) -> None:
         self.delete_session_calls.append(key)
+
+    @Slot(str)
+    def toggleSidebarGroup(self, channel: str) -> None:
+        if not channel:
+            return
+        self._sidebar_expanded_groups[channel] = (
+            self._sidebar_expanded_groups.get(channel, False) is not True
+        )
+        self._rebuild_sidebar_model()
+
+    def _session_rows(self) -> list[dict[str, object]]:
+        rows = getattr(self._sessions_model, "_rows", None)
+        if isinstance(rows, list):
+            return [dict(row) for row in rows if isinstance(row, dict)]
+        result: list[dict[str, object]] = []
+        for i in range(self._sessions_model.rowCount()):
+            idx = self._sessions_model.index(i)
+            key = self._sessions_model.data(idx, int(Qt.ItemDataRole.UserRole) + 1)
+            if not isinstance(key, str) or not key:
+                continue
+            result.append(
+                {
+                    "key": key,
+                    "title": self._sessions_model.data(idx, int(Qt.ItemDataRole.UserRole) + 2)
+                    or key,
+                    "updated_label": self._sessions_model.data(
+                        idx, int(Qt.ItemDataRole.UserRole) + 7
+                    )
+                    or "",
+                    "channel": self._sessions_model.data(idx, int(Qt.ItemDataRole.UserRole) + 5)
+                    or "other",
+                    "has_unread": bool(
+                        self._sessions_model.data(idx, int(Qt.ItemDataRole.UserRole) + 6) or False
+                    ),
+                    "session_kind": self._sessions_model.data(
+                        idx, int(Qt.ItemDataRole.UserRole) + 10
+                    )
+                    or "regular",
+                    "is_read_only": bool(
+                        self._sessions_model.data(idx, int(Qt.ItemDataRole.UserRole) + 11) or False
+                    ),
+                    "parent_session_key": self._sessions_model.data(
+                        idx, int(Qt.ItemDataRole.UserRole) + 12
+                    )
+                    or "",
+                    "is_running": bool(
+                        self._sessions_model.data(idx, int(Qt.ItemDataRole.UserRole) + 15) or False
+                    ),
+                }
+            )
+        return result
+
+    def _initial_group_expanded(self, channel: str, items: list[dict[str, object]]) -> bool:
+        if self._active_key and any(str(item.get("key", "")) == self._active_key for item in items):
+            return True
+        if self._active_key:
+            return False
+        return channel == "desktop"
+
+    def _ensure_group_expanded_for(self, key: str) -> None:
+        if not key:
+            return
+        for row in self._session_rows():
+            if str(row.get("key", "")) != key:
+                continue
+            channel = str(row.get("channel", "") or "")
+            if channel:
+                self._sidebar_expanded_groups[channel] = True
+            return
+
+    def _rebuild_sidebar_model(self) -> None:
+        self.sidebarProjectionWillChange.emit()
+        sessions = self._session_rows()
+        groups: dict[str, list[dict[str, object]]] = {}
+        order: list[str] = []
+        unread_parts: list[str] = []
+
+        for session in sessions:
+            channel = str(session.get("channel", "other") or "other")
+            if channel not in groups:
+                groups[channel] = []
+                order.append(channel)
+            session_copy = dict(session)
+            if str(session_copy.get("key", "")) == self._active_key:
+                session_copy["has_unread"] = False
+            groups[channel].append(session_copy)
+            if bool(session_copy.get("has_unread", False)):
+                unread_parts.append(str(session_copy.get("key", "")))
+
+        available = set(order)
+        self._sidebar_expanded_groups = {
+            channel: expanded
+            for channel, expanded in self._sidebar_expanded_groups.items()
+            if channel in available
+        }
+        order.sort(
+            key=lambda channel: (
+                (0, channel)
+                if channel == "desktop"
+                else ((2, channel) if channel == "heartbeat" else (1, channel))
+            )
+        )
+        for channel in order:
+            if channel in self._sidebar_expanded_groups:
+                continue
+            self._sidebar_expanded_groups[channel] = self._initial_group_expanded(
+                channel, groups[channel]
+            )
+
+        rows: list[dict[str, object]] = []
+        for channel in order:
+            items = groups[channel]
+            expanded = self._sidebar_expanded_groups.get(channel, False) is True
+            child_buckets: dict[str, list[dict[str, object]]] = {}
+            child_remainder: list[dict[str, object]] = []
+            reordered_items: list[dict[str, object]] = []
+            for item in items:
+                if bool(item.get("session_kind") == "subagent_child") and str(
+                    item.get("parent_session_key", "")
+                ):
+                    child_buckets.setdefault(str(item.get("parent_session_key", "")), []).append(
+                        item
+                    )
+                elif item.get("session_kind") == "subagent_child":
+                    child_remainder.append(item)
+            for item in items:
+                if item.get("session_kind") == "subagent_child":
+                    continue
+                reordered_items.append(item)
+                reordered_items.extend(child_buckets.get(str(item.get("key", "")), []))
+            reordered_items.extend(child_remainder)
+
+            unread_in_group = sum(
+                1 for item in reordered_items if bool(item.get("has_unread", False))
+            )
+            group_has_running = any(bool(item.get("is_running", False)) for item in reordered_items)
+            rows.append(
+                {
+                    "row_id": f"header:{channel}",
+                    "is_header": True,
+                    "channel": channel,
+                    "expanded": expanded,
+                    "item_key": "",
+                    "item_title": "",
+                    "item_updated_text": "",
+                    "visual_channel": channel,
+                    "is_read_only": False,
+                    "is_running": False,
+                    "is_child_session": False,
+                    "parent_session_key": "",
+                    "item_has_unread": False,
+                    "item_count": len(reordered_items),
+                    "group_unread_count": unread_in_group,
+                    "group_has_running": group_has_running,
+                    "is_last_in_group": False,
+                    "is_first_in_group": False,
+                }
+            )
+            if not expanded:
+                continue
+            for index, item in enumerate(reordered_items):
+                rows.append(
+                    {
+                        "row_id": f"session:{item.get('key', '')}",
+                        "is_header": False,
+                        "channel": channel,
+                        "expanded": False,
+                        "item_key": str(item.get("key", "")),
+                        "item_title": str(item.get("title", item.get("key", "")) or ""),
+                        "item_updated_text": str(item.get("updated_label", "") or ""),
+                        "visual_channel": "subagent"
+                        if item.get("session_kind") == "subagent_child"
+                        else str(item.get("channel", channel) or channel),
+                        "is_read_only": bool(item.get("is_read_only", False)),
+                        "is_running": bool(item.get("is_running", False)),
+                        "is_child_session": item.get("session_kind") == "subagent_child",
+                        "parent_session_key": str(item.get("parent_session_key", "") or ""),
+                        "item_has_unread": bool(item.get("has_unread", False)),
+                        "item_count": 0,
+                        "group_unread_count": 0,
+                        "group_has_running": False,
+                        "is_last_in_group": index == len(reordered_items) - 1,
+                        "is_first_in_group": index == 0,
+                    }
+                )
+
+        active_index = self._sidebar_model.active_row_index(self._active_key)
+        if active_index >= 0 and self._active_key:
+            next_index = next(
+                (
+                    idx
+                    for idx, row in enumerate(rows)
+                    if str(row.get("item_key", "")) == self._active_key
+                ),
+                -1,
+            )
+            if next_index >= 0 and next_index != active_index:
+                pinned = rows.pop(next_index)
+                rows.insert(max(0, min(active_index, len(rows))), pinned)
+
+        unread_parts.sort()
+        self._sidebar_model.sync_rows(rows)
+        self._sidebar_unread_count = len(unread_parts)
+        self._sidebar_unread_fingerprint = "|".join(unread_parts)
+        self.sidebarProjectionChanged.emit()
 
 
 class DummyUpdateService(QObject):
@@ -749,6 +989,36 @@ def _sidebar_session_anchor_offset(session_list: QObject, key: str) -> float:
     raise AssertionError(f"sidebar anchor not visible: {key}")
 
 
+def _sidebar_delegate_y(session_list: QObject, key: str) -> float:
+    content_item = session_list.property("contentItem")
+    if not isinstance(content_item, QQuickItem):
+        raise AssertionError("sidebar content item not found")
+    for obj in content_item.childItems():
+        if not bool(obj.property("anchorReady")):
+            continue
+        if bool(obj.property("anchorIsHeader")):
+            continue
+        if str(obj.property("anchorKey") or "") != key:
+            continue
+        return float(obj.property("y"))
+    raise AssertionError(f"sidebar delegate not found: {key}")
+
+
+def _sidebar_delegate_root(session_list: QObject, key: str) -> QQuickItem:
+    content_item = session_list.property("contentItem")
+    if not isinstance(content_item, QQuickItem):
+        raise AssertionError("sidebar content item not found")
+    for obj in content_item.childItems():
+        if not bool(obj.property("anchorReady")):
+            continue
+        if bool(obj.property("anchorIsHeader")):
+            continue
+        if str(obj.property("anchorKey") or "") != key:
+            continue
+        return obj
+    raise AssertionError(f"sidebar delegate root not found: {key}")
+
+
 def _find_object_by_property(root: QObject, property_name: str, expected: object) -> QObject:
     for obj in root.findChildren(QObject):
         try:
@@ -875,6 +1145,30 @@ def test_main_setup_mode_hides_sidebar_and_lands_on_settings(qapp):
         assert bool(root.property("setupMode")) is True
         assert bool(sidebar.property("visible")) is False
         assert int(stack.property("currentIndex")) == 1
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_settings_advanced_section_shows_config_folder_entry(qapp):
+    _ = qapp
+    config_service = DummyConfigService(config_file_path="/tmp/.bao/config.jsonc")
+    engine, root = _load_main_window(config_service)
+
+    try:
+        settings_view = _find_object(root, "settingsView")
+        _ = root.setProperty("startView", "settings")
+        _ = settings_view.setProperty("_activeTab", 2)
+        _process(30)
+
+        open_button = _find_visible_object_by_property(root, "text", "Open Config Folder")
+        _find_object_by_property(root, "text", "/tmp/.bao/config.jsonc")
+
+        QTest.mouseClick(root, Qt.LeftButton, Qt.NoModifier, _center_point(open_button))
+        _process(0)
+
+        assert config_service.opened_config_directory is True
     finally:
         root.deleteLater()
         engine.deleteLater()
@@ -2061,8 +2355,220 @@ def test_sidebar_delete_above_viewport_preserves_visible_anchor(qapp):
         origin_y = float(session_list.property("originY"))
         assert isinstance(before_offset, float)
         assert isinstance(after_offset, float)
-        assert after_y < before_y
+        assert after_y <= before_y + 0.5
         assert after_y >= origin_y
+        assert abs(after_offset - before_offset) < 2.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_sidebar_active_session_reorder_does_not_jump_to_top(qapp):
+    _ = qapp
+    rows = []
+    for i in range(20):
+        rows.append(
+            {
+                "key": f"imessage:chat::{i}",
+                "title": f"Chat {i}",
+                "updated_at": f"2026-03-06T10:{59 - i:02d}:00",
+                "channel": "imessage",
+                "has_unread": False,
+            }
+        )
+    session_model = SessionsModel(rows)
+    engine, root = _load_main_window(session_model=session_model)
+
+    try:
+        session_service = engine._test_refs["session_service"]
+        session_list = _find_object(root, "sidebarSessionList")
+
+        session_service.setActiveKey("imessage:chat::15")
+        session_service.sessionsChanged.emit()
+        for _ in range(4):
+            _process(30)
+
+        max_y_before = max(
+            0.0,
+            float(session_list.property("contentHeight")) - float(session_list.property("height")),
+        )
+        session_list.setProperty("contentY", max_y_before)
+        _process(30)
+        before_y = float(session_list.property("contentY"))
+        origin_y = float(session_list.property("originY"))
+        assert before_y > origin_y + 100.0
+        active_y_before = _sidebar_delegate_y(session_list, "imessage:chat::15")
+        assert active_y_before < before_y + float(session_list.property("height"))
+
+        reordered_rows = [dict(row) for row in rows]
+        active_row = reordered_rows.pop(15)
+        active_row["updated_at"] = "2026-03-06T11:59:00"
+        reordered_rows.insert(0, active_row)
+
+        session_model.replaceRows(reordered_rows)
+        session_service.sessionsChanged.emit()
+        for _ in range(4):
+            _process(30)
+
+        after_y = float(session_list.property("contentY"))
+        assert after_y > origin_y + 100.0
+        assert abs(after_y - before_y) < 40.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_sidebar_sticky_header_tracks_scrolled_group(qapp):
+    _ = qapp
+    rows = []
+    for i in range(12):
+        rows.append(
+            {
+                "key": f"desktop:local::s{i}",
+                "title": f"Desktop {i}",
+                "updated_at": f"2026-03-06T10:{i:02d}:00",
+                "channel": "desktop",
+                "has_unread": False,
+            }
+        )
+    for i in range(12):
+        rows.append(
+            {
+                "key": f"telegram:room{i}",
+                "title": f"Telegram {i}",
+                "updated_at": f"2026-03-06T11:{i:02d}:00",
+                "channel": "telegram",
+                "has_unread": i == 0,
+            }
+        )
+    session_model = SessionsModel(rows)
+    engine, root = _load_main_window(session_model=session_model)
+
+    try:
+        session_service = engine._test_refs["session_service"]
+        session_list = _find_object(root, "sidebarSessionList")
+        sticky = _find_object(root, "sidebarStickyHeader")
+
+        session_service.setActiveKey("telegram:room8")
+        session_service.sessionsChanged.emit()
+        for _ in range(4):
+            _process(30)
+
+        max_y_before = max(
+            0.0,
+            float(session_list.property("contentHeight")) - float(session_list.property("height")),
+        )
+        session_list.setProperty("contentY", max_y_before)
+        for _ in range(4):
+            _process(30)
+
+        assert bool(sticky.property("visible")) is True
+        assert sticky.property("channel") == "telegram"
+        assert float(sticky.property("y")) <= float(session_list.property("y")) + 1.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_sidebar_session_delegate_geometry_contains_row_spacing(qapp):
+    _ = qapp
+    rows = []
+    for i in range(10):
+        rows.append(
+            {
+                "key": f"desktop:local::s{i}",
+                "title": f"Desktop {i}",
+                "updated_at": f"2026-03-06T10:{i:02d}:00",
+                "channel": "desktop",
+                "has_unread": False,
+            }
+        )
+    session_model = SessionsModel(rows)
+    engine, root = _load_main_window(session_model=session_model)
+
+    try:
+        session_service = engine._test_refs["session_service"]
+        session_service.setActiveKey("desktop:local::s0")
+        session_service.sessionsChanged.emit()
+        for _ in range(4):
+            _process(30)
+
+        session_list = _find_object(root, "sidebarSessionList")
+        delegate = _sidebar_delegate_root(session_list, "desktop:local::s0")
+        child_bottom = 0.0
+        for child in delegate.childItems():
+            if not bool(child.property("visible")):
+                continue
+            child_bottom = max(
+                child_bottom, float(child.property("y")) + float(child.property("height"))
+            )
+
+        assert child_bottom <= float(delegate.property("height")) + 0.5
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_sidebar_near_bottom_refresh_keeps_visible_anchor(qapp):
+    _ = qapp
+    rows = []
+    for i in range(30):
+        rows.append(
+            {
+                "key": f"imessage:chat::{i}",
+                "title": f"Chat {i}",
+                "updated_at": f"2026-03-06T10:{59 - (i % 60):02d}:00",
+                "channel": "imessage",
+                "has_unread": False,
+            }
+        )
+    session_model = SessionsModel(rows)
+    engine, root = _load_main_window(session_model=session_model)
+
+    try:
+        session_service = engine._test_refs["session_service"]
+        session_list = _find_object(root, "sidebarSessionList")
+
+        session_service.setActiveKey("imessage:chat::25")
+        session_service.sessionsChanged.emit()
+        for _ in range(4):
+            _process(30)
+
+        max_y_before = max(
+            0.0,
+            float(session_list.property("contentHeight")) - float(session_list.property("height")),
+        )
+        session_list.setProperty("contentY", max_y_before)
+        _process(30)
+
+        current_rows = [dict(row) for row in rows]
+        for step in range(3):
+            moved = current_rows.pop(24 - step)
+            moved["updated_at"] = f"2026-03-06T11:5{step}:00"
+            current_rows.insert(0, moved)
+
+            session_model.replaceRows(current_rows)
+            session_service.sessionsChanged.emit()
+            session_service.sessionsChanged.emit()
+            for _ in range(6):
+                _process(30)
+
+            content_y = float(session_list.property("contentY"))
+            origin_y = float(session_list.property("originY"))
+            max_y = max(
+                0.0,
+                float(session_list.property("contentHeight"))
+                - float(session_list.property("height")),
+            )
+            key, _offset = _first_visible_sidebar_session_anchor(root, session_list)
+
+            assert key != ""
+            assert content_y >= origin_y
+            assert content_y <= max_y + 2.0
     finally:
         root.deleteLater()
         engine.deleteLater()

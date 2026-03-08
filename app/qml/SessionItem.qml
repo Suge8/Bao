@@ -12,6 +12,9 @@ Rectangle {
     property bool isActive: false
     property bool dimmed: false
     property bool hasUnread: false
+    property bool readOnlySession: false
+    property bool isRunning: false
+    property int childIndent: 0
     readonly property string deleteIconSource: isDark
                                                ? "../resources/icons/sidebar-close.svg"
                                                : "../resources/icons/sidebar-close-light.svg"
@@ -40,7 +43,7 @@ Rectangle {
             verticalCenter: parent.verticalCenter
             left: parent.left
             right: deleteBtn.left
-            leftMargin: 11
+            leftMargin: 11 + root.childIndent
             rightMargin: 10
         }
         height: parent.height
@@ -88,6 +91,35 @@ Rectangle {
 
                 Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
                 Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
+            }
+
+            Rectangle {
+                id: runningBadge
+                visible: root.isRunning
+                width: 8
+                height: 8
+                radius: 4
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                color: statusSuccess
+                border.width: 1
+                border.color: isDark ? "#CCFFFFFF" : "#F7FFFB"
+                opacity: 0.65
+                scale: 0.92
+
+                SequentialAnimation on opacity {
+                    running: root.isRunning
+                    loops: Animation.Infinite
+                    NumberAnimation { from: 0.46; to: 1.0; duration: 900; easing.type: Easing.InOutQuad }
+                    NumberAnimation { from: 1.0; to: 0.46; duration: 900; easing.type: Easing.InOutQuad }
+                }
+
+                SequentialAnimation on scale {
+                    running: root.isRunning
+                    loops: Animation.Infinite
+                    NumberAnimation { from: 0.88; to: 1.14; duration: 900; easing.type: Easing.InOutQuad }
+                    NumberAnimation { from: 1.14; to: 0.88; duration: 900; easing.type: Easing.InOutQuad }
+                }
             }
         }
 
@@ -140,7 +172,7 @@ Rectangle {
         border.color: deleteHover.containsMouse ? sessionDeleteHoverBorder : sessionDeleteIdleBorder
         scale: deleteHover.containsMouse ? motionHoverScaleSubtle : (hoverArea.containsMouse ? 1.0 : motionDeleteHiddenScale)
         opacity: hoverArea.containsMouse || deleteHover.containsMouse ? 1.0 : 0.0
-        visible: opacity > 0.01
+        visible: !root.readOnlySession && opacity > 0.01
         Behavior on color { ColorAnimation { duration: motionMicro; easing.type: easeStandard } }
         Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
         Behavior on scale { NumberAnimation { duration: motionMicro; easing.type: easeStandard } }

@@ -111,3 +111,57 @@ def test_clickable_mouse_areas_define_cursor_feedback() -> None:
     assert offenders == [], (
         "Clickable MouseArea should provide explicit cursor feedback: " + ", ".join(offenders)
     )
+
+
+def test_sidebar_group_running_dot_avoids_parent_visible_animation_binding() -> None:
+    text = _read_qml("SidebarGroupHeader.qml")
+
+    assert "id: groupRunningDot" in text
+    assert "running: groupRunningDot.visible" in text
+    assert "running: parent.visible" not in text
+
+
+def test_sidebar_guards_injected_services_at_root() -> None:
+    text = _read_qml("Sidebar.qml")
+
+    assert (
+        'readonly property bool hasChatService: typeof chatService !== "undefined" && chatService !== null'
+        in text
+    )
+    assert (
+        'readonly property bool hasSessionService: typeof sessionService !== "undefined" && sessionService !== null'
+        in text
+    )
+    assert (
+        'readonly property bool hasDiagnosticsService: typeof diagnosticsService !== "undefined" && diagnosticsService !== null'
+        in text
+    )
+    assert (
+        'property bool gatewayIdle: !hasChatService || chatService.state === "idle" || chatService.state === "stopped"'
+        in text
+    )
+
+
+def test_main_guards_injected_services_at_root() -> None:
+    text = _read_qml("Main.qml")
+
+    assert (
+        'readonly property bool hasDesktopPreferences: typeof desktopPreferences !== "undefined" && desktopPreferences !== null'
+        in text
+    )
+    assert (
+        'readonly property bool hasConfigService: typeof configService !== "undefined" && configService !== null'
+        in text
+    )
+    assert (
+        'readonly property bool hasSessionService: typeof sessionService !== "undefined" && sessionService !== null'
+        in text
+    )
+    assert (
+        'readonly property bool hasChatService: typeof chatService !== "undefined" && chatService !== null'
+        in text
+    )
+    assert (
+        'readonly property bool hasDiagnosticsService: typeof diagnosticsService !== "undefined" && diagnosticsService !== null'
+        in text
+    )
