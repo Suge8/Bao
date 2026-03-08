@@ -11,6 +11,7 @@ __pycache__/
 *.egg-info/
 *.egg
 dist/
+dist-pyinstaller/
 build/
 
 # Node (bridge sub-project)
