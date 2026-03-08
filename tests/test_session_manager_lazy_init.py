@@ -45,6 +45,48 @@ class _FakeTable:
         return 0
 
 
+def _list_sessions_while_meta_delete_is_blocked(
+    sm: Any,
+    key: str,
+    writer: threading.Thread,
+) -> list[dict[str, Any]]:
+    meta_tbl = sm._meta_table()
+    original_delete = meta_tbl.delete
+    delete_entered = threading.Event()
+    allow_finish = threading.Event()
+    list_started = threading.Event()
+    listed_sessions: list[list[dict[str, Any]]] = []
+
+    def delayed_delete(expr: str) -> None:
+        original_delete(expr)
+        if expr == f"session_key = '{key}'":
+            delete_entered.set()
+            assert allow_finish.wait(timeout=1.0)
+
+    with patch.object(meta_tbl, "delete", side_effect=delayed_delete):
+        writer.start()
+        assert delete_entered.wait(timeout=1.0)
+
+        def _list_sessions() -> None:
+            list_started.set()
+            listed_sessions.append(sm.list_sessions())
+
+        list_thread = threading.Thread(target=_list_sessions, daemon=True)
+        list_thread.start()
+        assert list_started.wait(timeout=1.0)
+        list_thread.join(timeout=0.1)
+        assert list_thread.is_alive()
+        assert listed_sessions == []
+
+        allow_finish.set()
+        writer.join(timeout=1.0)
+        list_thread.join(timeout=1.0)
+
+    assert not writer.is_alive()
+    assert not list_thread.is_alive()
+    return listed_sessions[0]
+
+
 def test_session_manager_init_is_lazy(tmp_path: Path) -> None:
     from bao.session.manager import SessionManager
 
@@ -304,6 +346,180 @@ def test_failed_save_does_not_leak_uncommitted_tail_snapshot(tmp_path: Path) -> 
     assert contents == ["old"]
 
 
+def test_append_save_skips_msg_table_reads_when_session_snapshot_is_hot(tmp_path: Path) -> None:
+    from bao.session.manager import SessionManager
+
+    sm = SessionManager(tmp_path)
+    key = "desktop:local::append-hot"
+    session = sm.get_or_create(key)
+    session.add_message("assistant", "old")
+    sm.save(session)
+
+    session.add_message("assistant", "new")
+    msg_tbl = sm._msg_table()
+    with (
+        patch.object(
+            msg_tbl, "search", side_effect=AssertionError("append path should not read rows")
+        ),
+        patch.object(
+            msg_tbl,
+            "count_rows",
+            side_effect=AssertionError("append path should not count rows"),
+        ),
+    ):
+        sm.save(session)
+
+    sm.invalidate(key)
+    reloaded = sm.get_or_create(key)
+    assert [msg.get("content") for msg in reloaded.messages] == ["old", "new"]
+
+
+def test_append_after_reload_skips_msg_table_reads_when_snapshot_seeded_from_load(
+    tmp_path: Path,
+) -> None:
+    from bao.session.manager import SessionManager
+
+    sm = SessionManager(tmp_path)
+    key = "desktop:local::append-reload"
+    session = sm.get_or_create(key)
+    session.add_message("assistant", "old")
+    sm.save(session)
+    sm.invalidate(key)
+
+    reloaded = sm.get_or_create(key)
+    reloaded.add_message("assistant", "new")
+    msg_tbl = sm._msg_table()
+    with (
+        patch.object(
+            msg_tbl, "search", side_effect=AssertionError("reload append should not read rows")
+        ),
+        patch.object(
+            msg_tbl,
+            "count_rows",
+            side_effect=AssertionError("reload append should not count rows"),
+        ),
+    ):
+        sm.save(reloaded)
+
+    sm.invalidate(key)
+    latest = sm.get_or_create(key)
+    assert [msg.get("content") for msg in latest.messages] == ["old", "new"]
+
+
+def test_save_fails_when_existing_baseline_cannot_be_loaded(tmp_path: Path) -> None:
+    from bao.session.manager import SessionManager
+
+    sm = SessionManager(tmp_path)
+    key = "desktop:local::baseline-read-fail"
+    session = sm.get_or_create(key)
+    session.add_message("assistant", "old")
+    sm.save(session)
+    sm.invalidate(key)
+
+    detached = sm.get_or_create(key)
+    delattr(detached, "_persisted_message_fingerprints")
+    detached.add_message("assistant", "new")
+
+    msg_tbl = sm._msg_table()
+    with patch.object(msg_tbl, "search", side_effect=RuntimeError("boom")):
+        with pytest.raises(RuntimeError, match="boom"):
+            sm.save(detached)
+
+    sm.invalidate(key)
+    reloaded = sm.get_or_create(key)
+    assert [msg.get("content") for msg in reloaded.messages] == ["old"]
+
+
+def test_noop_save_skips_tail_rewrite_and_emits_no_change(tmp_path: Path) -> None:
+    from bao.session.manager import SessionManager
+
+    sm = SessionManager(tmp_path)
+    key = "desktop:local::noop-save"
+    events: list[tuple[str, str]] = []
+    sm.add_change_listener(lambda event: events.append((event.session_key, event.kind)))
+
+    session = sm.get_or_create(key)
+    session.add_message("assistant", "hello")
+    sm.save(session)
+    events.clear()
+
+    msg_tbl = sm._msg_table()
+    with (
+        patch.object(
+            sm,
+            "_write_display_tail_row",
+            side_effect=AssertionError("noop should not rewrite tail"),
+        ),
+        patch.object(msg_tbl, "search", side_effect=AssertionError("noop should not read rows")),
+        patch.object(
+            msg_tbl,
+            "count_rows",
+            side_effect=AssertionError("noop should not count rows"),
+        ),
+    ):
+        sm.save(session)
+
+    assert events == []
+
+
+def test_metadata_only_save_emits_metadata_without_tail_rewrite(tmp_path: Path) -> None:
+    from bao.session.manager import SessionManager
+
+    sm = SessionManager(tmp_path)
+    key = "desktop:local::metadata-save"
+    events: list[tuple[str, str]] = []
+    sm.add_change_listener(lambda event: events.append((event.session_key, event.kind)))
+
+    session = sm.get_or_create(key)
+    session.add_message("assistant", "hello")
+    sm.save(session)
+    events.clear()
+
+    session.metadata["foo"] = "bar"
+    msg_tbl = sm._msg_table()
+    with (
+        patch.object(
+            sm,
+            "_write_display_tail_row",
+            side_effect=AssertionError("metadata-only save should not rewrite tail"),
+        ),
+        patch.object(
+            msg_tbl, "search", side_effect=AssertionError("metadata-only save should not read rows")
+        ),
+        patch.object(
+            msg_tbl,
+            "count_rows",
+            side_effect=AssertionError("metadata-only save should not count rows"),
+        ),
+    ):
+        sm.save(session)
+
+    assert events == [(key, "metadata")]
+
+
+def test_last_consolidated_change_rewrites_tail_and_emits_messages(tmp_path: Path) -> None:
+    from bao.session.manager import SessionManager
+
+    sm = SessionManager(tmp_path)
+    key = "desktop:local::consolidated-tail"
+    events: list[tuple[str, str]] = []
+    sm.add_change_listener(lambda event: events.append((event.session_key, event.kind)))
+
+    session = sm.get_or_create(key)
+    session.add_message("user", "hello")
+    session.add_message("assistant", "world")
+    sm.save(session)
+    events.clear()
+
+    session.last_consolidated = 1
+    sm.save(session)
+
+    assert events == [(key, "messages")]
+    sm.invalidate(key)
+    reloaded = sm.get_or_create(key)
+    assert [msg.get("content") for msg in reloaded.get_display_history()] == ["world"]
+
+
 def test_failed_clear_save_restores_previous_messages_and_tail(tmp_path: Path) -> None:
     from bao.session.manager import SessionManager
 
@@ -389,3 +605,66 @@ def test_peek_tail_messages_returns_none_when_lock_is_busy(tmp_path: Path) -> No
     finally:
         release.set()
         thread.join(timeout=2)
+
+
+def test_list_sessions_waits_for_inflight_save_metadata_rewrite(tmp_path: Path) -> None:
+    from bao.session.manager import SessionManager
+
+    sm = SessionManager(tmp_path)
+    key = "imessage:chat-1"
+    session = sm.get_or_create(key)
+    session.add_message("assistant", "before")
+    sm.save(session)
+
+    session.metadata["title"] = "updated"
+    save_thread = threading.Thread(target=lambda: sm.save(session), daemon=True)
+
+    listed_sessions = _list_sessions_while_meta_delete_is_blocked(sm, key, save_thread)
+
+    assert [item["key"] for item in listed_sessions] == [key]
+    assert listed_sessions[0]["metadata"]["title"] == "updated"
+
+
+def test_list_sessions_waits_for_inflight_metadata_only_rewrite(tmp_path: Path) -> None:
+    from bao.session.manager import SessionManager
+
+    sm = SessionManager(tmp_path)
+    key = "telegram:room-1"
+    session = sm.get_or_create(key)
+    session.add_message("assistant", "hello")
+    sm.save(session)
+
+    update_thread = threading.Thread(
+        target=lambda: sm.update_metadata_only(
+            key, {"desktop_last_seen_ai_at": "2026-01-01T00:00:00"}
+        ),
+        daemon=True,
+    )
+
+    listed_sessions = _list_sessions_while_meta_delete_is_blocked(sm, key, update_thread)
+
+    assert [item["key"] for item in listed_sessions] == [key]
+    assert listed_sessions[0]["metadata"]["desktop_last_seen_ai_at"] == "2026-01-01T00:00:00"
+
+
+def test_update_metadata_only_keyword_path_uses_same_meta_barrier(tmp_path: Path) -> None:
+    from bao.session.manager import SessionManager
+
+    sm = SessionManager(tmp_path)
+    key = "qq:room-kw"
+    session = sm.get_or_create(key)
+    session.add_message("assistant", "hello")
+    sm.save(session)
+
+    update_thread = threading.Thread(
+        target=lambda: sm.update_metadata_only(
+            key=key,
+            metadata_updates={"desktop_last_seen_ai_at": "2026-01-02T00:00:00"},
+        ),
+        daemon=True,
+    )
+
+    listed_sessions = _list_sessions_while_meta_delete_is_blocked(sm, key, update_thread)
+
+    assert [item["key"] for item in listed_sessions] == [key]
+    assert listed_sessions[0]["metadata"]["desktop_last_seen_ai_at"] == "2026-01-02T00:00:00"

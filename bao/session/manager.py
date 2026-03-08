@@ -5,12 +5,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import wraps
+from hashlib import blake2b
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
 from bao.utils.db import get_db, open_or_create_table
+from bao.utils.helpers import get_data_path
 
 # legacy safety net — runtime context is no longer injected as user message,
 # but keep filtering in case old sessions contain such entries.
@@ -52,6 +54,7 @@ _DISPLAY_TAIL_SAMPLE = [
 ]
 _DISPLAY_TAIL_CACHE_LIMIT = 200
 _DISPLAY_TAIL_SESSION_CACHE_LIMIT = 128
+_PER_KEY_LOCK_METHODS = frozenset({"save", "invalidate", "delete_session", "update_metadata_only"})
 
 
 def _escape(val: str) -> str:
@@ -62,16 +65,26 @@ def _synchronized(method: Any) -> Any:
     @wraps(method)
     def _wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
         method_name = method.__name__
-        lock = self._meta_lock
-        key_lock_methods = {"save", "invalidate", "delete_session", "update_metadata_only"}
-        if method_name in key_lock_methods and args:
+        meta_lock = self._meta_lock
+        key_lock: threading.RLock | None = None
+        if method_name in _PER_KEY_LOCK_METHODS and args:
             first = args[0]
             if isinstance(first, Session):
-                lock = self._lock_for(first.key)
+                key_lock = self._lock_for(first.key)
             elif isinstance(first, str) and first and not first.startswith("_active:"):
-                lock = self._lock_for(first)
-        with lock:
-            return method(self, *args, **kwargs)
+                key_lock = self._lock_for(first)
+        elif method_name in _PER_KEY_LOCK_METHODS:
+            session_kw = kwargs.get("session")
+            key_kw = kwargs.get("key")
+            if isinstance(session_kw, Session):
+                key_lock = self._lock_for(session_kw.key)
+            elif isinstance(key_kw, str) and key_kw and not key_kw.startswith("_active:"):
+                key_lock = self._lock_for(key_kw)
+        with meta_lock:
+            if key_lock is None:
+                return method(self, *args, **kwargs)
+            with key_lock:
+                return method(self, *args, **kwargs)
 
     return _wrapped
 
@@ -127,6 +140,8 @@ class Session:
                 source = source or "system"
 
             if role == "user" and source == "desktop-system":
+                continue
+            if role == "assistant" and source == "assistant-progress":
                 continue
             # legacy safety net: filter old runtime context user messages
             if (
@@ -205,6 +220,52 @@ class SessionManager:
         self._session_locks_lock = threading.Lock()
         self._session_locks: dict[str, threading.RLock] = {}
         self._change_listeners: list[Callable[[SessionChangeEvent], None]] = []
+
+    @staticmethod
+    def _message_storage_payload(msg: dict[str, Any]) -> dict[str, Any]:
+        extra = {k: v for k, v in msg.items() if k not in ("role", "content", "timestamp")}
+        return {
+            "role": msg["role"],
+            "content": msg.get("content", ""),
+            "timestamp": msg.get("timestamp", ""),
+            "extra_json": json.dumps(extra, ensure_ascii=False) if extra else "{}",
+        }
+
+    @staticmethod
+    def _message_storage_payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "role": row.get("role", "user"),
+            "content": row.get("content", ""),
+            "timestamp": row.get("timestamp", ""),
+            "extra_json": row.get("extra_json") or "{}",
+        }
+
+    @classmethod
+    def _message_fingerprint(cls, msg: dict[str, Any]) -> str:
+        payload = cls._message_storage_payload(msg)
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return blake2b(encoded, digest_size=16).hexdigest()
+
+    @classmethod
+    def _message_fingerprint_from_row(cls, row: dict[str, Any]) -> str:
+        payload = cls._message_storage_payload_from_row(row)
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return blake2b(encoded, digest_size=16).hexdigest()
+
+    @classmethod
+    def _message_fingerprints(cls, messages: list[dict[str, Any]]) -> list[str]:
+        return [cls._message_fingerprint(msg) for msg in messages]
+
+    @staticmethod
+    def _get_persisted_message_fingerprints(session: Session) -> list[str] | None:
+        fingerprints = getattr(session, "_persisted_message_fingerprints", None)
+        if not isinstance(fingerprints, list):
+            return None
+        return [str(item) for item in fingerprints]
+
+    @staticmethod
+    def _set_persisted_message_fingerprints(session: Session, fingerprints: list[str]) -> None:
+        setattr(session, "_persisted_message_fingerprints", list(fingerprints))
 
     def _db_connection(self):
         db = self._db
@@ -449,7 +510,7 @@ class SessionManager:
             logger.debug("⚠️ 索引创建跳过 / index creation skipped: {}", e)
 
     def _migrate_legacy(self, workspace: Path, meta_tbl: Any) -> None:
-        for d in (workspace / "sessions", Path.home() / ".bao" / "sessions"):
+        for d in (workspace / "sessions", get_data_path() / "sessions"):
             if not d.exists():
                 continue
             for path in d.glob("*.jsonl"):
@@ -511,6 +572,7 @@ class SessionManager:
             session = self._load(key)
             if session is None:
                 session = Session(key=key)
+                self._set_persisted_message_fingerprints(session, [])
             self._cache[key] = session
             return session
 
@@ -529,6 +591,7 @@ class SessionManager:
 
         now = datetime.now()
         session = Session(key=key, created_at=now, updated_at=now)
+        self._set_persisted_message_fingerprints(session, [])
         try:
             meta_tbl.add(
                 [
@@ -553,6 +616,20 @@ class SessionManager:
             if key in self._cache:
                 return True
             return self._load(key) is not None
+
+    def list_child_sessions(self, parent_session_key: str) -> list[dict[str, Any]]:
+        if not isinstance(parent_session_key, str) or not parent_session_key:
+            return []
+        sessions = self.list_sessions()
+        children = []
+        for session in sessions:
+            metadata = session.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("parent_session_key") != parent_session_key:
+                continue
+            children.append(session)
+        return children
 
     def _load(self, key: str) -> "Session | None":
         import os
@@ -598,7 +675,7 @@ class SessionManager:
                         len(messages),
                     )
 
-                return Session(
+                session = Session(
                     key=key,
                     messages=messages,
                     created_at=(
@@ -614,6 +691,11 @@ class SessionManager:
                     metadata=json.loads(meta.get("metadata_json") or "{}"),
                     last_consolidated=meta.get("last_consolidated", 0),
                 )
+                self._set_persisted_message_fingerprints(
+                    session,
+                    [self._message_fingerprint_from_row(row) for row in msg_rows],
+                )
+                return session
             except Exception as e:
                 logger.warning("⚠️ 会话加载失败 / load failed: {} — {}", key, e)
                 return None
@@ -729,46 +811,30 @@ class SessionManager:
             prev_tail = tail_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
         except Exception:
             prev_tail = []
+        prev_meta_row = prev_meta[0] if prev_meta else None
+        prev_tail_row = prev_tail[0] if prev_tail else None
+        current_created_at = session.created_at.isoformat()
+        current_updated_at = session.updated_at.isoformat()
+        current_metadata_json = json.dumps(session.metadata, ensure_ascii=False)
+        metadata_changed = (
+            prev_meta_row is None
+            or str(prev_meta_row.get("created_at") or "") != current_created_at
+            or str(prev_meta_row.get("updated_at") or "") != current_updated_at
+            or str(prev_meta_row.get("metadata_json") or "{}") != current_metadata_json
+            or int(prev_meta_row.get("last_consolidated", 0)) != int(session.last_consolidated)
+        )
+        prev_display_tail: list[dict[str, Any]] | None = None
+        if prev_tail_row is not None:
+            try:
+                payload = json.loads(prev_tail_row.get("tail_json") or "[]")
+                if isinstance(payload, list):
+                    prev_display_tail = [dict(item) for item in payload if isinstance(item, dict)]
+            except Exception:
+                prev_display_tail = None
 
         def _row_from_message(idx: int, msg: dict[str, Any]) -> dict[str, Any]:
-            extra = {k: v for k, v in msg.items() if k not in ("role", "content", "timestamp")}
-            return {
-                "session_key": session.key,
-                "idx": idx,
-                "role": msg["role"],
-                "content": msg.get("content", ""),
-                "timestamp": msg.get("timestamp", ""),
-                "extra_json": json.dumps(extra, ensure_ascii=False) if extra else "{}",
-            }
-
-        def _row_matches_message(row: dict[str, Any] | None, idx: int, msg: dict[str, Any]) -> bool:
-            if row is None:
-                return False
-            if int(row.get("idx", -1)) != idx:
-                return False
-            if row.get("role") != msg.get("role"):
-                return False
-            if row.get("content", "") != msg.get("content", ""):
-                return False
-            if row.get("timestamp", "") != msg.get("timestamp", ""):
-                return False
-            extra = {k: v for k, v in msg.items() if k not in ("role", "content", "timestamp")}
-            row_extra_json = row.get("extra_json") or "{}"
-            if not extra:
-                return row_extra_json == "{}"
-            return row_extra_json == json.dumps(extra, ensure_ascii=False)
-
-        def _rows_match_prefix(rows: list[dict[str, Any]], messages: list[dict[str, Any]]) -> bool:
-            if len(rows) > len(messages):
-                return False
-            return all(
-                _row_matches_message(row, idx, messages[idx]) for idx, row in enumerate(rows)
-            )
-
-        def _rows_match_messages(
-            rows: list[dict[str, Any]], messages: list[dict[str, Any]]
-        ) -> bool:
-            return len(rows) == len(messages) and _rows_match_prefix(rows, messages)
+            payload = self._message_storage_payload(msg)
+            return {"session_key": session.key, "idx": idx, **payload}
 
         def _msg_table_for_write() -> Any:
             nonlocal msg_tbl
@@ -777,26 +843,50 @@ class SessionManager:
             assert msg_tbl is not None
             return msg_tbl
 
+        prev_msgs_loaded = False
+
+        def _load_prev_msgs(*, strict: bool = False) -> list[dict[str, Any]]:
+            nonlocal prev_msgs_loaded, prev_msgs
+            if prev_msgs_loaded:
+                return prev_msgs
+            prev_msgs_loaded = True
+            try:
+                prev_msgs = (
+                    _msg_table_for_write().search().where(f"session_key = '{safe}'").to_list()
+                )
+                prev_msgs.sort(key=lambda row: int(row.get("idx", -1)))
+            except Exception:
+                prev_msgs = []
+                if strict:
+                    raise
+            return prev_msgs
+
+        write_mode = "noop"
+        append_start = 0
         try:
             message_count = len(session.messages)
-            if message_count > 0 or prev_meta:
-                try:
-                    prev_msgs = (
-                        _msg_table_for_write().search().where(f"session_key = '{safe}'").to_list()
-                    )
-                    prev_msgs.sort(key=lambda row: int(row.get("idx", -1)))
-                except Exception:
-                    prev_msgs = []
+            current_fingerprints = self._message_fingerprints(session.messages)
+            prev_fingerprints = self._get_persisted_message_fingerprints(session)
+            if prev_fingerprints is None and prev_meta:
+                prev_fingerprints = [
+                    self._message_fingerprint_from_row(row) for row in _load_prev_msgs(strict=True)
+                ]
+            if prev_fingerprints is None:
+                prev_fingerprints = []
+            prev_count = len(prev_fingerprints)
+            append_start = prev_count
 
-            existing_count = 0
-            if message_count > 0 or prev_meta:
-                try:
-                    existing_count = len(prev_msgs) or int(
-                        _msg_table_for_write().count_rows(filter=f"session_key = '{safe}'")
-                    )
-                except Exception:
-                    existing_count = len(prev_msgs)
-            existing_count = max(existing_count, 0)
+            if current_fingerprints == prev_fingerprints:
+                write_mode = "noop"
+            elif (
+                prev_count < message_count
+                and current_fingerprints[:prev_count] == prev_fingerprints
+            ):
+                write_mode = "append"
+            elif message_count == 0 and prev_count > 0:
+                write_mode = "clear"
+            else:
+                write_mode = "rewrite"
 
             try:
                 meta_tbl.delete(f"session_key = '{safe}'")
@@ -807,56 +897,72 @@ class SessionManager:
                 [
                     {
                         "session_key": session.key,
-                        "created_at": session.created_at.isoformat(),
-                        "updated_at": session.updated_at.isoformat(),
-                        "metadata_json": json.dumps(session.metadata, ensure_ascii=False),
+                        "created_at": current_created_at,
+                        "updated_at": current_updated_at,
+                        "metadata_json": current_metadata_json,
                         "last_consolidated": session.last_consolidated,
                     }
                 ]
             )
             display_tail = self._display_tail_from_session(session)
-            if message_count == 0:
-                if existing_count > 0:
-                    _msg_table_for_write().delete(f"session_key = '{safe}'")
-            elif existing_count == 0:
-                _msg_table_for_write().add(
-                    [_row_from_message(i, msg) for i, msg in enumerate(session.messages)]
-                )
-            elif existing_count < message_count and _rows_match_prefix(prev_msgs, session.messages):
+            display_tail_changed = prev_display_tail != display_tail
+            messages_surface_changed = (
+                write_mode != "noop" or display_tail_changed or prev_meta_row is None
+            )
+            if write_mode == "append":
                 append_rows = [
                     _row_from_message(i, session.messages[i])
-                    for i in range(existing_count, message_count)
+                    for i in range(append_start, message_count)
                 ]
                 if append_rows:
                     _msg_table_for_write().add(append_rows)
-            elif not _rows_match_messages(prev_msgs, session.messages):
+            elif write_mode == "clear":
+                if _load_prev_msgs(strict=True):
+                    _msg_table_for_write().delete(f"session_key = '{safe}'")
+            elif write_mode == "rewrite":
+                _load_prev_msgs(strict=True)
                 _msg_table_for_write().delete(f"session_key = '{safe}'")
-                _msg_table_for_write().add(
-                    [_row_from_message(i, msg) for i, msg in enumerate(session.messages)]
+                if session.messages:
+                    _msg_table_for_write().add(
+                        [_row_from_message(i, msg) for i, msg in enumerate(session.messages)]
+                    )
+            if messages_surface_changed:
+                self._write_display_tail_row(
+                    session.key,
+                    display_tail,
+                    message_count,
+                    current_updated_at,
                 )
-            self._write_display_tail_row(
-                session.key,
-                display_tail,
-                message_count,
-                session.updated_at.isoformat(),
-            )
         except Exception:
             self._best_effort_delete(meta_tbl, f"session_key = '{safe}'")
             self._best_effort_delete(tail_tbl, f"session_key = '{safe}'")
             if msg_tbl is not None:
-                self._best_effort_delete(msg_tbl, f"session_key = '{safe}'")
+                if write_mode == "append":
+                    self._best_effort_delete(
+                        msg_tbl, f"session_key = '{safe}' AND idx >= {append_start}"
+                    )
+                elif write_mode in {"clear", "rewrite"}:
+                    self._best_effort_delete(msg_tbl, f"session_key = '{safe}'")
             self._best_effort_add(meta_tbl, prev_meta)
             self._best_effort_add(tail_tbl, prev_tail)
-            if msg_tbl is not None:
+            if msg_tbl is not None and write_mode in {"clear", "rewrite"}:
                 self._best_effort_add(msg_tbl, prev_msgs)
             self._cache.pop(session.key, None)
             self._clear_display_tail_cache(session.key)
             raise
 
         self._cache[session.key] = session
+        self._set_persisted_message_fingerprints(session, current_fingerprints)
         self._store_display_tail_cache(session.key, display_tail)
-        if emit_change:
-            self._emit_change(SessionChangeEvent(session_key=session.key, kind="messages"))
+        event_kind: str | None
+        if messages_surface_changed:
+            event_kind = "messages"
+        elif metadata_changed:
+            event_kind = "metadata"
+        else:
+            event_kind = None
+        if emit_change and event_kind:
+            self._emit_change(SessionChangeEvent(session_key=session.key, kind=event_kind))
 
     @_synchronized
     def update_metadata_only(
@@ -974,6 +1080,16 @@ class SessionManager:
             pass
         self._emit_change(SessionChangeEvent(session_key=key, kind="deleted"))
         return ok
+
+    @_synchronized
+    def delete_session_tree(self, key: str) -> bool:
+        child_keys = [str(item.get("key", "")) for item in self.list_child_sessions(key)]
+        ok = True
+        for child_key in child_keys:
+            if not child_key:
+                continue
+            ok = self.delete_session(child_key) and ok
+        return self.delete_session(key) and ok
 
     @_synchronized
     def get_active_session_key(self, natural_key: str) -> str | None:
