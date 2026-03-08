@@ -328,12 +328,16 @@ class ChatMessageModel(QAbstractListModel):
             created_at = ChatMessageModel._message_created_at(m)
 
             if role == "assistant":
+                entrance_style = ChatMessageModel._normalize_entrance_style(
+                    m.get("entrance_style"), default="none"
+                )
                 prepared.append(
                     ChatMessageModel._build_prepared_message(
                         i,
                         role="assistant",
                         content=content,
                         status=status,
+                        entrance_style=entrance_style,
                         fmt=fmt,
                         created_at=created_at,
                         source=m.get("_source"),

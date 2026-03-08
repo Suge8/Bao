@@ -154,6 +154,7 @@ Item {{
     ("role", "entrance_style", "flash_name", "ripple_name", "sheen_name"),
     [
         ("assistant", "none", "copyFlash", "copyRipple", "copySheen"),
+        ("assistant", "greeting", "systemCopyFlash", "systemCopyRipple", "systemCopySheen"),
         ("system", "none", "systemCopyFlash", "systemCopyRipple", "systemCopySheen"),
         ("system", "greeting", "systemCopyFlash", "systemCopyRipple", "systemCopySheen"),
     ],
@@ -208,7 +209,7 @@ def test_message_click_feedback_restored(
 
 @pytest.mark.parametrize(
     ("role", "entrance_style"),
-    [("system", "none"), ("system", "greeting")],
+    [("system", "none"), ("system", "greeting"), ("assistant", "greeting")],
 )
 def test_system_aura_near_stays_within_bubble_width(qapp, role: str, entrance_style: str):
     engine = QQmlEngine()
@@ -356,7 +357,7 @@ def test_greeting_icon_uses_theme_specific_asset(qapp, dark: bool, expected_icon
     engine = QQmlEngine()
     component = QQmlComponent(engine)
     component.setData(
-        _build_wrapper("system", "greeting", dark=dark).encode("utf-8"),
+        _build_wrapper("assistant", "greeting", dark=dark).encode("utf-8"),
         QUrl("inline:MessageBubbleGreetingIconHarness.qml"),
     )
 
@@ -380,7 +381,7 @@ def test_light_greeting_uses_flat_bubble_and_compact_height(qapp):
     engine = QQmlEngine()
     component = QQmlComponent(engine)
     component.setData(
-        _build_wrapper("system", "greeting", dark=False).encode("utf-8"),
+        _build_wrapper("assistant", "greeting", dark=False).encode("utf-8"),
         QUrl("inline:MessageBubbleGreetingLightHarness.qml"),
     )
 

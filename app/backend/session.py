@@ -226,6 +226,24 @@ def _visible_session_key(
     return ""
 
 
+def _visible_session_key_for_channel(
+    candidates: tuple[str, ...],
+    *,
+    available_keys: set[str],
+    pending_create_keys: set[str],
+    channel: str,
+) -> str:
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if candidate not in pending_create_keys and candidate not in available_keys:
+            continue
+        if _session_channel_key(candidate) != channel:
+            continue
+        return candidate
+    return ""
+
+
 def _sidebar_channel_sort_key(channel: str) -> tuple[int, str]:
     if channel == "desktop":
         return (0, channel)
@@ -492,6 +510,7 @@ class SessionService(QObject):
     activeKeyChanged = Signal(str)
     activeSummaryChanged = Signal(str, object, object)
     activeReady = Signal(str)
+    startupTargetReady = Signal(str)
     activeSessionMetaChanged = Signal()
     sessionsLoadingChanged = Signal(bool)
     errorOccurred = Signal(str)
@@ -993,9 +1012,28 @@ class SessionService(QObject):
         self._maybe_reconcile_stored_active(active_for_view, stored_active)
         self._clear_pending_select_if_resolved(active_for_view)
 
+    def _desktop_startup_target_key(self) -> str:
+        active_key = self._active_key
+        if active_key and _session_channel_key(active_key) == "desktop":
+            for session in self._model._sessions:
+                if str(session.get("key", "")) == active_key:
+                    return active_key
+        for session in self._model._sessions:
+            key = str(session.get("key", ""))
+            if _session_channel_key(key) == "desktop":
+                return key
+        return ""
+
     def _emit_active_ready_if_applicable(self, key: str) -> None:
         if self._gateway_ready and key:
             self.activeReady.emit(key)
+
+    def _emit_startup_target_if_applicable(self) -> None:
+        if not self._gateway_ready:
+            return
+        target_key = self._desktop_startup_target_key()
+        if target_key:
+            self.startupTargetReady.emit(target_key)
 
     def _on_session_change(self, event: SessionChangeEvent) -> None:
         self._sessionChange.emit(event)
@@ -1062,6 +1100,7 @@ class SessionService(QObject):
         self._gateway_ready = True
         if self._active_key:
             self._emit_active_ready_if_applicable(self._active_key)
+        self._emit_startup_target_if_applicable()
 
     @Slot(str)
     def newSession(self, name: str = "") -> None:
@@ -1467,10 +1506,11 @@ class SessionService(QObject):
             available_keys=available_keys,
             pending_create_keys=pending_create_keys,
         )
-        stored_active_candidate = _visible_session_key(
+        stored_active_candidate = _visible_session_key_for_channel(
             (stored_active,),
             available_keys=available_keys,
             pending_create_keys=pending_create_keys,
+            channel="desktop",
         )
 
         if pending_candidate:
@@ -1518,6 +1558,7 @@ class SessionService(QObject):
         if fut is not None:
             fut.add_done_callback(self._on_backfill_done)
         self._emit_active_key_if_changed(active_for_view)
+        self._emit_startup_target_if_applicable()
         self._finalize_active_resolution(active_for_view, stored_active)
         if auto_selected_key and self._session_manager is not None:
             fut = self._submit_safe(

@@ -40,7 +40,7 @@ uv run python app/main.py
 
 消息点击反馈现在也统一走单一路径：普通气泡、system 与启动问候都使用气泡内部的 `overlay + ripple + progress` 驱动高光层；高光不再是额外的移动亮片，而是铺在气泡内部的同形渐变层。
 
-ready 阶段的 AI 启动问候与系统通知仍共用同一条 system 消息链路，并由 `entrance_style` 驱动 greeting 外观；onboarding 则直接走普通 assistant 消息链路，不再复用 greeting 胶囊。历史回放会保留 `format` 与 `entrance_style`，因此 startup greeting 和普通 onboarding 消息在 reload 后都会保持各自语义。
+ready 阶段的 AI 启动问候统一走 `assistant + entrance_style=greeting` 单一路径：desktop 与外部渠道都复用同一套持久化/未读语义，渲染层仅根据 `entrance_style` 投影 greeting 外观；onboarding 继续走普通 assistant 消息链路。历史回放会保留 `format` 与 `entrance_style`，因此 startup greeting 和普通 onboarding 消息在 reload 后都会保持各自语义。
 
 桌面端现在会把子代理线程作为独立只读会话投影出来：子会话进入同一套 `SessionManager -> SessionService -> ChatService/QML` 数据流，并按父会话所在渠道归组、紧跟在父会话下方显示；子会话本身不提供输入框，也不提供删除入口，继续追加提示统一回到主会话，由主代理通过同一 child session key 续接，避免 UI 层再造第二套临时线程状态。
 

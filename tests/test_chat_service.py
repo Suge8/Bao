@@ -427,20 +427,23 @@ def test_transient_greeting_persisted_with_greeting_style() -> None:
     sm.get_or_create.return_value = session
     svc._session_manager = sm
 
-    svc._append_transient_system_message(
+    svc._append_transient_assistant_message(
         "Hello",
+        status="done",
         entrance_style="greeting",
         session_key="desktop:other",
         show_in_ui=False,
     )
 
     session.add_message.assert_called_once_with(
-        "user",
+        "assistant",
         "Hello",
         status="done",
-        _source="desktop-system",
+        format="markdown",
         entrance_style="greeting",
     )
+    sm.save.assert_called_once_with(session, emit_change=True)
+    sm.update_metadata_only.assert_not_called()
 
 
 def test_transient_startup_onboarding_persisted_as_assistant() -> None:
@@ -461,7 +464,9 @@ def test_transient_startup_onboarding_persisted_as_assistant() -> None:
         "Hello",
         status="done",
         format="markdown",
+        entrance_style="assistantReceived",
     )
+    sm.save.assert_called_once_with(session, emit_change=True)
     sm.update_metadata_only.assert_not_called()
 
 
@@ -490,7 +495,7 @@ def test_desktop_startup_greeting_queued_until_startup_session_ready() -> None:
     svc._desired_session_key = key
     svc._committed_session_key = key
     svc._startupMessage.emit(
-        DesktopStartupMessage(content="Hello", role="system", entrance_style="greeting")
+        DesktopStartupMessage(content="Hello", role="assistant", entrance_style="greeting")
     )
 
     assert _model.rowCount() == 0
@@ -504,7 +509,7 @@ def test_desktop_startup_greeting_queued_until_startup_session_ready() -> None:
     svc._handle_history_result(True, "", (key, 0, (0, ""), []))
 
     assert _model.rowCount() == 1
-    assert _model._messages[0]["role"] == "system"
+    assert _model._messages[0]["role"] == "assistant"
     assert _model._messages[0]["content"] == "Hello"
     assert _model._messages[0]["entrancestyle"] == "greeting"
     assert not svc._startup_pending
@@ -564,6 +569,55 @@ def test_startup_message_waits_for_history_apply_before_flushing() -> None:
     assert model._messages[0]["role"] == "assistant"
     assert model._messages[0]["content"] == "Hello"
     assert not svc._startup_pending
+
+
+def test_default_startup_session_key_prefers_desktop_target_over_current_external_session() -> None:
+    svc, _model = make_service()
+    svc._session_key = "imessage:13800138000"
+    svc._startup_target_key = "desktop:local::s1"
+
+    assert svc._default_startup_session_key() == "desktop:local::s1"
+
+
+def test_default_startup_session_key_ignores_current_external_session_without_desktop_target() -> (
+    None
+):
+    svc, _model = make_service()
+    svc._session_key = "imessage:13800138000"
+    svc._startup_target_key = ""
+
+    assert svc._default_startup_session_key() == ""
+
+
+def test_desktop_startup_message_persists_to_desktop_target_when_current_view_is_external() -> None:
+    svc, model = make_service()
+    svc._session_manager = MagicMock()
+    svc._session_key = "imessage:13800138000"
+    svc._desired_session_key = "imessage:13800138000"
+    svc._committed_session_key = "imessage:13800138000"
+    svc._history_initialized = True
+    svc.notifyStartupSessionReady("desktop:local::s1")
+
+    scheduled: list[tuple[str, str, str, str, bool, bool]] = []
+
+    def _schedule(
+        session_key: str,
+        content: str,
+        status: str,
+        *,
+        entrance_style: str = "assistantReceived",
+        emit_change: bool = False,
+        mark_seen: bool = False,
+    ) -> None:
+        scheduled.append((session_key, content, status, entrance_style, emit_change, mark_seen))
+
+    svc._schedule_assistant_message_persist = _schedule
+    svc._startupMessage.emit(
+        DesktopStartupMessage(content="Hello", role="assistant", entrance_style="greeting")
+    )
+
+    assert model.rowCount() == 0
+    assert scheduled == [("desktop:local::s1", "Hello", "done", "greeting", True, False)]
 
 
 def test_system_response_empty_ignored():
@@ -1570,6 +1624,25 @@ def test_prepare_history_preserves_assistant_progress_source() -> None:
     )
 
     assert prepared[0]["_source"] == "assistant-progress"
+
+
+def test_prepare_history_preserves_assistant_greeting_entrance_style() -> None:
+    from app.backend.chat import ChatMessageModel
+
+    prepared = ChatMessageModel.prepare_history(
+        [
+            {
+                "role": "assistant",
+                "content": "早安杰哥",
+                "status": "done",
+                "format": "markdown",
+                "entrance_style": "greeting",
+            }
+        ]
+    )
+
+    assert prepared[0]["role"] == "assistant"
+    assert prepared[0]["entrancestyle"] == "greeting"
 
 
 def test_handle_history_result_preserves_transient_tail_after_tool_row_without_reset():

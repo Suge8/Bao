@@ -1043,7 +1043,8 @@ def test_active_sidebar_row_stays_within_its_group_when_rows_above_change(tmp_pa
         svc.initialize(sm)
 
         _spin_until(lambda: _sidebar_model(svc).rowCount() >= 4)
-        svc.toggleSidebarGroup("desktop")
+        svc.selectSession("telegram:room2")
+        _spin_until(lambda: svc.activeKey == "telegram:room2")
         _spin_until(lambda: _sidebar_model(svc).rowCount() >= 6)
 
         extra = sm.get_or_create("desktop:local::newer")
@@ -1756,6 +1757,83 @@ def test_list_sessions_unread_uses_ai_timestamps_only():
         assert _sessions_model(svc).data(idx_s1, Qt.UserRole + 6) is True
         assert _sessions_model(svc).data(idx_s2, Qt.UserRole + 6) is False
         assert _sessions_model(svc).data(idx_s3, Qt.UserRole + 6) is False
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_gateway_ready_ignores_stored_external_active_for_desktop_startup():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(
+            sessions=[
+                {
+                    "key": "telegram:chat-1::s1",
+                    "title": "Telegram",
+                    "updated_at": "2026-01-01T00:12:00",
+                },
+                {
+                    "key": "desktop:local::s1",
+                    "title": "Desktop 1",
+                    "updated_at": "2026-01-01T00:10:00",
+                },
+                {
+                    "key": "desktop:local::s2",
+                    "title": "Desktop 2",
+                    "updated_at": "2026-01-01T00:11:00",
+                },
+            ],
+            active_key="telegram:chat-1::s1",
+        )
+        svc.initialize(sm)
+        svc.setGatewayReady()
+
+        _spin_until(lambda: svc.activeKey != "")
+
+        assert svc.activeKey == "desktop:local::s2"
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_startup_target_ready_prefers_first_desktop_session_when_focus_is_external_before_start():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager(
+            sessions=[
+                {
+                    "key": "desktop:local::s2",
+                    "title": "Desktop 2",
+                    "updated_at": "2026-01-01T00:11:00",
+                },
+                {
+                    "key": "desktop:local::s1",
+                    "title": "Desktop 1",
+                    "updated_at": "2026-01-01T00:10:00",
+                },
+                {
+                    "key": "imessage:13800138000::focus",
+                    "title": "Focused iMessage",
+                    "updated_at": "2026-01-01T00:12:00",
+                },
+            ]
+        )
+        targets: list[str] = []
+        svc.startupTargetReady.connect(targets.append)
+
+        svc.initialize(sm)
+        _spin_until(lambda: _sessions_model(svc).rowCount() == 3)
+
+        svc.selectSession("imessage:13800138000::focus")
+        _spin_until(lambda: svc.activeKey == "imessage:13800138000::focus")
+
+        svc.setGatewayReady()
+        _spin_until(lambda: len(targets) > 0)
+
+        assert svc.activeKey == "imessage:13800138000::focus"
+        assert targets[-1] == "desktop:local::s2"
     finally:
         runner.shutdown(grace_s=1.0)
 

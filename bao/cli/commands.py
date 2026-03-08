@@ -120,7 +120,11 @@ def run_gateway(port: int, verbose: bool) -> None:
                 stack.agent.run(),
                 stack.channels.start_all(),
                 send_startup_greeting(
-                    stack.agent, stack.bus, stack.config, channels=stack.channels
+                    stack.agent,
+                    stack.bus,
+                    stack.config,
+                    channels=stack.channels,
+                    session_manager=stack.session_manager,
                 ),
             )
         except KeyboardInterrupt:

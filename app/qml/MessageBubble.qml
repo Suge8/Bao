@@ -15,10 +15,10 @@ Item {
     property string dateDividerText: ""
     property var toastFunc: null
 
+    property bool isGreeting: entranceStyle === "greeting"
     property bool isUser: role === "user"
-    property bool isSystem: role === "system"
-    property bool isGreeting: isSystem && entranceStyle === "greeting"
-    property bool isSystemError: isSystem && status === "error"
+    property bool isSystem: role === "system" || isGreeting
+    property bool isSystemError: role === "system" && status === "error"
     property bool isMarkdown: format === "markdown"
     property bool isAssistantEntrance: !isSystem && entranceStyle === "assistantReceived"
     property bool isUserEntrance: !isSystem && entranceStyle === "userSent"
