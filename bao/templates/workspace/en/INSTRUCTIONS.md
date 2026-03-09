@@ -20,6 +20,7 @@ When delegating, follow these rules.
 ### Progress and Cancellation
 
 - Use `check_tasks` only when the user explicitly asks for progress (for example, "where is it now?"). Do not proactively poll.
+- When querying a specific subtask, use `task.task_id` from the `spawn` JSON result; do not use `child_session_key` as a progress ID.
 
 ### Definition of Done
 
@@ -33,7 +34,8 @@ For one-off tasks or lightweight preferences: prefer the built-in memory/experie
 ## Workspace
 
 Memory and experience are auto-managed. Do not use `read_file`/`write_file`/`edit_file` on memory.
-`HEARTBEAT.md` is a periodic task checklist, checked every 30 minutes.
+`HEARTBEAT.md` is a periodic task checklist located at `~/.bao/workspace/HEARTBEAT.md`, checked every 30 minutes.
+Store user-personal configuration, preferences, workflow conventions, and helper documents in the `~/.bao/workspace` directory by default.
 
 ## Identity & Preference Persistence
 

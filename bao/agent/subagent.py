@@ -8,7 +8,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from loguru import logger
 
@@ -32,6 +32,8 @@ if TYPE_CHECKING:
 
 _SUBAGENT_ERROR_KEYWORDS = ("error:", "traceback", "failed", "exception", "permission denied")
 _ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+
+SpawnResultStatus = Literal["spawned", "failed"]
 
 
 @dataclass
@@ -58,6 +60,84 @@ class TaskStatus:
     last_error_category: str | None = None
     last_error_code: str | None = None
     last_error_message: str | None = None
+
+
+@dataclass(frozen=True)
+class SpawnIssue:
+    code: str
+    message: str
+
+    def to_payload(self) -> dict[str, str]:
+        return {"code": self.code, "message": self.message}
+
+
+@dataclass(frozen=True)
+class SpawnTaskRef:
+    task_id: str
+    label: str
+    status: str = "running"
+    child_session_key: str | None = None
+
+    def to_payload(self) -> dict[str, str]:
+        payload = {
+            "task_id": self.task_id,
+            "label": self.label,
+            "status": self.status,
+        }
+        if self.child_session_key:
+            payload["child_session_key"] = self.child_session_key
+        return payload
+
+
+@dataclass(frozen=True)
+class SpawnResult:
+    status: SpawnResultStatus
+    message: str
+    task: SpawnTaskRef | None = None
+    warning: SpawnIssue | None = None
+    error: SpawnIssue | None = None
+    schema_version: int = 1
+
+    @classmethod
+    def spawned(
+        cls,
+        *,
+        task_id: str,
+        label: str,
+        child_session_key: str | None,
+        warning: SpawnIssue | None = None,
+    ) -> "SpawnResult":
+        return cls(
+            status="spawned",
+            message=(
+                "Subagent spawned. Query progress with task.task_id via check_tasks or "
+                "check_tasks_json."
+            ),
+            task=SpawnTaskRef(
+                task_id=task_id,
+                label=label,
+                child_session_key=child_session_key,
+            ),
+            warning=warning,
+        )
+
+    @classmethod
+    def failed(cls, *, code: str, message: str) -> "SpawnResult":
+        return cls(
+            status="failed",
+            message="Subagent spawn failed.",
+            error=SpawnIssue(code=code, message=message),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "status": self.status,
+            "message": self.message,
+            "task": self.task.to_payload() if self.task else None,
+            "warning": self.warning.to_payload() if self.warning else None,
+            "error": self.error.to_payload() if self.error else None,
+        }
 
 
 class SubagentManager:
@@ -151,7 +231,7 @@ class SubagentManager:
         session_key: str | None = None,
         context_from: str | None = None,
         child_session_key: str | None = None,
-    ) -> str:
+    ) -> SpawnResult:
         task_id = uuid.uuid4().hex[:12]
         while task_id in self._task_statuses or task_id in self._running_tasks:
             task_id = uuid.uuid4().hex[:12]
@@ -167,7 +247,7 @@ class SubagentManager:
             child_session_key=child_session_key,
         )
         if child_key_error:
-            return f"Spawn failed: {child_key_error}"
+            return SpawnResult.failed(code=child_key_error.code, message=child_key_error.message)
         resolved_child_session_key = self._resolve_child_session_key(
             parent_session_key=session_key,
             child_session_key=child_session_key,
@@ -176,12 +256,7 @@ class SubagentManager:
         if resolved_child_session_key:
             origin["child_session_key"] = resolved_child_session_key
 
-        prev: TaskStatus | None = None
-        resume_context: str | None = None
-        if context_from:
-            prev = self.get_task_status(context_from)
-            if prev and prev.status in ("completed", "failed"):
-                resume_context = self._build_resume_context(context_from, prev)
+        resume_context, warning = self._resolve_resume_context(context_from)
 
         self._task_statuses[task_id] = TaskStatus(
             task_id=task_id,
@@ -211,17 +286,12 @@ class SubagentManager:
         bg_task.add_done_callback(_cleanup)
 
         logger.info("🚀 启动子代 / subagent spawned: [{}]: {}", task_id, safe_label)
-        result = f'Spawned task_id={task_id} label="{safe_label}"'
-        if resolved_child_session_key:
-            result += f" child_session_key={resolved_child_session_key}"
-        if context_from:
-            if not prev or prev.status not in ("completed", "failed"):
-                visible_context_from = self._sanitize_visible(context_from)
-                result += (
-                    " (warning: context_from="
-                    f"{visible_context_from} not found or not finished, context not injected)"
-                )
-        return result
+        return SpawnResult.spawned(
+            task_id=task_id,
+            label=safe_label,
+            child_session_key=resolved_child_session_key,
+            warning=warning,
+        )
 
     def get_task_status(self, task_id: str) -> TaskStatus | None:
         return self._task_statuses.get(task_id)
@@ -275,7 +345,7 @@ class SubagentManager:
 
     @staticmethod
     def _sanitize_visible(text: str) -> str:
-        return text.replace("\n", " ").replace("\r", "").replace("|", "/")
+        return shared.sanitize_visible_text(text)
 
     @staticmethod
     def _build_resume_context(context_from: str, prev: TaskStatus) -> str:
@@ -283,6 +353,26 @@ class SubagentManager:
             f"[Continuing from previous task ({context_from})]\n"
             f"Previous task: {prev.task_description[:200]}\n"
             f"Previous result: {prev.result_summary or 'no summary'}"
+        )
+
+    def _resolve_resume_context(
+        self, context_from: str | None
+    ) -> tuple[str | None, SpawnIssue | None]:
+        if not context_from:
+            return None, None
+        prev = self.get_task_status(context_from)
+        if prev and prev.status in ("completed", "failed"):
+            return self._build_resume_context(context_from, prev), None
+        visible_context_from = self._sanitize_visible(context_from)
+        return (
+            None,
+            SpawnIssue(
+                code="context_from_unavailable",
+                message=(
+                    f"context_from={visible_context_from} not found or not finished; "
+                    "resume context not injected."
+                ),
+            ),
         )
 
     @staticmethod
@@ -311,47 +401,29 @@ class SubagentManager:
         *,
         parent_session_key: str | None,
         child_session_key: str | None,
-    ) -> str | None:
+    ) -> SpawnIssue | None:
         if not isinstance(child_session_key, str) or not child_session_key.strip():
             return None
         if self.sessions is None:
             return None
         if not isinstance(parent_session_key, str) or not parent_session_key:
-            return "child_session_key requires a parent session"
+            return SpawnIssue(
+                code="child_session_parent_required",
+                message="child_session_key requires a parent session",
+            )
         candidate = child_session_key.strip()
         if not self.sessions.session_exists(candidate):
-            return f"unknown child_session_key '{candidate}'"
+            return SpawnIssue(
+                code="unknown_child_session_key",
+                message=f"unknown child_session_key '{candidate}'",
+            )
         session = self.sessions.get_or_create(candidate)
         if session.metadata.get("parent_session_key") != parent_session_key:
-            return "child_session_key does not belong to this parent session"
+            return SpawnIssue(
+                code="child_session_parent_mismatch",
+                message="child_session_key does not belong to this parent session",
+            )
         return None
-
-    def _persist_child_session_metadata(
-        self,
-        child_session_key: str,
-        *,
-        parent_session_key: str,
-        label: str,
-        status: str,
-        task_id: str,
-        summary: str | None = None,
-    ) -> None:
-        if self.sessions is None:
-            return
-        session = self.sessions.get_or_create(child_session_key)
-        session.metadata.update(
-            {
-                "title": label,
-                "session_kind": "subagent_child",
-                "read_only": True,
-                "parent_session_key": parent_session_key,
-                "task_label": label,
-                "child_status": status,
-                "active_task_id": task_id if status == "running" else "",
-                "last_result_summary": summary or "",
-            }
-        )
-        self.sessions.save(session)
 
     def _persist_child_user_turn(
         self,
@@ -372,12 +444,11 @@ class SubagentManager:
                 "read_only": True,
                 "parent_session_key": parent_session_key,
                 "task_label": label,
-                "child_status": "running",
-                "active_task_id": task_id,
             }
         )
         session.add_message("user", task)
         self.sessions.save(session)
+        self.sessions.set_child_running(child_session_key, task_id)
 
     def _persist_child_result(
         self,
@@ -812,10 +883,8 @@ class SubagentManager:
         current = self.get_task_status(task_id)
         resume_ctx = current.resume_context if current else None
         if not resume_ctx and context_from:
-            prev = self.get_task_status(context_from)
-            if prev and prev.status in ("completed", "failed"):
-                resume_ctx = self._build_resume_context(context_from, prev)
-            else:
+            resume_ctx, warning = self._resolve_resume_context(context_from)
+            if warning is not None:
                 logger.debug("context_from={} not found or not finished, ignoring", context_from)
         if resume_ctx:
             messages.insert(1, {"role": "user", "content": resume_ctx})

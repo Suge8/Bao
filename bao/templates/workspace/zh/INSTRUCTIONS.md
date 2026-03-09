@@ -20,6 +20,7 @@
 ### 进度与终止
 
 - `check_tasks` 仅在用户明确询问进度时调用（例如"现在到哪一步了"），不要主动轮询
+- 查询某个子任务时，使用 `spawn` 结果 JSON 中的 `task.task_id`；不要把 `child_session_key` 当作进度查询 ID
 
 ### 完成标准
 
@@ -33,7 +34,8 @@
 ## 工作区
 
 记忆与经验自动管理，不要对记忆使用 `read_file`/`write_file`/`edit_file`。
-`HEARTBEAT.md` 为定期任务清单，每 30 分钟检查一次。
+`HEARTBEAT.md` 为定期任务清单，位于 `~/.bao/workspace/HEARTBEAT.md`，每 30 分钟检查一次。
+凡是与当前用户个人使用相关的配置、约定、偏好和辅助文档，默认放在 `~/.bao/workspace` 工作区目录。
 
 ## 身份与偏好持久化
 

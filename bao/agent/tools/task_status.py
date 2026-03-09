@@ -4,6 +4,7 @@ import json
 import time
 from typing import TYPE_CHECKING, Any
 
+from bao.agent import shared
 from bao.agent.tools.base import Tool
 
 if TYPE_CHECKING:
@@ -20,7 +21,7 @@ class CheckTasksTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Check status of background tasks (by task_id or list all)."
+        return "Check status of background tasks by task.task_id from spawn, or list all."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -80,7 +81,7 @@ class CancelTaskTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Cancel a running background task by task_id."
+        return "Cancel a running background task by task.task_id from spawn."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -110,7 +111,7 @@ def _format_brief(st: "TaskStatus") -> str:
     elapsed = max(0, int(now - st.started_at))
     mins, secs = divmod(elapsed, 60)
     time_str = f"{mins}m{secs}s" if mins else f"{secs}s"
-    label = st.label.replace("\n", " ").replace("\r", "").replace("|", "/")
+    label = shared.sanitize_visible_text(st.label)
     stale_warning = ""
     if st.status == "running" and now - st.updated_at > 120:
         stale_warning = " ⚠️ stale"
@@ -124,7 +125,7 @@ def _format_brief(st: "TaskStatus") -> str:
     else:
         line = f"  [{st.task_id}] {label} | {st.status} | {time_str}"
         if st.result_summary:
-            cleaned = st.result_summary.replace("\n", " ").replace("\r", "").replace("|", "/")
+            cleaned = shared.sanitize_visible_text(st.result_summary)
             summary = cleaned[:80]
             if len(cleaned) > 80:
                 summary += "..."
@@ -138,7 +139,7 @@ def _format_detailed(st: "TaskStatus") -> str:
     elapsed = max(0, int(now - st.started_at))
     mins, secs = divmod(elapsed, 60)
     time_str = f"{mins}m{secs}s" if mins else f"{secs}s"
-    label = st.label.replace("\n", " ").replace("\r", "").replace("|", "/")
+    label = shared.sanitize_visible_text(st.label)
     stale_warning = ""
     if st.status == "running" and now - st.updated_at > 120:
         stale_warning = " ⚠️ no update for >2min"
@@ -149,7 +150,7 @@ def _format_detailed(st: "TaskStatus") -> str:
         f" | {st.tool_steps} tools | phase: {st.phase} | {time_str}{stale_warning}"
     )
     if st.result_summary and st.status in ("completed", "failed"):
-        cleaned = st.result_summary.replace("\n", " ").replace("\r", "").replace("|", "/")
+        cleaned = shared.sanitize_visible_text(st.result_summary)
         summary = cleaned[:300]
         if len(cleaned) > 300:
             summary += "..."
@@ -157,8 +158,7 @@ def _format_detailed(st: "TaskStatus") -> str:
     recent_actions = getattr(st, "recent_actions", [])
     if recent_actions and st.status == "running":
         line += "\n  recent: " + "; ".join(
-            str(a).replace("\n", " ").replace("\r", "").replace("|", "/")
-            for a in recent_actions[-3:]
+            shared.sanitize_visible_text(str(a)) for a in recent_actions[-3:]
         )
     return line
 
@@ -173,7 +173,7 @@ def _task_to_snapshot(st: "TaskStatus") -> dict[str, Any]:
     def _clean(s: str | None) -> str | None:
         if s is None:
             return None
-        return s.replace("\n", " ").replace("\r", "").replace("|", "/")
+        return shared.sanitize_visible_text(s)
 
     recent = [_clean(str(a)) or "" for a in (getattr(st, "recent_actions", []) or [])[-3:]]
     last_error: dict[str, Any] = {
@@ -183,6 +183,7 @@ def _task_to_snapshot(st: "TaskStatus") -> dict[str, Any]:
     }
     return {
         "task_id": st.task_id,
+        "child_session_key": st.child_session_key,
         "label": _clean(st.label),
         "status": st.status,
         "iteration": st.iteration,
