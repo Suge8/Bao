@@ -1,14 +1,54 @@
 import asyncio
+import gc
+from collections.abc import Iterator
+from contextlib import contextmanager
 import importlib
 import pathlib
 import tempfile
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 from bao.agent import plan
 from bao.bus.events import InboundMessage
 from bao.bus.queue import MessageBus
+from bao.utils.db import close_db
+
+if TYPE_CHECKING:
+    from bao.agent.loop import AgentLoop
 
 pytest = importlib.import_module("pytest")
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
+
+
+@contextmanager
+def _workspace_dir() -> Iterator[pathlib.Path]:
+    with tempfile.TemporaryDirectory() as td:
+        ws = pathlib.Path(td)
+        (ws / "PERSONA.md").write_text("# Persona\n", encoding="utf-8")
+        (ws / "INSTRUCTIONS.md").write_text("# Instructions\n", encoding="utf-8")
+        try:
+            yield ws
+        finally:
+            close_db(ws)
+
+
+@contextmanager
+def _test_loop(loop_bus: MessageBus, provider: MagicMock) -> Iterator["AgentLoop"]:
+    with _workspace_dir() as ws:
+        from bao.agent.loop import AgentLoop
+
+        loop = AgentLoop(
+            bus=loop_bus,
+            provider=provider,
+            workspace=ws,
+            model="test-model",
+        )
+        try:
+            yield loop
+        finally:
+            loop.close()
+            del loop
+            gc.collect()
 
 
 @pytest.mark.asyncio
@@ -17,19 +57,7 @@ async def test_soft_interrupt_presaves_user_message_when_busy():
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    with tempfile.TemporaryDirectory() as td:
-        from bao.agent.loop import AgentLoop
-
-        ws = pathlib.Path(td)
-        (ws / "PERSONA.md").write_text("# Persona\n", encoding="utf-8")
-        (ws / "INSTRUCTIONS.md").write_text("# Instructions\n", encoding="utf-8")
-
-        loop = AgentLoop(
-            bus=loop_bus,
-            provider=provider,
-            workspace=ws,
-            model="test-model",
-        )
+    with _test_loop(loop_bus, provider) as loop:
 
         async def _noop_mcp():
             pass
@@ -94,20 +122,7 @@ async def test_interrupt_preserves_tool_order_with_presaved_current_message():
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    with tempfile.TemporaryDirectory() as td:
-        from bao.agent.loop import AgentLoop
-
-        ws = pathlib.Path(td)
-        (ws / "PERSONA.md").write_text("# Persona\n", encoding="utf-8")
-        (ws / "INSTRUCTIONS.md").write_text("# Instructions\n", encoding="utf-8")
-
-        loop = AgentLoop(
-            bus=loop_bus,
-            provider=provider,
-            workspace=ws,
-            model="test-model",
-        )
-
+    with _test_loop(loop_bus, provider) as loop:
         completed_tool_msgs = [
             {
                 "role": "assistant",
@@ -195,20 +210,7 @@ async def test_presaved_fallback_removes_only_presaved_history_item() -> None:
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    with tempfile.TemporaryDirectory() as td:
-        from bao.agent.loop import AgentLoop
-
-        ws = pathlib.Path(td)
-        (ws / "PERSONA.md").write_text("# Persona\n", encoding="utf-8")
-        (ws / "INSTRUCTIONS.md").write_text("# Instructions\n", encoding="utf-8")
-
-        loop = AgentLoop(
-            bus=loop_bus,
-            provider=provider,
-            workspace=ws,
-            model="test-model",
-        )
-
+    with _test_loop(loop_bus, provider) as loop:
         captured: dict[str, list[dict[str, object]]] = {}
 
         async def fake_run_agent_loop(initial_messages, **kwargs):
@@ -260,20 +262,7 @@ async def test_interrupt_non_presaved_fallback_skips_newer_presaved_same_content
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    with tempfile.TemporaryDirectory() as td:
-        from bao.agent.loop import AgentLoop
-
-        ws = pathlib.Path(td)
-        (ws / "PERSONA.md").write_text("# Persona\n", encoding="utf-8")
-        (ws / "INSTRUCTIONS.md").write_text("# Instructions\n", encoding="utf-8")
-
-        loop = AgentLoop(
-            bus=loop_bus,
-            provider=provider,
-            workspace=ws,
-            model="test-model",
-        )
-
+    with _test_loop(loop_bus, provider) as loop:
         completed_tool_msgs = [
             {
                 "role": "assistant",
@@ -359,20 +348,7 @@ async def test_interrupt_insert_fallback_appends_when_target_user_missing() -> N
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    with tempfile.TemporaryDirectory() as td:
-        from bao.agent.loop import AgentLoop
-
-        ws = pathlib.Path(td)
-        (ws / "PERSONA.md").write_text("# Persona\n", encoding="utf-8")
-        (ws / "INSTRUCTIONS.md").write_text("# Instructions\n", encoding="utf-8")
-
-        loop = AgentLoop(
-            bus=loop_bus,
-            provider=provider,
-            workspace=ws,
-            model="test-model",
-        )
-
+    with _test_loop(loop_bus, provider) as loop:
         completed_tool_msgs = [
             {
                 "role": "assistant",
@@ -439,19 +415,7 @@ async def test_model_error_response_persisted_as_error_and_returned() -> None:
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    with tempfile.TemporaryDirectory() as td:
-        from bao.agent.loop import AgentLoop
-
-        ws = pathlib.Path(td)
-        (ws / "PERSONA.md").write_text("# Persona\n", encoding="utf-8")
-        (ws / "INSTRUCTIONS.md").write_text("# Instructions\n", encoding="utf-8")
-
-        loop = AgentLoop(
-            bus=loop_bus,
-            provider=provider,
-            workspace=ws,
-            model="test-model",
-        )
+    with _test_loop(loop_bus, provider) as loop:
 
         async def fake_run_agent_loop(initial_messages, **kwargs):
             del initial_messages, kwargs
@@ -498,19 +462,7 @@ async def test_interrupt_marks_plan_step_interrupted() -> None:
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    with tempfile.TemporaryDirectory() as td:
-        from bao.agent.loop import AgentLoop
-
-        ws = pathlib.Path(td)
-        (ws / "PERSONA.md").write_text("# Persona\n", encoding="utf-8")
-        (ws / "INSTRUCTIONS.md").write_text("# Instructions\n", encoding="utf-8")
-
-        loop = AgentLoop(
-            bus=loop_bus,
-            provider=provider,
-            workspace=ws,
-            model="test-model",
-        )
+    with _test_loop(loop_bus, provider) as loop:
 
         async def fake_run_agent_loop(initial_messages, **kwargs):
             del initial_messages, kwargs
@@ -557,19 +509,7 @@ async def test_interrupt_uses_parsed_pending_step_not_string_contains() -> None:
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    with tempfile.TemporaryDirectory() as td:
-        from bao.agent.loop import AgentLoop
-
-        ws = pathlib.Path(td)
-        (ws / "PERSONA.md").write_text("# Persona\n", encoding="utf-8")
-        (ws / "INSTRUCTIONS.md").write_text("# Instructions\n", encoding="utf-8")
-
-        loop = AgentLoop(
-            bus=loop_bus,
-            provider=provider,
-            workspace=ws,
-            model="test-model",
-        )
+    with _test_loop(loop_bus, provider) as loop:
 
         async def fake_run_agent_loop(initial_messages, **kwargs):
             del initial_messages, kwargs
@@ -612,12 +552,8 @@ async def test_interrupt_with_string_current_step_still_marks_pending() -> None:
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    with tempfile.TemporaryDirectory() as td:
+    with _workspace_dir() as ws:
         from bao.agent.loop import AgentLoop
-
-        ws = pathlib.Path(td)
-        (ws / "PERSONA.md").write_text("# Persona\n", encoding="utf-8")
-        (ws / "INSTRUCTIONS.md").write_text("# Instructions\n", encoding="utf-8")
 
         loop = AgentLoop(
             bus=loop_bus,

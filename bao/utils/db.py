@@ -21,6 +21,16 @@ def get_db(workspace: Path) -> lancedb.DBConnection:
     return _connections[key]
 
 
+def close_db(workspace: Path) -> None:
+    key = str(workspace)
+    db = _connections.pop(key, None)
+    if db is None:
+        return
+    close = getattr(db, "close", None)
+    if callable(close):
+        close()
+
+
 def ensure_table(
     db: lancedb.DBConnection, name: str, sample: Sequence[Mapping[str, object]]
 ) -> lancedb.table.Table:

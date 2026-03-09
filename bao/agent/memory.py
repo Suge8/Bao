@@ -134,10 +134,10 @@ class MemoryStore:
 
     def __init__(self, workspace: Path, embedding_config: Any | None = None):
         self._store_lock = threading.RLock()
-        self._db = get_db(workspace)
-        self._tbl = self._ensure_migrated_table()
+        self._db: Any = get_db(workspace)
+        self._tbl: Any = self._ensure_migrated_table()
         self._embed_fn = None
-        self._vec_tbl = None
+        self._vec_tbl: Any | None = None
         self._embed_timeout_s = _DEFAULT_EMBED_TIMEOUT_S
         self._embed_retry_attempts = _DEFAULT_EMBED_RETRY_ATTEMPTS
         self._embed_retry_backoff_ms = _DEFAULT_EMBED_RETRY_BACKOFF_MS
@@ -146,6 +146,11 @@ class MemoryStore:
         if embedding_config and getattr(embedding_config, "enabled", False):
             self._init_embedding(embedding_config)
         self._migrate_legacy(workspace)
+
+    def close(self) -> None:
+        with self._store_lock:
+            self._vec_tbl = None
+            self._embed_fn = None
 
     def _ensure_migrated_table(self):
         """Ensure memory table exists with current schema, migrating if needed."""

@@ -55,6 +55,8 @@ _DISPLAY_TAIL_SAMPLE = [
 _DISPLAY_TAIL_CACHE_LIMIT = 200
 _DISPLAY_TAIL_SESSION_CACHE_LIMIT = 128
 _PER_KEY_LOCK_METHODS = frozenset({"save", "invalidate", "delete_session", "update_metadata_only"})
+_RUNTIME_STATUS_RUNNING = "running"
+_RUNTIME_METADATA_KEYS = frozenset({"session_running", "child_status", "active_task_id"})
 
 
 def _escape(val: str) -> str:
@@ -205,6 +207,24 @@ class Session:
         self.updated_at = datetime.now()
 
 
+def _split_runtime_metadata(metadata: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    persisted = dict(metadata)
+    runtime: dict[str, Any] = {}
+
+    if bool(persisted.pop("session_running", False)):
+        runtime["session_running"] = True
+
+    status = str(persisted.get("child_status") or "")
+    active_task_id = str(persisted.pop("active_task_id", "") or "")
+    if status == _RUNTIME_STATUS_RUNNING:
+        persisted.pop("child_status", None)
+        runtime["child_status"] = _RUNTIME_STATUS_RUNNING
+        if active_task_id:
+            runtime["active_task_id"] = active_task_id
+
+    return persisted, runtime
+
+
 class SessionManager:
     def __init__(self, workspace: Path):
         self.workspace = workspace
@@ -215,11 +235,25 @@ class SessionManager:
         self._cache: dict[str, Session] = {}
         self._display_tail_cache: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
         self._active_cache: dict[str, str] = {}
+        self._runtime_metadata: dict[str, dict[str, Any]] = {}
         self._meta_lock = threading.RLock()
         self._init_lock = threading.RLock()
         self._session_locks_lock = threading.Lock()
         self._session_locks: dict[str, threading.RLock] = {}
         self._change_listeners: list[Callable[[SessionChangeEvent], None]] = []
+
+    @_synchronized
+    def close(self) -> None:
+        self._cache.clear()
+        self._display_tail_cache.clear()
+        self._active_cache.clear()
+        self._runtime_metadata.clear()
+        self._change_listeners.clear()
+        self._session_locks.clear()
+        self._meta_tbl = None
+        self._msg_tbl = None
+        self._display_tail_tbl = None
+        self._db = None
 
     @staticmethod
     def _message_storage_payload(msg: dict[str, Any]) -> dict[str, Any]:
@@ -360,6 +394,47 @@ class SessionManager:
         self._display_tail_cache.move_to_end(key)
         while len(self._display_tail_cache) > _DISPLAY_TAIL_SESSION_CACHE_LIMIT:
             self._display_tail_cache.popitem(last=False)
+
+    @staticmethod
+    def _normalize_runtime_metadata(runtime_updates: dict[str, Any]) -> dict[str, Any]:
+        normalized: dict[str, Any] = {}
+        if bool(runtime_updates.get("session_running", False)):
+            normalized["session_running"] = True
+
+        status = str(runtime_updates.get("child_status") or "")
+        if status == _RUNTIME_STATUS_RUNNING:
+            normalized["child_status"] = _RUNTIME_STATUS_RUNNING
+            task_id = str(runtime_updates.get("active_task_id") or "")
+            if task_id:
+                normalized["active_task_id"] = task_id
+
+        return normalized
+
+    def _replace_runtime_metadata(self, key: str, runtime_updates: dict[str, Any]) -> None:
+        normalized = self._normalize_runtime_metadata(runtime_updates)
+        if normalized:
+            self._runtime_metadata[key] = normalized
+            return
+        self._runtime_metadata.pop(key, None)
+
+    def _update_runtime_metadata(self, key: str, runtime_updates: dict[str, Any]) -> None:
+        overlay = dict(self._runtime_metadata.get(key, {}))
+        overlay.update(runtime_updates)
+        self._replace_runtime_metadata(key, overlay)
+
+    def _merge_runtime_metadata(self, key: str, metadata: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(metadata)
+        overlay = self._runtime_metadata.get(key)
+        if overlay:
+            merged.update(overlay)
+        return merged
+
+    def _refresh_cached_session_metadata(self, key: str) -> None:
+        session = self._cache.get(key)
+        if session is None:
+            return
+        persisted, _ = _split_runtime_metadata(session.metadata)
+        session.metadata = self._merge_runtime_metadata(key, persisted)
 
     def _clear_display_tail_cache(self, key: str) -> None:
         self._display_tail_cache.pop(key, None)
@@ -688,7 +763,10 @@ class SessionManager:
                         if meta.get("updated_at")
                         else datetime.now()
                     ),
-                    metadata=json.loads(meta.get("metadata_json") or "{}"),
+                    metadata=self._merge_runtime_metadata(
+                        key,
+                        _split_runtime_metadata(json.loads(meta.get("metadata_json") or "{}"))[0],
+                    ),
                     last_consolidated=meta.get("last_consolidated", 0),
                 )
                 self._set_persisted_message_fingerprints(
@@ -800,6 +878,9 @@ class SessionManager:
         meta_tbl = self._meta_table()
         tail_tbl = self._display_tail_table()
         msg_tbl: Any | None = None
+        persisted_metadata, runtime_metadata = _split_runtime_metadata(session.metadata)
+        self._replace_runtime_metadata(session.key, runtime_metadata)
+        session.metadata = self._merge_runtime_metadata(session.key, persisted_metadata)
         prev_meta: list[dict[str, Any]] = []
         prev_msgs: list[dict[str, Any]] = []
         prev_tail: list[dict[str, Any]] = []
@@ -815,7 +896,7 @@ class SessionManager:
         prev_tail_row = prev_tail[0] if prev_tail else None
         current_created_at = session.created_at.isoformat()
         current_updated_at = session.updated_at.isoformat()
-        current_metadata_json = json.dumps(session.metadata, ensure_ascii=False)
+        current_metadata_json = json.dumps(persisted_metadata, ensure_ascii=False)
         metadata_changed = (
             prev_meta_row is None
             or str(prev_meta_row.get("created_at") or "") != current_created_at
@@ -971,36 +1052,68 @@ class SessionManager:
         """Update session metadata without loading/saving messages (lightweight)."""
         safe = _escape(key)
         meta_tbl = self._meta_table()
+        persisted_updates = {
+            field: value
+            for field, value in metadata_updates.items()
+            if field not in _RUNTIME_METADATA_KEYS
+        }
+        if not persisted_updates:
+            return
         try:
             meta_rows = meta_tbl.search().where(f"session_key = '{safe}'").limit(1).to_list()
             if not meta_rows:
                 return
             meta = meta_rows[0]
-            current_metadata = json.loads(meta.get("metadata_json") or "{}")
-            current_metadata.update(metadata_updates)
-            meta_tbl.delete(f"session_key = '{safe}'")
-            meta_tbl.add(
-                [
-                    {
-                        "session_key": key,
-                        "created_at": meta["created_at"],
-                        "updated_at": meta["updated_at"],
-                        "metadata_json": json.dumps(current_metadata, ensure_ascii=False),
-                        "last_consolidated": meta.get("last_consolidated", 0),
-                    }
-                ]
+            current_metadata, _ = _split_runtime_metadata(
+                json.loads(meta.get("metadata_json") or "{}")
             )
+            current_metadata.update(persisted_updates)
+            if persisted_updates:
+                meta_tbl.delete(f"session_key = '{safe}'")
+                meta_tbl.add(
+                    [
+                        {
+                            "session_key": key,
+                            "created_at": meta["created_at"],
+                            "updated_at": meta["updated_at"],
+                            "metadata_json": json.dumps(current_metadata, ensure_ascii=False),
+                            "last_consolidated": meta.get("last_consolidated", 0),
+                        }
+                    ]
+                )
             if key in self._cache:
-                self._cache[key].metadata.update(metadata_updates)
+                self._cache[key].metadata.update(persisted_updates)
+                self._refresh_cached_session_metadata(key)
             if emit_change:
                 self._emit_change(SessionChangeEvent(session_key=key, kind="metadata"))
         except Exception as e:
             logger.warning("⚠️ metadata update failed: {} — {}", key, e)
 
     @_synchronized
+    def set_session_running(self, key: str, is_running: bool, *, emit_change: bool = True) -> None:
+        self._update_runtime_metadata(key, {"session_running": bool(is_running)})
+        self._refresh_cached_session_metadata(key)
+        if emit_change:
+            self._emit_change(SessionChangeEvent(session_key=key, kind="metadata"))
+
+    @_synchronized
+    def set_child_running(self, key: str, task_id: str, *, emit_change: bool = True) -> None:
+        self._update_runtime_metadata(
+            key,
+            {
+                "child_status": _RUNTIME_STATUS_RUNNING,
+                "active_task_id": str(task_id or ""),
+            },
+        )
+        self._refresh_cached_session_metadata(key)
+        if emit_change:
+            self._emit_change(SessionChangeEvent(session_key=key, kind="metadata"))
+
+    @_synchronized
     def invalidate(self, key: str) -> None:
         self._cache.pop(key, None)
         self._clear_display_tail_cache(key)
+        self._runtime_metadata.pop(key, None)
 
     @_synchronized
     def _delete_meta_row(self, key: str) -> bool:
@@ -1051,9 +1164,11 @@ class SessionManager:
             self._best_effort_add(tail_tbl, prev_tail)
             self._cache.pop(key, None)
             self._clear_display_tail_cache(key)
+            self._runtime_metadata.pop(key, None)
             return False
         self._cache.pop(key, None)
         self._clear_display_tail_cache(key)
+        self._runtime_metadata.pop(key, None)
         # Defensive: clear _active_cache if it points to the deleted session
         for nk, ak in list(self._active_cache.items()):
             if ak == key:
@@ -1114,6 +1229,29 @@ class SessionManager:
         return None
 
     @_synchronized
+    def resolve_active_session_key(self, natural_key: str) -> str:
+        active_key = self.get_active_session_key(natural_key)
+        if isinstance(active_key, str) and active_key:
+            if active_key == natural_key or active_key.startswith(f"{natural_key}::"):
+                if self.session_exists(active_key):
+                    return active_key
+        return natural_key
+
+    @_synchronized
+    def mark_desktop_seen_ai_if_active(
+        self, session_key: str, desktop_natural_key: str = "desktop:local"
+    ) -> None:
+        if not session_key:
+            return
+        if self.get_active_session_key(desktop_natural_key) != session_key:
+            return
+        self.update_metadata_only(
+            session_key,
+            {"desktop_last_seen_ai_at": datetime.now().isoformat()},
+            emit_change=False,
+        )
+
+    @_synchronized
     def set_active_session_key(self, natural_key: str, session_key: str) -> None:
         self._active_cache[natural_key] = session_key
         marker = f"_active:{natural_key}"
@@ -1148,12 +1286,13 @@ class SessionManager:
                     continue
                 updated_at = str(row.get("updated_at") or "")
                 message_count, has_messages = self._session_message_summary(key, updated_at)
+                metadata, _ = _split_runtime_metadata(json.loads(row.get("metadata_json") or "{}"))
                 sessions.append(
                     {
                         "key": key,
                         "created_at": row.get("created_at"),
                         "updated_at": updated_at,
-                        "metadata": json.loads(row.get("metadata_json") or "{}"),
+                        "metadata": self._merge_runtime_metadata(key, metadata),
                         "message_count": message_count,
                         "has_messages": has_messages,
                     }

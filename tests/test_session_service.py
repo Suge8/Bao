@@ -15,6 +15,7 @@ from app.backend.asyncio_runner import AsyncioRunner
 from bao.session.manager import SessionChangeEvent, SessionManager
 
 pytest = importlib.import_module("pytest")
+pytestmark = [pytest.mark.integration, pytest.mark.gui]
 
 QtCore = pytest.importorskip("PySide6.QtCore")
 QCoreApplication = QtCore.QCoreApplication
@@ -105,6 +106,7 @@ def _sidebar_role(model: Any, name: bytes) -> int:
     raise AssertionError(f"sidebar role not found: {name!r}")
 
 
+@pytest.mark.smoke
 def test_model_empty_initially():
     m = _new_session_model()
     assert m.rowCount() == 0
@@ -507,7 +509,6 @@ def test_done_callbacks_ignore_cancelled_future():
 
         svc._on_list_done(future)
         svc._on_select_done(future)
-        svc._on_sync_family_active_done(future)
         svc._on_create_done("desktop:local::new", future)
         svc._on_delete_done("desktop:local::old", future)
     finally:
@@ -762,7 +763,7 @@ def test_active_summary_changed_emits_current_session_summary(qt_app):
         runner.shutdown(grace_s=1.0)
 
 
-def test_initialize_syncs_external_family_active_key(tmp_path, qt_app):
+def test_initialize_does_not_sync_external_family_active_key_from_desktop_focus(tmp_path, qt_app):
     runner = AsyncioRunner()
     runner.start()
     try:
@@ -779,55 +780,34 @@ def test_initialize_syncs_external_family_active_key(tmp_path, qt_app):
         QTimer.singleShot(300, loop.quit)
         loop.exec()
 
-        assert sm.get_active_session_key("telegram:chat") == "telegram:chat::s2"
+        assert sm.get_active_session_key("telegram:chat") is None
     finally:
         runner.shutdown(grace_s=1.0)
 
 
-def test_external_family_active_sync_keeps_active_chat_realtime(tmp_path, qt_app):
-    from app.backend.chat import ChatMessageModel
-    from app.backend.gateway import ChatService
-
+def test_desktop_focus_external_session_does_not_write_family_active_marker(tmp_path, qt_app):
     runner = AsyncioRunner()
     runner.start()
-    chat = None
     try:
         svc = _new_session_service(runner)
-        model = ChatMessageModel()
-        chat = ChatService(model, runner)
         sm = SessionManager(tmp_path)
         sm.save(sm.get_or_create("telegram:chat"))
         sm.save(sm.get_or_create("telegram:chat::s2"))
-        sm.set_active_session_key("desktop:local", "telegram:chat::s2")
-
-        svc.activeKeyChanged.connect(chat.setSessionKey)
-        chat.setSessionManager(sm)
         svc.setGatewayReady()
         svc.initialize(sm)
 
         loop = QEventLoop()
         QTimer.singleShot(300, loop.quit)
         loop.exec()
+        svc.selectSession("telegram:chat::s2")
 
-        async def _inbound_like_core() -> None:
-            natural = "telegram:chat"
-            key = sm.get_active_session_key(natural) or natural
-            session = sm.get_or_create(key)
-            session.add_message("user", "incoming external")
-            sm.save(session)
+        loop2 = QEventLoop()
+        QTimer.singleShot(400, loop2.quit)
+        loop2.exec()
 
-        runner.submit(_inbound_like_core()).result(timeout=2)
-
-        _spin_until(lambda: model.rowCount() == 1)
-
-        assert model.rowCount() == 1
-        assert model._messages[-1]["content"] == "incoming external"
+        assert sm.get_active_session_key("desktop:local") == "telegram:chat::s2"
+        assert sm.get_active_session_key("telegram:chat") is None
     finally:
-        if chat is not None:
-            try:
-                chat.deleteLater()
-            except Exception:
-                pass
         runner.shutdown(grace_s=1.0)
 
 
@@ -980,6 +960,114 @@ def test_sidebar_model_groups_sessions_in_backend_projection(tmp_path, qt_app):
         runner.shutdown(grace_s=1.0)
 
 
+def test_sidebar_projection_uses_runtime_clear_for_running_state(tmp_path, qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = SessionManager(tmp_path)
+
+        session = sm.get_or_create("imessage:chat-1::main")
+        session.metadata["title"] = "Main"
+        sm.save(session)
+        sm.set_session_running("imessage:chat-1::main", True, emit_change=False)
+        sm.set_session_running("imessage:chat-1::main", False, emit_change=False)
+
+        svc.initialize(sm)
+        svc.setGatewayReady()
+        svc.selectSession("imessage:chat-1::main")
+
+        _spin_until(lambda: _sidebar_model(svc).rowCount() >= 2)
+
+        sidebar = _sidebar_model(svc)
+        item_key_role = _sidebar_role(sidebar, b"itemKey")
+        group_running_role = _sidebar_role(sidebar, b"groupHasRunning")
+        item_running_role = _sidebar_role(sidebar, b"isRunning")
+
+        assert sidebar.data(sidebar.index(0), group_running_role) is False
+        for index in range(sidebar.rowCount()):
+            if sidebar.data(sidebar.index(index), item_key_role) != "imessage:chat-1::main":
+                continue
+            assert sidebar.data(sidebar.index(index), item_running_role) is False
+            break
+        else:
+            raise AssertionError("sidebar row not found")
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_sidebar_projection_ignores_stale_persisted_running_child_after_restart(tmp_path, qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = SessionManager(tmp_path)
+
+        parent = sm.get_or_create("imessage:chat-1::main")
+        parent.metadata["title"] = "Main"
+        sm.save(parent)
+
+        child = sm.get_or_create("subagent:imessage:chat-1::child")
+        child.metadata.update(
+            {
+                "title": "Child",
+                "session_kind": "subagent_child",
+                "read_only": True,
+                "parent_session_key": "imessage:chat-1::main",
+            }
+        )
+        sm.save(child)
+
+        meta_tbl = sm._meta_table()
+        meta_tbl.delete("session_key = 'subagent:imessage:chat-1::child'")
+        meta_tbl.add(
+            [
+                {
+                    "session_key": "subagent:imessage:chat-1::child",
+                    "created_at": child.created_at.isoformat(),
+                    "updated_at": child.updated_at.isoformat(),
+                    "metadata_json": json.dumps(
+                        {
+                            "title": "Child",
+                            "session_kind": "subagent_child",
+                            "read_only": True,
+                            "parent_session_key": "imessage:chat-1::main",
+                            "child_status": "running",
+                            "active_task_id": "task-1",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "last_consolidated": 0,
+                }
+            ]
+        )
+
+        reloaded = SessionManager(tmp_path)
+        svc.initialize(reloaded)
+        svc.setGatewayReady()
+        svc.selectSession("imessage:chat-1::main")
+
+        _spin_until(lambda: _sidebar_model(svc).rowCount() >= 2)
+
+        sidebar = _sidebar_model(svc)
+        item_key_role = _sidebar_role(sidebar, b"itemKey")
+        group_running_role = _sidebar_role(sidebar, b"groupHasRunning")
+        item_running_role = _sidebar_role(sidebar, b"isRunning")
+        assert sidebar.data(sidebar.index(0), group_running_role) is False
+        for index in range(sidebar.rowCount()):
+            if (
+                sidebar.data(sidebar.index(index), item_key_role)
+                != "subagent:imessage:chat-1::child"
+            ):
+                continue
+            assert sidebar.data(sidebar.index(index), item_running_role) is False
+            break
+        else:
+            raise AssertionError("child sidebar row not found")
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
 def test_toggle_sidebar_group_updates_backend_row_visibility(tmp_path, qt_app):
     runner = AsyncioRunner()
     runner.start()
@@ -1075,7 +1163,7 @@ def test_active_sidebar_row_stays_within_its_group_when_rows_above_change(tmp_pa
         runner.shutdown(grace_s=1.0)
 
 
-def test_rapid_same_family_selection_persists_latest_active_key(tmp_path, qt_app):
+def test_rapid_same_family_selection_only_updates_desktop_active_key(tmp_path, qt_app):
     runner = AsyncioRunner()
     runner.start()
     try:
@@ -1099,7 +1187,7 @@ def test_rapid_same_family_selection_persists_latest_active_key(tmp_path, qt_app
         loop2.exec()
 
         assert sm.get_active_session_key("desktop:local") == "telegram:chat::s2"
-        assert sm.get_active_session_key("telegram:chat") == "telegram:chat::s2"
+        assert sm.get_active_session_key("telegram:chat") is None
     finally:
         runner.shutdown(grace_s=1.0)
 

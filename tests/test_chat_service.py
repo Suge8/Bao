@@ -14,6 +14,7 @@ from bao.gateway.builder import DesktopStartupMessage
 from bao.session.manager import SessionChangeEvent
 
 pytest = importlib.import_module("pytest")
+pytestmark = [pytest.mark.integration, pytest.mark.gui]
 
 QtCore = pytest.importorskip("PySide6.QtCore")
 QtGui = pytest.importorskip("PySide6.QtGui")
@@ -91,6 +92,7 @@ def test_initial_state():
     assert svc.lastError == ""
 
 
+@pytest.mark.smoke
 def test_send_message_appends_user_row():
     svc, model = make_service()
     svc.sendMessage("hello")
@@ -131,11 +133,8 @@ def test_send_message_marks_session_running_when_queue_starts() -> None:
     svc.sendMessage("test")
 
     assert model.rowCount() == 2
-    assert sm.update_metadata_only.call_args_list[0].args == (
-        "desktop:local::s1",
-        {"session_running": True},
-    )
-    assert sm.update_metadata_only.call_args_list[0].kwargs == {"emit_change": True}
+    assert sm.set_session_running.call_args_list[0].args == ("desktop:local::s1", True)
+    assert sm.set_session_running.call_args_list[0].kwargs == {"emit_change": True}
 
 
 def test_on_send_done_emits_cancelled_result() -> None:
