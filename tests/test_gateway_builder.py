@@ -16,6 +16,8 @@ from bao.gateway.builder import (
     send_startup_greeting,
 )
 
+pytestmark = pytest.mark.integration
+
 
 class TestImports:
     """Verify the public API is importable."""
@@ -50,6 +52,7 @@ class TestGatewayStack:
         assert dataclasses.is_dataclass(GatewayStack)
 
 
+@pytest.mark.smoke
 def test_startup_system_prompt_keeps_bao_identity() -> None:
     prompt = mod._build_startup_system_prompt(
         persona_text="",
@@ -68,6 +71,55 @@ def test_startup_system_prompt_keeps_bao_identity() -> None:
     assert "Channel: feishu | Chat: ou_123" in prompt
 
 
+def test_build_gateway_stack_does_not_repair_external_family_active_from_desktop() -> None:
+    fake_bus = MagicMock()
+    fake_agent = MagicMock()
+    fake_channels = MagicMock()
+    fake_session_manager = MagicMock()
+
+    class FakeCron:
+        on_job = None
+
+        def __init__(self, path):
+            pass
+
+    with (
+        patch.object(mod, "__name__", mod.__name__),
+        patch("bao.agent.loop.AgentLoop", return_value=fake_agent),
+        patch("bao.bus.queue.MessageBus", return_value=fake_bus),
+        patch("bao.channels.manager.ChannelManager", return_value=fake_channels),
+        patch(
+            "bao.config.loader.get_data_dir",
+            return_value=MagicMock(
+                __truediv__=lambda s, x: MagicMock(__truediv__=lambda s, y: "/tmp/fake")
+            ),
+        ),
+        patch("bao.cron.service.CronService", side_effect=FakeCron),
+        patch("bao.heartbeat.service.HeartbeatService", return_value=MagicMock()),
+    ):
+        config = MagicMock()
+        config.workspace_path = "/tmp/test"
+        config.agents.defaults.model = "test"
+        config.agents.defaults.temperature = 0.1
+        config.agents.defaults.max_tokens = 100
+        config.agents.defaults.max_tool_iterations = 5
+        config.agents.defaults.memory_window = 10
+        config.agents.defaults.reasoning_effort = None
+        config.agents.defaults.models = []
+        config.tools.web.search = MagicMock()
+        config.tools.exec = MagicMock()
+        config.tools.embedding = MagicMock()
+        config.tools.restrict_to_workspace = False
+        config.tools.mcp_servers = {}
+        config.gateway.heartbeat.interval_s = 60
+        config.gateway.heartbeat.enabled = True
+
+        build_gateway_stack(config, MagicMock(), fake_session_manager)
+
+    fake_session_manager.repair_family_active_from_desktop.assert_not_called()
+
+
+@pytest.mark.smoke
 def test_startup_trigger_is_minimal_internal_event() -> None:
     assert mod._build_startup_trigger() == '{"event":"system.user_online"}'
 
@@ -886,6 +938,7 @@ async def test_startup_greeting_waits_for_channel_ready_when_provided() -> None:
     fake_bus.publish_outbound = AsyncMock()
 
     ready_evt = asyncio.Event()
+    sent: list[object] = []
 
     class FakeChannels:
         async def wait_started(self) -> None:
@@ -893,6 +946,9 @@ async def test_startup_greeting_waits_for_channel_ready_when_provided() -> None:
 
         async def wait_ready(self, _name: str) -> None:
             await ready_evt.wait()
+
+        async def send_outbound(self, msg) -> None:
+            sent.append(msg)
 
     fake_agent = MagicMock()
     config = MagicMock()
@@ -924,10 +980,12 @@ async def test_startup_greeting_waits_for_channel_ready_when_provided() -> None:
         )
         await asyncio.sleep(0)
         assert fake_bus.publish_outbound.await_count == 0
+        assert sent == []
         ready_evt.set()
         await asyncio.wait_for(task, timeout=0.5)
 
-    assert fake_bus.publish_outbound.await_count == 1
+    assert fake_bus.publish_outbound.await_count == 0
+    assert len(sent) == 1
 
 
 @pytest.mark.asyncio
@@ -1035,14 +1093,7 @@ async def test_startup_greeting_prefers_utility_model_when_configured() -> None:
 @pytest.mark.asyncio
 async def test_startup_greeting_desktop_not_blocked_by_external_publish() -> None:
     fake_bus = MagicMock()
-    publish_started = asyncio.Event()
-    release_publish = asyncio.Event()
-
-    async def _publish_side_effect(_msg):
-        publish_started.set()
-        await release_publish.wait()
-
-    fake_bus.publish_outbound = AsyncMock(side_effect=_publish_side_effect)
+    fake_bus.publish_outbound = AsyncMock()
 
     fake_agent = MagicMock()
     fake_agent.model = "right-gpt/gpt-5.3-codex"
@@ -1056,6 +1107,20 @@ async def test_startup_greeting_desktop_not_blocked_by_external_publish() -> Non
         desktop_called.set()
 
     on_desktop = AsyncMock(side_effect=_on_desktop)
+
+    publish_started = asyncio.Event()
+    release_publish = asyncio.Event()
+
+    class FakeRuntimeChannels:
+        async def wait_started(self) -> None:
+            return None
+
+        async def wait_ready(self, _name: str) -> None:
+            return None
+
+        async def send_outbound(self, _msg) -> None:
+            publish_started.set()
+            await release_publish.wait()
 
     config = MagicMock()
     config.workspace_path = "/tmp/test"
@@ -1102,6 +1167,7 @@ async def test_startup_greeting_desktop_not_blocked_by_external_publish() -> Non
                 fake_bus,
                 config,
                 on_desktop_startup_message=on_desktop,
+                channels=FakeRuntimeChannels(),
             )
         )
 
@@ -1117,11 +1183,11 @@ async def test_startup_greeting_desktop_not_blocked_by_external_publish() -> Non
             entrance_style="greeting",
         )
     )
-    assert fake_bus.publish_outbound.await_count == 1
+    assert fake_bus.publish_outbound.await_count == 0
 
 
 @pytest.mark.asyncio
-async def test_startup_greeting_persists_external_ready_message_to_session_manager() -> None:
+async def test_startup_greeting_persists_external_ready_message_to_active_family_session() -> None:
     fake_bus = MagicMock()
     fake_bus.publish_outbound = AsyncMock()
 
@@ -1140,9 +1206,20 @@ async def test_startup_greeting_persists_external_ready_message_to_session_manag
         def add_message(self, role: str, content: str, **kwargs: object) -> None:
             self.messages.append({"role": role, "content": content, **kwargs})
 
-    session = StubSession("feishu:ou_123")
+    session = StubSession("feishu:ou_123::s7")
     session_manager = MagicMock()
     session_manager.get_or_create.return_value = session
+    session_manager.resolve_active_session_key.return_value = "feishu:ou_123::s7"
+
+    class FakeRuntimeChannels:
+        async def wait_started(self) -> None:
+            return None
+
+        async def wait_ready(self, _name: str) -> None:
+            return None
+
+        async def send_outbound(self, _msg) -> None:
+            return None
 
     config = MagicMock()
     config.workspace_path = "/tmp/test"
@@ -1169,11 +1246,14 @@ async def test_startup_greeting_persists_external_ready_message_to_session_manag
             fake_agent,
             fake_bus,
             config,
+            channels=FakeRuntimeChannels(),
             session_manager=session_manager,
         )
 
-    session_manager.get_or_create.assert_called_once_with("feishu:ou_123")
+    fake_bus.publish_outbound.assert_not_awaited()
+    session_manager.get_or_create.assert_called_once_with("feishu:ou_123::s7")
     session_manager.save.assert_called_once_with(session)
+    session_manager.mark_desktop_seen_ai_if_active.assert_called_once_with("feishu:ou_123::s7")
     assert session.messages == [
         {
             "role": "assistant",
@@ -1201,6 +1281,17 @@ async def test_startup_onboarding_persists_external_message_to_session_manager()
     session = StubSession("imessage:13800138000")
     session_manager = MagicMock()
     session_manager.get_or_create.return_value = session
+    session_manager.resolve_active_session_key.return_value = "imessage:13800138000"
+
+    class FakeRuntimeChannels:
+        async def wait_started(self) -> None:
+            return None
+
+        async def wait_ready(self, _name: str) -> None:
+            return None
+
+        async def send_outbound(self, _msg) -> None:
+            return None
 
     config = MagicMock()
     config.workspace_path = "/tmp/test"
@@ -1231,11 +1322,14 @@ async def test_startup_onboarding_persists_external_message_to_session_manager()
             MagicMock(),
             fake_bus,
             config,
+            channels=FakeRuntimeChannels(),
             session_manager=session_manager,
         )
 
+    fake_bus.publish_outbound.assert_not_awaited()
     session_manager.get_or_create.assert_called_once_with("imessage:13800138000")
     session_manager.save.assert_called_once_with(session)
+    session_manager.mark_desktop_seen_ai_if_active.assert_called_once_with("imessage:13800138000")
     assert session.messages == [
         {
             "role": "assistant",
@@ -1245,6 +1339,61 @@ async def test_startup_onboarding_persists_external_message_to_session_manager()
             "entrance_style": "assistantReceived",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_startup_greeting_does_not_persist_external_message_when_send_fails() -> None:
+    fake_bus = MagicMock()
+    fake_bus.publish_outbound = AsyncMock()
+
+    fake_agent = MagicMock()
+    fake_agent.model = "right-gpt/gpt-5.3-codex"
+    fake_agent.provider = MagicMock()
+    fake_agent.provider.chat = AsyncMock(return_value=MagicMock(content="hello"))
+
+    class FakeRuntimeChannels:
+        async def wait_started(self) -> None:
+            return None
+
+        async def wait_ready(self, _name: str) -> None:
+            return None
+
+        async def send_outbound(self, _msg) -> None:
+            raise RuntimeError("send denied")
+
+    session_manager = MagicMock()
+    config = MagicMock()
+    config.workspace_path = "/tmp/test"
+
+    channels = MagicMock()
+    channels.telegram.enabled = False
+    channels.telegram.allow_from = []
+    channels.feishu.enabled = True
+    channels.feishu.allow_from = ["ou_123"]
+    channels.dingtalk.enabled = False
+    channels.dingtalk.allow_from = []
+    channels.imessage.enabled = False
+    channels.imessage.allow_from = []
+    channels.qq.enabled = False
+    channels.qq.allow_from = []
+    channels.email.enabled = False
+    channels.email.allow_from = []
+    channels.whatsapp.enabled = False
+    channels.whatsapp.allow_from = []
+    config.channels = channels
+
+    with patch("bao.config.onboarding.detect_onboarding_stage", return_value="ready"):
+        await send_startup_greeting(
+            fake_agent,
+            fake_bus,
+            config,
+            channels=FakeRuntimeChannels(),
+            session_manager=session_manager,
+        )
+
+    fake_bus.publish_outbound.assert_not_awaited()
+    session_manager.get_or_create.assert_not_called()
+    session_manager.save.assert_not_called()
 
 
 @pytest.mark.asyncio
