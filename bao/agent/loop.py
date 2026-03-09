@@ -2628,6 +2628,11 @@ class AgentLoop:
         self._running = False
         logger.info("👋 停止代理 / agent stopping: main loop")
 
+    def close(self) -> None:
+        self._running = False
+        self.context.close()
+        self.sessions.close()
+
     def _prepare_user_history_for_context(
         self, session: Session, msg: InboundMessage
     ) -> list[dict[str, Any]]:
@@ -2720,7 +2725,7 @@ class AgentLoop:
             label = str(
                 metadata.get("task_label") or metadata.get("title") or child_session_key
             ).strip()
-            status = str(metadata.get("child_status") or "completed").strip() or "completed"
+            status = str(metadata.get("child_status") or "unknown").strip() or "unknown"
             summary = str(metadata.get("last_result_summary") or "").strip()
             line = f"- child_session_key={child_session_key} | label={label} | status={status}"
             if summary:
@@ -2926,9 +2931,9 @@ class AgentLoop:
     async def _set_session_running_metadata(self, key: str, is_running: bool) -> None:
         try:
             await asyncio.to_thread(
-                self.sessions.update_metadata_only,
+                self.sessions.set_session_running,
                 key,
-                {"session_running": bool(is_running)},
+                bool(is_running),
             )
         except Exception as exc:
             logger.debug("Skip session running metadata update {}: {}", key, exc)

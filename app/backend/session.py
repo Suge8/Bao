@@ -981,21 +981,6 @@ class SessionService(QObject):
         )
         self.sidebarProjectionChanged.emit()
 
-    def _maybe_reconcile_stored_active(self, active_for_view: str, stored_active: str) -> None:
-        if self._disposed or self._session_manager is None:
-            return
-        if self._pending_select_key is not None:
-            return
-        if not active_for_view or active_for_view != stored_active:
-            return
-        family_key = _session_family_key(active_for_view)
-        if not family_key or family_key == self._natural_key:
-            return
-        seq = self._next_active_commit_seq()
-        fut = self._submit_safe(self._reconcile_active_selection(active_for_view, seq))
-        if fut is not None:
-            fut.add_done_callback(self._on_sync_family_active_done)
-
     def _set_local_active_key(self, key: str) -> None:
         if self._active_key == key:
             return
@@ -1008,8 +993,7 @@ class SessionService(QObject):
         self._emit_active_summary(key)
         self._emit_active_key_if_changed(key)
 
-    def _finalize_active_resolution(self, active_for_view: str, stored_active: str) -> None:
-        self._maybe_reconcile_stored_active(active_for_view, stored_active)
+    def _finalize_active_resolution(self, active_for_view: str) -> None:
         self._clear_pending_select_if_resolved(active_for_view)
 
     def _desktop_startup_target_key(self) -> str:
@@ -1297,9 +1281,6 @@ class SessionService(QObject):
             if seq != self._active_commit_seq:
                 return
             sm.set_active_session_key(self._natural_key, key)
-            family_key = _session_family_key(key)
-            if family_key and family_key != self._natural_key:
-                sm.set_active_session_key(family_key, key)
 
         await self._run_user_io(_write)
 
@@ -1314,23 +1295,6 @@ class SessionService(QObject):
             sm.clear_active_session_key(self._natural_key)
 
         await self._run_user_io(_clear)
-
-    async def _reconcile_active_selection(self, key: str, seq: int) -> None:
-        sm = self._session_manager
-        if sm is None or not key:
-            return
-        family_key = _session_family_key(key)
-        if not family_key or family_key == self._natural_key:
-            return
-        if seq != self._active_commit_seq:
-            return
-
-        current_desktop = await self._run_user_io(sm.get_active_session_key, self._natural_key)
-        current_family = await self._run_user_io(sm.get_active_session_key, family_key)
-        if seq != self._active_commit_seq:
-            return
-        if current_desktop != key or current_family != key:
-            await self._commit_active_selection(key, seq)
 
     def _build_new_session_key(self, name: str) -> str:
         if name:
@@ -1415,15 +1379,6 @@ class SessionService(QObject):
             self._selectResult.emit(False, str(exc), "")
         else:
             self._selectResult.emit(True, "", future.result())
-
-    def _on_sync_family_active_done(self, future: Any) -> None:
-        if self._disposed:
-            return
-        if future.cancelled():
-            return
-        exc = self._future_exception_or_none(future)
-        if exc:
-            logger.debug("Skip active selection sync: {}", exc)
 
     def _on_create_done(self, key: str, future: Any) -> None:
         if self._disposed:
@@ -1559,7 +1514,7 @@ class SessionService(QObject):
             fut.add_done_callback(self._on_backfill_done)
         self._emit_active_key_if_changed(active_for_view)
         self._emit_startup_target_if_applicable()
-        self._finalize_active_resolution(active_for_view, stored_active)
+        self._finalize_active_resolution(active_for_view)
         if auto_selected_key and self._session_manager is not None:
             fut = self._submit_safe(
                 self._select_session(auto_selected_key, self._next_active_commit_seq())
