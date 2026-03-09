@@ -98,6 +98,13 @@ jobs:
           - runner: macos-15-intel
             arch: x86_64
     runs-on: ${{ matrix.runner }}
+    env:
+      BAO_MAC_CODESIGN_IDENTITY: ${{ secrets.BAO_MAC_CODESIGN_IDENTITY }}
+      BAO_MAC_CERT_P12_BASE64: ${{ secrets.BAO_MAC_CERT_P12_BASE64 }}
+      BAO_MAC_CERT_P12_PASSWORD: ${{ secrets.BAO_MAC_CERT_P12_PASSWORD }}
+      BAO_MAC_NOTARY_APPLE_ID: ${{ secrets.BAO_MAC_NOTARY_APPLE_ID }}
+      BAO_MAC_NOTARY_TEAM_ID: ${{ secrets.BAO_MAC_NOTARY_TEAM_ID }}
+      BAO_MAC_NOTARY_PASSWORD: ${{ secrets.BAO_MAC_NOTARY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -115,8 +122,96 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra desktop-build-pyinstaller --frozen
 
+      - name: Detect macOS signing mode
+        id: mac_signing_mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            BAO_MAC_CODESIGN_IDENTITY
+            BAO_MAC_CERT_P12_BASE64
+            BAO_MAC_CERT_P12_PASSWORD
+            BAO_MAC_NOTARY_APPLE_ID
+            BAO_MAC_NOTARY_TEAM_ID
+            BAO_MAC_NOTARY_PASSWORD
+          )
+          missing=0
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing optional macOS signing secret: $name"
+              missing=1
+            fi
+          done
+
+          if [[ "$missing" -eq 0 ]]; then
+            echo "BAO_MAC_SIGNING_ENABLED=true" >> "$GITHUB_ENV"
+            echo "mode=signed" >> "$GITHUB_OUTPUT"
+            echo "Using Developer ID signing + notarization for macOS artifacts."
+          else
+            echo "BAO_MAC_SIGNING_ENABLED=false" >> "$GITHUB_ENV"
+            echo "mode=unsigned" >> "$GITHUB_OUTPUT"
+            echo "::warning::macOS signing secrets are incomplete; release artifacts will be built without Developer ID signing or notarization."
+          fi
+
+      - name: Import Developer ID certificate
+        if: env.BAO_MAC_SIGNING_ENABLED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/bao-signing.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/bao-cert.p12"
+          KEYCHAIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+
+          python3 -c 'import base64, os, pathlib; pathlib.Path(os.environ["RUNNER_TEMP"]).joinpath("bao-cert.p12").write_bytes(base64.b64decode(os.environ["BAO_MAC_CERT_P12_BASE64"]))'
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$BAO_MAC_CERT_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/xcrun
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -d user -s "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+          {
+            echo "BAO_MAC_KEYCHAIN_PATH=$KEYCHAIN_PATH"
+            echo "BAO_MAC_CERT_PATH=$CERT_PATH"
+          } >> "$GITHUB_ENV"
+
       - name: Build with PyInstaller
         run: bash app/scripts/build_mac_pyinstaller.sh --arch ${{ matrix.arch }}
+
+      - name: Verify signed app
+        if: env.BAO_MAC_SIGNING_ENABLED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$GITHUB_WORKSPACE/dist-pyinstaller/dist/Bao.app"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          spctl -a -t exec -vv "$APP_PATH"
+
+      - name: Notarize app bundle
+        if: env.BAO_MAC_SIGNING_ENABLED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$GITHUB_WORKSPACE/dist-pyinstaller/dist/Bao.app"
+          APP_ZIP="$RUNNER_TEMP/Bao-${{ matrix.arch }}-notary.zip"
+          ditto -c -k --keepParent "$APP_PATH" "$APP_ZIP"
+          xcrun notarytool submit "$APP_ZIP" \
+            --apple-id "$BAO_MAC_NOTARY_APPLE_ID" \
+            --team-id "$BAO_MAC_NOTARY_TEAM_ID" \
+            --password "$BAO_MAC_NOTARY_PASSWORD" \
+            --wait
+
+      - name: Staple app bundle
+        if: env.BAO_MAC_SIGNING_ENABLED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$GITHUB_WORKSPACE/dist-pyinstaller/dist/Bao.app"
+          xcrun stapler staple "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
 
       - name: Ensure create-dmg
         run: |
@@ -129,8 +224,39 @@ jobs:
       - name: Create DMG
         run: bash app/scripts/create_dmg.sh --arch ${{ matrix.arch }} --app-path "$GITHUB_WORKSPACE/dist-pyinstaller/dist/Bao.app"
 
+      - name: Notarize DMG
+        if: env.BAO_MAC_SIGNING_ENABLED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          DMG_PATH="$GITHUB_WORKSPACE/dist/Bao-${{ needs.resolve-release.outputs.release_version }}-macos-${{ matrix.arch }}.dmg"
+          xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "$BAO_MAC_NOTARY_APPLE_ID" \
+            --team-id "$BAO_MAC_NOTARY_TEAM_ID" \
+            --password "$BAO_MAC_NOTARY_PASSWORD" \
+            --wait
+
+      - name: Staple DMG
+        if: env.BAO_MAC_SIGNING_ENABLED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          DMG_PATH="$GITHUB_WORKSPACE/dist/Bao-${{ needs.resolve-release.outputs.release_version }}-macos-${{ matrix.arch }}.dmg"
+          xcrun stapler staple "$DMG_PATH"
+          xcrun stapler validate "$DMG_PATH"
+
       - name: Create update zip
         run: bash app/scripts/create_update_zip.sh --arch ${{ matrix.arch }} --app-path "$GITHUB_WORKSPACE/dist-pyinstaller/dist/Bao.app"
+
+      - name: Cleanup macOS signing keychain
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${BAO_MAC_KEYCHAIN_PATH:-}" && -f "$BAO_MAC_KEYCHAIN_PATH" ]]; then
+            security delete-keychain "$BAO_MAC_KEYCHAIN_PATH"
+          fi
+          rm -f "${BAO_MAC_CERT_PATH:-}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
