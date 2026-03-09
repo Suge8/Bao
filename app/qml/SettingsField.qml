@@ -99,6 +99,7 @@ Item {
 
             TextField {
                 id: field
+                property bool baoClickAwayEditor: true
                 anchors.fill: parent
                 hoverEnabled: true
                 leftPadding: sizeFieldPaddingX

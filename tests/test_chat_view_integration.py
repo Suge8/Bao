@@ -802,6 +802,26 @@ def _process(ms: int) -> None:
     loop.exec()
 
 
+def _install_focus_filter(root: QObject) -> WindowFocusDismissFilter:
+    focus_filter = WindowFocusDismissFilter(root)
+    app = QGuiApplication.instance()
+    if app is not None:
+        app.installEventFilter(focus_filter)
+    if hasattr(root, "installEventFilter"):
+        root.installEventFilter(focus_filter)
+    return focus_filter
+
+
+def _remove_focus_filter(root: QObject, focus_filter: WindowFocusDismissFilter | None) -> None:
+    if focus_filter is None:
+        return
+    app = QGuiApplication.instance()
+    if app is not None:
+        app.removeEventFilter(focus_filter)
+    if hasattr(root, "removeEventFilter"):
+        root.removeEventFilter(focus_filter)
+
+
 def _find_chat_input(root: QObject) -> QObject:
     for obj in root.findChildren(QObject):
         if obj.objectName() == "chatMessageInput":
@@ -1049,13 +1069,45 @@ def _center_point(item: QObject) -> QPoint:
     return QPoint(int(center.x()), int(center.y()))
 
 
+def _provider_list_snapshot(settings_view: QObject) -> list[dict[str, object]]:
+    provider_list = settings_view.property("_providerList")
+    to_variant = getattr(provider_list, "toVariant", None)
+    if callable(to_variant):
+        provider_list = to_variant()
+    if not isinstance(provider_list, list):
+        raise AssertionError("settings provider list is not a list")
+    snapshot: list[dict[str, object]] = []
+    for item in provider_list:
+        if not isinstance(item, dict):
+            raise AssertionError("settings provider row is not a dict")
+        snapshot.append(item)
+    return snapshot
+
+
+def _scroll_item_into_view(root: QObject, scroll_view: QObject, item: QObject) -> None:
+    content_item = scroll_view.property("contentItem")
+    if not isinstance(content_item, QQuickItem):
+        raise AssertionError("settings scroll content item not found")
+    scene_center = item.mapToScene(QPointF(item.property("width") / 2, item.property("height") / 2))
+    window_height = float(root.property("height"))
+    current_y = float(content_item.property("contentY"))
+    lower_bound = window_height - 120
+    upper_bound = 120.0
+    if scene_center.y() > lower_bound:
+        content_item.setProperty("contentY", current_y + (scene_center.y() - lower_bound))
+        _process(50)
+    elif scene_center.y() < upper_bound:
+        content_item.setProperty("contentY", max(0.0, current_y - (upper_bound - scene_center.y())))
+        _process(50)
+
+
 def test_main_chat_view_composer_click_focus_works_with_window_focus_filter(qapp):
     _ = qapp
     engine, root = _load_main_window()
+    focus_filter: WindowFocusDismissFilter | None = None
 
     try:
-        focus_filter = WindowFocusDismissFilter(root)
-        root.installEventFilter(focus_filter)
+        focus_filter = _install_focus_filter(root)
         message_input = _find_chat_input(root)
 
         message_input.forceActiveFocus()
@@ -1067,6 +1119,7 @@ def test_main_chat_view_composer_click_focus_works_with_window_focus_filter(qapp
 
         assert bool(message_input.property("activeFocus")) is True
     finally:
+        _remove_focus_filter(root, focus_filter)
         root.deleteLater()
         engine.deleteLater()
         _process(0)
@@ -1108,10 +1161,10 @@ def test_diagnostics_modal_renders_content(qapp):
 def test_main_chat_view_external_click_clears_selection_with_window_focus_filter(qapp):
     _ = qapp
     engine, root = _load_main_window()
+    focus_filter: WindowFocusDismissFilter | None = None
 
     try:
-        focus_filter = WindowFocusDismissFilter(root)
-        root.installEventFilter(focus_filter)
+        focus_filter = _install_focus_filter(root)
         message_input = _find_chat_input(root)
 
         _ = message_input.setProperty("text", "hello bao")
@@ -1129,6 +1182,7 @@ def test_main_chat_view_external_click_clears_selection_with_window_focus_filter
         assert bool(message_input.property("activeFocus")) is False
         assert str(message_input.property("selectedText")) == ""
     finally:
+        _remove_focus_filter(root, focus_filter)
         root.deleteLater()
         engine.deleteLater()
         _process(0)
@@ -1406,21 +1460,128 @@ def test_add_new_provider_expands_new_card(qapp):
         assert QMetaObject.invokeMethod(settings_view, "_addNewProvider")
         for _ in range(8):
             _process(30)
-            provider_list = settings_view.property("_providerList")
-            to_variant = getattr(provider_list, "toVariant", None)
-            if callable(to_variant):
-                provider_list = to_variant()
+            provider_list = _provider_list_snapshot(settings_view)
             if isinstance(provider_list, list) and len(provider_list) == 1:
                 break
 
-        provider_list = settings_view.property("_providerList")
-        to_variant = getattr(provider_list, "toVariant", None)
-        if callable(to_variant):
-            provider_list = to_variant()
-        assert isinstance(provider_list, list)
+        provider_list = _provider_list_snapshot(settings_view)
         assert len(provider_list) == 1
         assert provider_list[0]["name"] == "primary"
     finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_settings_add_provider_click_works_with_focused_editor(qapp):
+    _ = qapp
+    config_service = DummyConfigService(
+        model="openai/gpt-4o",
+        providers=[{"name": "primary", "type": "openai", "apiKey": "sk-ready", "apiBase": ""}],
+    )
+    engine, root = _load_main_window(config_service)
+    focus_filter: WindowFocusDismissFilter | None = None
+
+    try:
+        focus_filter = _install_focus_filter(root)
+        _ = root.setProperty("startView", "settings")
+        settings_view = _find_object(root, "settingsView")
+        _process(30)
+
+        workspace_field = _find_object_by_property(root, "placeholderText", "~/.bao/workspace")
+        settings_scroll = _find_object(root, "settingsScroll")
+        add_provider_button = _find_object(root, "addProviderHitArea")
+
+        workspace_field.forceActiveFocus()
+        _process(0)
+        assert len(_provider_list_snapshot(settings_view)) == 1
+
+        _scroll_item_into_view(root, settings_scroll, add_provider_button)
+
+        QTest.mouseClick(root, Qt.LeftButton, Qt.NoModifier, _center_point(add_provider_button))
+        _process(150)
+
+        assert bool(workspace_field.property("activeFocus")) is False
+        assert settings_view.property("_pendingExpandProviderName") == ""
+        assert len(_provider_list_snapshot(settings_view)) == 2
+    finally:
+        _remove_focus_filter(root, focus_filter)
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_settings_save_click_works_with_open_settings_select_popup(qapp):
+    _ = qapp
+    config_service = DummyConfigService(
+        model="openai/gpt-4o",
+        providers=[{"name": "primary", "type": "openai", "apiKey": "sk-ready", "apiBase": ""}],
+    )
+    engine, root = _load_main_window(config_service)
+    focus_filter: WindowFocusDismissFilter | None = None
+
+    try:
+        focus_filter = _install_focus_filter(root)
+        _ = root.setProperty("startView", "settings")
+        popup_owner = _find_visible_object_by_property(root, "baoClickAwayPopupOwner", True)
+        save_button = _find_visible_object_by_property(root, "text", "Save")
+        _process(30)
+
+        popup_owner.openPopup()
+        _process(100)
+
+        assert bool(popup_owner.property("baoClickAwayPopupOpen")) is True
+
+        QTest.mouseClick(root, Qt.LeftButton, Qt.NoModifier, _center_point(save_button))
+        _process(100)
+
+        assert isinstance(config_service.last_saved_changes, dict)
+    finally:
+        _remove_focus_filter(root, focus_filter)
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_settings_channel_header_click_works_with_focused_editor(qapp):
+    _ = qapp
+    config_service = DummyConfigService(
+        model="openai/gpt-4o",
+        providers=[{"name": "primary", "type": "openai", "apiKey": "sk-ready", "apiBase": ""}],
+        channels={"telegram": {"enabled": True, "token": "123456:ABC"}},
+    )
+    engine, root = _load_main_window(config_service)
+    focus_filter: WindowFocusDismissFilter | None = None
+
+    try:
+        focus_filter = _install_focus_filter(root)
+        _ = root.setProperty("startView", "settings")
+        settings_view = _find_object(root, "settingsView")
+        _ = settings_view.setProperty("_activeTab", 1)
+        _process(30)
+
+        workspace_field = _find_object_by_property(root, "placeholderText", "~/.bao/workspace")
+        channel_row = _find_object(root, "channelRow_telegram")
+        channel_header = _find_object(root, "channelHeader_telegram")
+
+        workspace_field.forceActiveFocus()
+        _process(0)
+
+        assert bool(workspace_field.property("activeFocus")) is True
+        assert bool(channel_row.property("expanded")) is False
+
+        QTest.mouseClick(root, Qt.LeftButton, Qt.NoModifier, _center_point(channel_header))
+        _process(50)
+
+        assert bool(channel_row.property("expanded")) is True
+        assert bool(workspace_field.property("activeFocus")) is False
+
+        QTest.mouseClick(root, Qt.LeftButton, Qt.NoModifier, _center_point(channel_header))
+        _process(50)
+
+        assert bool(channel_row.property("expanded")) is False
+    finally:
+        _remove_focus_filter(root, focus_filter)
         root.deleteLater()
         engine.deleteLater()
         _process(0)
@@ -2441,6 +2602,7 @@ def test_sidebar_sticky_header_tracks_scrolled_group(qapp):
                 "updated_at": f"2026-03-06T11:{i:02d}:00",
                 "channel": "telegram",
                 "has_unread": i == 0,
+                "is_running": i == 8,
             }
         )
     session_model = SessionsModel(rows)
@@ -2450,6 +2612,7 @@ def test_sidebar_sticky_header_tracks_scrolled_group(qapp):
         session_service = engine._test_refs["session_service"]
         session_list = _find_object(root, "sidebarSessionList")
         sticky = _find_object(root, "sidebarStickyHeader")
+        sticky_viewport = _find_object(root, "sidebarStickyHeaderViewport")
 
         session_service.setActiveKey("telegram:room8")
         session_service.sessionsChanged.emit()
@@ -2466,7 +2629,11 @@ def test_sidebar_sticky_header_tracks_scrolled_group(qapp):
 
         assert bool(sticky.property("visible")) is True
         assert sticky.property("channel") == "telegram"
-        assert float(sticky.property("y")) <= float(session_list.property("y")) + 1.0
+        assert bool(sticky.property("groupHasRunning")) is True
+        assert float(sticky_viewport.property("y")) >= float(session_list.property("y")) - 1.0
+        assert float(sticky_viewport.property("y")) <= float(session_list.property("y")) + 1.0
+        assert float(sticky.property("y")) >= -float(sticky.property("height")) - 1.0
+        assert float(sticky.property("y")) <= 1.0
     finally:
         root.deleteLater()
         engine.deleteLater()

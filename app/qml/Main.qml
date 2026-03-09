@@ -1588,6 +1588,7 @@ ApplicationWindow {
                                     clip: true
 
                                     TextArea {
+                                        property bool baoClickAwayEditor: true
                                         readOnly: true
                                         width: parent.width
                                         text: diagnosticsRecentLogTextSafe()

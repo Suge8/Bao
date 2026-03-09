@@ -9,6 +9,8 @@ Item {
     property string dotpath: ""
     property string description: ""
     property var initialValue: undefined
+    property bool baoClickAwayPopupOwner: true
+    readonly property bool baoClickAwayPopupOpen: combo.popup.visible
 
     // Array of { label: string, value: any }
     property var options: []
@@ -65,6 +67,47 @@ Item {
             return false
         combo.currentIndex = idx
         return true
+    }
+
+    function openPopup() {
+        combo.forceActiveFocus()
+        setPopupVisible(true)
+    }
+
+    function setPopupVisible(visible) {
+        if (visible) {
+            combo.popup.open()
+            return
+        }
+        combo.popup.visible = false
+    }
+
+    function baoClickAwayContainsScenePoint(sceneX, sceneY) {
+        var controlPoint = root.mapFromItem(null, sceneX, sceneY)
+        if (root.contains(controlPoint))
+            return true
+
+        if (!combo.popup.visible)
+            return false
+
+        var popupBackground = combo.popup.background
+        if (popupBackground) {
+            var popupBackgroundPoint = popupBackground.mapFromItem(null, sceneX, sceneY)
+            if (popupBackground.contains(popupBackgroundPoint))
+                return true
+        }
+
+        var popupContent = combo.popup.contentItem
+        if (!popupContent)
+            return false
+
+        var popupContentPoint = popupContent.mapFromItem(null, sceneX, sceneY)
+        return popupContent.contains(popupContentPoint)
+    }
+
+    function baoClickAwayDismiss() {
+        setPopupVisible(false)
+        combo.focus = false
     }
 
     Component.onCompleted: {
@@ -184,6 +227,7 @@ Item {
                     width: combo.width
                     padding: 6
                     transformOrigin: Item.Top
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside | Popup.CloseOnPressOutsideParent
 
                     enter: Transition {
                         ParallelAnimation {
@@ -230,6 +274,7 @@ Item {
 
             MouseArea {
                 id: comboArea
+                objectName: "settingsSelectHitArea"
                 anchors.fill: parent
                 hoverEnabled: true
                 acceptedButtons: Qt.LeftButton
@@ -237,8 +282,7 @@ Item {
                 cursorShape: Qt.PointingHandCursor
                 onClicked: {
                     combo.forceActiveFocus()
-                    if (combo.popup.visible) combo.popup.close()
-                    else combo.popup.open()
+                    setPopupVisible(!combo.popup.visible)
                 }
             }
         }

@@ -577,8 +577,8 @@ Rectangle {
             "apiKey": providerValue.apiKey,
             "apiBase": ""
         })
-        _providerList = nextProviders
         _pendingExpandProviderName = name
+        _providerList = nextProviders
     }
 
     function _removeProviderDraft(name) {
@@ -851,6 +851,7 @@ Rectangle {
 
     ScrollView {
         id: settingsScroll
+        objectName: "settingsScroll"
         anchors.fill: parent
         contentWidth: scrollContent.width
         contentHeight: scrollContent.height
@@ -1724,6 +1725,7 @@ Rectangle {
 
                             MouseArea {
                                 id: addHover
+                                objectName: "addProviderHitArea"
                                 anchors.fill: parent
                                 hoverEnabled: true
                                 acceptedButtons: Qt.LeftButton
@@ -1874,6 +1876,8 @@ Rectangle {
 
                         ChannelRow {
                             width: parent.width
+                            rowObjectName: "channelRow_telegram"
+                            headerObjectName: "channelHeader_telegram"
                             channelName: tr("Telegram", "Telegram")
                             enabledPath: "channels.telegram.enabled"
                             fields: [
@@ -1886,6 +1890,8 @@ Rectangle {
 
                         ChannelRow {
                             width: parent.width
+                            rowObjectName: "channelRow_discord"
+                            headerObjectName: "channelHeader_discord"
                             channelName: tr("Discord", "Discord")
                             enabledPath: "channels.discord.enabled"
                             fields: [
@@ -1898,6 +1904,8 @@ Rectangle {
 
                         ChannelRow {
                             width: parent.width
+                            rowObjectName: "channelRow_whatsapp"
+                            headerObjectName: "channelHeader_whatsapp"
                             channelName: tr("WhatsApp", "WhatsApp")
                             enabledPath: "channels.whatsapp.enabled"
                             fields: [
@@ -1909,6 +1917,8 @@ Rectangle {
 
                         ChannelRow {
                             width: parent.width
+                            rowObjectName: "channelRow_feishu"
+                            headerObjectName: "channelHeader_feishu"
                             channelName: tr("飞书", "Feishu")
                             enabledPath: "channels.feishu.enabled"
                             fields: [
@@ -1922,6 +1932,8 @@ Rectangle {
 
                         ChannelRow {
                             width: parent.width
+                            rowObjectName: "channelRow_slack"
+                            headerObjectName: "channelHeader_slack"
                             channelName: tr("Slack", "Slack")
                             enabledPath: "channels.slack.enabled"
                             fields: [
@@ -1944,6 +1956,8 @@ Rectangle {
 
                         ChannelRow {
                             width: parent.width
+                            rowObjectName: "channelRow_dingtalk"
+                            headerObjectName: "channelHeader_dingtalk"
                             channelName: tr("钉钉", "DingTalk")
                             enabledPath: "channels.dingtalk.enabled"
                             fields: [
@@ -1955,6 +1969,8 @@ Rectangle {
 
                         ChannelRow {
                             width: parent.width
+                            rowObjectName: "channelRow_qq"
+                            headerObjectName: "channelHeader_qq"
                             channelName: tr("QQ", "QQ")
                             enabledPath: "channels.qq.enabled"
                             fields: [
@@ -1966,6 +1982,8 @@ Rectangle {
 
                         ChannelRow {
                             width: parent.width
+                            rowObjectName: "channelRow_email"
+                            headerObjectName: "channelHeader_email"
                             channelName: tr("邮件", "Email")
                             enabledPath: "channels.email.enabled"
                             fields: [
@@ -1996,6 +2014,8 @@ Rectangle {
 
                         ChannelRow {
                             width: parent.width
+                            rowObjectName: "channelRow_imessage"
+                            headerObjectName: "channelHeader_imessage"
                             channelName: tr("iMessage", "iMessage")
                             enabledPath: "channels.imessage.enabled"
                             fields: [
@@ -2007,6 +2027,8 @@ Rectangle {
 
                         ChannelRow {
                             width: parent.width
+                            rowObjectName: "channelRow_mochat"
+                            headerObjectName: "channelHeader_mochat"
                             channelName: tr("Mochat", "Mochat")
                             enabledPath: "channels.mochat.enabled"
                             fields: [
