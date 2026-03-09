@@ -105,8 +105,10 @@ class IMessageChannel(BaseChannel):
                 logger.error("❌ iMessage 文本发送失败 / send failed: {}", error_text)
                 if hint := automation_permission_hint(error_text, sys.executable):
                     logger.warning("⚠️ iMessage 自动化未授权 / automation denied: {}", hint)
+                raise RuntimeError(error_text or "iMessage text send failed")
         except Exception as e:
             logger.error("❌ iMessage 文本发送异常 / send error: {}", e)
+            raise
 
     async def _send_file(self, buddy: str, file_path: str) -> None:
         """Send a file (image/doc) via AppleScript POSIX file."""
@@ -133,8 +135,10 @@ class IMessageChannel(BaseChannel):
                 logger.error("❌ iMessage 文件发送失败 / send failed: {}", error_text)
                 if hint := automation_permission_hint(error_text, sys.executable):
                     logger.warning("⚠️ iMessage 自动化未授权 / automation denied: {}", hint)
+                raise RuntimeError(error_text or "iMessage file send failed")
         except Exception as e:
             logger.error("❌ iMessage 文件发送异常 / send error: {}", e)
+            raise
 
     # ---- internal ----
 
