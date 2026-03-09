@@ -5,8 +5,11 @@ import QtQuick.Layouts 1.15
 Item {
     id: root
 
+    objectName: root.rowObjectName
     property string channelName: ""
     property string enabledPath: ""
+    property string rowObjectName: ""
+    property string headerObjectName: ""
     // Array of {label, dotpath, placeholder, isSecret, inputType, isList}
     property var fields: []
     property var advancedFields: []
@@ -28,6 +31,7 @@ Item {
         // Header row — channel name + expand arrow + toggle
         ExpandHeader {
             id: headerSurface
+            objectName: root.headerObjectName
             Layout.fillWidth: true
             headerHeight: 44
             title: root.channelName

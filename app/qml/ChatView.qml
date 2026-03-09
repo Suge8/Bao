@@ -677,6 +677,7 @@ Rectangle {
                     TextArea {
                         id: messageInput
                         objectName: "chatMessageInput"
+                        property bool baoClickAwayEditor: true
                         hoverEnabled: true
                         placeholderText: strings.chat_placeholder
                         placeholderTextColor: textPlaceholder

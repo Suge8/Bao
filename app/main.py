@@ -73,17 +73,98 @@ DEFAULT_APP_ICON_RELATIVE_PATHS = (
 )
 
 
-def _inherits_text_editor(obj: QObject | None) -> bool:
-    meta = obj.metaObject() if obj is not None else None
-    while meta is not None:
-        name = meta.className()
-        if any(token in name for token in ("TextArea", "TextField", "TextInput", "TextEdit")):
-            return True
-        meta = meta.superClass()
-    return False
+_CLICK_AWAY_EDITOR_PROP = "baoClickAwayEditor"
+_CLICK_AWAY_POPUP_OWNER_PROP = "baoClickAwayPopupOwner"
+_CLICK_AWAY_POPUP_OPEN_PROP = "baoClickAwayPopupOpen"
+_CLICK_AWAY_POPUP_CONTAINS_FN = "baoClickAwayContainsScenePoint"
+_CLICK_AWAY_POPUP_DISMISS_FN = "baoClickAwayDismiss"
+
+
+def _iter_object_ancestors(obj: QObject | None):
+    seen: set[int] = set()
+    current = obj
+    while current is not None:
+        identity = id(current)
+        if identity in seen:
+            return
+        seen.add(identity)
+        yield current
+
+        parent_item = getattr(current, "parentItem", None)
+        if callable(parent_item):
+            item_owner = parent_item()
+            if isinstance(item_owner, QObject) and item_owner is not current:
+                current = item_owner
+                continue
+
+        parent = current.parent()
+        current = parent if isinstance(parent, QObject) else None
+
+
+def _is_click_away_editor(obj: QObject | None) -> bool:
+    if obj is None:
+        return False
+    try:
+        return bool(obj.property(_CLICK_AWAY_EDITOR_PROP))
+    except RuntimeError:
+        return False
+
+
+def _find_click_away_editor(obj: QObject | None) -> QObject | None:
+    for current in _iter_object_ancestors(obj):
+        if _is_click_away_editor(current):
+            return current
+    return None
+
+
+def _is_open_click_away_popup_owner(obj: QObject | None) -> bool:
+    if obj is None:
+        return False
+    try:
+        return bool(obj.property(_CLICK_AWAY_POPUP_OWNER_PROP)) and bool(
+            obj.property(_CLICK_AWAY_POPUP_OPEN_PROP)
+        )
+    except RuntimeError:
+        return False
+
+
+def _find_open_click_away_popup_owner(obj: QObject | None) -> QObject | None:
+    for current in _iter_object_ancestors(obj):
+        if _is_open_click_away_popup_owner(current):
+            return current
+    return None
+
+
+def _find_open_click_away_popup_owner_in_subtree(obj: QObject) -> QObject | None:
+    for current in obj.findChildren(QObject):
+        if _is_open_click_away_popup_owner(current):
+            return current
+    return None
 
 
 class WindowFocusDismissFilter(QObject):
+    def _target_window(self) -> QQuickWindow | None:
+        parent = self.parent()
+        return parent if isinstance(parent, QQuickWindow) else None
+
+    def _map_event_to_window(self, window: QQuickWindow, event: QMouseEvent) -> QPointF:
+        return QPointF(window.mapFromGlobal(event.globalPosition().toPoint()))
+
+    def _event_hits_window(self, window: QQuickWindow, event: QMouseEvent) -> bool:
+        local_pos = self._map_event_to_window(window, event)
+        window_rect = QRectF(0.0, 0.0, float(window.width()), float(window.height()))
+        return window_rect.contains(local_pos)
+
+    def _resolve_open_popup_owner(self, window: QQuickWindow) -> QObject | None:
+        focus_control = cast(QObject | None, QQmlProperty.read(window, "activeFocusControl"))
+        focus_item = cast(QObject | None, window.activeFocusItem())
+        popup_owner = _find_open_click_away_popup_owner(focus_control)
+        if popup_owner is None:
+            popup_owner = _find_open_click_away_popup_owner(focus_item)
+        if popup_owner is None:
+            popup_owner = _find_open_click_away_popup_owner_in_subtree(window)
+        return popup_owner
+
     def _post_pointer_refresh(
         self, window: QQuickWindow, source_event: QMouseEvent | None = None
     ) -> None:
@@ -113,15 +194,16 @@ class WindowFocusDismissFilter(QObject):
 
     def _resolve_focused_editor(self, window: QQuickWindow) -> tuple[QObject, object] | None:
         focus_control = cast(QObject | None, QQmlProperty.read(window, "activeFocusControl"))
-        focus_item = window.activeFocusItem()
-        focus_owner = focus_control if _inherits_text_editor(focus_control) else focus_item
-        if not _inherits_text_editor(focus_owner):
+        focus_item = cast(QObject | None, window.activeFocusItem())
+        focus_owner = _find_click_away_editor(focus_control)
+        if focus_owner is None:
+            focus_owner = _find_click_away_editor(focus_item)
+        if focus_owner is None:
             return None
-        editor = cast(QObject, focus_owner)
-        hit_test_target = editor if hasattr(editor, "mapFromScene") else focus_item
+        hit_test_target = focus_owner if hasattr(focus_owner, "mapFromScene") else focus_item
         if not hasattr(hit_test_target, "mapFromScene"):
             return None
-        return editor, hit_test_target
+        return focus_owner, hit_test_target
 
     def _click_is_inside_editor(self, hit_test_target: object, event: QMouseEvent) -> bool:
         map_from_scene = getattr(hit_test_target, "mapFromScene", None)
@@ -130,6 +212,27 @@ class WindowFocusDismissFilter(QObject):
             return False
         local = map_from_scene(event.position())
         return bool(contains(local))
+
+    def _click_is_inside_popup_owner(
+        self, window: QQuickWindow, popup_owner: QObject, event: QMouseEvent
+    ) -> bool:
+        contains_point = getattr(popup_owner, _CLICK_AWAY_POPUP_CONTAINS_FN, None)
+        if not callable(contains_point):
+            return False
+        local_pos = self._map_event_to_window(window, event)
+        try:
+            return bool(contains_point(local_pos.x(), local_pos.y()))
+        except RuntimeError:
+            return False
+
+    def _dismiss_popup_owner(self, popup_owner: QObject) -> None:
+        dismiss = getattr(popup_owner, _CLICK_AWAY_POPUP_DISMISS_FN, None)
+        if not callable(dismiss):
+            return
+        try:
+            dismiss()
+        except RuntimeError:
+            return
 
     def _clear_editor_focus(self, editor: QObject) -> None:
         deselect = getattr(editor, "deselect", None)
@@ -140,23 +243,78 @@ class WindowFocusDismissFilter(QObject):
                 pass
         _ = editor.setProperty("focus", False)
 
+    def _defer_editor_blur(self, window: QQuickWindow, editor: QObject) -> None:
+        def apply() -> None:
+            try:
+                if not bool(editor.property("activeFocus")):
+                    self._post_pointer_refresh(window)
+                    return
+                self._clear_editor_focus(editor)
+                self._post_pointer_refresh(window)
+            except RuntimeError:
+                return
+
+        QTimer.singleShot(0, apply)
+
     @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if event.type() != QEvent.Type.MouseButtonRelease:
+        if event.type() not in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
             return False
-        if not isinstance(watched, QQuickWindow) or not isinstance(event, QMouseEvent):
+        if not isinstance(event, QMouseEvent):
             return False
 
-        resolved = self._resolve_focused_editor(watched)
+        target_window = self._target_window()
+        if target_window is None:
+            return False
+
+        if event.type() == QEvent.Type.MouseButtonPress:
+            if not self._event_hits_window(target_window, event):
+                return False
+            popup_owner = self._resolve_open_popup_owner(target_window)
+            if popup_owner is not None and not self._click_is_inside_popup_owner(
+                target_window, popup_owner, event
+            ):
+                self._dismiss_popup_owner(popup_owner)
+            return False
+
+        if watched is not target_window:
+            return False
+
+        resolved = self._resolve_focused_editor(target_window)
         if resolved is None:
-            self._post_pointer_refresh(watched, event)
+            self._post_pointer_refresh(target_window, event)
             return False
 
         focus_owner, hit_test_target = resolved
         if not self._click_is_inside_editor(hit_test_target, event):
-            self._clear_editor_focus(focus_owner)
-        self._post_pointer_refresh(watched, event)
+            self._defer_editor_blur(target_window, focus_owner)
+            return False
+
+        self._post_pointer_refresh(target_window, event)
         return False
+
+
+def refresh_pointer_if_window_active(
+    app: QGuiApplication, window: QQuickWindow, focus_filter: WindowFocusDismissFilter
+) -> None:
+    if app.applicationState() != Qt.ApplicationState.ApplicationActive:
+        return
+    if not window.isVisible():
+        return
+    focus_filter._post_pointer_refresh(window)
+
+
+def install_pointer_refresh_hooks(
+    app: QGuiApplication, window: QQuickWindow, focus_filter: WindowFocusDismissFilter
+) -> None:
+    QTimer.singleShot(0, lambda: refresh_pointer_if_window_active(app, window, focus_filter))
+
+    def on_application_state_changed(state: Qt.ApplicationState) -> None:
+        if state != Qt.ApplicationState.ApplicationActive:
+            return
+        refresh_pointer_if_window_active(app, window, focus_filter)
+
+    _ = app.applicationStateChanged.connect(on_application_state_changed)
 
 
 def parse_args() -> tuple[bool, str | None, bool, str, bool, str | None]:
@@ -658,6 +816,10 @@ def main() -> int:
     focus_dismiss_filter: WindowFocusDismissFilter | None = None
     if isinstance(root, QQuickWindow):
         focus_dismiss_filter = WindowFocusDismissFilter(root)
+        app_instance = QGuiApplication.instance()
+        if isinstance(app_instance, QGuiApplication):
+            app_instance.installEventFilter(focus_dismiss_filter)
+            install_pointer_refresh_hooks(app_instance, root, focus_dismiss_filter)
         root.installEventFilter(focus_dismiss_filter)
         if not use_native_title_bar:
             root.setColor(QColor(0, 0, 0, 0))

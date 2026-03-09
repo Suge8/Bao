@@ -273,7 +273,7 @@ Rectangle {
         root.stickyHeaderItemCount = stickyRow.itemCount
         root.stickyHeaderUnreadCount = stickyRow.groupUnreadCount
         root.stickyHeaderHasRunning = stickyRow.groupHasRunning
-        root.stickyHeaderOffset = Math.min(0.0, stickyOffset)
+        root.stickyHeaderOffset = Math.max(-sizeSidebarHeader, Math.min(0.0, stickyOffset))
     }
 
     function visibleDelegates() {
@@ -281,10 +281,17 @@ Rectangle {
             return []
         var delegates = []
         var children = sessionList.contentItem.children
+        var minY = sessionList.contentY - sizeSidebarHeader
+        var maxY = sessionList.contentY + sessionList.height + sizeSidebarHeader
         for (var i = 0; i < children.length; i++) {
             var child = children[i]
-            if (child && child.anchorReady === true)
-                delegates.push(child)
+            if (!child || child.anchorReady !== true)
+                continue
+            var childTop = child.y
+            var childBottom = child.y + child.height
+            if (childBottom < minY || childTop > maxY)
+                continue
+            delegates.push(child)
         }
         delegates.sort(function(a, b) { return a.y - b.y })
         return delegates
@@ -941,26 +948,37 @@ Rectangle {
                     }
                 }
 
-                SidebarGroupHeader {
-                    id: stickyHeader
-                    objectName: "sidebarStickyHeader"
+                Item {
+                    id: stickyHeaderViewport
+                    objectName: "sidebarStickyHeaderViewport"
                     parent: sessionList.parent
                     visible: root.stickyHeaderVisible
                     z: 3
-                    anchors.left: sessionList.left
-                    anchors.right: sessionList.right
-                    y: sessionList.y + root.stickyHeaderOffset
+                    x: sessionList.x
+                    y: sessionList.y
+                    width: sessionList.width
                     height: sizeSidebarHeader
-                    channel: root.stickyHeaderChannel
-                    expanded: root.stickyHeaderExpanded
-                    itemCount: root.stickyHeaderItemCount
-                    unreadCount: root.stickyHeaderUnreadCount
-                    groupHasRunning: root.stickyHeaderHasRunning
-                    iconSource: root.channelIconSource(root.stickyHeaderChannel)
-                    chevronObjectName: "sidebarStickyGroupChevronIcon_" + (root.stickyHeaderChannel || "other")
-                    unreadBadgeObjectName: "sidebarStickyGroupUnreadBadge_" + (root.stickyHeaderChannel || "other")
-                    unreadTextObjectName: "sidebarStickyGroupUnreadText_" + (root.stickyHeaderChannel || "other")
-                    onClicked: root.toggleGroup(root.stickyHeaderChannel)
+                    clip: true
+
+                    SidebarGroupHeader {
+                        id: stickyHeader
+                        objectName: "sidebarStickyHeader"
+                        visible: root.stickyHeaderVisible
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        y: root.stickyHeaderOffset
+                        height: sizeSidebarHeader
+                        channel: root.stickyHeaderChannel
+                        expanded: root.stickyHeaderExpanded
+                        itemCount: root.stickyHeaderItemCount
+                        unreadCount: root.stickyHeaderUnreadCount
+                        groupHasRunning: root.stickyHeaderHasRunning
+                        iconSource: root.channelIconSource(root.stickyHeaderChannel)
+                        chevronObjectName: "sidebarStickyGroupChevronIcon_" + (root.stickyHeaderChannel || "other")
+                        unreadBadgeObjectName: "sidebarStickyGroupUnreadBadge_" + (root.stickyHeaderChannel || "other")
+                        unreadTextObjectName: "sidebarStickyGroupUnreadText_" + (root.stickyHeaderChannel || "other")
+                        onClicked: root.toggleGroup(root.stickyHeaderChannel)
+                    }
                 }
 
 
