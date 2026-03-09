@@ -7,6 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import httpx
 from pydantic import SecretStr
 
 from bao.providers.api_mode_cache import get_cached_mode, set_cached_mode
@@ -14,9 +15,14 @@ from bao.providers.base import LLMResponse
 from bao.providers.openai_provider import OpenAICompatibleProvider, _system_prompt_seems_ignored
 from bao.providers.responses_compat import (
     _normalize_call_id,
+    append_responses_tool_call_arguments,
+    build_internal_tool_call_id,
+    build_responses_tool_call_request,
     convert_messages_to_responses,
     convert_tools_to_responses,
     parse_responses_json,
+    replace_responses_tool_call_arguments,
+    start_responses_tool_call,
 )
 
 
@@ -140,6 +146,117 @@ def test_normalize_call_id_shortens_long_id_stably() -> None:
 
     assert first == second
     assert len(first) <= 64
+
+
+def test_build_internal_tool_call_id_normalizes_call_id() -> None:
+    raw_call_id = "call_" + ("z" * 100)
+    internal_id = build_internal_tool_call_id(raw_call_id, "fc_1")
+
+    call_id, item_id = internal_id.split("|", 1)
+    assert item_id == "fc_1"
+    assert len(call_id) <= 64
+
+
+def test_parse_responses_json_normalizes_internal_tool_call_id() -> None:
+    raw_call_id = "call_" + ("q" * 90)
+    data = {
+        "status": "completed",
+        "output": [
+            {
+                "type": "function_call",
+                "call_id": raw_call_id,
+                "id": "fc_long",
+                "name": "tool",
+                "arguments": "{}",
+            }
+        ],
+    }
+
+    _, tool_calls, _, _ = parse_responses_json(data)
+
+    assert len(tool_calls) == 1
+    call_id, item_id = tool_calls[0].id.split("|", 1)
+    assert item_id == "fc_long"
+    assert len(call_id) <= 64
+
+
+def test_build_responses_tool_call_request_uses_shared_buffer_lifecycle() -> None:
+    raw_call_id = "call_" + ("b" * 90)
+    tool_call_buffers: dict[str, dict[str, object]] = {}
+    item = {
+        "type": "function_call",
+        "call_id": raw_call_id,
+        "id": "fc_2",
+        "name": "search",
+        "arguments": "{}",
+    }
+
+    start_responses_tool_call(tool_call_buffers, item)
+    append_responses_tool_call_arguments(tool_call_buffers, raw_call_id, '{"q":')
+    replace_responses_tool_call_arguments(tool_call_buffers, raw_call_id, '{"q":"ok"}')
+
+    tool_call = build_responses_tool_call_request(item, tool_call_buffers)
+
+    assert tool_call is not None
+    assert tool_call.arguments == {"q": "ok"}
+    call_id, item_id = tool_call.id.split("|", 1)
+    assert item_id == "fc_2"
+    assert len(call_id) <= 64
+
+
+def test_build_responses_tool_call_request_coerces_non_object_arguments() -> None:
+    item = {
+        "type": "function_call",
+        "call_id": "call_list_args",
+        "id": "fc_list",
+        "name": "search",
+        "arguments": '["unexpected"]',
+    }
+
+    tool_call = build_responses_tool_call_request(item)
+
+    assert tool_call is not None
+    assert tool_call.arguments == {}
+
+
+def test_openai_provider_stream_normalizes_internal_tool_call_id(monkeypatch) -> None:
+    provider = OpenAICompatibleProvider(api_key="k", api_base="https://example.com/v1")
+    raw_call_id = "call_" + ("s" * 90)
+
+    async def _fake_iter_sse_events(_response: httpx.Response):
+        yield {
+            "type": "response.output_item.added",
+            "item": {
+                "type": "function_call",
+                "call_id": raw_call_id,
+                "id": "fc_stream",
+                "name": "search",
+                "arguments": "{}",
+            },
+        }
+        yield {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "call_id": raw_call_id,
+                "id": "fc_stream",
+                "name": "search",
+                "arguments": "{}",
+            },
+        }
+        yield {"type": "response.completed", "response": {"status": "completed"}}
+
+    monkeypatch.setattr(provider, "_iter_sse_events", _fake_iter_sse_events)
+
+    response = asyncio.run(
+        provider._consume_responses_stream(httpx.Response(200), on_progress=None)
+    )
+
+    assert response.finish_reason == "stop"
+    assert len(response.tool_calls) == 1
+    call_id, item_id = response.tool_calls[0].id.split("|", 1)
+    assert item_id == "fc_stream"
+    assert len(call_id) <= 64
 
 
 def test_api_mode_cache(tmp_path):

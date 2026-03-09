@@ -143,20 +143,9 @@ def parse_responses_json(
             continue
         if item_type != "function_call":
             continue
-
-        call_id = item.get("call_id") or "call_0"
-        args_raw = item.get("arguments") or "{}"
-        try:
-            args = json.loads(args_raw)
-        except Exception:
-            args = {"raw": args_raw}
-        tool_calls.append(
-            ToolCallRequest(
-                id=f"{call_id}|{item.get('id') or 'fc_0'}",
-                name=item.get("name"),
-                arguments=args,
-            )
-        )
+        tool_call = build_responses_tool_call_request(item)
+        if tool_call is not None:
+            tool_calls.append(tool_call)
 
     status = data.get("status", "completed")
     finish_reason = _map_finish_reason(status)
@@ -216,6 +205,68 @@ def _split_tool_call_id(tool_call_id: Any) -> tuple[str, str | None]:
     return "call_0", None
 
 
+def start_responses_tool_call(
+    tool_call_buffers: dict[str, dict[str, Any]], item: dict[str, Any]
+) -> None:
+    if item.get("type") != "function_call":
+        return
+    call_id = item.get("call_id")
+    if not call_id:
+        return
+    tool_call_buffers[call_id] = {
+        "id": item.get("id") or "fc_0",
+        "name": item.get("name") or "unknown_tool",
+        "arguments": item.get("arguments") or "",
+    }
+
+
+def append_responses_tool_call_arguments(
+    tool_call_buffers: dict[str, dict[str, Any]], call_id: Any, delta: Any
+) -> None:
+    if not call_id:
+        return
+    buf = tool_call_buffers.get(str(call_id))
+    if buf is None:
+        return
+    buf["arguments"] += str(delta or "")
+
+
+def replace_responses_tool_call_arguments(
+    tool_call_buffers: dict[str, dict[str, Any]], call_id: Any, arguments: Any
+) -> None:
+    if not call_id:
+        return
+    buf = tool_call_buffers.get(str(call_id))
+    if buf is None:
+        return
+    buf["arguments"] = arguments or ""
+
+
+def build_responses_tool_call_request(
+    item: dict[str, Any],
+    tool_call_buffers: dict[str, dict[str, Any]] | None = None,
+) -> ToolCallRequest | None:
+    if item.get("type") != "function_call":
+        return None
+    call_id = item.get("call_id")
+    if not call_id:
+        return None
+    buf = (tool_call_buffers or {}).get(call_id) or {}
+    args_raw = buf.get("arguments") or item.get("arguments") or "{}"
+    return ToolCallRequest(
+        id=build_internal_tool_call_id(call_id, buf.get("id") or item.get("id") or "fc_0"),
+        name=str(buf.get("name") or item.get("name") or "unknown_tool"),
+        arguments=_parse_tool_call_arguments(args_raw),
+    )
+
+
+def build_internal_tool_call_id(tool_call_id: Any, item_id: Any) -> str:
+    call_id, _ = _split_tool_call_id(tool_call_id)
+    normalized_call_id = _normalize_call_id(call_id)
+    normalized_item_id = str(item_id or "fc_0").strip() or "fc_0"
+    return f"{normalized_call_id}|{normalized_item_id}"
+
+
 def _normalize_call_id(call_id: str) -> str:
     raw = str(call_id or "call_0").strip() or "call_0"
     if len(raw) <= 64:
@@ -223,6 +274,16 @@ def _normalize_call_id(call_id: str) -> str:
     digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
     prefix = raw[:47]
     return f"{prefix}_{digest}"
+
+
+def _parse_tool_call_arguments(arguments_raw: Any) -> dict[str, Any]:
+    if not isinstance(arguments_raw, str):
+        return arguments_raw if isinstance(arguments_raw, dict) else {}
+    try:
+        parsed = json.loads(arguments_raw)
+    except Exception:
+        return {"raw": arguments_raw}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 _FINISH_REASON_MAP = {

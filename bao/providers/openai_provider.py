@@ -13,9 +13,13 @@ from loguru import logger
 from bao.providers.api_mode_cache import get_cached_mode, set_cached_mode
 from bao.providers.base import LLMProvider, LLMResponse, ToolCallRequest, normalize_tool_calls
 from bao.providers.responses_compat import (
+    append_responses_tool_call_arguments,
+    build_responses_tool_call_request,
     convert_messages_to_responses,
     convert_tools_to_responses,
     parse_responses_json,
+    replace_responses_tool_call_arguments,
+    start_responses_tool_call,
 )
 from bao.providers.retry import (
     DEFAULT_BASE_DELAY,
@@ -332,50 +336,26 @@ class OpenAICompatibleProvider(LLMProvider):
 
             if event_type == "response.output_item.added":
                 item = event.get("item") or {}
-                if item.get("type") == "function_call":
-                    call_id = item.get("call_id")
-                    if call_id:
-                        tool_call_buffers[call_id] = {
-                            "id": item.get("id") or "fc_0",
-                            "name": item.get("name") or "unknown_tool",
-                            "arguments": item.get("arguments") or "",
-                        }
+                start_responses_tool_call(tool_call_buffers, item)
                 continue
 
             if event_type == "response.function_call_arguments.delta":
-                call_id = event.get("call_id")
-                if call_id and call_id in tool_call_buffers:
-                    tool_call_buffers[call_id]["arguments"] += event.get("delta") or ""
+                append_responses_tool_call_arguments(
+                    tool_call_buffers, event.get("call_id"), event.get("delta")
+                )
                 continue
 
             if event_type == "response.function_call_arguments.done":
-                call_id = event.get("call_id")
-                if call_id and call_id in tool_call_buffers:
-                    tool_call_buffers[call_id]["arguments"] = event.get("arguments") or ""
+                replace_responses_tool_call_arguments(
+                    tool_call_buffers, event.get("call_id"), event.get("arguments")
+                )
                 continue
 
             if event_type == "response.output_item.done":
                 item = event.get("item") or {}
-                if item.get("type") != "function_call":
-                    continue
-                call_id = item.get("call_id")
-                if not call_id:
-                    continue
-                buf = tool_call_buffers.get(call_id) or {}
-                args_raw = buf.get("arguments") or item.get("arguments") or "{}"
-                try:
-                    args = json.loads(args_raw)
-                except Exception:
-                    args = {"raw": args_raw}
-                if not isinstance(args, dict):
-                    args = {}
-                tool_calls.append(
-                    ToolCallRequest(
-                        id=f"{call_id}|{buf.get('id') or item.get('id') or 'fc_0'}",
-                        name=str(buf.get("name") or item.get("name") or "unknown_tool"),
-                        arguments=args,
-                    )
-                )
+                tool_call = build_responses_tool_call_request(item, tool_call_buffers)
+                if tool_call is not None:
+                    tool_calls.append(tool_call)
                 continue
 
             if event_type == "response.completed":
