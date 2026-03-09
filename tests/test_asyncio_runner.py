@@ -8,6 +8,7 @@ import importlib
 from app.backend.asyncio_runner import AsyncioRunner
 
 pytest = importlib.import_module("pytest")
+pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
@@ -18,6 +19,7 @@ def runner():
     r.shutdown(grace_s=3.0)
 
 
+@pytest.mark.smoke
 def test_submit_and_get_result(runner):
     async def add(a, b):
         return a + b
@@ -35,6 +37,7 @@ def test_submit_exception_propagates(runner):
         fut.result(timeout=3)
 
 
+@pytest.mark.smoke
 def test_shutdown_does_not_hang(runner):
     async def slow():
         await asyncio.sleep(0.1)

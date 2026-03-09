@@ -8,6 +8,7 @@ from datetime import datetime
 from unittest.mock import patch
 
 pytest = importlib.import_module("pytest")
+pytestmark = [pytest.mark.unit, pytest.mark.gui]
 
 QtGui = pytest.importorskip("PySide6.QtGui")
 QtCore = pytest.importorskip("PySide6.QtCore")
@@ -28,6 +29,7 @@ def _new_model():
     return ChatMessageModel()
 
 
+@pytest.mark.smoke
 def test_append_user(qapp):
     m = _new_model()
     row = m.append_user("hello")
@@ -40,6 +42,7 @@ def test_append_user(qapp):
     assert m.data(idx, Qt.UserRole + 8) is True
 
 
+@pytest.mark.smoke
 def test_append_assistant(qapp):
     m = _new_model()
     row = m.append_assistant("hi there")

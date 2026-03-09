@@ -123,3 +123,11 @@ ignore = ["E501"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+strict_markers = true
+markers = [
+    "unit: fast deterministic tests for local iteration",
+    "integration: cross-module and boundary tests",
+    "smoke: critical-path regression checks",
+    "gui: desktop and QML tests that need PySide6 or UI harnesses",
+    "slow: expensive tests that are not part of the default fast path",
+]

@@ -20,6 +20,8 @@ def _make_loop(tmp_path: Path) -> AgentLoop:
     return AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model")
 
 
+@pytest.mark.unit
+@pytest.mark.smoke
 def test_new_plan_normalizes_and_limits() -> None:
     long_step = "x" * 300
     steps = [f"{i}. [pending] step-{i}-{long_step}" for i in range(1, 15)]
@@ -473,6 +475,8 @@ async def test_update_plan_step_done_count_ignores_body_literal(tmp_path: Path) 
     assert out.startswith("Plan updated: 1/2 done")
 
 
+@pytest.mark.integration
+@pytest.mark.smoke
 def test_plan_injected_before_memory(tmp_path: Path) -> None:
     ctx = ContextBuilder(tmp_path)
     state = plan.new_plan("goal", ["step1", "step2"])

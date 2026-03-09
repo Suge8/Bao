@@ -4,6 +4,7 @@ import asyncio
 import importlib
 
 pytest = importlib.import_module("pytest")
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
 @pytest.mark.asyncio
@@ -26,6 +27,7 @@ async def test_await_tool_with_interrupt_cancels_long_tool():
 
     tool_task = asyncio.create_task(long_tool())
     run_task = asyncio.current_task()
+    assert run_task is not None
 
     async def interrupt_after_start():
         await asyncio.sleep(0.05)
@@ -102,6 +104,7 @@ async def test_await_tool_with_interrupt_swallowed_cancel_bounded_wait():
 
     tool_task = asyncio.create_task(stubborn_tool())
     run_task = asyncio.current_task()
+    assert run_task is not None
 
     async def interrupt_after_start():
         await asyncio.sleep(0.05)
@@ -110,6 +113,7 @@ async def test_await_tool_with_interrupt_swallowed_cancel_bounded_wait():
     asyncio.create_task(interrupt_after_start())
 
     import time
+
     t0 = time.monotonic()
     result = await loop._await_tool_with_interrupt(tool_task, run_task)
     elapsed = time.monotonic() - t0

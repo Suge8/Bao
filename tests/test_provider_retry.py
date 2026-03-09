@@ -2,9 +2,13 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
+
 from bao.providers.base import LLMResponse
 from bao.providers.openai_provider import OpenAICompatibleProvider
 from bao.providers.retry import PROGRESS_RESET, compute_retry_delay, should_retry_exception
+
+pytestmark = pytest.mark.unit
 
 
 class _ResponseError(Exception):
@@ -51,6 +55,7 @@ class _SuccessStream:
         return _StreamChunk(content="final", finish_reason="stop")
 
 
+@pytest.mark.smoke
 def test_retry_helper_status_and_retry_after() -> None:
     retryable = _ResponseError("service unavailable", 503)
     non_retryable = _ResponseError("unauthorized", 401)
@@ -61,6 +66,7 @@ def test_retry_helper_status_and_retry_after() -> None:
     assert compute_retry_delay(retry_after, attempt=0, base_delay=1.0) == 5.0
 
 
+@pytest.mark.smoke
 def test_openai_completions_retry_emits_reset_before_second_attempt() -> None:
     provider = OpenAICompatibleProvider(api_key="k", api_base="https://x.com/v1")
 

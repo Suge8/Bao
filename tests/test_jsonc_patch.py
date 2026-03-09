@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
+
 from app.backend.jsonc_patch import _strip_comments, patch_jsonc
+
+pytestmark = pytest.mark.unit
 
 SAMPLE_JSONC = """{
   // Provider config
@@ -29,6 +33,7 @@ def _parse(text: str) -> dict[str, Any]:
     return json.loads(_strip_comments(text))
 
 
+@pytest.mark.smoke
 def test_update_existing_string(tmp_path):
     result, errors = patch_jsonc(SAMPLE_JSONC, {"providers.openai.apiKey": "sk-new"})
     assert not errors
@@ -66,6 +71,7 @@ def test_insert_new_key():
     assert data["providers"]["openai"]["timeoutMs"] == 30000
 
 
+@pytest.mark.smoke
 def test_insert_channel_config():
     base = '{\n  "channels": {}\n}'
     result, errors = patch_jsonc(base, {"channels.telegram": {"enabled": True, "token": "abc"}})
@@ -120,6 +126,7 @@ def test_idempotent():
     assert _parse(result1) == _parse(result2)
 
 
+@pytest.mark.smoke
 def test_invalid_path_returns_error():
     _, errors = patch_jsonc(SAMPLE_JSONC, {"nonexistent.deep.path": "value"})
     assert errors  # should report error, not crash
