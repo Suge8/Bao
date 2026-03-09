@@ -59,7 +59,7 @@ Bao 不一样。它**记得住**、**学得会**、**能进化**。
 把耗时任务交给子代理：你继续聊，它在后台把活做完。需要时问一次进度，它就能讲清楚。
 
 - **后台执行** — 子代理独立运行，主代理随时响应你的新消息
-- **进度可查** — 主代理调用 `check_tasks` 即可查看子代理当前阶段、已用工具数、迭代轮次；调用 `check_tasks_json` 可获取 schema_version=1 的结构化 JSON（含 `last_error` 错误摘要），适合 UI/自动化消费
+- **进度可查** — `spawn` 返回 schema_version=1 的结构化 JSON；使用其中的 `task.task_id` 调用 `check_tasks` 或 `check_tasks_json`，即可查看子代理当前阶段、已用工具数、迭代轮次，适合 UI/自动化消费
 - **里程碑推送** — 子代理每 5 轮自动汇报一次进展，不刷屏，关键节点不遗漏
 - **续接上次结果** — 可在前序任务结论基础上继续推进，不用从头讲背景
 - **长任务引擎** — 轨迹压缩 + 充分性检查 + 上下文压实，复杂任务更稳、更专注
@@ -381,8 +381,32 @@ docker compose logs -f --tail=100 bao-gateway
 ## ✅ 测试
 
 ```bash
+# 本地快速验证：改动相关测试 / node id / -k
+bash scripts/test_targeted.sh tests/test_chat_service.py -q
+
+# 桌面相关改动：先跑定向测试，再按需补 smoke
+uv run --extra desktop --extra dev pytest \
+  tests/test_asyncio_runner.py \
+  tests/test_chat_model.py \
+  tests/test_jsonc_patch.py \
+  tests/test_config_service.py \
+  tests/test_chat_service.py \
+  tests/test_session_service.py \
+  -q
+
+# 核心 smoke 集：关键路径快速回归
+bash scripts/test_smoke.sh -q
+
+# 高风险并发 / 中断回归：只在相关改动时运行
+bash scripts/test_high_risk.sh -q
+QT_QPA_PLATFORM=offscreen uv run --extra desktop python app/main.py --smoke
+
+# 全量回归：留给跨模块重构、依赖升级、发布前或 CI
 uv run pytest tests/ -v
 ```
+
+默认策略：本地开发优先跑“受影响测试 + 必要 smoke”，不要每次小改动都直接全量 `tests/`。
+只有在核心共享层改动、依赖升级、跨模块重构、发布前回归这类高风险场景，才扩大到全量测试。
 
 
 ## 🖥️ Desktop App (实验性)
@@ -480,7 +504,7 @@ Other agents repeat mistakes. **Bao learns from them.**
 Hand off time-consuming work to a subagent: keep chatting while it works in the background. Bao keeps the handoff internal and only shows you the parent agent's user-facing summary when the task completes.
 
 - **Background execution** — subagents run independently while the main agent stays responsive to you
-- **Progress on demand** — the main agent calls `check_tasks` to see current phase, tool count, and iteration progress; `check_tasks_json` returns a stable schema_version=1 JSON snapshot (including `last_error` summary) for UI or automation consumers
+- **Progress on demand** — `spawn` returns schema_version=1 JSON; use `task.task_id` from that result with `check_tasks` or `check_tasks_json` to inspect current phase, tool count, and iteration progress for UI or automation consumers
 - **Milestone updates** — subagents auto-report every 5 iterations. No spam, no missed beats
 - **Single visible completion path** — subagent completion is handed back as an internal structured event; only the parent agent's final assistant summary enters the chat timeline
 - **Resume from prior results** — continue from a previous task without re-explaining context
@@ -802,8 +826,32 @@ New messages in the same session use cooperative soft interruption by default (s
 ### ✅ Tests
 
 ```bash
+# Fast local verification: changed tests / node ids / -k
+bash scripts/test_targeted.sh tests/test_chat_service.py -q
+
+# Desktop changes: focused desktop tests, then smoke if needed
+uv run --extra desktop --extra dev pytest \
+  tests/test_asyncio_runner.py \
+  tests/test_chat_model.py \
+  tests/test_jsonc_patch.py \
+  tests/test_config_service.py \
+  tests/test_chat_service.py \
+  tests/test_session_service.py \
+  -q
+
+# Core smoke set: quick regression on critical paths
+bash scripts/test_smoke.sh -q
+
+# High-risk concurrency / interrupt regression: run only when those areas change
+bash scripts/test_high_risk.sh -q
+QT_QPA_PLATFORM=offscreen uv run --extra desktop python app/main.py --smoke
+
+# Full regression: cross-cutting refactors, dependency upgrades, release checks, or CI
 uv run pytest tests/ -v
 ```
+
+Default policy: local development should prefer “affected tests + required smoke” instead of running the full suite after every small change.
+Expand to the full suite only for high-risk changes such as shared-core refactors, dependency upgrades, release validation, or CI.
 
 
 ### 🖥️ Desktop App (experimental)

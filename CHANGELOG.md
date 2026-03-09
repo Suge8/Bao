@@ -6,17 +6,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+### Fixed
+
+- **Desktop 侧边栏 sticky 分组头不再越界覆盖标题区** — 吸顶分组头现在被限制在会话列表自身的顶部裁剪视口内，被下一个分组顶走时只会在列表内退出，不再漏到上方标题区域。
+- **Desktop/外部渠道的运行态不再作为跨重启脏 metadata 残留** — `SessionManager` 现将 `session_running` 与 `child_status=running` 收口为当前进程的 runtime overlay，并在列会话/加载会话时与稳定 metadata 合并；主代理、desktop gateway 与 subagent 在各自编排边界显式推送/清理运行态，侧栏绿点继续事件驱动更新，但应用重启后不会再从磁盘读回旧 running 状态。
+- **Desktop 设置页首击不再被窗口级失焦吞掉** — `WindowFocusDismissFilter` 现在只对显式声明 `baoClickAwayEditor` 的编辑器执行 click-away blur，并把失焦收口在点击完成之后；Settings 的 tab、Provider 展开头与“+ 添加 LLM 提供商”不再出现先失焦、第二次点击才生效的竞态。
+- **Desktop SettingsSelect 下拉不再吞掉下一次按钮点击** — 设置页自定义下拉组件的 popup 外点关闭现在也走统一的窗口级 dismiss 路径；打开下拉后再点 `Save`、渠道头或 `+ 添加 LLM Provider` 不会再先关闭弹层、第二次才命中目标。
+
 ## [0.3.22] - 2026-03-09
 
 ### Changed
 
 - **Desktop 启动问候与 greeting 视觉语义改为统一的 assistant 单一路径** — desktop 与外部渠道的 startup/onboarding 问候现在都会按 assistant 消息持久化，并保留 `entrance_style` 供 UI 投影 greeting 外观，避免会话历史、未读与启动目标在 system/assistant 两套语义之间漂移。
+- **Desktop focus 不再反向污染 external startup routing** — Desktop 当前浏览的 external sibling 不再写回 external family active；external startup greeting 会继续跟随 core 维护的 family active，而不是被桌面当前 focus 改写。
 - **Desktop 打包指南正式纳入仓库发布文档链路** — `docs/desktop-packaging.md` 现在作为受版本控制的正式文档保留，同时 `.gitignore` 继续默认忽略其他本地 `docs/*`，只显式放行这份发布文档，消除“README 可见但 CI checkout 缺失”的状态分裂。
 
 ### Fixed
 
 - **Desktop 启动问候不再误落到当前外部会话或丢失持久化 entrance_style** — `SessionService` 与 `ChatService` 现在会优先解析 desktop 启动目标，会话持久化同步保留 greeting/assistant entrance style，切到外部渠道时也不会把启动问候写错会话或在 reload 后退化成普通 assistant 气泡。
-- **Gateway/CLI 的 startup greeting 会同步落库到对应会话** — 外部 ready/onboarding 问候在发送到 channel 的同时也会写入 `SessionManager`，桌面端 reload、未读与历史回放能看到一致的启动消息，不再只存在瞬时 outbound 路径。
+- **Gateway/CLI 的 startup greeting 会同步落库到当前 family active 会话** — 外部 ready/onboarding 问候在真实发送成功后会优先写入该渠道 family 当前 active sibling（如 `imessage:+86...::s7`），找不到 active sibling 时再回退 natural key；桌面端 reload、未读与历史回放能看到与 `/new` / 当前会话续接一致的启动消息，不再回落到旧 sibling。
 
 ## [0.3.21] - 2026-03-09
 
