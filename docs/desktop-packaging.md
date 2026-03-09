@@ -118,6 +118,8 @@ bash app/scripts/create_update_zip.sh --arch arm64 --app-path "dist/Bao.app"
 
 这是让打包后的 `Bao.app` 能稳定触发 `Messages` 自动化授权弹窗的单一路径；不要只修某一条构建链路，否则 PyInstaller 与 Nuitka 产物的 TCC 行为会漂移。
 
+另外，构建脚本会在回写 `Info.plist` 后立刻重新执行一次 `codesign`。原因很直接：如果先签名、后改 plist，`tccd` 会因为签名信息失效而无法为 Apple Events 计算 designated requirement，最终表现就是 `-1743` 且不弹 Automation 授权窗。
+
 ### iMessage 运行前权限
 
 如果你在桌面端启用了 iMessage，安装后的 macOS 还需要手动授予两条独立权限：
@@ -152,6 +154,23 @@ Windows 默认发布版使用 PyInstaller 的 GUI 模式，安装器 UI 仍由 `
 ## CI/CD 自动构建
 
 正式发版前先完成 `docs/release-checklist.md` 中的通用步骤；本页只保留 Desktop 专项打包说明。
+
+`Desktop Release` 的 macOS job 现在默认仍能完成基础打包；只有在仓库里检测到完整 signing/notary secrets 时，才会额外进入正式分发链：
+
+- 从 GitHub Secrets 导入 Developer ID Application `.p12`
+- 在临时 keychain 中给 `codesign` / `xcrun` 开私钥访问
+- 对 `Bao.app` 做 `--options runtime --timestamp` 签名
+- 先 notarize + staple `.app`，再产出 `update.zip`
+- 再 notarize + staple `.dmg`
+
+如需启用签名/公证，需要预先配置这些 GitHub Secrets：
+
+- `BAO_MAC_CODESIGN_IDENTITY`
+- `BAO_MAC_CERT_P12_BASE64`
+- `BAO_MAC_CERT_P12_PASSWORD`
+- `BAO_MAC_NOTARY_APPLE_ID`
+- `BAO_MAC_NOTARY_TEAM_ID`
+- `BAO_MAC_NOTARY_PASSWORD`（Apple ID 的 app-specific password）
 
 推送版本 tag 触发：
 
@@ -229,6 +248,8 @@ xcrun stapler staple dist/Bao-x.y.z-macos-arm64.dmg
 ```
 
 未签名的 .app 会被 Gatekeeper 拦截，用户需右键→打开。
+
+如果你把签名/公证交给 GitHub Actions，证书和 notarization 凭据不要直接写进 workflow 文件，也不要贴进聊天或仓库；统一放进上面的 GitHub Secrets，由 `desktop-release.yml` 在 runner 的临时 keychain 中导入后使用。未配置这些 secrets 时，workflow 会给出 warning，并继续产出未签名的 macOS 资产。
 
 ## 已知问题与 Workaround
 

@@ -33,10 +33,16 @@ def test_build_mac_script_includes_workspace_package_data() -> None:
     assert "--noinclude-qt-plugins=tls" in text
     assert "imageformats/libqpdf.dylib" in text
     assert 'BUNDLE_IDENTIFIER="io.github.suge8.bao"' in text
+    assert 'CODESIGN_IDENTITY="${BAO_MAC_CODESIGN_IDENTITY:--}"' in text
     assert 'plist_set_or_add "$INFO_PLIST" "CFBundleIdentifier" "$BUNDLE_IDENTIFIER"' in text
     assert (
         'plist_set_or_add "$INFO_PLIST" "NSAppleEventsUsageDescription" "$APPLE_EVENTS_USAGE_DESCRIPTION"'
         in text
+    )
+    assert 'resign_app_bundle "$OUTPUT_APP"' in text
+    assert '/usr/bin/codesign --force --deep --sign "$CODESIGN_IDENTITY" "$app_path"' in text
+    assert (
+        'codesign --force --deep --options runtime --timestamp --sign "$CODESIGN_IDENTITY"' in text
     )
 
 
@@ -52,12 +58,18 @@ def test_build_mac_pyinstaller_script_includes_desktop_resources() -> None:
     assert "--collect-submodules bao.channels" in text
     assert "--collect-submodules bao.providers" in text
     assert '--osx-bundle-identifier "$BUNDLE_IDENTIFIER"' in text
+    assert 'CODESIGN_IDENTITY="${BAO_MAC_CODESIGN_IDENTITY:--}"' in text
     assert 'plist_set_or_add "$INFO_PLIST" "CFBundleShortVersionString" "$VERSION"' in text
     assert 'plist_set_or_add "$INFO_PLIST" "CFBundleVersion" "$VERSION"' in text
     assert 'plist_set_or_add "$INFO_PLIST" "CFBundleIdentifier" "$BUNDLE_IDENTIFIER"' in text
     assert (
         'plist_set_or_add "$INFO_PLIST" "NSAppleEventsUsageDescription" "$APPLE_EVENTS_USAGE_DESCRIPTION"'
         in text
+    )
+    assert 'resign_app_bundle "$OUTPUT_APP"' in text
+    assert '/usr/bin/codesign --force --deep --sign "$CODESIGN_IDENTITY" "$app_path"' in text
+    assert (
+        'codesign --force --deep --options runtime --timestamp --sign "$CODESIGN_IDENTITY"' in text
     )
 
 
@@ -232,8 +244,32 @@ def test_desktop_release_workflow_uses_pyinstaller_as_primary_packager() -> None
     assert "build_mac_pyinstaller.sh" in build_mac_section
     assert "create_dmg.sh --arch ${{ matrix.arch }} --app-path" in build_mac_section
     assert "create_update_zip.sh --arch ${{ matrix.arch }} --app-path" in build_mac_section
+    assert "Detect macOS signing mode" in build_mac_section
+    assert "Import Developer ID certificate" in build_mac_section
+    assert "Notarize app bundle" in build_mac_section
+    assert "Staple app bundle" in build_mac_section
+    assert "Notarize DMG" in build_mac_section
+    assert "Staple DMG" in build_mac_section
     assert "ccache" not in build_mac_section
     assert "nuitka" not in build_mac_section.lower()
+
+
+def test_desktop_release_workflow_macos_signing_is_optional() -> None:
+    text = _read(".github/workflows/desktop-release.yml")
+
+    assert "BAO_MAC_CODESIGN_IDENTITY" in text
+    assert "BAO_MAC_CERT_P12_BASE64" in text
+    assert "BAO_MAC_CERT_P12_PASSWORD" in text
+    assert "BAO_MAC_NOTARY_APPLE_ID" in text
+    assert "BAO_MAC_NOTARY_TEAM_ID" in text
+    assert "BAO_MAC_NOTARY_PASSWORD" in text
+    assert "BAO_MAC_SIGNING_ENABLED=true" in text
+    assert "BAO_MAC_SIGNING_ENABLED=false" in text
+    assert "release artifacts will be built without Developer ID signing or notarization" in text
+    assert "security import" in text
+    assert "xcrun notarytool submit" in text
+    assert "xcrun stapler staple" in text
+    assert "if: env.BAO_MAC_SIGNING_ENABLED == 'true'" in text
 
 
 def test_desktop_release_workflow_checks_inno_setup_before_windows_build() -> None:

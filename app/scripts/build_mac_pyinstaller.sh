@@ -25,6 +25,7 @@ esac
 VERSION=$(uv run python app/scripts/read_version.py)
 BUNDLE_IDENTIFIER="io.github.suge8.bao"
 APPLE_EVENTS_USAGE_DESCRIPTION="Bao needs Automation permission to send messages and media through Messages.app."
+CODESIGN_IDENTITY="${BAO_MAC_CODESIGN_IDENTITY:--}"
 
 plist_set_or_add() {
     local plist_path="$1"
@@ -43,6 +44,18 @@ plist_require_key() {
         echo "❌ Missing required Info.plist key: $key"
         exit 1
     }
+}
+
+resign_app_bundle() {
+    local app_path="$1"
+
+    echo "▸ Re-signing app bundle after Info.plist updates..."
+    if [[ "$CODESIGN_IDENTITY" == "-" ]]; then
+        /usr/bin/codesign --force --deep --sign "$CODESIGN_IDENTITY" "$app_path"
+        return
+    fi
+
+    /usr/bin/codesign --force --deep --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$app_path"
 }
 
 APP_NAME="Bao"
@@ -126,6 +139,7 @@ if [[ -f "$INFO_PLIST" ]]; then
     plist_set_or_add "$INFO_PLIST" "NSAppleEventsUsageDescription" "$APPLE_EVENTS_USAGE_DESCRIPTION"
     plist_require_key "$INFO_PLIST" "CFBundleIdentifier"
     plist_require_key "$INFO_PLIST" "NSAppleEventsUsageDescription"
+    resign_app_bundle "$OUTPUT_APP"
 else
     echo "❌ Build failed: $INFO_PLIST not found"
     exit 1
