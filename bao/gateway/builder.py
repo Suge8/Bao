@@ -107,21 +107,27 @@ def _collect_channel_targets(config: Any, logger: Any) -> list[tuple[str, str]]:
     return targets
 
 
-def _log_startup_out(logger: Any, channel_name: str, chat_id: str, content: str) -> None:
+def _log_startup_out(
+    logger: Any, channel_name: str, chat_id: str, content: str, *, delivered: bool
+) -> None:
     preview = content[:60] + "..." if len(content) > 60 else content
     preview = preview.replace("\n", " ")
+    if delivered:
+        logger.info("💬 启动问候已发送 / sent: {}:{}: {}", channel_name, chat_id, preview)
+        return
     logger.info("💬 启动问候已入队 / queued: {}:{}: {}", channel_name, chat_id, preview)
 
 
 def _persist_startup_message(
     session_manager: Any,
     *,
-    session_key: str,
+    natural_key: str,
     content: str,
     entrance_style: str,
 ) -> None:
-    if session_manager is None or not session_key or not content:
+    if session_manager is None or not natural_key or not content:
         return
+    session_key = session_manager.resolve_active_session_key(natural_key)
     session = session_manager.get_or_create(session_key)
     session.add_message(
         "assistant",
@@ -131,6 +137,7 @@ def _persist_startup_message(
         entrance_style=entrance_style,
     )
     session_manager.save(session)
+    session_manager.mark_desktop_seen_ai_if_active(session_key)
 
 
 def _extract_persona_language_tag(text: str) -> str | None:
@@ -292,6 +299,7 @@ def build_gateway_stack(
 
     bus = MessageBus()
     session_manager = session_manager or SessionManager(config.workspace_path)
+    assert session_manager is not None
     cron = CronService(get_data_dir() / "cron" / "jobs.json")
 
     agent = AgentLoop(
@@ -454,20 +462,23 @@ async def send_startup_greeting(
         )
         if not text:
             return
-        if channels is not None:
-            await channels.wait_started()
-            await channels.wait_ready(channel_name)
         try:
-            await bus.publish_outbound(
-                OutboundMessage(channel=channel_name, chat_id=chat_id, content=text)
-            )
+            msg = OutboundMessage(channel=channel_name, chat_id=chat_id, content=text)
+            delivered = False
+            if channels is not None:
+                await channels.wait_started()
+                await channels.wait_ready(channel_name)
+                await channels.send_outbound(msg)
+                delivered = True
+            else:
+                await bus.publish_outbound(msg)
             _persist_startup_message(
                 session_manager,
-                session_key=f"{channel_name}:{chat_id}",
+                natural_key=f"{channel_name}:{chat_id}",
                 content=text,
                 entrance_style="greeting",
             )
-            _log_startup_out(logger, channel_name, chat_id, text)
+            _log_startup_out(logger, channel_name, chat_id, text, delivered=delivered)
         except Exception as e:
             logger.warning("⚠️ 问候发送失败 / send failed: {}:{} — {}", channel_name, chat_id, e)
 
@@ -492,19 +503,22 @@ async def send_startup_greeting(
     async def _broadcast_onboarding(content: str) -> None:
         for ch, cid in targets:
             try:
+                msg = OutboundMessage(channel=ch, chat_id=cid, content=content)
+                delivered = False
                 if channels is not None:
                     await channels.wait_started()
                     await channels.wait_ready(ch)
-                await bus.publish_outbound(
-                    OutboundMessage(channel=ch, chat_id=cid, content=content)
-                )
+                    await channels.send_outbound(msg)
+                    delivered = True
+                else:
+                    await bus.publish_outbound(msg)
                 _persist_startup_message(
                     session_manager,
-                    session_key=f"{ch}:{cid}",
+                    natural_key=f"{ch}:{cid}",
                     content=content,
                     entrance_style="assistantReceived",
                 )
-                _log_startup_out(logger, ch, cid, content)
+                _log_startup_out(logger, ch, cid, content, delivered=delivered)
             except Exception as e:
                 logger.warning("⚠️ 入门问候失败 / onboarding failed: {}:{} — {}", ch, cid, e)
 
