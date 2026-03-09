@@ -302,6 +302,10 @@ def has_tool_error(tool_name: str, result: str, error_keywords: tuple[str, ...])
     return bool(info and info.is_error)
 
 
+def sanitize_visible_text(text: str) -> str:
+    return text.replace("\n", " ").replace("\r", "").replace("|", "/")
+
+
 def sanitize_trace_text(text: Any, max_len: int) -> str:
     normalized = str(text or "").replace("\r", " ").replace("\n", " ").strip()
     compact = " ".join(normalized.split())

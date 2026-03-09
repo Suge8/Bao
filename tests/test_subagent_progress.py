@@ -9,7 +9,7 @@ import time
 import uuid
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
-from bao.agent.subagent import SubagentManager, TaskStatus
+from bao.agent.subagent import SpawnResult, SubagentManager, TaskStatus
 from bao.agent.tools.registry import ToolRegistry
 from bao.agent.tools.task_status import (
     CancelTaskTool,
@@ -24,6 +24,13 @@ from bao.providers.base import LLMResponse, ToolCallRequest
 from bao.session.manager import SessionManager
 
 pytest = importlib.import_module("pytest")
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
+
+
+def _spawn_task_id(result: SpawnResult) -> str:
+    assert result.task is not None
+    return result.task.task_id
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -109,7 +116,9 @@ async def test_spawn_persists_child_session_key(bus, tmp_path):
         session_key="desktop:local::main",
     )
 
-    assert "child_session_key=subagent:desktop:local::main::" in result
+    assert result.task is not None
+    assert result.task.child_session_key is not None
+    assert result.task.child_session_key.startswith("subagent:desktop:local::main::")
     status = manager.get_all_statuses()[0]
     assert status.child_session_key is not None
 
@@ -133,7 +142,9 @@ async def test_spawn_rejects_unknown_child_session_key(bus, tmp_path):
         child_session_key="subagent:desktop:local::main::missing",
     )
 
-    assert result.startswith("Spawn failed: unknown child_session_key")
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.code == "unknown_child_session_key"
 
 
 def test_build_subagent_prompt_includes_memory_sections(manager):
@@ -708,14 +719,14 @@ async def test_run_subagent_keeps_completed_status_when_announce_fails(bus, tmp_
 
 @pytest.mark.asyncio
 async def test_spawn_creates_status(manager):
-    """spawn() should create a TaskStatus entry and return a confirmation string."""
     result = await manager.spawn(
         task="Summarize the README",
         label="summarize",
         origin_channel="telegram",
         origin_chat_id="c1",
     )
-    assert "spawned" in result.lower()
+    assert result.status == "spawned"
+    assert result.task is not None
 
     statuses = manager.get_all_statuses()
     assert len(statuses) == 1
@@ -729,7 +740,7 @@ async def test_spawn_creates_status(manager):
 @pytest.mark.asyncio
 async def test_spawn_task_id_has_12_chars(manager):
     result = await manager.spawn(task="Summarize")
-    task_id = result.split("task_id=")[1].split(" ", 1)[0]
+    task_id = _spawn_task_id(result)
     assert len(task_id) == 12
     assert "-" not in task_id
 
@@ -750,7 +761,7 @@ async def test_spawn_task_id_retries_on_collision(manager):
         ],
     ):
         result = await manager.spawn(task="Summarize")
-    task_id = result.split("task_id=")[1].split(" ", 1)[0]
+    task_id = _spawn_task_id(result)
     assert task_id == "bbbbbbbbbbbb"
 
 
@@ -1040,11 +1051,28 @@ async def test_check_tasks_json_accepts_string_schema_version(manager):
     assert len(payload["tasks"]) == 1
     snap = payload["tasks"][0]
     assert snap["task_id"] == "t1"
+    assert snap["child_session_key"] is None
     assert snap["label"] == "research /task"
     assert snap["recent_actions"] == ["a/b", "c d"]
     assert snap["origin"] == {"channel": "tg", "chat_id": "1"}
     assert "resume_context" not in snap
     assert "task_description" not in snap
+
+
+@pytest.mark.asyncio
+async def test_check_tasks_json_includes_child_session_key(manager):
+    manager._task_statuses["t1"] = TaskStatus(
+        task_id="t1",
+        label="research",
+        task_description="d",
+        origin={"channel": "tg", "chat_id": "1"},
+        child_session_key="subagent:desktop:local::main::t1",
+    )
+
+    tool = CheckTasksJsonTool(manager)
+    payload = json.loads(await tool.execute(task_id="t1"))
+
+    assert payload["tasks"][0]["child_session_key"] == "subagent:desktop:local::main::t1"
 
 
 @pytest.mark.asyncio
@@ -1653,8 +1681,8 @@ async def test_spawn_context_from_completed_task(manager):
             label="refactor",
             context_from="prev01",
         )
-        assert result.startswith("Spawned task_id=")
-        task_id = result.split("task_id=")[1].split(" ", 1)[0]
+        assert result.status == "spawned"
+        task_id = _spawn_task_id(result)
         spawned = manager.get_task_status(task_id)
         assert spawned is not None
         assert spawned.resume_context is not None
@@ -1675,8 +1703,9 @@ async def test_spawn_context_from_missing_task(manager):
         label="new task",
         context_from="nonexistent",
     )
-    # Should still spawn successfully — context_from miss is silent degradation
-    assert result.startswith("Spawned task_id=")
+    assert result.status == "spawned"
+    assert result.warning is not None
+    assert result.warning.code == "context_from_unavailable"
     assert len(manager.get_all_statuses()) == 1
 
 
@@ -1687,9 +1716,10 @@ async def test_spawn_context_from_warning_sanitizes_visible_text(manager):
         label="new task",
         context_from="bad|id\nnext",
     )
-    assert "context_from=bad/id next" in result
-    assert "bad|id" not in result
-    assert "\n" not in result
+    assert result.warning is not None
+    assert "context_from=bad/id next" in result.warning.message
+    assert "bad|id" not in result.warning.message
+    assert "\n" not in result.warning.message
 
 
 @pytest.mark.asyncio
@@ -1707,8 +1737,9 @@ async def test_spawn_context_from_running_task_ignored(manager):
         label="follow up",
         context_from="run01",
     )
-    # Should still spawn — running task context is silently ignored
-    assert result.startswith("Spawned task_id=")
+    assert result.status == "spawned"
+    assert result.warning is not None
+    assert result.warning.code == "context_from_unavailable"
     new_statuses = [s for s in manager.get_all_statuses() if s.task_id != "run01"]
     assert len(new_statuses) == 1
 

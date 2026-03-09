@@ -1,7 +1,7 @@
 """Spawn tool for creating background subagents."""
 
 import asyncio
-import re
+import json
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 
 from bao.agent import plan
+from bao.agent.subagent import SpawnResult
 from bao.agent.tools.base import Tool
 from bao.bus.events import OutboundMessage
 
@@ -81,28 +82,20 @@ class SpawnTool(Tool):
         return "I've delegated this to a subagent and will share the result once it's done."
 
     @staticmethod
-    def _extract_task_id(result: str) -> str | None:
-        result_text = str(result or "").strip()
-        if not result_text.lower().startswith("spawned"):
-            return None
-        match = re.search(r"\btask_id=([A-Za-z0-9_-]+)\b", result_text)
-        if not match:
-            return None
-        return match.group(1)
+    def _serialize_result(result: SpawnResult) -> str:
+        return json.dumps(result.to_payload(), ensure_ascii=False)
 
-    async def _notify_spawn_started(self, result: str) -> None:
+    async def _notify_spawn_started(self, result: "SpawnResult") -> None:
         if not self._publish_outbound:
             return
-        task_id = self._extract_task_id(result)
-        if not task_id:
+        if result.status != "spawned" or result.task is None:
             return
 
         metadata = dict(self._reply_metadata.get() or {})
         metadata.update(
             {
-                "_subagent_spawned": True,
+                "_subagent_spawn": result.to_payload(),
                 "session_key": self._session_key.get(),
-                "task_id": task_id,
             }
         )
 
@@ -121,7 +114,10 @@ class SpawnTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Delegate a task to a background subagent. Returns task_id for tracking."
+        return (
+            "Delegate a task to a background subagent. Returns schema_version=1 JSON; "
+            "query progress with task.task_id."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -155,9 +151,13 @@ class SpawnTool(Tool):
         context_from = kwargs.get("context_from")
         child_session_key = kwargs.get("child_session_key")
         if not isinstance(task, str) or not task:
-            return "Spawn failed: task text is required"
+            return self._serialize_result(
+                SpawnResult.failed(code="task_required", message="task text is required")
+            )
         if label is not None and not isinstance(label, str):
-            return "Spawn failed: label must be a string"
+            return self._serialize_result(
+                SpawnResult.failed(code="invalid_label", message="label must be a string")
+            )
         spawn_kwargs: dict[str, Any] = {
             "task": task,
             "label": label,
@@ -175,4 +175,4 @@ class SpawnTool(Tool):
             raise
         except Exception as exc:
             logger.debug("Spawn notify failed (non-fatal): {}", exc)
-        return result
+        return self._serialize_result(result)

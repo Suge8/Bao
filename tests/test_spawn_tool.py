@@ -2,21 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 from pathlib import Path
 from typing import Any, cast
 
 from bao.agent.loop import AgentLoop
-from bao.agent.subagent import SubagentManager
+from bao.agent.subagent import SpawnIssue, SpawnResult, SubagentManager
 from bao.agent.tools.spawn import SpawnTool
 from bao.bus.events import OutboundMessage
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider, LLMResponse
+from bao.session.manager import SessionManager
 
 pytest = importlib.import_module("pytest")
 
 
 class _DummyManager:
-    def __init__(self, result: str):
+    def __init__(self, result: SpawnResult):
         self.result = result
         self.calls: list[dict[str, Any]] = []
 
@@ -29,7 +31,7 @@ class _DummyManager:
         session_key: str | None = None,
         context_from: str | None = None,
         child_session_key: str | None = None,
-    ) -> str:
+    ) -> SpawnResult:
         self.calls.append(
             {
                 "task": task,
@@ -42,6 +44,16 @@ class _DummyManager:
             }
         )
         return self.result
+
+
+def _spawned_result(task_id: str, *, label: str = "worker") -> SpawnResult:
+    return SpawnResult.spawned(task_id=task_id, label=label, child_session_key=None)
+
+
+def _parse_payload(raw: str) -> dict[str, Any]:
+    payload = json.loads(raw)
+    assert isinstance(payload, dict)
+    return payload
 
 
 class _NoopProvider(LLMProvider):
@@ -71,7 +83,7 @@ def test_spawn_tool_notifies_zh_on_success() -> None:
     async def _publish(msg: OutboundMessage) -> None:
         sent.append(msg)
 
-    manager = _DummyManager('Spawned task_id=abc123def456 label="worker"')
+    manager = _DummyManager(_spawned_result("abc123def456"))
     tool = SpawnTool(manager=cast(SubagentManager, cast(object, manager)))
     tool.set_publish_outbound(_publish)
     tool.set_context(
@@ -86,12 +98,15 @@ def test_spawn_tool_notifies_zh_on_success() -> None:
     )
 
     result = asyncio.run(tool.execute(task="处理任务", label="worker"))
-    assert result.startswith("Spawned task_id=abc123def456")
+    payload = _parse_payload(result)
+    assert payload["status"] == "spawned"
+    assert payload["task"]["task_id"] == "abc123def456"
     assert len(sent) == 1
     assert sent[0].content == "已委派子代理处理中，完成后我会同步结果。"
-    assert sent[0].metadata.get("_subagent_spawned") is True
     assert sent[0].metadata.get("session_key") == "imessage:+86100"
-    assert sent[0].metadata.get("task_id") == "abc123def456"
+    spawn_meta = sent[0].metadata.get("_subagent_spawn")
+    assert isinstance(spawn_meta, dict)
+    assert spawn_meta["task"]["task_id"] == "abc123def456"
     assert sent[0].metadata.get("slack") == {
         "thread_ts": "1710000.123",
         "channel_type": "channel",
@@ -100,7 +115,7 @@ def test_spawn_tool_notifies_zh_on_success() -> None:
 
 @pytest.mark.asyncio
 async def test_spawn_tool_passes_child_session_key() -> None:
-    manager = _DummyManager('Spawned task_id=abc123def456 label="worker"')
+    manager = _DummyManager(_spawned_result("abc123def456"))
     tool = SpawnTool(manager=cast(SubagentManager, cast(object, manager)))
     tool.set_context("desktop", "local", session_key="desktop:local::main", lang="zh")
 
@@ -108,7 +123,8 @@ async def test_spawn_tool_passes_child_session_key() -> None:
         task="continue", child_session_key="subagent:desktop:local::main::child"
     )
 
-    assert result.startswith("Spawned task_id=abc123def456")
+    payload = _parse_payload(result)
+    assert payload["task"]["task_id"] == "abc123def456"
     assert manager.calls[0]["session_key"] == "desktop:local::main"
     assert manager.calls[0]["child_session_key"] == "subagent:desktop:local::main::child"
 
@@ -119,13 +135,14 @@ def test_spawn_tool_notifies_en_on_success() -> None:
     async def _publish(msg: OutboundMessage) -> None:
         sent.append(msg)
 
-    manager = _DummyManager('Spawned task_id=def456abc123 label="worker"')
+    manager = _DummyManager(_spawned_result("def456abc123"))
     tool = SpawnTool(manager=cast(SubagentManager, cast(object, manager)))
     tool.set_publish_outbound(_publish)
     tool.set_context("telegram", "c1", session_key="telegram:c1", lang="en")
 
     result = asyncio.run(tool.execute(task="Do work", label="worker"))
-    assert result.startswith("Spawned task_id=def456abc123")
+    payload = _parse_payload(result)
+    assert payload["task"]["task_id"] == "def456abc123"
     assert len(sent) == 1
     assert (
         sent[0].content
@@ -133,21 +150,30 @@ def test_spawn_tool_notifies_en_on_success() -> None:
     )
 
 
-def test_spawn_tool_notifies_with_leading_whitespace_in_result() -> None:
+def test_spawn_tool_serializes_warning_without_visible_noise() -> None:
     sent: list[OutboundMessage] = []
 
     async def _publish(msg: OutboundMessage) -> None:
         sent.append(msg)
 
-    manager = _DummyManager('  Spawned task_id=deadbeefcafe label="worker"')
+    manager = _DummyManager(
+        SpawnResult.spawned(
+            task_id="deadbeefcafe",
+            label="worker",
+            child_session_key=None,
+            warning=SpawnIssue(code="x", message="bad"),
+        )
+    )
     tool = SpawnTool(manager=cast(SubagentManager, cast(object, manager)))
     tool.set_publish_outbound(_publish)
     tool.set_context("imessage", "+86100", session_key="imessage:+86100", lang="zh")
 
     result = asyncio.run(tool.execute(task="处理任务", label="worker"))
-    assert result.startswith("  Spawned task_id=deadbeefcafe")
+    payload = _parse_payload(result)
+    assert payload["task"]["task_id"] == "deadbeefcafe"
+    assert payload["warning"] == {"code": "x", "message": "bad"}
     assert len(sent) == 1
-    assert sent[0].metadata.get("task_id") == "deadbeefcafe"
+    assert sent[0].metadata["_subagent_spawn"]["task"]["task_id"] == "deadbeefcafe"
 
 
 def test_spawn_tool_skips_notify_when_spawn_fails() -> None:
@@ -156,21 +182,45 @@ def test_spawn_tool_skips_notify_when_spawn_fails() -> None:
     async def _publish(msg: OutboundMessage) -> None:
         sent.append(msg)
 
-    manager = _DummyManager("Spawn failed: backend unavailable")
+    manager = _DummyManager(
+        SpawnResult.failed(code="backend_unavailable", message="backend unavailable")
+    )
     tool = SpawnTool(manager=cast(SubagentManager, cast(object, manager)))
     tool.set_publish_outbound(_publish)
     tool.set_context("telegram", "c1", session_key="telegram:c1", lang="zh")
 
     result = asyncio.run(tool.execute(task="Do work", label="worker"))
-    assert result == "Spawn failed: backend unavailable"
+    payload = _parse_payload(result)
+    assert payload["status"] == "failed"
+    assert payload["error"] == {"code": "backend_unavailable", "message": "backend unavailable"}
     assert sent == []
+
+
+def test_spawn_tool_rejects_missing_task_with_structured_error() -> None:
+    manager = _DummyManager(_spawned_result("unused"))
+    tool = SpawnTool(manager=cast(SubagentManager, cast(object, manager)))
+
+    payload = _parse_payload(asyncio.run(tool.execute(task="", label="worker")))
+
+    assert payload["status"] == "failed"
+    assert payload["error"] == {"code": "task_required", "message": "task text is required"}
+
+
+def test_spawn_tool_rejects_non_string_label_with_structured_error() -> None:
+    manager = _DummyManager(_spawned_result("unused"))
+    tool = SpawnTool(manager=cast(SubagentManager, cast(object, manager)))
+
+    payload = _parse_payload(asyncio.run(tool.execute(task="Do work", label=123)))
+
+    assert payload["status"] == "failed"
+    assert payload["error"] == {"code": "invalid_label", "message": "label must be a string"}
 
 
 def test_spawn_tool_propagates_cancelled_error_from_notify() -> None:
     async def _publish(_msg: OutboundMessage) -> None:
         raise asyncio.CancelledError()
 
-    manager = _DummyManager('Spawned task_id=feedbeefcafe label="worker"')
+    manager = _DummyManager(_spawned_result("feedbeefcafe"))
     tool = SpawnTool(manager=cast(SubagentManager, cast(object, manager)))
     tool.set_publish_outbound(_publish)
     tool.set_context("telegram", "c1", session_key="telegram:c1", lang="en")
@@ -198,7 +248,7 @@ def test_loop_set_tool_context_applies_lang_to_spawn_notice(tmp_path: Path) -> N
         sent.append(msg)
 
     spawn.set_publish_outbound(_publish)
-    setattr(spawn, "_manager", _DummyManager('Spawned task_id=f00ba47bad99 label="w"'))
+    setattr(spawn, "_manager", _DummyManager(_spawned_result("f00ba47bad99", label="w")))
 
     loop._set_tool_context(
         "telegram",
@@ -209,10 +259,38 @@ def test_loop_set_tool_context_applies_lang_to_spawn_notice(tmp_path: Path) -> N
     )
     result = asyncio.run(spawn.execute(task="Do work", label="w"))
 
-    assert result.startswith("Spawned task_id=f00ba47bad99")
+    payload = _parse_payload(result)
+    assert payload["task"]["task_id"] == "f00ba47bad99"
     assert len(sent) == 1
     assert sent[0].content == "已委派子代理处理中，完成后我会同步结果。"
     assert sent[0].metadata.get("slack") == {
         "thread_ts": "1710000.999",
         "channel_type": "im",
     }
+
+
+def test_build_child_session_notes_keeps_unknown_status(tmp_path: Path) -> None:
+    sessions = SessionManager(tmp_path)
+    child = sessions.get_or_create("subagent:telegram:c1::child")
+    child.metadata.update(
+        {
+            "title": "worker",
+            "session_kind": "subagent_child",
+            "read_only": True,
+            "parent_session_key": "telegram:c1",
+            "task_label": "worker",
+        }
+    )
+    sessions.save(child)
+
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=_NoopProvider(),
+        workspace=tmp_path,
+        max_iterations=1,
+        session_manager=sessions,
+    )
+
+    notes = loop._build_child_session_notes("telegram:c1")
+
+    assert any("status=unknown" in line for line in notes)
