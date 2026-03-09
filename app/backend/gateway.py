@@ -1501,11 +1501,35 @@ class ChatService(QObject):
             logger.debug("Skip metadata update {}: {}", key, exc)
 
     def _set_session_running(self, key: str, is_running: bool) -> None:
-        self._update_session_metadata(
-            key,
-            {"session_running": bool(is_running)},
-            emit_change=True,
-        )
+        if not key or self._session_manager is None:
+            return
+
+        session_manager = self._session_manager
+        update_fn = getattr(session_manager, "set_session_running", None)
+        if not callable(update_fn):
+            self._update_session_metadata(
+                key,
+                {"session_running": bool(is_running)},
+                emit_change=True,
+            )
+            return
+
+        if isinstance(self._runner, AsyncioRunner):
+            try:
+                future = self._runner.submit(
+                    self._run_bg_io(lambda: update_fn(key, bool(is_running), emit_change=True))
+                )
+                future.add_done_callback(self._on_metadata_update_done)
+                return
+            except RuntimeError:
+                pass
+            except Exception as exc:
+                logger.debug("Skip session running update {}: {}", key, exc)
+
+        try:
+            update_fn(key, bool(is_running), emit_change=True)
+        except Exception as exc:
+            logger.debug("Skip session running update {}: {}", key, exc)
 
     def _build_gateway_channels_projection(self) -> list[dict[str, Any]]:
         base_channels = self._enabled_gateway_channels or self._configured_gateway_channels

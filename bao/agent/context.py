@@ -147,6 +147,17 @@ class _LazyMemoryStoreProxy:
             names.update(dir(store))
         return sorted(names)
 
+    def close(self) -> None:
+        lock = object.__getattribute__(self, "_lock")
+        with lock:
+            store = object.__getattribute__(self, "_store")
+            if store is None:
+                return
+            close = getattr(store, "close", None)
+            if callable(close):
+                close()
+            object.__setattr__(self, "_store", None)
+
 
 class ContextBuilder:
     BOOTSTRAP_FILES = ["INSTRUCTIONS.md", "PERSONA.md"]
@@ -158,6 +169,9 @@ class ContextBuilder:
         self.memory = _LazyMemoryStoreProxy(workspace, embedding_config=embedding_config)
         self.skills = SkillsLoader(workspace)
         self._bootstrap_cache: dict[str, tuple[tuple[int, int, int], str]] = {}
+
+    def close(self) -> None:
+        self.memory.close()
 
     def build_system_prompt(
         self,
