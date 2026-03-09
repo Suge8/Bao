@@ -213,6 +213,37 @@ class ChannelManager:
             return
         await channel.wait_ready()
 
+    async def send_outbound(self, msg: OutboundMessage) -> None:
+        channel = self.channels.get(msg.channel)
+        if not channel:
+            if msg.channel != "desktop":
+                logger.warning("⚠️ 未知通道 / unknown channel: {}", msg.channel)
+            return
+        if msg.metadata.get("_progress"):
+            defaults = self.config.agents.defaults
+            if not channel.supports_progress:
+                return
+            is_tool_hint = msg.metadata.get("_tool_hint", False)
+            allow_tool_hints = defaults.send_tool_hints
+            allow_progress = defaults.send_progress
+            if is_tool_hint and not allow_tool_hints:
+                if not allow_progress:
+                    return
+                suppressed_meta = dict(msg.metadata)
+                suppressed_meta["_tool_hint_suppressed"] = True
+                msg = OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="",
+                    reply_to=msg.reply_to,
+                    media=msg.media,
+                    metadata=suppressed_meta,
+                )
+            if not is_tool_hint and not allow_progress:
+                return
+        msg = self._transform_coding_meta(msg)
+        await channel.send(msg)
+
     async def stop_all(self) -> None:
         """Stop all channels and the dispatcher."""
         logger.info("📡 停止通道 / stopping: all channels")
@@ -244,35 +275,8 @@ class ChannelManager:
         while True:
             try:
                 msg = await asyncio.wait_for(self.bus.consume_outbound(), timeout=1.0)
-                channel = self.channels.get(msg.channel)
-                if not channel:
-                    if msg.channel != "desktop":
-                        logger.warning("⚠️ 未知通道 / unknown channel: {}", msg.channel)
-                    continue
-                if msg.metadata.get("_progress"):
-                    if not channel.supports_progress:
-                        continue
-                    is_tool_hint = msg.metadata.get("_tool_hint", False)
-                    allow_tool_hints = defaults.send_tool_hints
-                    allow_progress = defaults.send_progress
-                    if is_tool_hint and not allow_tool_hints:
-                        if not allow_progress:
-                            continue
-                        suppressed_meta = dict(msg.metadata)
-                        suppressed_meta["_tool_hint_suppressed"] = True
-                        msg = OutboundMessage(
-                            channel=msg.channel,
-                            chat_id=msg.chat_id,
-                            content="",
-                            reply_to=msg.reply_to,
-                            media=msg.media,
-                            metadata=suppressed_meta,
-                        )
-                    if not is_tool_hint and not allow_progress:
-                        continue
-                msg = self._transform_coding_meta(msg)
                 try:
-                    await channel.send(msg)
+                    await self.send_outbound(msg)
                 except Exception as e:
                     logger.error("❌ 发送失败 / send failed: {}: {}", msg.channel, e)
                     self._report_channel_error("send_failed", msg.channel, e)
