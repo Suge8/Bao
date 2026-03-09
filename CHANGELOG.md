@@ -6,12 +6,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.23] - 2026-03-10
+
+### Changed
+
+- **Subagent progress tracking now starts from `spawn` JSON** — `spawn` returns a stable schema_version=1 payload, `task.task_id` becomes the public progress query key, and workspace instructions / README stay aligned with the same contract.
+- **OpenAI Responses/Codex tool-call replay now uses one shared normalization path** — long `call_id` values, streamed tool arguments, and replayed tool history now flow through the same compat helpers so OpenAI-compatible providers stop diverging on the same protocol surface.
+- **Desktop Release can optionally sign and notarize macOS artifacts in CI** — when the required GitHub Secrets are present, the macOS workflow now imports a Developer ID certificate, signs `Bao.app`, notarizes/staples both `.app` and `.dmg`, and otherwise cleanly falls back to unsigned artifacts.
+- **Local verification now follows marker-based entrypoints** — pytest markers are declared centrally in `pyproject.toml`, and the repo now ships `scripts/test_targeted.sh`, `scripts/test_smoke.sh`, and `scripts/test_high_risk.sh` so local runs can match the documented fast-path workflow.
+
 ### Fixed
 
+- **Gateway/CLI startup greetings now persist only after a real outbound send and land in the active family session** — the runtime channel path now waits for channel readiness, sends through the channel manager, and only then persists the greeting to the currently active sibling for that channel family.
 - **Desktop 侧边栏 sticky 分组头不再越界覆盖标题区** — 吸顶分组头现在被限制在会话列表自身的顶部裁剪视口内，被下一个分组顶走时只会在列表内退出，不再漏到上方标题区域。
 - **Desktop/外部渠道的运行态不再作为跨重启脏 metadata 残留** — `SessionManager` 现将 `session_running` 与 `child_status=running` 收口为当前进程的 runtime overlay，并在列会话/加载会话时与稳定 metadata 合并；主代理、desktop gateway 与 subagent 在各自编排边界显式推送/清理运行态，侧栏绿点继续事件驱动更新，但应用重启后不会再从磁盘读回旧 running 状态。
 - **Desktop 设置页首击不再被窗口级失焦吞掉** — `WindowFocusDismissFilter` 现在只对显式声明 `baoClickAwayEditor` 的编辑器执行 click-away blur，并把失焦收口在点击完成之后；Settings 的 tab、Provider 展开头与“+ 添加 LLM 提供商”不再出现先失焦、第二次点击才生效的竞态。
 - **Desktop SettingsSelect 下拉不再吞掉下一次按钮点击** — 设置页自定义下拉组件的 popup 外点关闭现在也走统一的窗口级 dismiss 路径；打开下拉后再点 `Save`、渠道头或 `+ 添加 LLM Provider` 不会再先关闭弹层、第二次才命中目标。
+- **iMessage send failures now surface as actionable runtime errors** — AppleScript send failures, including `-1743` automation denials, now raise back to the caller so desktop and tests can distinguish “send failed” from “send silently disappeared.”
 
 ## [0.3.22] - 2026-03-09
 
