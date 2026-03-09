@@ -11,6 +11,14 @@ import httpx
 from oauth_cli_kit import get_token as get_codex_token
 
 from bao.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from bao.providers.responses_compat import (
+    append_responses_tool_call_arguments,
+    build_responses_tool_call_request,
+    convert_messages_to_responses,
+    convert_tools_to_responses,
+    replace_responses_tool_call_arguments,
+    start_responses_tool_call,
+)
 from bao.providers.retry import (
     ProgressCallbackError,
     StreamInterruptedError,
@@ -47,7 +55,7 @@ class OpenAICodexProvider(LLMProvider):
         else:
             effort = reasoning_effort.strip().lower()
             reasoning_effort = effort if effort in {"low", "medium", "high"} else None
-        system_prompt, input_items = _convert_messages(messages)
+        system_prompt, input_items = convert_messages_to_responses(messages)
 
         token = await asyncio.to_thread(get_codex_token)
         account_id = token.account_id or ""
@@ -72,7 +80,7 @@ class OpenAICodexProvider(LLMProvider):
             body["reasoning"] = {"effort": reasoning_effort}
 
         if tools:
-            body["tools"] = _convert_tools(tools)
+            body["tools"] = convert_tools_to_responses(tools)
             body["tool_choice"] = "auto"
             body["parallel_tool_calls"] = True
 
@@ -142,150 +150,6 @@ async def _request_codex(
             return await _consume_sse(response, on_progress=on_progress)
 
 
-def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert OpenAI function-calling schema to Codex flat format."""
-    converted: list[dict[str, Any]] = []
-    for tool in tools:
-        fn = (tool.get("function") or {}) if tool.get("type") == "function" else tool
-        name = fn.get("name")
-        if not name:
-            continue
-        params = fn.get("parameters") or {}
-        converted.append(
-            {
-                "type": "function",
-                "name": name,
-                "description": fn.get("description") or "",
-                "parameters": params if isinstance(params, dict) else {},
-            }
-        )
-    return converted
-
-
-def _flush_pending_images(input_items: list[dict[str, Any]], pending_images: list[str]) -> None:
-    if not pending_images:
-        return
-    image_content: list[dict[str, Any]] = [
-        {"type": "input_text", "text": "[screenshot from tool above]"},
-    ]
-    for ib64 in pending_images:
-        image_content.append(
-            {"type": "input_image", "image_url": f"data:image/jpeg;base64,{ib64}", "detail": "auto"}
-        )
-    input_items.append({"role": "user", "content": image_content})
-    pending_images.clear()
-
-
-def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
-    system_prompt = ""
-    input_items: list[dict[str, Any]] = []
-    pending_images: list[str] = []
-
-    for idx, msg in enumerate(messages):
-        role = msg.get("role")
-        content = msg.get("content")
-
-        if role != "tool" and pending_images:
-            _flush_pending_images(input_items, pending_images)
-
-        if role == "system":
-            system_prompt = content if isinstance(content, str) else ""
-            continue
-
-        if role == "user":
-            input_items.append(_convert_user_message(content))
-            continue
-
-        if role == "assistant":
-            # Handle text first.
-            if isinstance(content, str) and content:
-                input_items.append(
-                    {
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": content}],
-                        "status": "completed",
-                        "id": f"msg_{idx}",
-                    }
-                )
-            # Then handle tool calls.
-            for tool_call in msg.get("tool_calls", []) or []:
-                fn = tool_call.get("function") or {}
-                name = fn.get("name")
-                if not name:
-                    continue
-                raw_args = fn.get("arguments")
-                if isinstance(raw_args, str):
-                    arguments = raw_args
-                else:
-                    arguments = json.dumps(
-                        raw_args if raw_args is not None else {}, ensure_ascii=False
-                    )
-                call_id, item_id = _split_tool_call_id(tool_call.get("id"))
-                call_id = call_id or f"call_{idx}"
-                item_id = item_id or f"fc_{idx}"
-                input_items.append(
-                    {
-                        "type": "function_call",
-                        "id": item_id,
-                        "call_id": call_id,
-                        "name": name,
-                        "arguments": arguments,
-                    }
-                )
-            continue
-
-        if role == "tool":
-            call_id, _ = _split_tool_call_id(msg.get("tool_call_id"))
-            output_text = (
-                content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
-            )
-            input_items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": output_text,
-                }
-            )
-            img_b64 = msg.get("_image")
-            if isinstance(img_b64, str) and img_b64:
-                pending_images.append(img_b64)
-            continue
-
-    if pending_images:
-        _flush_pending_images(input_items, pending_images)
-
-    return system_prompt, input_items
-
-
-def _convert_user_message(content: Any) -> dict[str, Any]:
-    if isinstance(content, str):
-        return {"role": "user", "content": [{"type": "input_text", "text": content}]}
-    if isinstance(content, list):
-        converted: list[dict[str, Any]] = []
-        for item in content:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "text":
-                converted.append({"type": "input_text", "text": item.get("text", "")})
-            elif item.get("type") == "image_url":
-                url = (item.get("image_url") or {}).get("url")
-                if url:
-                    converted.append({"type": "input_image", "image_url": url, "detail": "auto"})
-        if converted:
-            return {"role": "user", "content": converted}
-    return {"role": "user", "content": [{"type": "input_text", "text": ""}]}
-
-
-def _split_tool_call_id(tool_call_id: Any) -> tuple[str, str | None]:
-    if isinstance(tool_call_id, str) and tool_call_id:
-        if "|" in tool_call_id:
-            call_id, item_id = tool_call_id.split("|", 1)
-            return call_id, item_id or None
-        return tool_call_id, None
-    return "call_0", None
-
-
 def _prompt_cache_key(messages: list[dict[str, Any]]) -> str:
     raw = json.dumps(messages, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -324,46 +188,24 @@ async def _consume_sse(
         event_type = event.get("type")
         if event_type == "response.output_item.added":
             item = event.get("item") or {}
-            if item.get("type") == "function_call":
-                call_id = item.get("call_id")
-                if not call_id:
-                    continue
-                tool_call_buffers[call_id] = {
-                    "id": item.get("id") or "fc_0",
-                    "name": item.get("name"),
-                    "arguments": item.get("arguments") or "",
-                }
+            start_responses_tool_call(tool_call_buffers, item)
         elif event_type == "response.output_text.delta":
             delta = event.get("delta") or ""
             content += delta
             await emit_progress(on_progress, delta)
         elif event_type == "response.function_call_arguments.delta":
-            call_id = event.get("call_id")
-            if call_id and call_id in tool_call_buffers:
-                tool_call_buffers[call_id]["arguments"] += event.get("delta") or ""
+            append_responses_tool_call_arguments(
+                tool_call_buffers, event.get("call_id"), event.get("delta")
+            )
         elif event_type == "response.function_call_arguments.done":
-            call_id = event.get("call_id")
-            if call_id and call_id in tool_call_buffers:
-                tool_call_buffers[call_id]["arguments"] = event.get("arguments") or ""
+            replace_responses_tool_call_arguments(
+                tool_call_buffers, event.get("call_id"), event.get("arguments")
+            )
         elif event_type == "response.output_item.done":
             item = event.get("item") or {}
-            if item.get("type") == "function_call":
-                call_id = item.get("call_id")
-                if not call_id:
-                    continue
-                buf = tool_call_buffers.get(call_id) or {}
-                args_raw = buf.get("arguments") or item.get("arguments") or "{}"
-                try:
-                    args = json.loads(args_raw)
-                except Exception:
-                    args = {"raw": args_raw}
-                tool_calls.append(
-                    ToolCallRequest(
-                        id=f"{call_id}|{buf.get('id') or item.get('id') or 'fc_0'}",
-                        name=str(buf.get("name") or item.get("name") or "unknown_tool"),
-                        arguments=args,
-                    )
-                )
+            tool_call = build_responses_tool_call_request(item, tool_call_buffers)
+            if tool_call is not None:
+                tool_calls.append(tool_call)
         elif event_type == "response.completed":
             status = (event.get("response") or {}).get("status")
             finish_reason = _map_finish_reason(status)
