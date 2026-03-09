@@ -271,7 +271,6 @@ class ChannelManager:
         internal traces never leak to external chat channels.
         """
         logger.debug("Outbound dispatcher started")
-        defaults = self.config.agents.defaults
         while True:
             try:
                 msg = await asyncio.wait_for(self.bus.consume_outbound(), timeout=1.0)
