@@ -273,14 +273,12 @@ class ChannelManager:
         logger.debug("Outbound dispatcher started")
         while True:
             try:
-                msg = await asyncio.wait_for(self.bus.consume_outbound(), timeout=1.0)
+                msg = await self.bus.consume_outbound()
                 try:
                     await self.send_outbound(msg)
                 except Exception as e:
                     logger.error("❌ 发送失败 / send failed: {}: {}", msg.channel, e)
                     self._report_channel_error("send_failed", msg.channel, e)
-            except asyncio.TimeoutError:
-                continue
             except asyncio.CancelledError:
                 break
 
