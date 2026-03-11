@@ -45,6 +45,7 @@ def _build_wrapper(
     content: str = "收到，杰哥。",
     *,
     dark: bool = True,
+    status: str = "done",
     entrance_pending: bool = False,
     show_date_divider: bool = False,
     date_divider_text: str = "",
@@ -139,7 +140,7 @@ Item {{
         role: "{role}"
         content: "{content}"
         format: "plain"
-        status: "done"
+        status: "{status}"
         entranceStyle: "{entrance_style}"
         entrancePending: {str(entrance_pending).lower()}
         showDateDivider: {str(show_date_divider).lower()}
@@ -402,6 +403,98 @@ def test_light_greeting_uses_flat_bubble_and_compact_height(qapp):
         assert bool(gradient.property("visible")) is False
         assert bool(sweep.property("visible")) is False
         assert float(bubble.property("height")) <= 44.0
+    finally:
+        root.deleteLater()
+        _process(0)
+
+
+def test_typing_indicator_morphs_into_content_in_same_bubble(qapp):
+    engine = QQmlEngine()
+    component = QQmlComponent(engine)
+    component.setData(
+        _build_wrapper(
+            "assistant",
+            "assistantReceived",
+            "",
+            status="typing",
+        ).encode("utf-8"),
+        QUrl("inline:MessageBubbleTypingMorphHarness.qml"),
+    )
+
+    _wait_until_ready(component)
+
+    assert component.status() == QQmlComponent.Ready, component.errors()
+    root = component.create()
+    assert root is not None, component.errors()
+
+    try:
+        bubble = root.findChild(QObject, "bubble")
+        typing = root.findChild(QObject, "typingIndicator")
+        content = root.findChild(QObject, "contentText")
+
+        assert bubble is not None
+        assert typing is not None
+        assert content is not None
+        assert float(typing.property("opacity")) > 0.98
+        assert float(content.property("opacity")) < 0.02
+
+        bubble.setProperty("content", "Bao 在这。")
+        bubble.setProperty("status", "done")
+
+        _process(40)
+
+        assert 0.0 < float(typing.property("opacity")) < 1.0
+        assert 0.0 < float(content.property("opacity")) < 1.0
+        assert float(content.property("scale")) < 1.0
+
+        _process(320)
+
+        assert float(typing.property("opacity")) < 0.02
+        assert float(content.property("opacity")) > 0.98
+        assert abs(float(content.property("scale")) - 1.0) < 0.01
+    finally:
+        root.deleteLater()
+        _process(0)
+
+
+def test_pending_surface_settles_when_user_message_finishes(qapp):
+    engine = QQmlEngine()
+    component = QQmlComponent(engine)
+    component.setData(
+        _build_wrapper(
+            "user",
+            "userSent",
+            "我已经发出去了。",
+            status="pending",
+        ).encode("utf-8"),
+        QUrl("inline:MessageBubblePendingFinalizeHarness.qml"),
+    )
+
+    _wait_until_ready(component)
+
+    assert component.status() == QQmlComponent.Ready, component.errors()
+    root = component.create()
+    assert root is not None, component.errors()
+
+    try:
+        bubble = root.findChild(QObject, "bubble")
+        overlay = root.findChild(QObject, "pendingOverlay")
+
+        assert bubble is not None
+        assert overlay is not None
+        assert float(overlay.property("opacity")) > 0.98
+        assert float(overlay.property("scale")) > 1.0
+
+        bubble.setProperty("status", "done")
+        _process(60)
+
+        assert 0.0 < float(overlay.property("opacity")) < 1.0
+        assert 1.0 < float(overlay.property("scale")) < 1.017
+
+        _process(360)
+
+        assert float(overlay.property("opacity")) < 0.02
+        assert abs(float(overlay.property("scale")) - 1.0) < 0.01
     finally:
         root.deleteLater()
         _process(0)

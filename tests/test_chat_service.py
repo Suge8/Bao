@@ -8,7 +8,7 @@ import importlib
 import sys
 from collections.abc import Coroutine
 from typing import Any, TypeVar, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from bao.gateway.builder import DesktopStartupMessage
 from bao.session.manager import SessionChangeEvent
@@ -90,6 +90,98 @@ def test_initial_state():
     svc, _ = make_service()
     assert svc.state == "idle"
     assert svc.lastError == ""
+    assert svc.viewPhase == "idle"
+
+
+def test_view_phase_uses_loading_for_starting_and_history_windows() -> None:
+    svc, _ = make_service()
+
+    svc._set_state("starting")
+    assert svc.viewPhase == "loading"
+
+    svc._set_state("running")
+    assert svc.viewPhase == "loading"
+
+    svc._set_history_loading(True)
+    assert svc.viewPhase == "loading"
+
+
+def test_view_phase_becomes_ready_when_active_session_ready() -> None:
+    svc, _ = make_service()
+
+    svc._set_state("running")
+    svc._set_active_session_state(True, False)
+
+    assert svc.viewPhase == "ready"
+
+
+def test_view_phase_prefers_error() -> None:
+    svc, _ = make_service()
+
+    svc._set_state("running")
+    svc._set_active_session_state(True, True)
+    svc._set_state("error")
+
+    assert svc.viewPhase == "error"
+
+
+def test_call_agent_pre_saves_user_message_and_passes_metadata() -> None:
+    from types import SimpleNamespace
+
+    svc, _model = make_service()
+    session = MagicMock()
+    sm = MagicMock()
+    sm.get_or_create.return_value = session
+    svc._session_manager = sm
+
+    captured: dict[str, Any] = {}
+
+    async def _process_direct(text: str, **kwargs: Any) -> str:
+        captured["text"] = text
+        captured.update(kwargs)
+        return "ok"
+
+    svc._agent = SimpleNamespace(process_direct=_process_direct)
+
+    result = asyncio.run(svc._call_agent("hello", "desktop:local::s1"))
+
+    assert result == "ok"
+    session.add_message.assert_called_once()
+    add_args = session.add_message.call_args
+    assert add_args.args == ("user", "hello")
+    assert add_args.kwargs["status"] == "pending"
+    assert add_args.kwargs["_pre_saved"] is True
+    token = add_args.kwargs["_pre_saved_token"]
+    assert isinstance(token, str) and token
+    sm.save.assert_called_once_with(session, emit_change=False)
+    assert captured["text"] == "hello"
+    assert captured["session_key"] == "desktop:local::s1"
+    assert captured["channel"] == "desktop"
+    assert captured["chat_id"] == "local"
+    assert captured["metadata"] == {"_pre_saved": True, "_pre_saved_token": token}
+
+
+def test_call_agent_falls_back_when_presave_fails() -> None:
+    from types import SimpleNamespace
+
+    svc, _model = make_service()
+    sm = MagicMock()
+    sm.get_or_create.side_effect = RuntimeError("boom")
+    svc._session_manager = sm
+
+    captured: dict[str, Any] = {}
+
+    async def _process_direct(text: str, **kwargs: Any) -> str:
+        captured["text"] = text
+        captured.update(kwargs)
+        return "ok"
+
+    svc._agent = SimpleNamespace(process_direct=_process_direct)
+
+    result = asyncio.run(svc._call_agent("hello", "desktop:local::s1"))
+
+    assert result == "ok"
+    assert captured["metadata"] == {}
 
 
 @pytest.mark.smoke
@@ -99,6 +191,7 @@ def test_send_message_appends_user_row():
     assert model.rowCount() == 1
     assert model._messages[0]["role"] == "user"
     assert model._messages[0]["content"] == "hello"
+    assert model._messages[0]["status"] == "pending"
 
 
 def test_send_empty_message_ignored():
@@ -133,8 +226,24 @@ def test_send_message_marks_session_running_when_queue_starts() -> None:
     svc.sendMessage("test")
 
     assert model.rowCount() == 2
+    assert model._messages[0]["status"] == "pending"
     assert sm.set_session_running.call_args_list[0].args == ("desktop:local::s1", True)
     assert sm.set_session_running.call_args_list[0].kwargs == {"emit_change": True}
+
+
+def test_send_message_while_starting_keeps_single_pending_user_path() -> None:
+    svc, model = make_service()
+    svc._state = "starting"
+    svc._set_history_loading(True)
+    emitted: list[int] = []
+    svc.messageAppended.connect(emitted.append)
+
+    svc.sendMessage("hello")
+
+    assert model.rowCount() == 1
+    assert emitted == [0]
+    assert model._messages[0]["role"] == "user"
+    assert model._messages[0]["status"] == "pending"
 
 
 def test_on_send_done_emits_cancelled_result() -> None:
@@ -147,6 +256,60 @@ def test_on_send_done_emits_cancelled_result() -> None:
     svc._on_send_done(future, 3)
 
     assert results == [(3, False, "Cancelled.")]
+
+
+def test_handle_send_result_marks_active_user_done_and_persists_status() -> None:
+    svc, model = make_service()
+    session = MagicMock()
+    session.messages = [
+        {"role": "user", "content": "hello", "_pre_saved_token": "tok", "status": "pending"}
+    ]
+    sm = MagicMock()
+    sm.get_or_create.return_value = session
+    svc._session_manager = sm
+    svc._committed_session_key = "desktop:local::s1"
+    user_row = model.append_user("hello", status="pending", client_token="tok")
+    typing_row = model.append_assistant("", status="typing")
+    svc._active_user = type(svc._active_user)(
+        row=user_row,
+        session_key="desktop:local::s1",
+        token="tok",
+    )
+    svc._active_streaming_row = typing_row
+    svc._active_streaming_session_key = "desktop:local::s1"
+
+    svc._handle_send_result(typing_row, True, "final")
+
+    assert model._messages[user_row]["status"] == "done"
+    assert session.messages[0]["status"] == "done"
+    sm.save.assert_called_with(session, emit_change=False)
+
+
+def test_handle_send_result_marks_active_user_error_and_persists_status() -> None:
+    svc, model = make_service()
+    session = MagicMock()
+    session.messages = [
+        {"role": "user", "content": "hello", "_pre_saved_token": "tok", "status": "pending"}
+    ]
+    sm = MagicMock()
+    sm.get_or_create.return_value = session
+    svc._session_manager = sm
+    svc._committed_session_key = "desktop:local::s1"
+    user_row = model.append_user("hello", status="pending", client_token="tok")
+    typing_row = model.append_assistant("", status="typing")
+    svc._active_user = type(svc._active_user)(
+        row=user_row,
+        session_key="desktop:local::s1",
+        token="tok",
+    )
+    svc._active_streaming_row = typing_row
+    svc._active_streaming_session_key = "desktop:local::s1"
+
+    svc._handle_send_result(typing_row, False, "Error: boom")
+
+    assert model._messages[user_row]["status"] == "error"
+    assert session.messages[0]["status"] == "error"
+    sm.save.assert_called_with(session, emit_change=False)
 
 
 def test_stop_from_idle_is_noop():
@@ -483,7 +646,14 @@ def test_transient_assistant_marks_seen_when_shown_in_active_session() -> None:
 
     assert model.rowCount() == 1
     assert model._messages[0]["role"] == "assistant"
-    sm.update_metadata_only.assert_called_once()
+    sm.mark_desktop_seen_ai.assert_called_once_with(
+        key,
+        emit_change=False,
+        metadata_updates=None,
+        clear_running=False,
+    )
+    sm.set_session_running.assert_not_called()
+    sm.update_metadata_only.assert_not_called()
 
 
 def test_desktop_startup_greeting_queued_until_startup_session_ready() -> None:
@@ -847,12 +1017,20 @@ def test_send_result_marks_seen_for_active_session():
     svc._handle_send_result(row, True, "ok")
 
     assert svc._active_send_future is None
-    sm.update_metadata_only.assert_called_once()
-    assert sm.update_metadata_only.call_args.args[0] == "desktop:active"
-    payload = sm.update_metadata_only.call_args.args[1]
-    assert payload["session_running"] is False
-    assert isinstance(payload.get("desktop_last_seen_ai_at"), str)
-    assert sm.update_metadata_only.call_args.kwargs == {"emit_change": True}
+    sm.mark_desktop_seen_ai.assert_called_once_with(
+        "desktop:active",
+        emit_change=True,
+        metadata_updates=None,
+        clear_running=True,
+    )
+    assert sm.method_calls[-1] == call.mark_desktop_seen_ai(
+        "desktop:active",
+        emit_change=True,
+        metadata_updates=None,
+        clear_running=True,
+    )
+    sm.set_session_running.assert_not_called()
+    sm.update_metadata_only.assert_not_called()
 
 
 def test_handle_session_deleted_keeps_streaming_key_for_cancel_cleanup() -> None:
@@ -1062,8 +1240,13 @@ def test_set_session_key_same_key_still_loads_when_history_not_initialized():
 
     assert called == ["desktop:local"]
     assert svc._current_nav_id == 1
-    sm.update_metadata_only.assert_called_once()
-    assert sm.update_metadata_only.call_args.kwargs == {"emit_change": False}
+    sm.mark_desktop_seen_ai.assert_called_once_with(
+        "desktop:local",
+        emit_change=False,
+        metadata_updates=None,
+        clear_running=False,
+    )
+    sm.update_metadata_only.assert_not_called()
 
 
 def test_set_session_key_same_key_ignored_when_history_inflight():
@@ -1099,8 +1282,13 @@ def test_set_session_key_marks_seen_before_history_reload_for_new_session():
     svc.setSessionKey("desktop:new")
 
     assert called == ["desktop:new"]
-    sm.update_metadata_only.assert_called_once()
-    assert sm.update_metadata_only.call_args.kwargs == {"emit_change": False}
+    sm.mark_desktop_seen_ai.assert_called_once_with(
+        "desktop:new",
+        emit_change=False,
+        metadata_updates=None,
+        clear_running=False,
+    )
+    sm.update_metadata_only.assert_not_called()
 
 
 def test_set_session_key_empty_clears_visible_history_without_reloading():
@@ -1194,6 +1382,51 @@ def test_set_session_key_same_session_does_not_emit_session_view_applied():
     svc.setSessionKey("desktop:local")
 
     assert applied == []
+
+
+def test_set_session_key_same_session_cold_open_emits_session_viewport_ready():
+    from app.backend.chat import ChatMessageModel
+    from app.backend.gateway import _HistorySnapshot
+
+    svc, _model = make_service()
+    key = "desktop:local"
+    prepared = ChatMessageModel.prepare_history(
+        [{"role": "assistant", "content": "cached", "timestamp": "t"}]
+    )
+    svc._session_manager = object()
+    svc._session_key = key
+    svc._desired_session_key = key
+    svc._committed_session_key = key
+    svc._history_initialized = False
+    svc._history_cache[key] = _HistorySnapshot((len(prepared), "cached"), prepared, True)
+    svc._request_history_load = lambda *_args, **_kwargs: None
+
+    ready: list[str] = []
+    svc.sessionViewportReady.connect(ready.append)
+
+    svc.setSessionKey(key)
+
+    assert ready == [key]
+
+
+def test_handle_history_result_emits_session_viewport_ready_after_apply():
+    svc, _model = make_service()
+    key = "desktop:local"
+    svc._session_key = key
+    svc._desired_session_key = key
+    svc._committed_session_key = key
+    svc._current_nav_id = 1
+
+    ready: list[str] = []
+    svc.sessionViewportReady.connect(ready.append)
+
+    svc._handle_history_result(
+        True,
+        "",
+        (key, 1, (1, "sig"), [{"role": "assistant", "content": "hello", "timestamp": "t"}], True),
+    )
+
+    assert ready == [key]
 
 
 def test_set_session_key_uses_manager_tail_snapshot_before_async_reload():

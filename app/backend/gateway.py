@@ -15,6 +15,7 @@ import copy
 import os
 import queue
 import threading
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -22,8 +23,9 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
-from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
+from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 
+from app.backend.attachment import AttachmentDraftModel
 from app.backend.asyncio_runner import AsyncioRunner
 from app.backend.chat import ChatMessageModel
 from bao.gateway.builder import DesktopStartupMessage
@@ -97,6 +99,23 @@ class _HistorySnapshot:
     has_messages: bool
 
 
+@dataclass(frozen=True)
+class _ActiveUserMessage:
+    row: int = -1
+    session_key: str = ""
+    token: str = ""
+
+
+@dataclass(frozen=True)
+class _QueuedSendRequest:
+    session_key: str
+    raw_text: str
+    display_text: str
+    media_paths: list[str]
+    row: int
+    client_token: str
+
+
 class ChatService(QObject):
     stateChanged = Signal(str)
     errorChanged = Signal(str)
@@ -108,7 +127,10 @@ class ChatService(QObject):
     gatewayReady = Signal(object, list)  # session_manager, enabled_channels
     historyLoadingChanged = Signal(bool)
     activeSessionStateChanged = Signal()
+    viewPhaseChanged = Signal(str)
     sessionViewApplied = Signal(str)
+    sessionViewportReady = Signal(str)
+    draftAttachmentCountChanged = Signal()
 
     # Internal signals: asyncio thread → Qt main thread marshaling
     _initResult = Signal(int, bool, str, object, list)
@@ -154,7 +176,7 @@ class ChatService(QObject):
         self._active_session_read_only = False
         self._current_nav_id = 0
         self._history_future: Any = None
-        self._send_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+        self._send_queue: queue.Queue[_QueuedSendRequest] = queue.Queue()
         self._processing = False
         self._lang = "en"
         self._lock = threading.Lock()
@@ -164,10 +186,14 @@ class ChatService(QObject):
         self._pending_notifications: list[_QueuedUiMessage] = []
         self._active_streaming_row: int = -1
         self._active_streaming_session_key: str | None = None
+        self._active_user = _ActiveUserMessage()
         self._active_send_future: Any = None
         self._active_has_content = False
         self._pending_split = False
         self._lifecycle_request_id = 0
+        self._draft_attachments = AttachmentDraftModel(self)
+
+        self._draft_attachments.countChanged.connect(self.draftAttachmentCountChanged)
 
         self._initResult.connect(self._handle_init_result)
         self._sendResult.connect(self._handle_send_result)
@@ -218,6 +244,18 @@ class ChatService(QObject):
     @Property(bool, notify=activeSessionStateChanged)
     def activeSessionHasMessages(self) -> bool:
         return self._active_session_has_messages
+
+    @Property(str, notify=viewPhaseChanged)
+    def viewPhase(self) -> str:
+        return self._compute_view_phase()
+
+    @Property(QObject, constant=True)
+    def draftAttachments(self) -> AttachmentDraftModel:
+        return self._draft_attachments
+
+    @Property(int, notify=draftAttachmentCountChanged)
+    def draftAttachmentCount(self) -> int:
+        return self._draft_attachments.count
 
     # ------------------------------------------------------------------
     # Public slots
@@ -307,13 +345,43 @@ class ChatService(QObject):
 
     @Slot(str)
     def sendMessage(self, text: str) -> None:
-        if not text.strip():
-            return
         if self._active_session_read_only:
             return
-        row = self._model.append_user(text)
+        raw_text = text.strip()
+        media_paths = self._draft_attachments.snapshot_paths()
+        if not raw_text and not media_paths:
+            return
+        client_token = uuid.uuid4().hex
+        display_text = self._compose_user_display_text(
+            raw_text, self._draft_attachments.snapshot_names()
+        )
+        row = self._model.append_user(display_text, status="pending", client_token=client_token)
+        self._draft_attachments.clear()
         self.messageAppended.emit(row)
-        self._enqueue(text)
+        self._enqueue(
+            _QueuedSendRequest(
+                session_key=self._session_key,
+                raw_text=raw_text,
+                display_text=display_text,
+                media_paths=media_paths,
+                row=row,
+                client_token=client_token,
+            )
+        )
+
+    @Slot("QVariant")
+    def addDraftAttachments(self, values: Any) -> None:
+        paths = self._coerce_local_paths(values)
+        if paths:
+            self._draft_attachments.add_local_paths(paths)
+
+    @Slot(int)
+    def removeDraftAttachment(self, index: int) -> None:
+        self._draft_attachments.remove_at(index)
+
+    @Slot()
+    def clearDraftAttachments(self) -> None:
+        self._draft_attachments.clear()
 
     @Slot(str)
     def setSessionKey(self, key: str) -> None:
@@ -468,6 +536,7 @@ class ChatService(QObject):
                 self._cache_history_snapshot(key, fingerprint, [], False)
                 self._model.clear()
                 self._set_history_loading(False)
+                self._emit_session_viewport_ready(key)
                 self._emit_session_view_applied(key, switched_session=switched_session)
                 self._request_history_load(key, nav_id, show_loading=False)
                 return
@@ -484,11 +553,13 @@ class ChatService(QObject):
             self._set_active_session_state(True, has_messages)
             self._cache_history_snapshot(key, fingerprint, prepared_messages, has_messages)
             self._model.load_prepared([dict(msg) for msg in prepared_messages])
+            self._emit_session_viewport_ready(key)
         else:
             self._history_initialized = True
             self._history_fingerprint = cached_snapshot.fingerprint
             self._set_active_session_state(True, cached_snapshot.has_messages)
             self._model.load_prepared([dict(msg) for msg in cached_snapshot.prepared_messages])
+            self._emit_session_viewport_ready(key)
 
         self._emit_session_view_applied(key, switched_session=switched_session)
 
@@ -651,6 +722,7 @@ class ChatService(QObject):
         self._set_history_loading(False)
         if loaded_key == self._startup_target_key:
             self._drain_startup_pending()
+        self._emit_session_viewport_ready(loaded_key)
 
     @staticmethod
     def _history_signature(messages: list[dict[str, Any]]) -> tuple[int, str]:
@@ -668,10 +740,30 @@ class ChatService(QObject):
         self._active_session_has_messages = has_messages
         self.activeSessionStateChanged.emit()
 
+        self.viewPhaseChanged.emit(self._compute_view_phase())
+
     def _emit_session_view_applied(self, key: str, *, switched_session: bool) -> None:
         if not switched_session:
             return
         self.sessionViewApplied.emit(key)
+
+    def _compute_view_phase(self) -> str:
+        if self._state == "error":
+            return "error"
+        if self._history_loading:
+            return "loading"
+        if self._state == "starting":
+            return "loading"
+        if self._active_session_ready:
+            return "ready"
+        if self._state in ("idle", "stopped"):
+            return "idle"
+        return "loading"
+
+    def _emit_session_viewport_ready(self, key: str) -> None:
+        if not key:
+            return
+        self.sessionViewportReady.emit(key)
 
     def _cache_history_snapshot(
         self,
@@ -819,8 +911,8 @@ class ChatService(QObject):
     # Internal: message queue (serial)
     # ------------------------------------------------------------------
 
-    def _enqueue(self, text: str) -> None:
-        self._send_queue.put((self._session_key, text))
+    def _enqueue(self, request: _QueuedSendRequest) -> None:
+        self._send_queue.put(request)
         if self._state == "running":
             self._drain_queue()
 
@@ -829,20 +921,33 @@ class ChatService(QObject):
             if self._processing:
                 return
             try:
-                session_key, text = self._send_queue.get_nowait()
+                request = self._send_queue.get_nowait()
             except queue.Empty:
                 return
             self._processing = True
 
-        self._set_session_running(session_key, True)
+        self._active_user = _ActiveUserMessage(
+            row=request.row,
+            session_key=request.session_key,
+            token=request.client_token,
+        )
+        self._set_session_running(request.session_key, True)
 
         assistant_row = self._append_typing_row()
         self._active_streaming_row = assistant_row
-        self._active_streaming_session_key = session_key
+        self._active_streaming_session_key = request.session_key
         self._active_has_content = False
         self._pending_split = False
 
-        fut = self._runner.submit(self._call_agent(text, session_key))
+        fut = self._runner.submit(
+            self._call_agent(
+                request.raw_text,
+                request.session_key,
+                client_token=request.client_token,
+                display_text=request.display_text,
+                media_paths=request.media_paths,
+            )
+        )
         self._active_send_future = fut
         fut.add_done_callback(lambda f: self._on_send_done(f, assistant_row))
 
@@ -905,6 +1010,7 @@ class ChatService(QObject):
             and completed_session_key
             and completed_session_key == self._committed_session_key
         )
+        self._finalize_active_user_message(ok=ok and not is_provider_error)
         if completed_session_key and not should_mark_seen:
             self._set_session_running(completed_session_key, False)
         completed_key = completed_session_key if isinstance(completed_session_key, str) else ""
@@ -924,13 +1030,26 @@ class ChatService(QObject):
         for message in pending:
             self._show_ui_message(message)
 
-    async def _call_agent(self, text: str, session_key: str) -> str:
+    async def _call_agent(
+        self,
+        text: str,
+        session_key: str,
+        *,
+        client_token: str = "",
+        display_text: str | None = None,
+        media_paths: list[str] | None = None,
+    ) -> str:
         if self._agent is None:
             raise RuntimeError("Agent not initialized")
 
         from bao.agent.protocol import StreamEventType
         from bao.providers.retry import PROGRESS_RESET
 
+        metadata = await self._prepare_user_message_metadata(
+            session_key,
+            display_text if isinstance(display_text, str) else text,
+            client_token=client_token,
+        )
         accumulated = ""
 
         async def _on_progress(delta: str) -> None:
@@ -953,10 +1072,174 @@ class ChatService(QObject):
             session_key=session_key,
             channel="desktop",
             chat_id="local",
+            media=media_paths or None,
             on_progress=_on_progress,
             on_event=_on_event,
+            metadata=metadata,
         )
         return result
+
+    def _compose_user_display_text(self, text: str, attachment_names: list[str]) -> str:
+        if not attachment_names:
+            return text
+        label = "附件" if self._lang == "zh" else "Attachments"
+        summary = self._summarize_attachment_names(attachment_names)
+        attachment_line = f"[{label}] {summary}"
+        if text:
+            return f"{text}\n\n{attachment_line}"
+        return attachment_line
+
+    @staticmethod
+    def _summarize_attachment_names(names: list[str]) -> str:
+        cleaned = [name.strip() for name in names if isinstance(name, str) and name.strip()]
+        if not cleaned:
+            return ""
+        preview = cleaned[:3]
+        if len(cleaned) <= 3:
+            return ", ".join(preview)
+        return f"{', '.join(preview)} +{len(cleaned) - 3}"
+
+    @staticmethod
+    def _coerce_local_paths(values: Any) -> list[str]:
+        if values is None:
+            return []
+        raw_items = values if isinstance(values, list) else [values]
+        paths: list[str] = []
+        seen: set[str] = set()
+        for raw in raw_items:
+            path = ChatService._coerce_local_path(raw)
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            paths.append(path)
+        return paths
+
+    @staticmethod
+    def _coerce_local_path(value: Any) -> str | None:
+        to_local_file = getattr(value, "toLocalFile", None)
+        if callable(to_local_file):
+            local = to_local_file()
+            return local or None
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            if raw.startswith("file://"):
+                local = QUrl(raw).toLocalFile()
+                return local or None
+            return raw
+        return None
+
+    @staticmethod
+    def _persist_user_message_with_manager(
+        session_manager: Any,
+        session_key: str,
+        content: str,
+        pre_saved_token: str,
+    ) -> None:
+        session = session_manager.get_or_create(session_key)
+        session.add_message(
+            "user",
+            content,
+            status="pending",
+            _pre_saved=True,
+            _pre_saved_token=pre_saved_token,
+        )
+        session_manager.save(session, emit_change=False)
+
+    @staticmethod
+    def _persist_user_message_status_with_manager(
+        session_manager: Any,
+        session_key: str,
+        pre_saved_token: str,
+        status: str,
+    ) -> None:
+        session = session_manager.get_or_create(session_key)
+        for message in reversed(session.messages):
+            if message.get("role") != "user":
+                continue
+            if message.get("_pre_saved_token") != pre_saved_token:
+                continue
+            message["status"] = status
+            session.updated_at = datetime.now()
+            session_manager.save(session, emit_change=False)
+            return
+
+    async def _prepare_user_message_metadata(
+        self, session_key: str, text: str, *, client_token: str = ""
+    ) -> dict[str, Any]:
+        session_manager = self._session_manager
+        if session_manager is None or not session_key or not text.strip():
+            return {}
+
+        pre_saved_token = client_token or uuid.uuid4().hex
+        try:
+            await self._run_bg_io(
+                self._persist_user_message_with_manager,
+                session_manager,
+                session_key,
+                text,
+                pre_saved_token,
+            )
+        except Exception as exc:
+            logger.warning("Failed to pre-save desktop user message: {}", exc)
+            return {}
+
+        return {
+            "_pre_saved": True,
+            "_pre_saved_token": pre_saved_token,
+        }
+
+    def _finalize_active_user_message(self, *, ok: bool) -> None:
+        active_user = self._active_user
+        user_row = active_user.row
+        session_key = active_user.session_key
+        client_token = active_user.token
+        final_status = "done" if ok else "error"
+
+        if session_key and session_key == self._committed_session_key and user_row >= 0:
+            self._model.set_status(user_row, final_status)
+
+        self._active_user = _ActiveUserMessage()
+
+        if not session_key or not client_token:
+            return
+
+        session_manager = self._session_manager
+        if session_manager is None:
+            return
+
+        try:
+            if isinstance(self._runner, AsyncioRunner):
+                future = self._runner.submit(
+                    self._run_bg_io(
+                        self._persist_user_message_status_with_manager,
+                        session_manager,
+                        session_key,
+                        client_token,
+                        final_status,
+                    )
+                )
+                future.add_done_callback(self._on_finalize_user_message_done)
+                return
+        except RuntimeError:
+            pass
+
+        try:
+            self._persist_user_message_status_with_manager(
+                session_manager,
+                session_key,
+                client_token,
+                final_status,
+            )
+        except Exception as exc:
+            logger.warning("Failed to finalize desktop user message status: {}", exc)
+
+    def _on_finalize_user_message_done(self, future: Any) -> None:
+        try:
+            future.result()
+        except Exception as exc:
+            logger.warning("Failed to finalize desktop user message status: {}", exc)
 
     def _handle_progress_update(self, row: int, content: str) -> None:
         """Runs on Qt main thread. Routes streaming content to active bubble."""
@@ -1400,6 +1683,7 @@ class ChatService(QObject):
         if self._state != state:
             self._state = state
             self.stateChanged.emit(state)
+            self.viewPhaseChanged.emit(self._compute_view_phase())
             self._refresh_gateway_channels()
 
     def _cancel_history_future(self) -> None:
@@ -1434,6 +1718,7 @@ class ChatService(QObject):
                     self._model.rowCount(),
                 )
             self.historyLoadingChanged.emit(loading)
+            self.viewPhaseChanged.emit(self._compute_view_phase())
 
     def _set_error(self, msg: str) -> None:
         msg = msg.strip()
@@ -1500,36 +1785,20 @@ class ChatService(QObject):
         except Exception as exc:
             logger.debug("Skip metadata update {}: {}", key, exc)
 
-    def _set_session_running(self, key: str, is_running: bool) -> None:
+    def _set_session_running(self, key: str, is_running: bool, *, emit_change: bool = True) -> None:
         if not key or self._session_manager is None:
             return
 
         session_manager = self._session_manager
         update_fn = getattr(session_manager, "set_session_running", None)
         if not callable(update_fn):
-            self._update_session_metadata(
-                key,
-                {"session_running": bool(is_running)},
-                emit_change=True,
-            )
             return
 
-        if isinstance(self._runner, AsyncioRunner):
-            try:
-                future = self._runner.submit(
-                    self._run_bg_io(lambda: update_fn(key, bool(is_running), emit_change=True))
-                )
-                future.add_done_callback(self._on_metadata_update_done)
-                return
-            except RuntimeError:
-                pass
-            except Exception as exc:
-                logger.debug("Skip session running update {}: {}", key, exc)
-
-        try:
-            update_fn(key, bool(is_running), emit_change=True)
-        except Exception as exc:
-            logger.debug("Skip session running update {}: {}", key, exc)
+        self._run_session_manager_op(
+            lambda: update_fn(key, bool(is_running), emit_change=emit_change),
+            debug_action="session running update",
+            key=key,
+        )
 
     def _build_gateway_channels_projection(self) -> list[dict[str, Any]]:
         base_channels = self._enabled_gateway_channels or self._configured_gateway_channels
@@ -1558,10 +1827,57 @@ class ChatService(QObject):
         emit_change: bool = False,
         extra_updates: dict[str, Any] | None = None,
     ) -> None:
-        payload: dict[str, Any] = {"desktop_last_seen_ai_at": datetime.now().isoformat()}
+        if not key or self._session_manager is None:
+            return
+        metadata_updates: dict[str, Any] = {}
+        clear_running = False
         if isinstance(extra_updates, dict):
-            payload.update(extra_updates)
-        self._update_session_metadata(key, payload, emit_change=emit_change)
+            for field, value in extra_updates.items():
+                if field == "session_running":
+                    clear_running = clear_running or value is False
+                    continue
+                metadata_updates[field] = value
+
+        session_manager = self._session_manager
+        mark_seen_fn = getattr(session_manager, "mark_desktop_seen_ai", None)
+
+        def _apply_seen_update() -> None:
+            if not callable(mark_seen_fn):
+                return
+            mark_seen_fn(
+                key,
+                emit_change=emit_change,
+                metadata_updates=metadata_updates or None,
+                clear_running=clear_running,
+            )
+
+        self._run_session_manager_op(
+            _apply_seen_update,
+            debug_action="desktop seen update",
+            key=key,
+        )
+
+    def _run_session_manager_op(
+        self,
+        op: Any,
+        *,
+        debug_action: str,
+        key: str,
+    ) -> None:
+        if isinstance(self._runner, AsyncioRunner):
+            try:
+                future = self._runner.submit(self._run_bg_io(op))
+                future.add_done_callback(self._on_metadata_update_done)
+                return
+            except RuntimeError:
+                pass
+            except Exception as exc:
+                logger.debug("Skip {} {}: {}", debug_action, key, exc)
+
+        try:
+            op()
+        except Exception as exc:
+            logger.debug("Skip {} {}: {}", debug_action, key, exc)
 
     @staticmethod
     def _on_metadata_update_done(future: Any) -> None:

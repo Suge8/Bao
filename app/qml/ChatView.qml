@@ -30,7 +30,7 @@ Rectangle {
         anchors.fill: parent
         anchors.leftMargin: root.chatSideInset
         anchors.rightMargin: root.chatSideInset
-        anchors.bottomMargin: composerBar.listBottomInset
+        anchors.bottomMargin: composerBar.presentedListBottomInset
         clip: true
         spacing: spacingLg
         topMargin: root.chatTopSafeInset + root.chatTopContentGap
@@ -48,16 +48,34 @@ Rectangle {
 
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-        // ── Smart follow / anti-flicker state ──────────────────────
+        Component.onCompleted: scheduleSessionViewportReady()
+
+        // ── Bottom-pinned follow state ──────────────────────────────
         property bool historyLoading: chatService ? chatService.historyLoading : false
         readonly property string activeSessionKey: sessionService ? sessionService.activeKey : ""
         property string renderedSessionKey: activeSessionKey
+        readonly property string viewPhase: {
+            if (!chatService) return "idle"
+            var phase = chatService.viewPhase
+            if (phase !== undefined && phase !== null && phase !== "") return phase
+            if (chatService.state === "error") return "error"
+            if (chatService.historyLoading || chatService.state === "starting") return "loading"
+            if (chatService.activeSessionReady) return "ready"
+            return "idle"
+        }
         readonly property bool sessionReady: chatService ? chatService.activeSessionReady : false
         readonly property bool sessionHasMessages: chatService ? chatService.activeSessionHasMessages : false
         readonly property real keyboardLineStep: Math.max(48, Math.round(height * 0.08))
         readonly property real keyboardPageStep: Math.max(keyboardLineStep, Math.round(height * 0.9))
+        readonly property real nearEndThresholdPx: Math.max(24, keyboardLineStep)
+        readonly property real animateReconcileThresholdPx: Math.max(height * 0.75, 240)
         property real pendingRestoreContentY: -1
-        property bool pendingRestoreAtEnd: false
+        property bool pendingRestorePinned: false
+        property bool bottomPinned: true
+        property int suppressViewportTracking: 0
+        property bool reconcileQueued: false
+        property bool queuedReconcileAnimated: true
+        property bool programmaticFollowActive: false
 
         function positionAfterLayout() {
             if (count <= 0) return
@@ -73,28 +91,192 @@ Rectangle {
             return originY
         }
 
+        function clampContentY(value) {
+            return Math.max(minContentY(), Math.min(maxContentY(), value))
+        }
+
         function isNearEnd() {
-            return maxContentY() - contentY <= Math.max(24, keyboardLineStep)
+            return maxContentY() - contentY <= nearEndThresholdPx
+        }
+
+        function withSuppressedViewportTracking(fn) {
+            suppressViewportTracking += 1
+            try {
+                fn()
+            } finally {
+                suppressViewportTracking = Math.max(0, suppressViewportTracking - 1)
+            }
+        }
+
+        function refreshPinnedFromViewport() {
+            if (suppressViewportTracking > 0) return
+            if (count <= 0) {
+                bottomPinned = true
+                return
+            }
+            bottomPinned = isNearEnd()
+        }
+
+        onBottomPinnedChanged: {
+            // Detaching from bottom means user owns scrolling now.
+            if (!bottomPinned)
+                cancelProgrammaticFollow()
+        }
+
+        function finishProgrammaticFollow() {
+            if (!programmaticFollowActive) return
+            programmaticFollowActive = false
+            suppressViewportTracking = Math.max(0, suppressViewportTracking - 1)
+            if (bottomPinned && !historyLoading && count > 0 && !isNearEnd())
+                queuePinnedReconcile(shouldAnimatePinnedReconcile())
+        }
+
+        function cancelProgrammaticFollow() {
+            if (!programmaticFollowActive && !bottomPinnedFollower.running)
+                return
+            bottomPinnedFollower.stop()
+            if (!programmaticFollowActive) return
+            programmaticFollowActive = false
+            suppressViewportTracking = Math.max(0, suppressViewportTracking - 1)
+        }
+
+        function applyPinnedReconcileOnce(animated) {
+            if (!bottomPinned || historyLoading || count <= 0)
+                return
+            forceLayout()
+            setProgrammaticContentY(maxContentY(), animated)
+        }
+
+        function setProgrammaticContentY(targetY, animated) {
+            if (count <= 0) return
+            var nextY = clampContentY(targetY)
+            if (Math.abs(nextY - contentY) <= 1) {
+                cancelProgrammaticFollow()
+                withSuppressedViewportTracking(function() {
+                    contentY = nextY
+                })
+                return
+            }
+
+            if (!animated) {
+                cancelProgrammaticFollow()
+                withSuppressedViewportTracking(function() {
+                    contentY = nextY
+                })
+                return
+            }
+
+            if (!programmaticFollowActive) {
+                suppressViewportTracking += 1
+                programmaticFollowActive = true
+            } else if (bottomPinnedFollower.running) {
+                bottomPinnedFollower.stop()
+            }
+
+            bottomPinnedFollower.from = contentY
+            bottomPinnedFollower.to = nextY
+            bottomPinnedFollower.start()
+        }
+
+        function reconcilePinnedBottom(animated) {
+            var useAnimation = animated !== false
+            applyPinnedReconcileOnce(useAnimation)
+            Qt.callLater(function() {
+                if (!messageList.bottomPinned || messageList.historyLoading || messageList.count <= 0)
+                    return
+                messageList.applyPinnedReconcileOnce(useAnimation)
+            })
+        }
+
+        function queuePinnedReconcile(animated) {
+            if (reconcileQueued) {
+                queuedReconcileAnimated = queuedReconcileAnimated && animated !== false
+                return
+            }
+            reconcileQueued = true
+            queuedReconcileAnimated = animated !== false
+            scheduleQueuedReconcile()
+        }
+
+        function scheduleQueuedReconcile() {
+            Qt.callLater(function() {
+                var useAnimation = messageList.queuedReconcileAnimated
+                messageList.reconcileQueued = false
+                messageList.queuedReconcileAnimated = true
+                messageList.reconcilePinnedBottom(useAnimation)
+            })
+        }
+
+        function shouldAnimatePinnedReconcile() {
+            return Math.abs(maxContentY() - contentY) <= animateReconcileThresholdPx
+        }
+
+        function forceFollowToEnd(animated) {
+            bottomPinned = true
+            if (animated === false) {
+                reconcileQueued = false
+                queuedReconcileAnimated = true
+                reconcilePinnedBottom(false)
+                return
+            }
+            queuePinnedReconcile(animated)
+        }
+
+        function messageMetaAt(row) {
+            if (row < 0 || !model) return null
+            var idx = model.index(row, 0)
+            return {
+                role: model.data(idx, Qt.UserRole + 2) || "",
+                status: model.data(idx, Qt.UserRole + 5) || "",
+                entranceStyle: model.data(idx, Qt.UserRole + 7) || ""
+            }
+        }
+
+        function pinOnAppend(row) {
+            var message = messageMetaAt(row)
+            if (!message) return false
+            return message.role === "user"
+                || message.role === "assistant"
+                || message.role === "system"
+                || message.status === "typing"
+        }
+
+        function shouldForceInstantAppend(row) {
+            var message = messageMetaAt(row)
+            if (!message) return false
+            return message.entranceStyle === "greeting"
+                || message.role === "user"
+                || message.status === "typing"
+        }
+
+        function shouldReconcileOnStatusUpdate(row, status) {
+            if (status !== "done" && status !== "error") return false
+            var message = messageMetaAt(row)
+            if (!message) return false
+            return message.role === "assistant" || message.role === "system"
         }
 
         function scrollBy(delta) {
             if (count <= 0) return
-            var minY = minContentY()
-            var maxY = maxContentY()
+            cancelProgrammaticFollow()
             var nextY = contentY + delta
-            if (nextY <= minY) {
+            if (nextY <= minContentY()) {
                 positionViewAtBeginning()
+                refreshPinnedFromViewport()
                 return
             }
-            if (nextY >= maxY) {
+            if (nextY >= maxContentY()) {
                 positionAfterLayout()
+                refreshPinnedFromViewport()
                 return
             }
-            contentY = Math.max(minY, Math.min(maxY, nextY))
+            contentY = clampContentY(nextY)
+            refreshPinnedFromViewport()
         }
 
         function handleNavigationKey(event) {
             if (!event || messageInput.activeFocus || count <= 0) return false
+            cancelProgrammaticFollow()
 
             switch (event.key) {
             case Qt.Key_Up:
@@ -111,9 +293,11 @@ Rectangle {
                 return true
             case Qt.Key_Home:
                 positionViewAtBeginning()
+                refreshPinnedFromViewport()
                 return true
             case Qt.Key_End:
                 positionAfterLayout()
+                refreshPinnedFromViewport()
                 return true
             default:
                 return false
@@ -121,97 +305,74 @@ Rectangle {
         }
 
         function captureViewportBeforeReset() {
-            pendingRestoreAtEnd = isNearEnd()
+            pendingRestorePinned = bottomPinned
             pendingRestoreContentY = contentY
         }
 
         function clearPendingViewportRestore() {
             pendingRestoreContentY = -1
-            pendingRestoreAtEnd = false
+            pendingRestorePinned = false
+        }
+
+        function scheduleSessionViewportReady() {
+            Qt.callLater(function() {
+                if (messageList.historyLoading || messageList.count <= 0)
+                    return
+                messageList.bottomPinned = true
+                messageList.queuePinnedReconcile(false)
+            })
         }
 
         function restoreViewportAfterReset() {
-            if (pendingRestoreContentY < 0 && !pendingRestoreAtEnd) return
+            if (pendingRestoreContentY < 0 && !pendingRestorePinned) return
 
             Qt.callLater(function() {
                 if (messageList.count <= 0) {
                     messageList.clearPendingViewportRestore()
+                    messageList.bottomPinned = true
                     return
                 }
 
-                messageList.forceLayout()
-                if (messageList.pendingRestoreAtEnd) {
-                    messageList.positionViewAtEnd()
+                if (messageList.pendingRestorePinned) {
+                    messageList.bottomPinned = true
+                    messageList.reconcilePinnedBottom(false)
                 } else {
-                    messageList.contentY = Math.max(
-                        messageList.minContentY(),
-                        Math.min(messageList.maxContentY(), messageList.pendingRestoreContentY)
-                    )
+                    messageList.setProgrammaticContentY(messageList.pendingRestoreContentY, false)
+                    messageList.refreshPinnedFromViewport()
                 }
                 messageList.clearPendingViewportRestore()
             })
         }
 
-        function messageMetaAt(row) {
-            if (row < 0 || !model) return null
-            var idx = model.index(row, 0)
-            return {
-                role: model.data(idx, Qt.UserRole + 2) || "",
-                status: model.data(idx, Qt.UserRole + 5) || ""
-            }
-        }
-
-        function applyScrollToEnd() {
-            positionAfterLayout()
-            Qt.callLater(function() {
-                if (messageList.historyLoading) return
-                messageList.positionAfterLayout()
-            })
-        }
-
-        function forceFollowToEnd() {
-            if (historyLoading || count <= 0) return
-            applyScrollToEnd()
-        }
-
-        function shouldFollowOnAppend(row) {
-            var message = messageMetaAt(row)
-            if (!message) return false
-
-            return message.role === "user"
-                || message.role === "assistant"
-                || message.role === "system"
-                || message.status === "typing"
-        }
-
-        function shouldFollowOnStatusUpdate(row, status) {
-            if (status !== "done" && status !== "error") return false
-            var message = messageMetaAt(row)
-            if (!message) return false
-            return message.role === "assistant" || message.role === "system"
-        }
-
         Connections {
             target: chatService
+            ignoreUnknownSignals: true
+
             function onHistoryLoadingChanged(loading) {
                 if (loading) {
                     messageList.cancelFlick()
-                    return
+                    messageList.cancelProgrammaticFollow()
                 }
-
-                messageList.forceFollowToEnd()
             }
 
             function onMessageAppended(_row) {
-                if (messageList.shouldFollowOnAppend(_row)) {
-                    messageList.forceFollowToEnd()
+                if (messageList.pinOnAppend(_row))
+                    messageList.bottomPinned = true
+                if (messageList.shouldForceInstantAppend(_row)) {
+                    messageList.forceFollowToEnd(false)
+                    return
                 }
+                messageList.queuePinnedReconcile(messageList.shouldAnimatePinnedReconcile())
             }
 
             function onStatusUpdated(_row, _status) {
-                if (messageList.shouldFollowOnStatusUpdate(_row, _status)) {
-                    messageList.forceFollowToEnd()
-                }
+                if (messageList.shouldReconcileOnStatusUpdate(_row, _status))
+                    messageList.queuePinnedReconcile(messageList.shouldAnimatePinnedReconcile())
+            }
+
+            function onContentUpdated(_row, _content) {
+                if (messageList.bottomPinned)
+                    messageList.forceFollowToEnd(false)
             }
         }
 
@@ -231,9 +392,6 @@ Rectangle {
                 var switchedSession = messageList.activeSessionKey !== messageList.renderedSessionKey
                 messageList.renderedSessionKey = messageList.activeSessionKey
                 if (switchedSession) {
-                    Qt.callLater(function() {
-                        messageList.forceFollowToEnd()
-                    })
                     return
                 }
                 messageList.restoreViewportAfterReset()
@@ -244,14 +402,38 @@ Rectangle {
             target: chatService
             ignoreUnknownSignals: true
 
-            function onSessionViewApplied(key) {
+            function onSessionViewportReady(key) {
                 Qt.callLater(function() {
                     messageList.renderedSessionKey = key || messageList.activeSessionKey
                     messageList.forceActiveFocus()
-                    messageList.forceFollowToEnd()
+                    messageList.scheduleSessionViewportReady()
                 })
             }
         }
+
+        SmoothedAnimation {
+            id: bottomPinnedFollower
+            target: messageList
+            property: "contentY"
+            velocity: Math.max(12000, messageList.height * 28)
+
+            onRunningChanged: {
+                if (!running)
+                    messageList.finishProgrammaticFollow()
+            }
+        }
+
+        function onViewportGeometryChanged() {
+            if (!bottomPinned)
+                return
+            queuePinnedReconcile(shouldAnimatePinnedReconcile())
+        }
+
+        onMovementStarted: cancelProgrammaticFollow()
+        onMovementEnded: refreshPinnedFromViewport()
+        onFlickEnded: refreshPinnedFromViewport()
+        onHeightChanged: onViewportGeometryChanged()
+        onContentHeightChanged: onViewportGeometryChanged()
 
         Keys.onPressed: function(event) {
             if (messageList.handleNavigationKey(event))
@@ -279,7 +461,7 @@ Rectangle {
             anchors.centerIn: parent
             width: Math.min(320, messageList.width - 80)
             height: loadingCol.implicitHeight
-            visible: messageList.count === 0 && messageList.historyLoading
+            visible: messageList.count === 0 && messageList.viewPhase === "loading"
 
             Column {
                 id: loadingCol
@@ -305,7 +487,9 @@ Rectangle {
 
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: strings.chat_loading_history
+                    text: chatService && chatService.state === "starting"
+                          ? strings.empty_starting_hint
+                          : strings.chat_loading_history
                     color: textTertiary
                     font.pixelSize: typeMeta
                     font.weight: weightDemiBold
@@ -319,7 +503,7 @@ Rectangle {
             width: Math.min(360, messageList.width - 80)
             height: emptyCol.implicitHeight
             visible: messageList.count === 0
-                     && !messageList.historyLoading
+                     && messageList.viewPhase !== "loading"
 
             Column {
                 id: emptyCol
@@ -368,47 +552,10 @@ Rectangle {
                     }
                 }
 
-                // ── State 2: Gateway starting ──
-                Column {
-                    id: gatewayStartingState
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    visible: chatService && chatService.state === "starting"
-                             && !(configService && configService.needsSetup)
-                    spacing: 14
-
-                    Rectangle {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        width: 74
-                        height: 74
-                        radius: 37
-                        color: isDark ? "#16FFFFFF" : "#10FFB33D"
-                        border.color: isDark ? "#22FFFFFF" : borderSubtle
-
-                        LoadingOrbit {
-                            anchors.centerIn: parent
-                            width: 42
-                            height: 42
-                            running: gatewayStartingState.visible
-                            color: statusWarning
-                            secondaryColor: Qt.lighter(statusWarning, 1.16)
-                            haloColor: accentGlow
-                            haloOpacity: 0.18
-                        }
-                    }
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: strings.empty_starting_hint
-                        color: textTertiary
-                        font.pixelSize: typeMeta
-                        font.weight: weightMedium
-                        font.letterSpacing: letterWide
-                    }
-                }
-
-                // ── State 3: Gateway error ──
+                // ── State 2: Gateway error ──
                 Column {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    visible: chatService && chatService.state === "error"
+                    visible: messageList.viewPhase === "error"
                              && !(configService && configService.needsSetup)
                     spacing: 14
                     width: parent.width
@@ -451,15 +598,13 @@ Rectangle {
                     }
                 }
 
-                // ── State 4: Ready (running, no messages yet) ──
+                // ── State 3: Ready (session visible, no messages yet) ──
                 Column {
                     id: readyEmptyState
                     objectName: "chatEmptyReadyState"
                     anchors.horizontalCenter: parent.horizontalCenter
-                    visible: chatService && messageList.sessionReady
+                    visible: messageList.viewPhase === "ready"
                              && !messageList.sessionHasMessages
-                             && chatService.state !== "starting"
-                             && chatService.state !== "error"
                     spacing: 14
 
                     Rectangle {
@@ -495,18 +640,13 @@ Rectangle {
                     }
                 }
 
-                // ── State 5: Idle/Stopped (gateway not started) ──
+                // ── State 4: Idle/Stopped (gateway not started) ──
                 Column {
                     id: idleEmptyState
                     objectName: "chatEmptyIdleState"
                     anchors.horizontalCenter: parent.horizontalCenter
-                    visible: {
-                        if (!chatService) return true
-                        var s = chatService.state
-                        return (s === "idle" || s === "stopped")
-                               && !messageList.sessionReady
-                               && !(configService && configService.needsSetup)
-                    }
+                    visible: messageList.viewPhase === "idle"
+                             && !(configService && configService.needsSetup)
                     spacing: 14
 
                     Rectangle {
@@ -546,11 +686,15 @@ Rectangle {
     // ── Input bar ────────────────────────────────────────────────────
     Item {
         id: composerBar
+        objectName: "composerBar"
         readonly property bool active: chatService && chatService.state === "running" && !root.activeSessionReadOnly
         readonly property real visibleHeight: inputRow.implicitHeight + 24
-        readonly property real listBottomInset: active
-                                             ? visibleHeight + root.composerBottomMargin + root.composerDockGap
-                                             : root.chatIdleBottomGap
+        readonly property int revealDuration: motionPanel + 40
+        // targetListBottomInset is the layout fact; presentedListBottomInset is the animated projection.
+        readonly property real targetListBottomInset: active
+                                                   ? visibleHeight + root.composerBottomMargin + root.composerDockGap
+                                                   : root.chatIdleBottomGap
+        property real presentedListBottomInset: targetListBottomInset
 
         anchors.left: parent.left
         anchors.right: parent.right
@@ -564,11 +708,12 @@ Rectangle {
         scale: active ? 1.0 : 0.992
         transform: Translate {
             y: composerBar.active ? 0 : 22
-            Behavior on y { NumberAnimation { duration: motionPanel; easing.type: easeStandard } }
+            Behavior on y { NumberAnimation { duration: composerBar.revealDuration; easing.type: easeEmphasis } }
         }
 
-        Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
-        Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
+        Behavior on presentedListBottomInset { NumberAnimation { duration: composerBar.revealDuration; easing.type: easeEmphasis } }
+        Behavior on opacity { NumberAnimation { duration: motionUi + 40; easing.type: easeStandard } }
+        Behavior on scale { NumberAnimation { duration: composerBar.revealDuration; easing.type: easeEmphasis } }
 
         RowLayout {
             id: inputRow
