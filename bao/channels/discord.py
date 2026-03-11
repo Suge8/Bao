@@ -74,30 +74,26 @@ class DiscordChannel(BaseChannel):
             logger.error("❌ 未配置 / not configured: Discord token")
             return
 
-        self._running = True
+        self._start_lifecycle()
         self._http = httpx.AsyncClient(timeout=30.0)
 
-        while self._running:
-            try:
-                # Use resume URL if available, otherwise default gateway
-                url = self._resume_gateway_url or self.config.gateway_url
-                logger.info("📡 连接网关 / connecting: Discord gateway")
-                async with websockets.connect(url) as ws:
-                    self._ws = ws
+        async def _run_once() -> None:
+            url = self._resume_gateway_url or self.config.gateway_url
+            logger.info("📡 连接网关 / connecting: Discord gateway")
+            async with websockets.connect(url) as ws:
+                self._ws = ws
+                try:
                     await self._gateway_loop()
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.warning("⚠️ 网关异常 / gateway error: {}", e)
-                if self._running:
-                    logger.info("🔄 开始重连 / reconnecting: wait=5s")
-                    await asyncio.sleep(5)
+                finally:
+                    self._ws = None
+
+        await self._run_reconnect_loop(_run_once, label="Discord 网关")
 
     async def stop(self) -> None:
         """Stop the Discord channel."""
         self._clear_progress()
         self._progress_reply_to.clear()
-        self._running = False
+        self._stop_lifecycle()
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
             self._heartbeat_task = None
@@ -110,6 +106,7 @@ class DiscordChannel(BaseChannel):
         if self._http:
             await self._http.aclose()
             self._http = None
+        self._reset_lifecycle()
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Discord REST API."""

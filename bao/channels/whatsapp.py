@@ -1,11 +1,10 @@
 """WhatsApp channel implementation using Node.js bridge."""
 
-import asyncio
 import base64
 import json
 import mimetypes
 from collections import OrderedDict
-from typing import Any
+from typing import Any, Protocol
 
 from loguru import logger
 
@@ -15,6 +14,12 @@ from bao.channels.base import BaseChannel
 from bao.channels.progress_text import ProgressBuffer
 from bao.config.schema import WhatsAppConfig
 from bao.utils.helpers import get_media_path
+
+
+class _BridgeWebSocket(Protocol):
+    async def send(self, message: Any, /, text: bool | None = None) -> Any: ...
+
+    async def close(self) -> Any: ...
 
 
 class WhatsAppChannel(BaseChannel):
@@ -30,7 +35,7 @@ class WhatsAppChannel(BaseChannel):
     def __init__(self, config: WhatsAppConfig, bus: MessageBus):
         super().__init__(config, bus)
         self.config: WhatsAppConfig = config
-        self._ws = None
+        self._ws: _BridgeWebSocket | None = None
         self._connected = False
         self._processed_message_ids: OrderedDict[str, None] = OrderedDict()
         self._progress_handler = ProgressBuffer(self._send_text)
@@ -44,13 +49,12 @@ class WhatsAppChannel(BaseChannel):
 
         logger.info("📡 连接桥接 / connecting: {}", bridge_url)
 
-        self._running = True
+        self._start_lifecycle()
 
-        while self._running:
-            try:
-                async with websockets.connect(bridge_url) as ws:
-                    self._ws = ws
-                    # Send auth token if configured
+        async def _run_once() -> None:
+            async with websockets.connect(bridge_url) as ws:
+                self._ws = ws
+                try:
                     bridge_token = self.config.bridge_token.get_secret_value()
                     if bridge_token:
                         await ws.send(
@@ -63,34 +67,29 @@ class WhatsAppChannel(BaseChannel):
                     logger.info("✅ 连接成功 / connected: WhatsApp bridge")
                     self.mark_ready()
 
-                    # Listen for messages
                     async for message in ws:
                         try:
                             await self._handle_bridge_message(message)
                         except Exception as e:
                             logger.error("❌ 处理失败 / message error: {}", e)
+                finally:
+                    self._connected = False
+                    self._ws = None
+                    self.mark_not_ready()
 
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self._connected = False
-                self._ws = None
-                self.mark_not_ready()
-                logger.warning("⚠️ 连接异常 / connection error: {}", e)
-
-                if self._running:
-                    logger.info("🔄 准备重连 / reconnecting: wait=5s")
-                    await asyncio.sleep(5)
+        await self._run_reconnect_loop(_run_once, label="WhatsApp bridge")
 
     async def stop(self) -> None:
         """Stop the WhatsApp channel."""
         self._clear_progress()
-        self._running = False
+        self._stop_lifecycle()
         self._connected = False
         self.mark_not_ready()
-        if self._ws:
-            await self._ws.close()
+        ws = self._ws
+        if ws is not None:
+            await ws.close()
             self._ws = None
+        self._reset_lifecycle()
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through WhatsApp."""
@@ -98,12 +97,13 @@ class WhatsAppChannel(BaseChannel):
 
     async def _send_text(self, chat_id: str, text: str) -> None:
         """Send raw text via WebSocket bridge."""
-        if not self._ws or not self._connected:
+        ws = self._ws
+        if ws is None or not self._connected:
             logger.warning("⚠️ 未连接 / not connected: WhatsApp bridge")
             return
         try:
             payload = {"type": "send", "to": chat_id, "text": text}
-            await self._ws.send(json.dumps(payload, ensure_ascii=False))
+            await ws.send(json.dumps(payload, ensure_ascii=False))
         except Exception as e:
             logger.error("❌ 发送失败 / send failed: {}", e)
 

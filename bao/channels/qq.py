@@ -1,6 +1,5 @@
 """QQ channel implementation using botpy SDK."""
 
-import asyncio
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
@@ -60,7 +59,6 @@ class QQChannel(BaseChannel):
         self.config: QQConfig = config
         self._client: Any = None
         self._processed_ids: deque[str] = deque(maxlen=1000)
-        self._bot_task: asyncio.Task[None] | None = None
         self._progress_msg_id: dict[str, str | None] = {}
         self._progress_handler = ProgressBuffer(self._send_text)
 
@@ -78,41 +76,24 @@ class QQChannel(BaseChannel):
             self.mark_ready()
             return
 
-        self._running = True
+        self._start_lifecycle()
         bot_class = _make_bot_class(self)
         self._client = bot_class()
-
-        self._bot_task = asyncio.create_task(self._run_bot())
         logger.info("📡 已启动 / bot started: C2C private message")
-        try:
-            await self._bot_task
-        except asyncio.CancelledError:
-            pass
 
-    async def _run_bot(self) -> None:
-        """Run the bot connection with auto-reconnect."""
         secret = self.config.secret.get_secret_value()
-        while self._running:
-            try:
-                await self._client.start(appid=self.config.app_id, secret=secret)
-            except Exception as e:
-                logger.warning("⚠️ 连接异常 / bot error: {}", e)
-            if self._running:
-                logger.info("🔄 准备重连 / reconnecting: wait=5s")
-                await asyncio.sleep(5)
+        await self._run_reconnect_loop(
+            lambda: self._client.start(appid=self.config.app_id, secret=secret),
+            label="QQ bot",
+        )
 
     async def stop(self) -> None:
         """Stop the QQ bot."""
         self._clear_progress()
         self._progress_msg_id.clear()
-        self._running = False
+        self._stop_lifecycle()
         self.mark_not_ready()
-        if self._bot_task:
-            self._bot_task.cancel()
-            try:
-                await self._bot_task
-            except asyncio.CancelledError:
-                pass
+        self._reset_lifecycle()
         logger.info("✅ 已停止 / bot stopped: QQ")
 
     async def send(self, msg: OutboundMessage) -> None:
