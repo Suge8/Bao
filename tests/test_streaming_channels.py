@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
@@ -53,6 +55,32 @@ async def test_slack_progress_updates_same_message() -> None:
     assert web.chat_postMessage.await_count == 1
     assert web.chat_update.await_count == 1
     assert web.chat_update.await_args.kwargs["ts"] == "1700000000.1"
+
+
+@pytest.mark.asyncio
+async def test_slack_start_waits_until_stop(monkeypatch) -> None:
+    channel = SlackChannel(
+        SlackConfig(enabled=True, bot_token=SecretStr("x"), app_token=SecretStr("y")),
+        MagicMock(),
+    )
+    web = SimpleNamespace(auth_test=AsyncMock(return_value={"user_id": "U1"}))
+    socket_client = SimpleNamespace(
+        socket_mode_request_listeners=[],
+        connect=AsyncMock(),
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr("bao.channels.slack.AsyncWebClient", lambda token: web)
+    monkeypatch.setattr("bao.channels.slack.SocketModeClient", lambda **_kwargs: socket_client)
+
+    start_task = asyncio.create_task(channel.start())
+    await asyncio.sleep(0)
+    assert not start_task.done()
+
+    await channel.stop()
+    await asyncio.wait_for(start_task, timeout=0.5)
+
+    socket_client.connect.assert_awaited_once()
+    socket_client.close.assert_awaited_once()
 
 
 class _DiscordResponse:
@@ -194,3 +222,64 @@ async def test_feishu_progress_updates_same_message(monkeypatch) -> None:
 
     assert len(created) == 1
     assert len(patched) == 1
+
+
+@pytest.mark.asyncio
+async def test_feishu_start_waits_until_stop(monkeypatch) -> None:
+    started = threading.Event()
+    released = threading.Event()
+
+    class _FakeLarkClientBuilder:
+        def app_id(self, _value: str):
+            return self
+
+        def app_secret(self, _value: str):
+            return self
+
+        def log_level(self, _value: object):
+            return self
+
+        def build(self) -> SimpleNamespace:
+            return SimpleNamespace()
+
+    class _FakeEventDispatcherBuilder:
+        def register_p2_im_message_receive_v1(self, _handler):
+            return self
+
+        def build(self) -> SimpleNamespace:
+            return SimpleNamespace()
+
+    class _FakeWsClient:
+        def start(self) -> None:
+            started.set()
+            released.wait(timeout=1)
+
+        def stop(self) -> None:
+            released.set()
+
+    monkeypatch.setattr(feishu_module, "FEISHU_AVAILABLE", True)
+    monkeypatch.setattr(
+        feishu_module,
+        "lark",
+        SimpleNamespace(
+            LogLevel=SimpleNamespace(INFO="INFO"),
+            Client=SimpleNamespace(builder=lambda: _FakeLarkClientBuilder()),
+            EventDispatcherHandler=SimpleNamespace(
+                builder=lambda *_args: _FakeEventDispatcherBuilder()
+            ),
+            ws=SimpleNamespace(Client=lambda *_args, **_kwargs: _FakeWsClient()),
+        ),
+    )
+
+    channel = FeishuChannel(
+        FeishuConfig(enabled=True, app_id="app", app_secret=SecretStr("secret")),
+        MagicMock(),
+    )
+
+    start_task = asyncio.create_task(channel.start())
+    await asyncio.to_thread(started.wait, 0.5)
+    assert started.is_set()
+    assert not start_task.done()
+
+    await channel.stop()
+    await asyncio.wait_for(start_task, timeout=0.5)
