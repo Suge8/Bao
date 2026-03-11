@@ -413,11 +413,17 @@ Rectangle {
                     property bool isStarting: hasChatService && chatService.state === "starting"
                     property bool isError: hasChatService && chatService.state === "error"
             property bool isIdleVisual: !isRunning && !isStarting && !isError
+            property string previousState: currentState
             property bool isHovered: gwHover.containsMouse
             property real actionPulse: 0.0
             property real iconLift: 0.0
             property real iconPulse: 0.0
             property real iconTurn: 0.0
+            readonly property int stateTransitionDuration: motionPanel + 40
+            // currentState stays canonical; these properties only project the handoff visually.
+            property string displayedPrimaryLabel: primaryLabel
+            property string outgoingPrimaryLabel: ""
+            property real primaryLabelTransition: 1.0
 
             function stateValue(runningValue, errorValue, startingValue, idleValue) {
                 switch (currentState) {
@@ -477,12 +483,48 @@ Rectangle {
             z: 6
 
             function resetVisualState() {
-                gwCapsule.actionPulse = 0.0
-                gwCapsule.iconLift = 0.0
-                gwCapsule.iconPulse = 0.0
-                gwCapsule.iconTurn = 0.0
+                applyVisualSeed(0.0, 0.0, 0.0, 0.0)
+            }
+            function applyVisualSeed(actionPulseValue, iconLiftValue, iconPulseValue, iconTurnValue) {
+                gwCapsule.actionPulse = actionPulseValue
+                gwCapsule.iconLift = iconLiftValue
+                gwCapsule.iconPulse = iconPulseValue
+                gwCapsule.iconTurn = iconTurnValue
                 gwDot.opacity = 1.0
                 gwDot.scale = 1.0
+            }
+            function transitionPrimaryLabel(nextLabel) {
+                if (displayedPrimaryLabel === nextLabel)
+                    return
+                outgoingPrimaryLabel = displayedPrimaryLabel
+                displayedPrimaryLabel = nextLabel
+                primaryLabelTransition = 0.0
+                primaryLabelTransitionAnim.restart()
+            }
+            function handoffVisualState() {
+                if (gwCapsule.previousState === gwCapsule.currentState)
+                    return
+
+                if (gwCapsule.previousState === "starting" && gwCapsule.currentState === "running") {
+                    applyVisualSeed(Math.max(gwCapsule.actionPulse, 0.02), -0.16, Math.max(gwCapsule.iconPulse, 0.03), 0.0)
+                    gwCapsule.previousState = gwCapsule.currentState
+                    return
+                }
+
+                if (gwCapsule.previousState === "starting") {
+                    applyVisualSeed(Math.max(gwCapsule.actionPulse, 0.015), 0.0, Math.max(gwCapsule.iconPulse, 0.02), 0.0)
+                    gwCapsule.previousState = gwCapsule.currentState
+                    return
+                }
+
+                if (gwCapsule.currentState === "starting") {
+                    applyVisualSeed(Math.max(gwCapsule.actionPulse, 0.02), 0.0, Math.max(gwCapsule.iconPulse, 0.02), gwCapsule.iconTurn)
+                    gwCapsule.previousState = gwCapsule.currentState
+                    return
+                }
+
+                resetVisualState()
+                gwCapsule.previousState = gwCapsule.currentState
             }
             function triggerGatewayAction() {
                         if (!hasChatService || gwCapsule.isStarting)
@@ -492,8 +534,10 @@ Rectangle {
                 else
                     chatService.start()
             }
-            onCurrentStateChanged: resetVisualState()
+            onCurrentStateChanged: handoffVisualState()
+            onPrimaryLabelChanged: transitionPrimaryLabel(primaryLabel)
             activeFocusOnTab: true
+            Component.onCompleted: displayedPrimaryLabel = primaryLabel
             Keys.onPressed: function(event) {
                 if (event.key === Qt.Key_Space || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                     gwCapsule.triggerGatewayAction()
@@ -505,8 +549,22 @@ Rectangle {
             border.color: activeFocus ? borderFocus : "transparent"
             scale: gwHover.pressed ? 0.985 : (gwCapsule.isHovered ? motionHoverScaleSubtle : 1.0)
 
-            Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
-            Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
+            Behavior on actionPulse { NumberAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeSoft } }
+            Behavior on iconLift { NumberAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeSoft } }
+            Behavior on iconPulse { NumberAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeSoft } }
+            Behavior on iconTurn { NumberAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeSoft } }
+            Behavior on color { ColorAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeStandard } }
+            Behavior on border.color { ColorAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeStandard } }
+            Behavior on scale { NumberAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeEmphasis } }
+            NumberAnimation {
+                id: primaryLabelTransitionAnim
+                target: gwCapsule
+                property: "primaryLabelTransition"
+                from: 0.0
+                to: 1.0
+                duration: gwCapsule.stateTransitionDuration
+                easing.type: easeSoft
+            }
             Item {
                 anchors.fill: parent
 
@@ -522,6 +580,7 @@ Rectangle {
                     color: Qt.darker(gwCapsule.actionColor, isDark ? 1.22 : 1.14)
                     border.width: 0
                     scale: (gwHover.pressed ? 0.97 : (gwCapsule.isHovered ? motionHoverScaleSubtle : 1.0)) + gwCapsule.actionPulse * 0.025
+                    Behavior on color { ColorAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeStandard } }
                     Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
 
                     Rectangle {
@@ -531,6 +590,7 @@ Rectangle {
                         radius: width / 2
                         anchors.centerIn: parent
                         color: gwCapsule.actionColor
+                        Behavior on color { ColorAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeStandard } }
                     }
 
                     SequentialAnimation {
@@ -605,12 +665,17 @@ Rectangle {
                     }
 
                     Item {
+                        objectName: "gatewayActionIconWrap"
                         width: sizeGatewayActionIcon
                         height: sizeGatewayActionIcon
                         anchors.centerIn: gwActionFace
                         y: gwCapsule.iconLift
                         scale: 1.0 + gwCapsule.iconPulse
                         rotation: gwCapsule.iconTurn
+
+                        Behavior on y { NumberAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeSoft } }
+                        Behavior on scale { NumberAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeSoft } }
+                        Behavior on rotation { NumberAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeSoft } }
 
                         Image {
                             anchors.fill: parent
@@ -634,7 +699,14 @@ Rectangle {
                     spacing: 1
 
                     Row {
+                        id: gatewaySecondaryRow
+                        objectName: "gatewaySecondaryRow"
                         spacing: 7
+                        opacity: 0.58 + gwCapsule.primaryLabelTransition * 0.14
+                        y: 2 * (1.0 - gwCapsule.primaryLabelTransition)
+
+                        Behavior on opacity { NumberAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeSoft } }
+                        Behavior on y { NumberAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeSoft } }
 
                         Rectangle {
                             id: gwDot
@@ -643,7 +715,9 @@ Rectangle {
                             radius: 3
                             anchors.verticalCenter: parent.verticalCenter
                             color: gwCapsule.dotColor
-                            Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
+                            Behavior on color { ColorAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeStandard } }
+                            Behavior on opacity { NumberAnimation { duration: motionUi + 20; easing.type: easeSoft } }
+                            Behavior on scale { NumberAnimation { duration: motionUi + 20; easing.type: easeSoft } }
 
                             SequentialAnimation on scale {
                                 running: gwCapsule.isRunning
@@ -671,17 +745,45 @@ Rectangle {
                             font.pixelSize: typeCaption
                             font.weight: weightDemiBold
                             font.letterSpacing: letterWide
-                            opacity: 0.72
+                            opacity: 1.0
+                            Behavior on color { ColorAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeStandard } }
                         }
                     }
 
-                    Text {
-                        text: gwCapsule.primaryLabel
-                        color: gwCapsule.statusColor
-                        font.pixelSize: typeButton + 1
-                        font.weight: weightBold
-                        font.letterSpacing: letterTight
-                        Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
+                    Item {
+                        objectName: "gatewayPrimaryLabelWrap"
+                        width: parent.width
+                        implicitHeight: Math.max(gatewayPrimaryLabelIncoming.implicitHeight, gatewayPrimaryLabelOutgoing.implicitHeight)
+                        height: implicitHeight
+
+                        Text {
+                            id: gatewayPrimaryLabelOutgoing
+                            objectName: "gatewayPrimaryLabelOutgoing"
+                            width: parent.width
+                            visible: gwCapsule.outgoingPrimaryLabel !== "" && opacity > 0.01
+                            text: gwCapsule.outgoingPrimaryLabel
+                            color: gwCapsule.statusColor
+                            font.pixelSize: typeButton + 1
+                            font.weight: weightBold
+                            font.letterSpacing: letterTight
+                            opacity: 1.0 - gwCapsule.primaryLabelTransition
+                            y: -4 * gwCapsule.primaryLabelTransition
+                            Behavior on color { ColorAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeStandard } }
+                        }
+
+                        Text {
+                            id: gatewayPrimaryLabelIncoming
+                            objectName: "gatewayPrimaryLabelIncoming"
+                            width: parent.width
+                            text: gwCapsule.displayedPrimaryLabel
+                            color: gwCapsule.statusColor
+                            font.pixelSize: typeButton + 1
+                            font.weight: weightBold
+                            font.letterSpacing: letterTight
+                            opacity: gwCapsule.primaryLabelTransition
+                            y: 4 * (1.0 - gwCapsule.primaryLabelTransition)
+                            Behavior on color { ColorAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeStandard } }
+                        }
                     }
                 }
 
