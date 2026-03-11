@@ -2750,8 +2750,6 @@ def test_sidebar_delete_above_viewport_preserves_visible_anchor(qapp):
         session_list.setProperty("contentY", 220)
         _process(30)
         before_key, before_offset = _first_visible_sidebar_session_anchor(root, session_list)
-        before_y = float(session_list.property("contentY"))
-
         session_model.replaceRows(rows[1:])
         session_service.sessionsChanged.emit()
         for _ in range(4):

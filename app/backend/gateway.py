@@ -25,8 +25,8 @@ from typing import Any
 from loguru import logger
 from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 
-from app.backend.attachment import AttachmentDraftModel
 from app.backend.asyncio_runner import AsyncioRunner
+from app.backend.attachment import AttachmentDraftModel
 from app.backend.chat import ChatMessageModel
 from bao.gateway.builder import DesktopStartupMessage
 from bao.session.manager import SessionChangeEvent
