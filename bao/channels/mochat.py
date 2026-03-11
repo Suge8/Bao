@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -18,20 +19,23 @@ from bao.channels.base import BaseChannel
 from bao.config.schema import MochatConfig
 from bao.utils.helpers import get_data_path
 
+_socketio_available = False
 try:
     import socketio
 
-    SOCKETIO_AVAILABLE = True
+    _socketio_available = True
 except ImportError:
     socketio = None
-    SOCKETIO_AVAILABLE = False
+SOCKETIO_AVAILABLE = _socketio_available
 
+_msgpack_available = False
 try:
     import msgpack  # noqa: F401
 
-    MSGPACK_AVAILABLE = True
+    _msgpack_available = True
 except ImportError:
-    MSGPACK_AVAILABLE = False
+    pass
+MSGPACK_AVAILABLE = _msgpack_available
 
 MAX_SEEN_MESSAGE_IDS = 2000
 CURSOR_SAVE_DEBOUNCE_S = 0.5
@@ -61,7 +65,7 @@ class DelayState:
 
     entries: list[MochatBufferedEntry] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    timer: asyncio.Task | None = None
+    timer: asyncio.Task[None] | None = None
 
 
 @dataclass
@@ -77,12 +81,12 @@ class MochatTarget:
 # ---------------------------------------------------------------------------
 
 
-def _safe_dict(value: Any) -> dict:
+def _safe_dict(value: Any) -> dict[str, Any]:
     """Return *value* if it's a dict, else empty dict."""
     return value if isinstance(value, dict) else {}
 
 
-def _str_field(src: dict, *keys: str) -> str:
+def _str_field(src: dict[str, Any], *keys: str) -> str:
     """Return the first non-empty str value found for *keys*, stripped."""
     for k in keys:
         v = src.get(k)
@@ -244,7 +248,7 @@ class MochatChannel(BaseChannel):
         self._state_dir = get_data_path() / "mochat"
         self._cursor_path = self._state_dir / "session_cursors.json"
         self._session_cursor: dict[str, int] = {}
-        self._cursor_save_task: asyncio.Task | None = None
+        self._cursor_save_task: asyncio.Task[None] | None = None
 
         self._session_set: set[str] = set()
         self._panel_set: set[str] = set()
@@ -258,9 +262,9 @@ class MochatChannel(BaseChannel):
         self._delay_states: dict[str, DelayState] = {}
 
         self._fallback_mode = False
-        self._session_fallback_tasks: dict[str, asyncio.Task] = {}
-        self._panel_fallback_tasks: dict[str, asyncio.Task] = {}
-        self._refresh_task: asyncio.Task | None = None
+        self._session_fallback_tasks: dict[str, asyncio.Task[None]] = {}
+        self._panel_fallback_tasks: dict[str, asyncio.Task[None]] = {}
+        self._refresh_task: asyncio.Task[None] | None = None
         self._target_locks: dict[str, asyncio.Lock] = {}
 
     # ---- lifecycle ---------------------------------------------------------
@@ -271,7 +275,7 @@ class MochatChannel(BaseChannel):
             logger.error("❌ Mochat 配置缺失 / config missing: claw_token not configured")
             return
 
-        self._running = True
+        self._start_lifecycle()
         self._http = httpx.AsyncClient(timeout=30.0)
         self._state_dir.mkdir(parents=True, exist_ok=True)
         await self._load_session_cursors()
@@ -282,12 +286,11 @@ class MochatChannel(BaseChannel):
             await self._ensure_fallback_workers()
 
         self._refresh_task = asyncio.create_task(self._refresh_loop())
-        while self._running:
-            await asyncio.sleep(1)
+        await self._wait_until_stopped()
 
     async def stop(self) -> None:
         """Stop all workers and clean up resources."""
-        self._running = False
+        self._stop_lifecycle()
         if self._refresh_task:
             self._refresh_task.cancel()
             self._refresh_task = None
@@ -311,6 +314,7 @@ class MochatChannel(BaseChannel):
             await self._http.aclose()
             self._http = None
         self._ws_connected = self._ws_ready = False
+        self._reset_lifecycle()
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send outbound message to session or panel."""
@@ -372,6 +376,7 @@ class MochatChannel(BaseChannel):
         if not SOCKETIO_AVAILABLE:
             logger.warning("⚠️ Mochat SocketIO 未安装 / socketio missing: using polling fallback")
             return False
+        assert socketio is not None
 
         serializer = "default"
         if not self.config.socket_disable_msgpack:
@@ -384,9 +389,11 @@ class MochatChannel(BaseChannel):
 
         client = socketio.AsyncClient(
             reconnection=True,
-            reconnection_attempts=self.config.max_retry_attempts or None,
-            reconnection_delay=max(0.1, self.config.socket_reconnect_delay_ms / 1000.0),
-            reconnection_delay_max=max(0.1, self.config.socket_max_reconnect_delay_ms / 1000.0),
+            reconnection_attempts=max(0, self.config.max_retry_attempts),
+            reconnection_delay=max(1, math.ceil(self.config.socket_reconnect_delay_ms / 1000.0)),
+            reconnection_delay_max=max(
+                1, math.ceil(self.config.socket_max_reconnect_delay_ms / 1000.0)
+            ),
             logger=False,
             engineio_logger=False,
             serializer=serializer,
@@ -412,13 +419,14 @@ class MochatChannel(BaseChannel):
         async def connect_error(data: Any) -> None:
             logger.error("❌ Mochat 连接失败 / ws connect error: {}", data)
 
-        @client.on("claw.session.events")
         async def on_session_events(payload: dict[str, Any]) -> None:
             await self._handle_watch_payload(payload, "session")
 
-        @client.on("claw.panel.events")
         async def on_panel_events(payload: dict[str, Any]) -> None:
             await self._handle_watch_payload(payload, "panel")
+
+        client.on("claw.session.events", handler=on_session_events)
+        client.on("claw.panel.events", handler=on_panel_events)
 
         for ev in (
             "notify:chat.inbox.append",
@@ -439,7 +447,7 @@ class MochatChannel(BaseChannel):
                 transports=["websocket"],
                 socketio_path=socket_path,
                 auth={"token": self.config.claw_token.get_secret_value()},
-                wait_timeout=max(1.0, self.config.socket_connect_timeout_ms / 1000.0),
+                wait_timeout=max(1, math.ceil(self.config.socket_connect_timeout_ms / 1000.0)),
             )
             return True
         except Exception as e:
