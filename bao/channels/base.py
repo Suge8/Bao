@@ -2,6 +2,7 @@
 
 import asyncio
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from loguru import logger
@@ -33,7 +34,64 @@ class BaseChannel(ABC):
         self.bus = bus
         self._running = False
         self._ready = asyncio.Event()
+        self._stop_event: asyncio.Event | None = None
         self._progress_handler: ProgressHandler | None = None
+
+    def _start_lifecycle(self) -> None:
+        self._running = True
+        self._stop_event = asyncio.Event()
+
+    def _stop_lifecycle(self) -> None:
+        self._running = False
+        stop_event = self._stop_event
+        if stop_event is not None:
+            stop_event.set()
+
+    def _reset_lifecycle(self) -> None:
+        self._stop_event = None
+
+    async def _wait_until_stopped(self) -> None:
+        stop_event = self._stop_event
+        if stop_event is None:
+            return
+        await stop_event.wait()
+
+    async def _wait_stop_or_timeout(self, timeout_s: float) -> bool:
+        stop_event = self._stop_event
+        if stop_event is None:
+            if timeout_s > 0:
+                await asyncio.sleep(timeout_s)
+            return False
+        if timeout_s <= 0:
+            return stop_event.is_set()
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=timeout_s)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    async def _run_reconnect_loop(
+        self,
+        run_once: Callable[[], Awaitable[None]],
+        *,
+        label: str,
+        delay_s: float = 5.0,
+    ) -> None:
+        delay_text = int(delay_s) if float(delay_s).is_integer() else delay_s
+        while self._running:
+            try:
+                await run_once()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                if not self._running:
+                    break
+                logger.warning("⚠️ {} 连接异常 / connection error: {}", label, e)
+            if not self._running:
+                break
+            logger.info("🔄 {} 准备重连 / reconnecting: wait={}s", label, delay_text)
+            if await self._wait_stop_or_timeout(delay_s):
+                break
 
     @abstractmethod
     async def start(self) -> None:

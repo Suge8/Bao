@@ -2,6 +2,8 @@ import asyncio
 import json
 from contextlib import suppress
 
+import pytest
+
 from bao.bus.events import OutboundMessage
 from bao.bus.queue import MessageBus
 from bao.channels.base import BaseChannel
@@ -95,6 +97,21 @@ def test_tool_hint_suppressed_keeps_iteration_boundary() -> None:
     assert sent.content == ""
     assert sent.metadata.get("_tool_hint") is True
     assert sent.metadata.get("_tool_hint_suppressed") is True
+
+
+@pytest.mark.asyncio
+async def test_stop_all_cancels_idle_dispatcher() -> None:
+    bus = MessageBus()
+    cfg = Config()
+    manager = ChannelManager(cfg, bus)
+    manager.channels = {"dummy": _DummyChannel(bus)}
+    manager._dispatch_task = asyncio.create_task(manager._dispatch_outbound())
+
+    await asyncio.sleep(0)
+    await manager.stop_all()
+
+    dispatch_task = manager._dispatch_task
+    assert dispatch_task is not None and dispatch_task.done()
 
 
 def test_tool_hints_enabled_by_default() -> None:
