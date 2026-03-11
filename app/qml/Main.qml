@@ -1062,7 +1062,11 @@ ApplicationWindow {
         darkMode: root.isDark
         bodyScrollable: false
         showDefaultCloseAction: false
-        onOpened: if (diagnosticsService) diagnosticsService.refresh()
+        onOpened: {
+            if (diagnosticsService)
+                diagnosticsService.refresh()
+            diagnosticsLogTailView.followTail()
+        }
 
         Item {
             id: diagnosticsBody
@@ -1582,25 +1586,15 @@ ApplicationWindow {
                                     }
                                 }
 
-                                ScrollView {
+                                FollowTailLogView {
+                                    id: diagnosticsLogTailView
+                                    objectName: "diagnosticsLogTailScroll"
                                     anchors.fill: parent
                                     visible: !!diagnosticsRecentLogTextSafe()
-                                    clip: true
-
-                                    TextArea {
-                                        property bool baoClickAwayEditor: true
-                                        readOnly: true
-                                        width: parent.width
-                                        text: diagnosticsRecentLogTextSafe()
-                                        color: textPrimary
-                                        wrapMode: TextArea.NoWrap
-                                        selectByMouse: true
-                                        textFormat: TextEdit.PlainText
-                                        font.pixelSize: typeMeta
-                                        font.family: Qt.platform.os === "osx" ? "Menlo" : "Monospace"
-                                        background: null
-                                        padding: 0
-                                    }
+                                    text: diagnosticsRecentLogTextSafe()
+                                    textColor: textPrimary
+                                    fontPixelSize: typeMeta
+                                    fontFamily: Qt.platform.os === "osx" ? "Menlo" : "Monospace"
                                 }
                             }
                         }

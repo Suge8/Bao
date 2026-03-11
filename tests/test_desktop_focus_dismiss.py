@@ -13,6 +13,7 @@ QtCore = pytest.importorskip("PySide6.QtCore")
 QtGui = pytest.importorskip("PySide6.QtGui")
 QtQml = pytest.importorskip("PySide6.QtQml")
 QtQuick = pytest.importorskip("PySide6.QtQuick")
+QtQuickControls2 = pytest.importorskip("PySide6.QtQuickControls2")
 QtTest = pytest.importorskip("PySide6.QtTest")
 
 QEvent = QtCore.QEvent
@@ -30,6 +31,7 @@ QMouseEvent = QtGui.QMouseEvent
 QQmlComponent = QtQml.QQmlComponent
 QQmlEngine = QtQml.QQmlEngine
 QQuickWindow = QtQuick.QQuickWindow
+QQuickStyle = QtQuickControls2.QQuickStyle
 QTest = QtTest.QTest
 
 from app.main import (
@@ -42,6 +44,7 @@ from app.main import (
 
 @pytest.fixture(scope="session")
 def qapp():
+    QQuickStyle.setStyle("Basic")
     app = QGuiApplication.instance() or QGuiApplication(sys.argv)
     yield app
 
@@ -54,9 +57,6 @@ def _process(ms: int) -> None:
 
 def _install_focus_filter(root: QObject) -> WindowFocusDismissFilter:
     focus_filter = WindowFocusDismissFilter(root)
-    app = QGuiApplication.instance()
-    if app is not None:
-        app.installEventFilter(focus_filter)
     if hasattr(root, "installEventFilter"):
         root.installEventFilter(focus_filter)
     return focus_filter
@@ -65,9 +65,6 @@ def _install_focus_filter(root: QObject) -> WindowFocusDismissFilter:
 def _remove_focus_filter(root: QObject, focus_filter: WindowFocusDismissFilter | None) -> None:
     if focus_filter is None:
         return
-    app = QGuiApplication.instance()
-    if app is not None:
-        app.removeEventFilter(focus_filter)
     if hasattr(root, "removeEventFilter"):
         root.removeEventFilter(focus_filter)
 
@@ -611,7 +608,7 @@ def test_window_focus_dismiss_preserves_single_click_expand_header_action(qapp):
         _process(0)
 
 
-def test_window_focus_dismiss_closes_settings_select_popup_without_eating_target_click(qapp):
+def test_settings_select_popup_closes_without_eating_target_click(qapp):
     engine = QQmlEngine()
     component = QQmlComponent(engine)
     component.setData(
@@ -623,14 +620,12 @@ def test_window_focus_dismiss_closes_settings_select_popup_without_eating_target
     assert component.status() == QQmlComponent.Ready, component.errors()
     root = component.create()
     assert root is not None, component.errors()
-    focus_filter: WindowFocusDismissFilter | None = None
 
     try:
         settings_select = root.findChild(QObject, "settingsSelect")
         hit_target = root.findChild(QObject, "hitTarget")
         assert settings_select is not None
         assert hit_target is not None
-        focus_filter = _install_focus_filter(root)
 
         select_hit_area = settings_select.findChild(QObject, "settingsSelectHitArea")
         assert select_hit_area is not None
@@ -646,7 +641,7 @@ def test_window_focus_dismiss_closes_settings_select_popup_without_eating_target
         )
         _process(100)
 
-        assert bool(settings_select.property("baoClickAwayPopupOpen")) is True
+        assert bool(settings_select.property("popupOpen")) is True
         assert bool(root.property("clicked")) is False
 
         hit_center = hit_target.mapToScene(
@@ -660,10 +655,9 @@ def test_window_focus_dismiss_closes_settings_select_popup_without_eating_target
         )
         _process(100)
 
-        assert bool(settings_select.property("baoClickAwayPopupOpen")) is False
+        assert bool(settings_select.property("popupOpen")) is False
         assert bool(root.property("clicked")) is True
     finally:
-        _remove_focus_filter(root, focus_filter)
         root.deleteLater()
         _process(0)
 
