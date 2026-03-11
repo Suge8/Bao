@@ -6,6 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.24] - 2026-03-11
+
+### Changed
+
+- **Desktop direct sends now share one pending-turn pipeline** — desktop chat now keeps a single pending user bubble, pre-saves the same turn into session history before dispatch, preserves bottom-pinned viewport reconciliation, and carries direct-send media attachments through to the core loop.
+- **Desktop session and diagnostics surfaces now follow one projection path** — collapsed sidebar groups keep only the active row visible, running/seen updates collapse into one metadata refresh path, the gateway capsule now hands off state transitions smoothly, and diagnostics log tails follow the bottom only while the user stays pinned there.
+- **Desktop click-away handling now defers to one native close path** — the window-level dismiss filter now only owns editor blur plus pointer refresh, while `SettingsSelect` popups return to Qt `Popup.closePolicy` so first clicks keep working.
+- **Channel lifecycle/reconnect control now follows one shared shell** — `BaseChannel` now owns the stop-event wait and outer reconnect lifecycle, so Discord/WhatsApp/QQ/DingTalk/Feishu/Mochat stop relying on per-channel keepalive/reconnect shells for the same control surface.
+- **Provider transient retries now reuse one shared async retry path** — `retry.py` now exposes `run_with_retries()`, and OpenAI chat completions plus Anthropic streaming both route retry timing, retryability checks, and retry hooks through the same helper instead of duplicating per-provider attempt loops.
+- **OpenCode short agent names now resolve against unique display names** — Bao can now translate unique oh-my-opencode short names like `Hephaestus` to the current OpenCode display name before launch, while still leaving ambiguous aliases untouched.
+
 ## [0.3.23] - 2026-03-10
 
 ### Changed
@@ -21,7 +32,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 - **Desktop 侧边栏 sticky 分组头不再越界覆盖标题区** — 吸顶分组头现在被限制在会话列表自身的顶部裁剪视口内，被下一个分组顶走时只会在列表内退出，不再漏到上方标题区域。
 - **Desktop/外部渠道的运行态不再作为跨重启脏 metadata 残留** — `SessionManager` 现将 `session_running` 与 `child_status=running` 收口为当前进程的 runtime overlay，并在列会话/加载会话时与稳定 metadata 合并；主代理、desktop gateway 与 subagent 在各自编排边界显式推送/清理运行态，侧栏绿点继续事件驱动更新，但应用重启后不会再从磁盘读回旧 running 状态。
 - **Desktop 设置页首击不再被窗口级失焦吞掉** — `WindowFocusDismissFilter` 现在只对显式声明 `baoClickAwayEditor` 的编辑器执行 click-away blur，并把失焦收口在点击完成之后；Settings 的 tab、Provider 展开头与“+ 添加 LLM 提供商”不再出现先失焦、第二次点击才生效的竞态。
-- **Desktop SettingsSelect 下拉不再吞掉下一次按钮点击** — 设置页自定义下拉组件的 popup 外点关闭现在也走统一的窗口级 dismiss 路径；打开下拉后再点 `Save`、渠道头或 `+ 添加 LLM Provider` 不会再先关闭弹层、第二次才命中目标。
+- **Desktop 设置页首击路径进一步收口** — `WindowFocusDismissFilter` 现在只负责 editor click-away blur 与 pointer refresh；`SettingsSelect` 的 dropdown 外点关闭回归 Qt 原生 `Popup.closePolicy`，打开下拉后再点 `Save`、渠道头或 `+ 添加 LLM Provider` 不会再先关闭弹层、第二次才生效，而 `+ Add LLM Provider` 也会在首击后立即展开并滚动到新增卡片。
 - **iMessage send failures now surface as actionable runtime errors** — AppleScript send failures, including `-1743` automation denials, now raise back to the caller so desktop and tests can distinguish “send failed” from “send silently disappeared.”
 
 ## [0.3.22] - 2026-03-09
