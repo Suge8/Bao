@@ -867,6 +867,47 @@ def test_mark_desktop_seen_ai_if_active_updates_seen_timestamp(tmp_path: Path) -
     assert isinstance(reloaded.metadata.get("desktop_last_seen_ai_at"), str)
 
 
+def test_mark_desktop_seen_ai_clears_running_before_visible_metadata_refresh(
+    tmp_path: Path,
+) -> None:
+    from bao.session.manager import SessionManager
+
+    sm = SessionManager(tmp_path)
+    key = "imessage:+8618127419003::s7"
+    session = sm.get_or_create(key)
+    session.add_message("assistant", "hello")
+    sm.save(session)
+    sm.set_session_running(key, True, emit_change=False)
+
+    update_thread = threading.Thread(
+        target=lambda: sm.mark_desktop_seen_ai(key, clear_running=True),
+        daemon=True,
+    )
+
+    listed_sessions = _list_sessions_while_meta_delete_is_blocked(sm, key, update_thread)
+
+    assert [item["key"] for item in listed_sessions] == [key]
+    assert isinstance(listed_sessions[0]["metadata"]["desktop_last_seen_ai_at"], str)
+    assert listed_sessions[0]["metadata"].get("session_running") is None
+
+
+def test_mark_desktop_seen_ai_emits_single_metadata_change(tmp_path: Path) -> None:
+    from bao.session.manager import SessionManager
+
+    sm = SessionManager(tmp_path)
+    key = "imessage:+8618127419003::s7"
+    session = sm.get_or_create(key)
+    session.add_message("assistant", "hello")
+    sm.save(session)
+    sm.set_session_running(key, True, emit_change=False)
+    events: list[tuple[str, str]] = []
+    sm.add_change_listener(lambda event: events.append((event.session_key, event.kind)))
+
+    sm.mark_desktop_seen_ai(key, clear_running=True)
+
+    assert events == [(key, "metadata")]
+
+
 def test_mark_desktop_seen_ai_if_active_ignores_inactive_session(tmp_path: Path) -> None:
     from bao.session.manager import SessionManager
 
