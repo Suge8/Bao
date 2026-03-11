@@ -19,7 +19,9 @@ Item {
     property bool isUser: role === "user"
     property bool isSystem: role === "system" || isGreeting
     property bool isSystemError: role === "system" && status === "error"
+    property bool isPending: status === "pending"
     property bool isMarkdown: format === "markdown"
+    property bool isTypingBubble: status === "typing" && content === ""
     property bool isAssistantEntrance: !isSystem && entranceStyle === "assistantReceived"
     property bool isUserEntrance: !isSystem && entranceStyle === "userSent"
     property bool _entranceStarted: false
@@ -38,6 +40,16 @@ Item {
     readonly property int systemIconGap: isGreeting ? 5 : 8
     readonly property int systemTextStartX: systemContentPaddingX + systemIconSlotWidth + systemIconGap
     readonly property bool useGreetingGradient: showGreetingDecoration && chatGreetingBubbleBgStart !== chatGreetingBubbleBgEnd
+    readonly property string entranceMotionProfile: {
+        if (isGreeting) return "greeting"
+        if (isSystem) return "system"
+        if (isUserEntrance) return "userSent"
+        if (isAssistantEntrance) return "assistantReceived"
+        if (isUser) return "user"
+        return "assistant"
+    }
+    readonly property string contentMorphProfile: isTypingBubble ? "typing" : "content"
+    readonly property string pendingSurfaceProfile: isPending ? "pending" : "settled"
     function alphaColor(color, alpha) {
         return Qt.rgba(color.r, color.g, color.b, Math.max(0.0, Math.min(1.0, alpha)))
     }
@@ -52,46 +64,169 @@ Item {
         ripple.opacity = 0.0
         ripple.scale = 0.92
     }
+    // Keep motion decisions in one place so ChatView stays geometry-only.
+    function entranceProfileData(profile) {
+        switch (profile) {
+        case "greeting":
+            return {
+                opacityDuration: motionUi + 40,
+                moveDuration: motionUi + 44,
+                settleDuration: motionPanel + 42,
+                glowFadeDuration: motionAmbient,
+                startScale: 0.962,
+                peakScale: 1.016,
+                startX: 0,
+                settleX: 0,
+                startY: 16,
+                settleY: -1.4,
+                glowPeak: motionAuraNearPeak * 0.44,
+                glowStartScale: 0.95,
+                glowPeakScale: 1.058
+            }
+        case "system":
+            return {
+                opacityDuration: motionUi + 24,
+                moveDuration: motionUi + 20,
+                settleDuration: motionPanel + 16,
+                glowFadeDuration: motionPanel + 60,
+                startScale: 0.932,
+                peakScale: 1.014,
+                startX: 0,
+                settleX: 0,
+                startY: -26,
+                settleY: 1.2,
+                glowPeak: motionAuraNearPeak * 0.43,
+                glowStartScale: 0.95,
+                glowPeakScale: 1.046
+            }
+        case "userSent":
+            return {
+                opacityDuration: motionFast + 40,
+                moveDuration: motionFast + 50,
+                settleDuration: motionUi + 44,
+                glowFadeDuration: motionPanel + 20,
+                startScale: 0.981,
+                peakScale: 1.02,
+                startX: motionEnterOffsetY * 2.65,
+                settleX: -1.05,
+                startY: motionEnterOffsetY * 0.58,
+                settleY: -0.58,
+                glowPeak: motionAuraNearPeak * 0.68,
+                glowStartScale: 0.938,
+                glowPeakScale: 1.045
+            }
+        case "assistantReceived":
+            return {
+                opacityDuration: motionUi + 22,
+                moveDuration: motionUi + 18,
+                settleDuration: motionUi + 52,
+                glowFadeDuration: motionPanel + 20,
+                startScale: 0.972,
+                peakScale: 1.015,
+                startX: -motionEnterOffsetY * 2.25,
+                settleX: 0.82,
+                startY: motionEnterOffsetY * 0.84,
+                settleY: -0.78,
+                glowPeak: motionAuraNearPeak * 0.55,
+                glowStartScale: 0.95,
+                glowPeakScale: 1.044
+            }
+        case "user":
+            return {
+                opacityDuration: motionFast + 28,
+                moveDuration: motionFast + 32,
+                settleDuration: motionUi + 36,
+                glowFadeDuration: motionPanel + 20,
+                startScale: 0.975,
+                peakScale: 1.017,
+                startX: motionEnterOffsetY * 1.95,
+                settleX: -0.82,
+                startY: motionEnterOffsetY * 0.4,
+                settleY: -0.46,
+                glowPeak: motionAuraNearPeak * 0.53,
+                glowStartScale: 0.938,
+                glowPeakScale: 1.044
+            }
+        default:
+            return {
+                opacityDuration: motionUi + 6,
+                moveDuration: motionUi + 14,
+                settleDuration: motionUi + 42,
+                glowFadeDuration: motionPanel + 20,
+                startScale: 0.971,
+                peakScale: 1.014,
+                startX: -motionEnterOffsetY * 1.65,
+                settleX: 0.62,
+                startY: motionEnterOffsetY * 0.68,
+                settleY: -0.56,
+                glowPeak: motionAuraNearPeak * 0.44,
+                glowStartScale: 0.95,
+                glowPeakScale: 1.043
+            }
+        }
+    }
+    function contentMorphProfileData(profile) {
+        switch (profile) {
+        case "typing":
+            return {
+                showsTypingIndicator: true,
+                showsContentBody: false,
+                contentOffsetY: 5,
+                contentScale: 0.992,
+                typingOffsetY: 0,
+                typingScale: 1.0,
+                contentDuration: motionUi + 20,
+                typingDuration: motionUi
+            }
+        default:
+            return {
+                showsTypingIndicator: false,
+                showsContentBody: root.content !== "",
+                contentOffsetY: 0,
+                contentScale: 1.0,
+                typingOffsetY: -4,
+                typingScale: 0.92,
+                contentDuration: motionUi + 20,
+                typingDuration: motionUi
+            }
+        }
+    }
+    function pendingSurfaceProfileData(profile) {
+        switch (profile) {
+        case "pending":
+            return {
+                opacity: root.isUser ? 1.0 : 0.84,
+                scale: 1.016,
+                color: root.isUser ? "#12FFFFFF" : root.alphaColor(accent, 0.08),
+                duration: motionUi + 60
+            }
+        default:
+            return {
+                opacity: 0.0,
+                scale: 1.0,
+                color: root.isUser ? "#12FFFFFF" : root.alphaColor(accent, 0.08),
+                duration: motionUi + 60
+            }
+        }
+    }
+    readonly property var entranceMotion: entranceProfileData(entranceMotionProfile)
+    readonly property var contentMorphMotion: contentMorphProfileData(contentMorphProfile)
+    readonly property var pendingSurfaceMotion: pendingSurfaceProfileData(pendingSurfaceProfile)
     readonly property color systemIconColor: {
         if (isSystemError) return statusError
         if (isGreeting) return chatGreetingAccent
         return systemAccentColor
     }
-    readonly property int entranceOpacityDuration: {
-        if (isGreeting) return motionUi + 20
-        if (isSystem) return motionPanel
-        if (isUser) return motionFast
-        return motionUi
-    }
-    readonly property int entranceScaleDuration: {
-        if (isGreeting) return motionPanel + 40
-        if (isSystem) return motionPanel + 40
-        if (isUser) return motionUi
-        return motionUi + 20
-    }
-    readonly property real entranceStartScale: {
-        if (isGreeting) return 0.976
-        if (isSystem) return 0.9
-        if (isUserEntrance) return 0.982
-        if (isAssistantEntrance) return 0.976
-        if (isUser) return 0.974
-        return 0.97
-    }
-    readonly property real entranceStartX: {
-        if (isSystem) return 0
-        if (isUserEntrance) return motionEnterOffsetY * 1.5
-        if (isAssistantEntrance) return -motionEnterOffsetY * 1.25
-        if (isUser) return motionEnterOffsetY
-        return -motionEnterOffsetY
-    }
-    readonly property real entranceStartY: {
-        if (isGreeting) return 8
-        if (isSystem) return -18
-        if (isUserEntrance) return motionEnterOffsetY * 0.35
-        if (isAssistantEntrance) return motionEnterOffsetY * 0.55
-        if (isUser) return motionEnterOffsetY * 0.25
-        return motionEnterOffsetY * 0.45
-    }
+    readonly property int entranceOpacityDuration: entranceMotion.opacityDuration
+    readonly property int entranceMoveDuration: entranceMotion.moveDuration
+    readonly property int entranceSettleDuration: entranceMotion.settleDuration
+    readonly property int entranceGlowFadeDuration: entranceMotion.glowFadeDuration
+    readonly property real entranceStartScale: entranceMotion.startScale
+    readonly property real entrancePeakScale: entranceMotion.peakScale
+    readonly property real entranceStartX: entranceMotion.startX
+    readonly property real entranceSettleX: entranceMotion.settleX
+    readonly property real entranceStartY: entranceMotion.startY
+    readonly property real entranceSettleY: entranceMotion.settleY
     readonly property color systemAuraFarColor: {
         if (isSystemError) return chatSystemAuraErrorFar
         if (isGreeting) return chatGreetingAuraFar
@@ -132,10 +267,20 @@ Item {
     readonly property int bubblePaddingBottom: 16
     readonly property int dividerBlockHeight: showDateDivider && dateDividerText !== "" ? 28 : 0
     readonly property color dividerLineColor: alphaColor(textSecondary, isSystem ? 0.18 : 0.14)
-    readonly property real bubbleEntranceGlowPeak: isUserEntrance ? motionAuraNearPeak * 0.42 : motionAuraNearPeak * 0.3
+    readonly property real bubbleEntranceGlowPeak: entranceMotion.glowPeak
     readonly property color bubbleEntranceGlowColor: isUserEntrance
                                                     ? root.alphaColor(accent, 0.34)
                                                     : root.alphaColor(accentGlow, 0.52)
+    readonly property real bubbleEntranceGlowStartScale: entranceMotion.glowStartScale
+    readonly property real bubbleEntranceGlowPeakScale: entranceMotion.glowPeakScale
+    readonly property bool showsTypingIndicator: contentMorphMotion.showsTypingIndicator
+    readonly property bool showsContentBody: contentMorphMotion.showsContentBody
+    readonly property real contentMorphOffsetY: contentMorphMotion.contentOffsetY
+    readonly property real contentMorphScale: contentMorphMotion.contentScale
+    readonly property real typingMorphOffsetY: contentMorphMotion.typingOffsetY
+    readonly property real typingMorphScale: contentMorphMotion.typingScale
+    readonly property int contentMorphDuration: contentMorphMotion.contentDuration
+    readonly property int typingMorphDuration: contentMorphMotion.typingDuration
     readonly property bool canCopyFeedback: root.content !== ""
     readonly property color copyFeedbackOverlayColor: {
         if (isSystemError) return chatSystemBubbleErrorOverlay
@@ -233,8 +378,13 @@ Item {
                 systemAuraFar.opacity = 0.0
                 resetFeedbackSheen(greetingSweep)
                 systemShift.y = root.entranceStartY
+                systemBubble.scale = root.entranceStartScale
                 systemEntranceAnim.restart()
             } else {
+                enterTranslate.x = root.entranceStartX
+                enterTranslate.y = root.entranceStartY
+                bubble.scale = root.entranceStartScale
+                bubbleEntranceGlow.scale = root.bubbleEntranceGlowStartScale
                 entranceAnim.restart()
             }
         }
@@ -515,33 +665,39 @@ Item {
     ParallelAnimation {
         id: systemEntranceAnim
         NumberAnimation { target: systemBubble; property: "opacity"; from: 0.0; to: 1.0; duration: entranceOpacityDuration; easing.type: easeStandard }
-        NumberAnimation { target: systemBubble; property: "scale"; from: entranceStartScale; to: 1.0; duration: entranceScaleDuration; easing.type: easeEmphasis }
-        NumberAnimation { target: systemShift; property: "y"; from: entranceStartY; to: 0; duration: entranceScaleDuration; easing.type: easeEmphasis }
+        SequentialAnimation {
+            NumberAnimation { target: systemBubble; property: "scale"; from: entranceStartScale; to: entrancePeakScale; duration: entranceMoveDuration; easing.type: easeEmphasis }
+            NumberAnimation { target: systemBubble; property: "scale"; to: 1.0; duration: entranceSettleDuration; easing.type: easeSoft }
+        }
+        SequentialAnimation {
+            NumberAnimation { target: systemShift; property: "y"; from: entranceStartY; to: entranceSettleY; duration: entranceMoveDuration; easing.type: easeEmphasis }
+            NumberAnimation { target: systemShift; property: "y"; to: 0; duration: entranceSettleDuration; easing.type: easeSoft }
+        }
         SequentialAnimation {
             NumberAnimation {
                 target: systemAuraNear
                 property: "opacity"
                 from: 0.0
-                to: isGreeting ? greetingAuraNearPeak * 0.56 : (isSystemError ? motionAuraNearPeak * 0.72 : motionAuraNearPeak * 0.38)
-                duration: motionFast
+                to: isGreeting ? greetingAuraNearPeak * 0.72 : (isSystemError ? motionAuraNearPeak * 0.78 : motionAuraNearPeak * 0.46)
+                duration: motionUi
                 easing.type: easeStandard
             }
-            NumberAnimation { target: systemAuraNear; property: "opacity"; to: 0.0; duration: motionAmbient; easing.type: easeStandard }
+            NumberAnimation { target: systemAuraNear; property: "opacity"; to: 0.0; duration: motionAmbient; easing.type: easeSoft }
         }
         SequentialAnimation {
             NumberAnimation {
                 target: systemAuraFar
                 property: "opacity"
                 from: 0.0
-                to: motionAuraFarPeak * 0.72
+                to: isGreeting ? greetingAuraFarPeak * 0.92 : motionAuraFarPeak * 0.8
                 duration: motionUi
                 easing.type: easeStandard
             }
-            NumberAnimation { target: systemAuraFar; property: "opacity"; to: 0.0; duration: motionAmbient + 120; easing.type: easeStandard }
+            NumberAnimation { target: systemAuraFar; property: "opacity"; to: 0.0; duration: motionAmbient + 120; easing.type: easeSoft }
         }
         SequentialAnimation {
-            NumberAnimation { target: greetingSweep; property: "opacity"; from: 0.0; to: motionGreetingSweepPeak * 0.65; duration: motionFast; easing.type: easeStandard }
-            PauseAnimation { duration: motionUi }
+            NumberAnimation { target: greetingSweep; property: "opacity"; from: 0.0; to: motionGreetingSweepPeak * 0.78; duration: motionUi; easing.type: easeStandard }
+            PauseAnimation { duration: motionFast }
             NumberAnimation { target: greetingSweep; property: "opacity"; to: 0.0; duration: motionPanel; easing.type: easeSoft }
         }
         NumberAnimation {
@@ -549,7 +705,7 @@ Item {
             property: "progress"
             from: root.feedbackProgressStart
             to: root.feedbackProgressEnd
-            duration: motionAmbient + 160
+            duration: motionAmbient + 200
             easing.type: easeSoft
         }
     }
@@ -653,7 +809,7 @@ Item {
             top: parent.top
             topMargin: root.dividerBlockHeight + 5
         }
-        property bool isTyping: root.status === "typing" && root.content === ""
+        property bool isTyping: root.isTypingBubble
         width: isTyping ? 72 : Math.min(contentMetrics.implicitWidth + (bubblePaddingX * 2), root.width * 0.75)
         height: isTyping ? 42 : contentText.contentHeight + bubblePaddingTop + bubblePaddingBottom
         radius: sizeBubbleRadius
@@ -731,38 +887,57 @@ Item {
         ParallelAnimation {
             id: entranceAnim
             NumberAnimation { target: bubble; property: "opacity"; from: 0.0; to: 1.0; duration: entranceOpacityDuration; easing.type: easeStandard }
-            NumberAnimation { target: bubble; property: "scale"; from: entranceStartScale; to: 1.0; duration: entranceScaleDuration; easing.type: easeEmphasis }
-            NumberAnimation { target: enterTranslate; property: "x"; from: entranceStartX; to: 0; duration: entranceScaleDuration; easing.type: easeEmphasis }
-            NumberAnimation { target: enterTranslate; property: "y"; from: entranceStartY; to: 0; duration: entranceScaleDuration; easing.type: easeEmphasis }
+            SequentialAnimation {
+                NumberAnimation { target: bubble; property: "scale"; from: entranceStartScale; to: entrancePeakScale; duration: entranceMoveDuration; easing.type: easeEmphasis }
+                NumberAnimation { target: bubble; property: "scale"; to: 1.0; duration: entranceSettleDuration; easing.type: easeSoft }
+            }
+            SequentialAnimation {
+                NumberAnimation { target: enterTranslate; property: "x"; from: entranceStartX; to: entranceSettleX; duration: entranceMoveDuration; easing.type: easeEmphasis }
+                NumberAnimation { target: enterTranslate; property: "x"; to: 0; duration: entranceSettleDuration; easing.type: easeSoft }
+            }
+            SequentialAnimation {
+                NumberAnimation { target: enterTranslate; property: "y"; from: entranceStartY; to: entranceSettleY; duration: entranceMoveDuration; easing.type: easeEmphasis }
+                NumberAnimation { target: enterTranslate; property: "y"; to: 0; duration: entranceSettleDuration; easing.type: easeSoft }
+            }
             SequentialAnimation {
                 NumberAnimation {
                     target: bubbleEntranceGlow
                     property: "opacity"
                     from: 0.0
                     to: bubbleEntranceGlowPeak
-                    duration: motionFast
+                    duration: motionUi
                     easing.type: easeStandard
                 }
                 NumberAnimation {
                     target: bubbleEntranceGlow
                     property: "opacity"
                     to: 0.0
-                    duration: motionPanel
+                    duration: entranceGlowFadeDuration
                     easing.type: easeSoft
                 }
             }
-            NumberAnimation {
-                target: bubbleEntranceGlow
-                property: "scale"
-                from: 0.96
-                to: 1.03
-                duration: motionPanel
-                easing.type: easeEmphasis
+            SequentialAnimation {
+                NumberAnimation {
+                    target: bubbleEntranceGlow
+                    property: "scale"
+                    from: bubbleEntranceGlowStartScale
+                    to: bubbleEntranceGlowPeakScale
+                    duration: entranceMoveDuration
+                    easing.type: easeEmphasis
+                }
+                NumberAnimation {
+                    target: bubbleEntranceGlow
+                    property: "scale"
+                    to: 1.0
+                    duration: entranceSettleDuration
+                    easing.type: easeSoft
+                }
             }
         }
 
         Text {
             id: contentText
+            objectName: "contentText"
             anchors {
                 top: parent.top
                 bottom: parent.bottom
@@ -774,21 +949,36 @@ Item {
                 rightMargin: bubblePaddingX
             }
             text: root.content
-            visible: root.content !== ""
+            visible: root.showsContentBody || opacity > 0.01
             color: root.isUser ? "#FFFFFF" : textPrimary
             font.pixelSize: typeBody
             wrapMode: Text.Wrap
             textFormat: root.isMarkdown ? Text.MarkdownText : Text.PlainText
             lineHeight: lineHeightBody
             verticalAlignment: Text.AlignVCenter
+            opacity: root.showsContentBody ? 1.0 : 0.0
+            y: root.contentMorphOffsetY
+            scale: root.contentMorphScale
+            transformOrigin: Item.Center
+            Behavior on opacity { NumberAnimation { duration: root.contentMorphDuration; easing.type: easeStandard } }
+            Behavior on y { NumberAnimation { duration: root.contentMorphDuration; easing.type: easeSoft } }
+            Behavior on scale { NumberAnimation { duration: root.contentMorphDuration; easing.type: easeSoft } }
         }
 
         Item {
             id: typingIndicator
+            objectName: "typingIndicator"
             anchors.centerIn: parent
-            visible: bubble.isTyping
+            visible: root.showsTypingIndicator || opacity > 0.01
             width: 32
             height: 10
+            opacity: root.showsTypingIndicator ? 1.0 : 0.0
+            y: root.typingMorphOffsetY
+            scale: root.typingMorphScale
+            transformOrigin: Item.Center
+            Behavior on opacity { NumberAnimation { duration: root.typingMorphDuration; easing.type: easeStandard } }
+            Behavior on y { NumberAnimation { duration: root.typingMorphDuration; easing.type: easeSoft } }
+            Behavior on scale { NumberAnimation { duration: root.typingMorphDuration; easing.type: easeSoft } }
 
             Row {
                 anchors.centerIn: parent
@@ -805,7 +995,7 @@ Item {
                         opacity: motionTypingPulseMinOpacity
 
                         SequentialAnimation on opacity {
-                            running: typingIndicator.visible
+                            running: root.showsTypingIndicator
                             loops: Animation.Infinite
                             PauseAnimation { duration: index * 120 }
                             NumberAnimation { to: 1.0; duration: motionUi; easing.type: easeStandard }
@@ -817,6 +1007,19 @@ Item {
             }
         }
 
+        Rectangle {
+            id: pendingOverlay
+            objectName: "pendingOverlay"
+            anchors.fill: parent
+            radius: parent.radius
+            color: root.pendingSurfaceMotion.color
+            visible: root.isPending || opacity > 0.01
+            opacity: root.pendingSurfaceMotion.opacity
+            scale: root.pendingSurfaceMotion.scale
+            transformOrigin: Item.Center
+            Behavior on opacity { NumberAnimation { duration: root.pendingSurfaceMotion.duration; easing.type: easeSoft } }
+            Behavior on scale { NumberAnimation { duration: root.pendingSurfaceMotion.duration; easing.type: easeSoft } }
+        }
         Rectangle { anchors.fill: parent; radius: parent.radius; color: chatBubbleErrorTint; visible: root.status === "error" }
     }
 }

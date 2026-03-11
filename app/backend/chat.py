@@ -1,7 +1,7 @@
 """ChatMessageModel — QAbstractListModel for chat messages.
 
 Roles: id, role, content, format, status, createdAt
-Status values: "typing" | "done" | "error"
+Status values: "pending" | "typing" | "done" | "error"
 Format values: "markdown" | "plain"
 """
 
@@ -90,16 +90,17 @@ class ChatMessageModel(QAbstractListModel):
     # Mutation API
     # ------------------------------------------------------------------
 
-    def append_user(self, text: str) -> int:
+    def append_user(self, text: str, *, status: str = "pending", client_token: str = "") -> int:
         """Append a user message; return its row index."""
         return self._append(
             {
                 "role": "user",
                 "content": text,
                 "format": "plain",
-                "status": "done",
+                "status": self._normalize_status(status, default="pending"),
                 "entranceStyle": "userSent",
                 "entrancePending": True,
+                "clientToken": client_token,
             }
         )
 
@@ -193,7 +194,7 @@ class ChatMessageModel(QAbstractListModel):
 
     @staticmethod
     def _normalize_status(status: Any, default: str = "done") -> str:
-        if isinstance(status, str) and status in {"typing", "done", "error"}:
+        if isinstance(status, str) and status in {"pending", "typing", "done", "error"}:
             return status
         return default
 
@@ -537,7 +538,11 @@ class ChatMessageModel(QAbstractListModel):
         if len(prepared_messages) < stable_prefix_count:
             return False
         stable_prefix = self._messages[:stable_prefix_count]
-        if not self._render_sequences_match(stable_prefix, prepared_messages[:stable_prefix_count]):
+        if not self._render_sequences_match(
+            stable_prefix,
+            prepared_messages[:stable_prefix_count],
+            ignore_user_status=True,
+        ):
             return False
 
         remainder = prepared_messages[stable_prefix_count:]
@@ -621,7 +626,11 @@ class ChatMessageModel(QAbstractListModel):
 
         stable_prefix = self._messages[:stable_prefix_count]
         prepared_prefix = prepared_messages[:stable_prefix_count]
-        if not self._render_sequences_match(stable_prefix, prepared_prefix):
+        if not self._render_sequences_match(
+            stable_prefix,
+            prepared_prefix,
+            ignore_user_status=True,
+        ):
             return prepared_messages
 
         remaining_tail = self._remaining_transient_tail(
@@ -659,24 +668,36 @@ class ChatMessageModel(QAbstractListModel):
                 continue
             if len(tail_prefix) > len(transient_tail):
                 continue
-            if not self._render_sequences_match(transient_tail[: len(tail_prefix)], tail_prefix):
+            if not self._render_sequences_match(
+                transient_tail[: len(tail_prefix)],
+                tail_prefix,
+                ignore_user_status=True,
+            ):
                 continue
             return [dict(msg) for msg in transient_tail[len(tail_prefix) :]]
         return None
 
     @classmethod
     def _render_sequences_match(
-        cls, left_messages: list[dict[str, Any]], right_messages: list[dict[str, Any]]
+        cls,
+        left_messages: list[dict[str, Any]],
+        right_messages: list[dict[str, Any]],
+        *,
+        ignore_user_status: bool = False,
     ) -> bool:
         if len(left_messages) != len(right_messages):
             return False
         for left, right in zip(left_messages, right_messages):
-            if cls._render_tuple(left) != cls._render_tuple(right):
+            if cls._render_tuple(left, ignore_user_status=ignore_user_status) != cls._render_tuple(
+                right, ignore_user_status=ignore_user_status
+            ):
                 return False
         return True
 
     @staticmethod
-    def _render_tuple(message: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+    def _render_tuple(
+        message: dict[str, Any], *, ignore_user_status: bool = False
+    ) -> tuple[str, str, str, str, str, str]:
         role = message.get("role", "")
         content = message.get("content", "")
         fmt = message.get("format", "")
@@ -685,6 +706,9 @@ class ChatMessageModel(QAbstractListModel):
         divider_text = message.get("dividertext", "")
         role_s = role if isinstance(role, str) else str(role)
         fmt_s = fmt if isinstance(fmt, str) else str(fmt)
+        status_s = status if isinstance(status, str) else str(status)
+        if ignore_user_status and role_s == "user":
+            status_s = ""
         entrance_s = ""
         if role_s == "system":
             entrance_s = entrance_style if isinstance(entrance_style, str) else str(entrance_style)
@@ -692,7 +716,7 @@ class ChatMessageModel(QAbstractListModel):
             role_s,
             content if isinstance(content, str) else str(content),
             fmt_s,
-            status if isinstance(status, str) else str(status),
+            status_s,
             entrance_s,
             divider_text if isinstance(divider_text, str) else str(divider_text),
         )

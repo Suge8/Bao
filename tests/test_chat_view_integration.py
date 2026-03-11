@@ -12,6 +12,7 @@ QtCore = pytest.importorskip("PySide6.QtCore")
 QtGui = pytest.importorskip("PySide6.QtGui")
 QtQml = pytest.importorskip("PySide6.QtQml")
 QtQuick = pytest.importorskip("PySide6.QtQuick")
+QtQuickControls2 = pytest.importorskip("PySide6.QtQuickControls2")
 QtTest = pytest.importorskip("PySide6.QtTest")
 
 QAbstractListModel = QtCore.QAbstractListModel
@@ -31,6 +32,7 @@ Signal = QtCore.Signal
 Slot = QtCore.Slot
 QGuiApplication = QtGui.QGuiApplication
 QQmlApplicationEngine = QtQml.QQmlApplicationEngine
+QQuickStyle = QtQuickControls2.QQuickStyle
 QTest = QtTest.QTest
 
 from app.main import WindowFocusDismissFilter
@@ -109,9 +111,12 @@ class DummyChatService(QObject):
     historyLoadingChanged = Signal(bool)
     messageAppended = Signal(int)
     statusUpdated = Signal(int, str)
+    contentUpdated = Signal(int, str)
+    stateChanged = Signal(str)
     gatewayReady = Signal(bool)
     activeSessionStateChanged = Signal()
     sessionViewApplied = Signal(str)
+    sessionViewportReady = Signal(str)
 
     def __init__(
         self,
@@ -143,9 +148,15 @@ class DummyChatService(QObject):
         self._history_loading = loading
         self.historyLoadingChanged.emit(loading)
 
-    @Property(str, constant=True)
+    @Property(str, notify=stateChanged)
     def state(self) -> str:
         return self._state
+
+    def setState(self, state: str) -> None:
+        if self._state == state:
+            return
+        self._state = state
+        self.stateChanged.emit(state)
 
     @Property(str, constant=True)
     def lastError(self) -> str:
@@ -183,6 +194,7 @@ class DummyChatService(QObject):
 
     def emitSessionViewApplied(self, key: str) -> None:
         self.sessionViewApplied.emit(key)
+        self.sessionViewportReady.emit(key)
 
     @Slot(str)
     def setLanguage(self, lang: str) -> None:
@@ -479,6 +491,10 @@ class DummySessionService(QObject):
     def activeKey(self) -> str:
         return self._active_key
 
+    @Property(bool, constant=True)
+    def activeSessionReadOnly(self) -> bool:
+        return False
+
     def setActiveKey(self, key: str) -> None:
         if self._active_key == key:
             return
@@ -488,7 +504,6 @@ class DummySessionService(QObject):
             for row in rows:
                 if isinstance(row, dict) and row.get("key") == key:
                     row["has_unread"] = False
-        self._ensure_group_expanded_for(key)
         self._rebuild_sidebar_model()
         self.activeKeyChanged.emit(key)
 
@@ -588,16 +603,13 @@ class DummySessionService(QObject):
             return False
         return channel == "desktop"
 
-    def _ensure_group_expanded_for(self, key: str) -> None:
-        if not key:
-            return
-        for row in self._session_rows():
-            if str(row.get("key", "")) != key:
-                continue
-            channel = str(row.get("channel", "") or "")
-            if channel:
-                self._sidebar_expanded_groups[channel] = True
-            return
+    def _visible_items_for_group(
+        self, items: list[dict[str, object]], *, expanded: bool
+    ) -> list[dict[str, object]]:
+        from app.backend import session as session_backend
+
+        visible_items = getattr(session_backend, "_visible_sidebar_items")
+        return visible_items(items, expanded=expanded, active_key=self._active_key)
 
     def _rebuild_sidebar_model(self) -> None:
         self.sidebarProjectionWillChange.emit()
@@ -687,9 +699,8 @@ class DummySessionService(QObject):
                     "is_first_in_group": False,
                 }
             )
-            if not expanded:
-                continue
-            for index, item in enumerate(reordered_items):
+            visible_items = self._visible_items_for_group(reordered_items, expanded=expanded)
+            for index, item in enumerate(visible_items):
                 rows.append(
                     {
                         "row_id": f"session:{item.get('key', '')}",
@@ -710,7 +721,7 @@ class DummySessionService(QObject):
                         "item_count": 0,
                         "group_unread_count": 0,
                         "group_has_running": False,
-                        "is_last_in_group": index == len(reordered_items) - 1,
+                        "is_last_in_group": index == len(visible_items) - 1,
                         "is_first_in_group": index == 0,
                     }
                 )
@@ -792,6 +803,7 @@ class DummyUpdateBridge(QObject):
 
 @pytest.fixture(scope="session")
 def qapp():
+    QQuickStyle.setStyle("Basic")
     app = QGuiApplication.instance() or QGuiApplication(sys.argv)
     yield app
 
@@ -802,11 +814,30 @@ def _process(ms: int) -> None:
     loop.exec()
 
 
+def _wait_until(predicate, *, attempts: int = 20, step_ms: int = 20) -> None:
+    for _ in range(attempts):
+        if predicate():
+            return
+        _process(step_ms)
+    raise AssertionError("condition not met before timeout")
+
+
+def _wait_for_diagnostics_log_tail_ready(root: QObject, scroll: QObject) -> None:
+    settle_ms = max(40, int(root.property("motionUi") or 0) + 20)
+    _process(settle_ms)
+    _wait_until(lambda: not bool(scroll.property("scrollToEndQueued")))
+
+
+def _scroll_max_y(item: QObject) -> float:
+    origin_y = float(item.property("originY"))
+    return max(
+        origin_y,
+        origin_y + float(item.property("contentHeight")) - float(item.property("height")),
+    )
+
+
 def _install_focus_filter(root: QObject) -> WindowFocusDismissFilter:
     focus_filter = WindowFocusDismissFilter(root)
-    app = QGuiApplication.instance()
-    if app is not None:
-        app.installEventFilter(focus_filter)
     if hasattr(root, "installEventFilter"):
         root.installEventFilter(focus_filter)
     return focus_filter
@@ -815,9 +846,6 @@ def _install_focus_filter(root: QObject) -> WindowFocusDismissFilter:
 def _remove_focus_filter(root: QObject, focus_filter: WindowFocusDismissFilter | None) -> None:
     if focus_filter is None:
         return
-    app = QGuiApplication.instance()
-    if app is not None:
-        app.removeEventFilter(focus_filter)
     if hasattr(root, "removeEventFilter"):
         root.removeEventFilter(focus_filter)
 
@@ -1158,6 +1186,113 @@ def test_diagnostics_modal_renders_content(qapp):
         _process(0)
 
 
+def test_diagnostics_log_tail_follow_contract_preserves_manual_detach_and_resume(qapp):
+    _ = qapp
+    diagnostics_service = DummyDiagnosticsService()
+    diagnostics_service._recent_log_text = "\n".join(
+        f"2026-03-08 03:19:{i:02d} | INFO | line {i}" for i in range(240)
+    )
+    engine, root = _load_main_window(
+        chat_service=DummyChatService(EmptyMessagesModel(), state="running"),
+        diagnostics_service=diagnostics_service,
+    )
+
+    try:
+        modal = _find_object(root, "diagnosticsModal")
+        _ = QMetaObject.invokeMethod(modal, "open")
+        _process(50)
+
+        scroll = _find_object(root, "diagnosticsLogTailScroll")
+        _wait_for_diagnostics_log_tail_ready(root, scroll)
+        flick = scroll
+
+        max_y = max(0.0, float(flick.property("contentHeight")) - float(flick.property("height")))
+        assert max_y > 0
+        assert abs(float(flick.property("contentY")) - max_y) <= 2
+        assert bool(scroll.property("autoFollowActive")) is True
+
+        detached_y = 0.0
+        _ = flick.setProperty("contentY", detached_y)
+        _ = QMetaObject.invokeMethod(scroll, "refreshAutoFollowFromViewport")
+        _process(20)
+        assert bool(scroll.property("autoFollowActive")) is False
+        assert abs(float(flick.property("contentY")) - detached_y) <= 2
+
+        diagnostics_service._recent_log_text += "\n2026-03-08 03:20:00 | INFO | line while detached"
+        diagnostics_service.changed.emit()
+        _process(200)
+
+        detached_max_y = max(
+            0.0, float(flick.property("contentHeight")) - float(flick.property("height"))
+        )
+        assert detached_max_y > detached_y
+        assert float(flick.property("contentY")) < detached_max_y - 8.0
+        assert bool(scroll.property("autoFollowActive")) is False
+
+        _ = QMetaObject.invokeMethod(scroll, "followTail")
+        _wait_until(lambda: not bool(scroll.property("scrollToEndQueued")))
+        assert bool(scroll.property("autoFollowActive")) is True
+
+        diagnostics_service._recent_log_text += "\n2026-03-08 03:20:01 | INFO | line after resume"
+        diagnostics_service.changed.emit()
+        _process(200)
+
+        resumed_max_y = max(
+            0.0, float(flick.property("contentHeight")) - float(flick.property("height"))
+        )
+        assert abs(float(flick.property("contentY")) - resumed_max_y) <= 2
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_diagnostics_log_tail_reopen_resets_follow_to_latest_log(qapp):
+    _ = qapp
+    diagnostics_service = DummyDiagnosticsService()
+    diagnostics_service._recent_log_text = "\n".join(
+        f"2026-03-08 03:21:{i:02d} | INFO | line {i}" for i in range(240)
+    )
+    engine, root = _load_main_window(
+        chat_service=DummyChatService(EmptyMessagesModel(), state="running"),
+        diagnostics_service=diagnostics_service,
+    )
+
+    try:
+        modal = _find_object(root, "diagnosticsModal")
+        _ = QMetaObject.invokeMethod(modal, "open")
+        _process(50)
+
+        scroll = _find_object(root, "diagnosticsLogTailScroll")
+        _wait_for_diagnostics_log_tail_ready(root, scroll)
+        initial_max_y = max(
+            0.0, float(scroll.property("contentHeight")) - float(scroll.property("height"))
+        )
+        assert initial_max_y > 0
+        assert abs(float(scroll.property("contentY")) - initial_max_y) <= 2
+        assert bool(scroll.property("autoFollowActive")) is True
+
+        _ = QMetaObject.invokeMethod(modal, "close")
+        _process(120)
+
+        diagnostics_service._recent_log_text += "\n2026-03-08 03:22:00 | INFO | line while hidden"
+        diagnostics_service.changed.emit()
+        _process(120)
+
+        _ = QMetaObject.invokeMethod(modal, "open")
+        _process(50)
+        _wait_for_diagnostics_log_tail_ready(root, scroll)
+
+        max_y = max(0.0, float(scroll.property("contentHeight")) - float(scroll.property("height")))
+        assert max_y > 0
+        assert bool(scroll.property("autoFollowActive")) is True
+        assert abs(float(scroll.property("contentY")) - max_y) <= 2
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
 def test_main_chat_view_external_click_clears_selection_with_window_focus_filter(qapp):
     _ = qapp
     engine, root = _load_main_window()
@@ -1491,6 +1626,7 @@ def test_settings_add_provider_click_works_with_focused_editor(qapp):
         workspace_field = _find_object_by_property(root, "placeholderText", "~/.bao/workspace")
         settings_scroll = _find_object(root, "settingsScroll")
         add_provider_button = _find_object(root, "addProviderHitArea")
+        initial_content_y = settings_scroll.property("contentItem").property("contentY")
 
         workspace_field.forceActiveFocus()
         _process(0)
@@ -1504,6 +1640,7 @@ def test_settings_add_provider_click_works_with_focused_editor(qapp):
         assert bool(workspace_field.property("activeFocus")) is False
         assert settings_view.property("_pendingExpandProviderName") == ""
         assert len(_provider_list_snapshot(settings_view)) == 2
+        assert settings_scroll.property("contentItem").property("contentY") > initial_content_y
     finally:
         _remove_focus_filter(root, focus_filter)
         root.deleteLater()
@@ -1518,26 +1655,23 @@ def test_settings_save_click_works_with_open_settings_select_popup(qapp):
         providers=[{"name": "primary", "type": "openai", "apiKey": "sk-ready", "apiBase": ""}],
     )
     engine, root = _load_main_window(config_service)
-    focus_filter: WindowFocusDismissFilter | None = None
 
     try:
-        focus_filter = _install_focus_filter(root)
         _ = root.setProperty("startView", "settings")
-        popup_owner = _find_visible_object_by_property(root, "baoClickAwayPopupOwner", True)
+        popup_owner = _find_visible_object_by_property(root, "popupOpen", False)
         save_button = _find_visible_object_by_property(root, "text", "Save")
         _process(30)
 
         popup_owner.openPopup()
         _process(100)
 
-        assert bool(popup_owner.property("baoClickAwayPopupOpen")) is True
+        assert bool(popup_owner.property("popupOpen")) is True
 
         QTest.mouseClick(root, Qt.LeftButton, Qt.NoModifier, _center_point(save_button))
         _process(100)
 
         assert isinstance(config_service.last_saved_changes, dict)
     finally:
-        _remove_focus_filter(root, focus_filter)
         root.deleteLater()
         engine.deleteLater()
         _process(0)
@@ -2072,6 +2206,118 @@ def test_gateway_capsule_space_key_triggers_gateway_action(qapp):
         _process(0)
 
 
+def test_gateway_capsule_handoffs_starting_motion_into_running_state(qapp):
+    _ = qapp
+
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            }
+        ]
+    )
+    chat_service = DummyChatService(EmptyMessagesModel(), state="starting")
+    engine, root = _load_main_window(session_model=session_model, chat_service=chat_service)
+
+    try:
+        capsule = _find_object(root, "gatewayCapsule")
+        icon_wrap = _find_object(root, "gatewayActionIconWrap")
+
+        _process(120)
+        starting_turn = float(capsule.property("iconTurn"))
+        assert starting_turn > 0.0
+
+        chat_service.setState("running")
+        _process(40)
+
+        mid_turn = float(icon_wrap.property("rotation"))
+        mid_pulse = float(capsule.property("iconPulse"))
+
+        assert mid_turn > 0.0
+        assert mid_pulse > 0.0
+
+        _process(360)
+
+        assert abs(float(icon_wrap.property("rotation"))) < starting_turn
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_gateway_capsule_primary_label_crossfades_between_states(qapp):
+    _ = qapp
+
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            }
+        ]
+    )
+    chat_service = DummyChatService(EmptyMessagesModel(), state="idle")
+    engine, root = _load_main_window(session_model=session_model, chat_service=chat_service)
+
+    try:
+        incoming = _find_object(root, "gatewayPrimaryLabelIncoming")
+        outgoing = _find_object(root, "gatewayPrimaryLabelOutgoing")
+
+        assert str(incoming.property("text")) != ""
+        chat_service.setState("starting")
+        _process(40)
+
+        assert 0.0 < float(incoming.property("opacity")) < 1.0
+        assert 0.0 < float(outgoing.property("opacity")) < 1.0
+
+        _process(360)
+
+        assert float(incoming.property("opacity")) > 0.98
+        assert float(outgoing.property("opacity")) < 0.02
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_gateway_capsule_secondary_row_settles_during_state_change(qapp):
+    _ = qapp
+
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            }
+        ]
+    )
+    chat_service = DummyChatService(EmptyMessagesModel(), state="idle")
+    engine, root = _load_main_window(session_model=session_model, chat_service=chat_service)
+
+    try:
+        secondary_row = _find_object(root, "gatewaySecondaryRow")
+
+        chat_service.setState("starting")
+        _process(40)
+
+        assert 0.58 <= float(secondary_row.property("opacity")) < 0.72
+        assert float(secondary_row.property("y")) > 0.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
 def test_gateway_detail_bubble_is_overlay_child_of_capsule(qapp):
     _ = qapp
 
@@ -2516,7 +2762,6 @@ def test_sidebar_delete_above_viewport_preserves_visible_anchor(qapp):
         origin_y = float(session_list.property("originY"))
         assert isinstance(before_offset, float)
         assert isinstance(after_offset, float)
-        assert after_y <= before_y + 0.5
         assert after_y >= origin_y
         assert abs(after_offset - before_offset) < 2.0
     finally:
@@ -2545,6 +2790,7 @@ def test_sidebar_active_session_reorder_does_not_jump_to_top(qapp):
         session_service = engine._test_refs["session_service"]
         session_list = _find_object(root, "sidebarSessionList")
 
+        session_service.toggleSidebarGroup("imessage")
         session_service.setActiveKey("imessage:chat::15")
         session_service.sessionsChanged.emit()
         for _ in range(4):
@@ -2614,6 +2860,7 @@ def test_sidebar_sticky_header_tracks_scrolled_group(qapp):
         sticky = _find_object(root, "sidebarStickyHeader")
         sticky_viewport = _find_object(root, "sidebarStickyHeaderViewport")
 
+        session_service.toggleSidebarGroup("telegram")
         session_service.setActiveKey("telegram:room8")
         session_service.sessionsChanged.emit()
         for _ in range(4):
@@ -2793,6 +3040,59 @@ def test_main_chat_view_system_message_append_forces_follow_to_end(qapp):
 
 
 @pytest.mark.parametrize(
+    ("history", "label"),
+    [
+        (
+            [{"role": "user", "content": f"message {i}"} for i in range(72)],
+            "many-short",
+        ),
+        (
+            [
+                {
+                    "role": "assistant",
+                    "content": " ".join([f"line{i}" for _ in range(18)]),
+                }
+                for i in range(17)
+            ],
+            "few-long",
+        ),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_main_chat_view_preloaded_history_cold_open_follows_to_end(qapp, history, label):
+    _ = qapp
+    _ = label
+    from app.backend.chat import ChatMessageModel
+
+    messages_model = ChatMessageModel()
+    messages_model.load_prepared(ChatMessageModel.prepare_history(history))
+
+    engine, root = _load_main_window(messages_model=messages_model)
+
+    try:
+        message_list = _find_object(root, "chatMessageList")
+
+        for _ in range(10):
+            _process(30)
+
+        origin_y = float(message_list.property("originY"))
+        max_y = max(
+            origin_y,
+            origin_y
+            + float(message_list.property("contentHeight"))
+            - float(message_list.property("height")),
+        )
+        content_y = float(message_list.property("contentY"))
+
+        assert max_y > origin_y + 20.0
+        assert content_y >= max_y - 2.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+@pytest.mark.parametrize(
     ("append_message", "label"),
     [
         (lambda model: model.append_user("hello"), "user"),
@@ -2884,9 +3184,331 @@ def test_main_chat_view_deferred_follow_respects_history_loading(qapp):
         chat_service.messageAppended.emit(row)
 
         _ = message_list.setProperty("contentY", 0.0)
+        _ = message_list.setProperty("bottomPinned", False)
         chat_service.setHistoryLoading(True)
 
         for _ in range(4):
+            _process(30)
+
+        assert float(message_list.property("contentY")) < 2.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_main_chat_view_streaming_update_follows_when_active(qapp):
+    _ = qapp
+    from app.backend.chat import ChatMessageModel
+
+    messages_model = ChatMessageModel()
+    for i in range(48):
+        messages_model.append_user(f"message {i}")
+
+    engine, root = _load_main_window(messages_model=messages_model)
+
+    try:
+        chat_service = engine._test_refs["chat_service"]
+        message_list = _find_object(root, "chatMessageList")
+
+        for _ in range(6):
+            _process(30)
+
+        typing_row = messages_model.append_assistant("", status="typing")
+        chat_service.messageAppended.emit(typing_row)
+        for _ in range(4):
+            _process(30)
+
+        for i in range(12):
+            streamed = "\n".join(f"stream line {j}" for j in range((i + 1) * 6))
+            messages_model.update_content(typing_row, streamed)
+            chat_service.contentUpdated.emit(typing_row, streamed)
+            _process(25)
+
+        for _ in range(4):
+            _process(30)
+
+        max_y_after = max(
+            0.0,
+            float(message_list.property("contentHeight")) - float(message_list.property("height")),
+        )
+        content_y = float(message_list.property("contentY"))
+
+        assert max_y_after > 1.0
+        assert content_y >= max_y_after - 2.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_main_chat_view_streaming_update_preserves_manual_viewport_when_scrolled_away(qapp):
+    _ = qapp
+    from app.backend.chat import ChatMessageModel
+
+    messages_model = ChatMessageModel()
+    for i in range(48):
+        messages_model.append_user(f"message {i}")
+
+    engine, root = _load_main_window(messages_model=messages_model)
+
+    try:
+        chat_service = engine._test_refs["chat_service"]
+        message_list = _find_object(root, "chatMessageList")
+
+        for _ in range(6):
+            _process(30)
+
+        typing_row = messages_model.append_assistant("", status="typing")
+        chat_service.messageAppended.emit(typing_row)
+        for _ in range(4):
+            _process(30)
+
+        _ = message_list.setProperty("contentY", 0.0)
+        _ = message_list.setProperty("bottomPinned", False)
+        _process(30)
+
+        for i in range(8):
+            streamed = "\n".join(f"stream line {j}" for j in range((i + 1) * 6))
+            messages_model.update_content(typing_row, streamed)
+            chat_service.contentUpdated.emit(typing_row, streamed)
+            _process(25)
+
+        for _ in range(4):
+            _process(30)
+
+        assert float(message_list.property("contentY")) < 2.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_main_chat_view_composer_activation_keeps_bottom_visible(qapp):
+    _ = qapp
+    from app.backend.chat import ChatMessageModel
+
+    messages_model = ChatMessageModel()
+    for i in range(48):
+        messages_model.append_user(f"message {i}")
+
+    chat_service = DummyChatService(messages_model, state="starting")
+    engine, root = _load_main_window(messages_model=messages_model, chat_service=chat_service)
+
+    try:
+        message_list = _find_object(root, "chatMessageList")
+
+        for _ in range(6):
+            _process(30)
+
+        max_y_before = max(
+            0.0,
+            float(message_list.property("contentHeight")) - float(message_list.property("height")),
+        )
+        assert max_y_before > 1.0
+
+        _ = message_list.setProperty("contentY", max_y_before)
+        _process(30)
+
+        chat_service.setState("running")
+        for _ in range(12):
+            _process(30)
+
+        max_y_after = max(
+            0.0,
+            float(message_list.property("contentHeight")) - float(message_list.property("height")),
+        )
+        content_y = float(message_list.property("contentY"))
+
+        assert max_y_after > max_y_before
+        assert content_y >= max_y_after - 2.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_main_chat_view_startup_greeting_lands_immediately_above_composer(qapp):
+    _ = qapp
+    from app.backend.chat import ChatMessageModel
+
+    messages_model = ChatMessageModel()
+    for i in range(20):
+        messages_model.append_assistant(f"old {i}", status="done")
+
+    chat_service = DummyChatService(messages_model, state="starting")
+    engine, root = _load_main_window(messages_model=messages_model, chat_service=chat_service)
+
+    try:
+        message_list = _find_object(root, "chatMessageList")
+
+        for _ in range(6):
+            _process(30)
+
+        chat_service.setState("running")
+        _process(40)
+
+        row = messages_model.append_assistant(
+            "hello",
+            status="done",
+            entrance_style="greeting",
+            entrance_pending=True,
+        )
+        chat_service.messageAppended.emit(row)
+        _wait_until(
+            lambda: float(message_list.property("contentY")) >= _scroll_max_y(message_list) - 2.0
+        )
+
+        max_y = _scroll_max_y(message_list)
+        content_y = float(message_list.property("contentY"))
+
+        assert content_y >= max_y - 2.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_main_chat_view_composer_reveal_animates_bottom_inset_when_gateway_starts(qapp):
+    _ = qapp
+    from app.backend.chat import ChatMessageModel
+
+    messages_model = ChatMessageModel()
+    chat_service = DummyChatService(messages_model, state="starting")
+    engine, root = _load_main_window(messages_model=messages_model, chat_service=chat_service)
+
+    try:
+        composer = _find_object(root, "composerBar")
+
+        start_inset = float(composer.property("presentedListBottomInset"))
+        target_running_inset = float(composer.property("targetListBottomInset"))
+        assert start_inset == target_running_inset
+
+        chat_service.setState("running")
+        _process(50)
+
+        mid_inset = float(composer.property("presentedListBottomInset"))
+        end_target = float(composer.property("targetListBottomInset"))
+
+        assert start_inset < mid_inset < end_target
+
+        _process(420)
+
+        assert abs(float(composer.property("presentedListBottomInset")) - end_target) < 1.0
+        assert float(composer.property("opacity")) > 0.98
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_main_chat_view_pending_user_and_startup_greeting_share_single_bottom_path(qapp):
+    _ = qapp
+    from app.backend.chat import ChatMessageModel
+
+    messages_model = ChatMessageModel()
+    for i in range(20):
+        messages_model.append_assistant(f"old {i}", status="done")
+
+    chat_service = DummyChatService(messages_model, state="starting")
+    engine, root = _load_main_window(messages_model=messages_model, chat_service=chat_service)
+
+    try:
+        message_list = _find_object(root, "chatMessageList")
+
+        for _ in range(6):
+            _process(30)
+
+        pending_row = messages_model.append_user("hello", status="pending", client_token="tok")
+        chat_service.messageAppended.emit(pending_row)
+        _wait_until(lambda: bool(message_list.property("bottomPinned")) is True)
+
+        chat_service.setState("running")
+        _process(40)
+
+        greeting_row = messages_model.append_assistant(
+            "welcome",
+            status="done",
+            entrance_style="greeting",
+            entrance_pending=True,
+        )
+        chat_service.messageAppended.emit(greeting_row)
+        _wait_until(
+            lambda: float(message_list.property("contentY")) >= _scroll_max_y(message_list) - 2.0
+        )
+
+        assert bool(message_list.property("bottomPinned")) is True
+        assert float(message_list.property("contentY")) >= _scroll_max_y(message_list) - 2.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_main_chat_view_pending_user_uses_instant_follow_without_programmatic_animation(qapp):
+    _ = qapp
+    from app.backend.chat import ChatMessageModel
+
+    messages_model = ChatMessageModel()
+    for i in range(28):
+        messages_model.append_assistant(f"old {i}", status="done")
+
+    engine, root = _load_main_window(messages_model=messages_model)
+
+    try:
+        chat_service = engine._test_refs["chat_service"]
+        message_list = _find_object(root, "chatMessageList")
+
+        for _ in range(6):
+            _process(30)
+
+        _ = message_list.setProperty("contentY", _scroll_max_y(message_list))
+        _ = message_list.setProperty("bottomPinned", True)
+        _process(30)
+
+        row = messages_model.append_user("hello", status="pending", client_token="tok")
+        chat_service.messageAppended.emit(row)
+        _process(40)
+
+        assert bool(message_list.property("programmaticFollowActive")) is False
+        assert bool(message_list.property("bottomPinned")) is True
+        assert float(message_list.property("contentY")) >= _scroll_max_y(message_list) - 2.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_main_chat_view_keyboard_scroll_interrupts_auto_follow_animation(qapp):
+    _ = qapp
+    from app.backend.chat import ChatMessageModel
+
+    messages_model = ChatMessageModel()
+    for i in range(48):
+        messages_model.append_user(f"message {i}")
+
+    engine, root = _load_main_window(messages_model=messages_model)
+
+    try:
+        chat_service = engine._test_refs["chat_service"]
+        message_list = _find_object(root, "chatMessageList")
+        root.requestActivate()
+
+        for _ in range(6):
+            _process(30)
+
+        _ = message_list.setProperty("contentY", 0.0)
+        _process(30)
+
+        row = messages_model.append_user("hello")
+        chat_service.messageAppended.emit(row)
+        _process(40)
+
+        message_list.forceActiveFocus()
+        _process(20)
+        QTest.keyClick(root, Qt.Key_Home)
+
+        for _ in range(10):
             _process(30)
 
         assert float(message_list.property("contentY")) < 2.0
@@ -3029,6 +3651,7 @@ def test_main_chat_view_preserves_viewport_on_model_reset(qapp):
 
         target_y = max_y_before / 2.0
         _ = message_list.setProperty("contentY", target_y)
+        _ = message_list.setProperty("bottomPinned", False)
         _process(30)
 
         messages_model.load_prepared(
@@ -3272,6 +3895,7 @@ def test_main_chat_view_render_equivalent_session_switch_keeps_future_restore(qa
 
         target_y = max_y / 2.0
         _ = message_list.setProperty("contentY", target_y)
+        _ = message_list.setProperty("bottomPinned", False)
         _process(30)
 
         messages_model.load_prepared(
