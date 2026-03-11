@@ -102,7 +102,7 @@ To target a specific session explicitly, pass `session_id`. To branch off withou
 
 ### OpenCode
 
-**Agent selection**: Use `opencode_agent: "plan"` for read-only analysis (review, audit, suggest). Omit or use `"build"` for implementation tasks.
+**Agent selection**: Use `opencode_agent: "plan"` for read-only analysis (review, audit, suggest). Omit or use `"build"` for implementation tasks. For oh-my-opencode custom agents, Bao accepts short names such as `Hephaestus` and resolves them to the current OpenCode display name when that short name is unique.
 
 **Project setup**: Before first use, configure `opencode.json` in the project root for non-interactive execution:
 

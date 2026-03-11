@@ -1,6 +1,7 @@
 """OpenCode CLI coding agent tool — thin subclass of BaseCodingAgentTool."""
 
 import json
+import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from bao.agent.tools.coding_agent_base import (
 
 # Shared cache between OpenCodeTool and OpenCodeDetailsTool
 _opencode_cache = DetailCache()
+_DISPLAY_NAME_PATTERN = re.compile(r"^(.+?)\s+\(")
 
 
 class OpenCodeTool(BaseCodingAgentTool):
@@ -30,6 +32,7 @@ class OpenCodeTool(BaseCodingAgentTool):
             default_timeout_seconds=default_timeout_seconds,
             detail_cache=_opencode_cache,
         )
+        self._agent_aliases_by_cwd: dict[str, dict[str, str]] = {}
 
     # -- identity --
 
@@ -122,6 +125,21 @@ class OpenCodeTool(BaseCodingAgentTool):
         }
 
     # -- hook implementations --
+
+    async def _prepare_extra_params(
+        self, *, cwd: Path, timeout: int, extra_params: dict[str, Any]
+    ) -> dict[str, Any]:
+        agent = extra_params.get("agent")
+        if not isinstance(agent, str) or not agent.strip():
+            return extra_params
+
+        prepared = dict(extra_params)
+        prepared["agent"] = await self._resolve_agent_alias(
+            cwd=cwd,
+            agent_name=agent,
+            timeout_seconds=min(timeout, 30),
+        )
+        return prepared
 
     def _validate_extra_params(self, kwargs: dict[str, Any]) -> str | None:
         fork = kwargs.get("fork", False)
@@ -229,6 +247,70 @@ class OpenCodeTool(BaseCodingAgentTool):
     def _extra_payload_fields(self, extra_params: dict[str, Any]) -> dict[str, Any]:
         agent = extra_params.get("agent")
         return {"agent": agent} if agent else {}
+
+    async def _resolve_agent_alias(
+        self, *, cwd: Path, agent_name: str, timeout_seconds: int
+    ) -> str:
+        trimmed = agent_name.strip()
+        if not trimmed:
+            return agent_name
+
+        aliases = await self._load_agent_aliases(cwd=cwd, timeout_seconds=timeout_seconds)
+        if not aliases:
+            return agent_name
+        return aliases.get(trimmed.casefold(), agent_name)
+
+    async def _load_agent_aliases(self, *, cwd: Path, timeout_seconds: int) -> dict[str, str]:
+        cache_key = str(cwd)
+        cached = self._agent_aliases_by_cwd.get(cache_key)
+        if cached is not None:
+            return cached
+
+        result = await self._run_command(
+            cmd=["opencode", "debug", "config"],
+            cwd=cwd,
+            timeout_seconds=min(timeout_seconds, 30),
+        )
+        if result["timed_out"] or result["returncode"] != 0:
+            self._agent_aliases_by_cwd[cache_key] = {}
+            return {}
+
+        try:
+            payload = json.loads(result["stdout"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            self._agent_aliases_by_cwd[cache_key] = {}
+            return {}
+
+        agents = payload.get("agent") if isinstance(payload, dict) else None
+        if not isinstance(agents, dict):
+            self._agent_aliases_by_cwd[cache_key] = {}
+            return {}
+
+        aliases: dict[str, str] = {}
+        short_name_counts: dict[str, int] = {}
+        short_name_targets: dict[str, str] = {}
+        for display_name in agents:
+            if not isinstance(display_name, str):
+                continue
+            normalized_display = display_name.strip()
+            if not normalized_display:
+                continue
+            aliases[normalized_display.casefold()] = normalized_display
+            match = _DISPLAY_NAME_PATTERN.match(normalized_display)
+            if not match:
+                continue
+            short_name = match.group(1).strip().casefold()
+            if not short_name:
+                continue
+            short_name_counts[short_name] = short_name_counts.get(short_name, 0) + 1
+            short_name_targets[short_name] = normalized_display
+
+        for short_name, count in short_name_counts.items():
+            if count == 1:
+                aliases[short_name] = short_name_targets[short_name]
+
+        self._agent_aliases_by_cwd[cache_key] = aliases
+        return aliases
 
     def _extra_meta_fields(self, payload: dict[str, Any]) -> dict[str, Any]:
         agent = payload.get("agent")
