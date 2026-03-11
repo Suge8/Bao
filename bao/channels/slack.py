@@ -1,6 +1,5 @@
 """Slack channel implementation using Socket Mode."""
 
-import asyncio
 import re
 
 from loguru import logger
@@ -47,7 +46,7 @@ class SlackChannel(BaseChannel):
             logger.error("❌ 模式错误 / unsupported mode: {}", self.config.mode)
             return
 
-        self._running = True
+        self._start_lifecycle()
 
         self._web_client = AsyncWebClient(token=bot_token)
         self._socket_client = SocketModeClient(
@@ -68,20 +67,20 @@ class SlackChannel(BaseChannel):
         logger.info("📡 启动通道 / starting: Slack socket mode")
         await self._socket_client.connect()
 
-        while self._running:
-            await asyncio.sleep(1)
+        await self._wait_until_stopped()
 
     async def stop(self) -> None:
         """Stop the Slack client."""
         self._clear_progress()
         self._progress_threads.clear()
-        self._running = False
+        self._stop_lifecycle()
         if self._socket_client:
             try:
                 await self._socket_client.close()
             except Exception as e:
                 logger.debug("Slack socket close failed: {}", e)
             self._socket_client = None
+        self._reset_lifecycle()
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Slack."""

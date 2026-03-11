@@ -202,7 +202,7 @@ class TelegramChannel(BaseChannel):
             self.mark_ready()
             return
 
-        self._running = True
+        self._start_lifecycle()
 
         api_req = HTTPXRequest(
             connection_pool_size=16, pool_timeout=5.0, connect_timeout=30.0, read_timeout=30.0
@@ -270,13 +270,11 @@ class TelegramChannel(BaseChannel):
             ),
         )
 
-        # Keep running until stopped
-        while self._running:
-            await asyncio.sleep(1)
+        await self._wait_until_stopped()
 
     async def stop(self) -> None:
         """Stop the Telegram bot."""
-        self._running = False
+        self._stop_lifecycle()
         self.mark_not_ready()
         self._clear_progress()
         self._progress_reply_params.clear()
@@ -304,6 +302,7 @@ class TelegramChannel(BaseChannel):
             await app.stop()
             await app.shutdown()
             self._app = None
+        self._reset_lifecycle()
 
     @staticmethod
     def _get_media_type(path: str) -> str:
