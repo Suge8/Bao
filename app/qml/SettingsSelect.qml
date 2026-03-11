@@ -9,8 +9,7 @@ Item {
     property string dotpath: ""
     property string description: ""
     property var initialValue: undefined
-    property bool baoClickAwayPopupOwner: true
-    readonly property bool baoClickAwayPopupOpen: combo.popup.visible
+    readonly property bool popupOpen: combo.popup.visible
 
     // Array of { label: string, value: any }
     property var options: []
@@ -75,39 +74,13 @@ Item {
     }
 
     function setPopupVisible(visible) {
+        if (combo.popup.visible === visible)
+            return
         if (visible) {
             combo.popup.open()
             return
         }
         combo.popup.visible = false
-    }
-
-    function baoClickAwayContainsScenePoint(sceneX, sceneY) {
-        var controlPoint = root.mapFromItem(null, sceneX, sceneY)
-        if (root.contains(controlPoint))
-            return true
-
-        if (!combo.popup.visible)
-            return false
-
-        var popupBackground = combo.popup.background
-        if (popupBackground) {
-            var popupBackgroundPoint = popupBackground.mapFromItem(null, sceneX, sceneY)
-            if (popupBackground.contains(popupBackgroundPoint))
-                return true
-        }
-
-        var popupContent = combo.popup.contentItem
-        if (!popupContent)
-            return false
-
-        var popupContentPoint = popupContent.mapFromItem(null, sceneX, sceneY)
-        return popupContent.contains(popupContentPoint)
-    }
-
-    function baoClickAwayDismiss() {
-        setPopupVisible(false)
-        combo.focus = false
     }
 
     Component.onCompleted: {
