@@ -1238,6 +1238,32 @@ class SessionManager:
         return natural_key
 
     @_synchronized
+    def mark_desktop_seen_ai(
+        self,
+        session_key: str,
+        *,
+        emit_change: bool = True,
+        metadata_updates: dict[str, Any] | None = None,
+        clear_running: bool = False,
+    ) -> None:
+        if not session_key:
+            return
+        if clear_running:
+            self.set_session_running(session_key, False, emit_change=False)
+        payload = {"desktop_last_seen_ai_at": datetime.now().isoformat()}
+        if isinstance(metadata_updates, dict):
+            payload.update(
+                {
+                    field: value
+                    for field, value in metadata_updates.items()
+                    if field not in _RUNTIME_METADATA_KEYS
+                }
+            )
+        self.update_metadata_only(session_key, payload, emit_change=False)
+        if emit_change:
+            self._emit_change(SessionChangeEvent(session_key=session_key, kind="metadata"))
+
+    @_synchronized
     def mark_desktop_seen_ai_if_active(
         self, session_key: str, desktop_natural_key: str = "desktop:local"
     ) -> None:
@@ -1245,11 +1271,7 @@ class SessionManager:
             return
         if self.get_active_session_key(desktop_natural_key) != session_key:
             return
-        self.update_metadata_only(
-            session_key,
-            {"desktop_last_seen_ai_at": datetime.now().isoformat()},
-            emit_change=False,
-        )
+        self.mark_desktop_seen_ai(session_key, emit_change=False)
 
     @_synchronized
     def set_active_session_key(self, natural_key: str, session_key: str) -> None:

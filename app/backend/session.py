@@ -252,6 +252,16 @@ def _sidebar_channel_sort_key(channel: str) -> tuple[int, str]:
     return (1, channel)
 
 
+def _visible_sidebar_items(
+    items: list[dict[str, Any]], *, expanded: bool, active_key: str
+) -> list[dict[str, Any]]:
+    if expanded:
+        return items
+    if not active_key:
+        return []
+    return [item for item in items if str(item.get("key", "")) == active_key]
+
+
 class SidebarRowsModel(QAbstractListModel):
     _ROLES = {
         _SIDEBAR_ROLE_ROW_ID: QByteArray(b"rowId"),
@@ -539,7 +549,10 @@ class SessionService(QObject):
         self._sidebar_expanded_groups: dict[str, bool] = {}
         self._sidebar_unread_count = 0
         self._sidebar_unread_fingerprint = ""
-        self._pending_deletes: dict[str, tuple[list[dict[str, Any]], str, str]] = {}
+        self._pending_deletes: dict[
+            str,
+            tuple[list[dict[str, Any]], str, str, dict[str, bool]],
+        ] = {}
         self._pending_creates: set[str] = set()
         self._list_request_seq = 0
         self._list_latest_seq = 0
@@ -781,19 +794,6 @@ class SessionService(QObject):
             return False
         return channel == "desktop"
 
-    def _ensure_sidebar_group_expanded_for(self, key: str) -> None:
-        if not key:
-            return
-        active_channel = ""
-        for session in self._model._sessions:
-            if str(session.get("key", "")) != key:
-                continue
-            active_channel = str(session.get("channel", "") or "")
-            break
-        if not active_channel or self._sidebar_expanded_groups.get(active_channel) is True:
-            return
-        self._sidebar_expanded_groups[active_channel] = True
-
     def _pin_sidebar_active_row(self, rows: list[dict[str, Any]]) -> None:
         active_key = self._active_key
         if not active_key:
@@ -946,9 +946,12 @@ class SessionService(QObject):
                     "is_first_in_group": False,
                 }
             )
-            if not expanded:
-                continue
-            for index, item in enumerate(reordered_items):
+            visible_items = _visible_sidebar_items(
+                reordered_items,
+                expanded=expanded,
+                active_key=active_key,
+            )
+            for index, item in enumerate(visible_items):
                 rows.append(
                     {
                         "row_id": f"session:{item.get('key', '')}",
@@ -967,7 +970,7 @@ class SessionService(QObject):
                         "item_count": 0,
                         "group_unread_count": 0,
                         "group_has_running": False,
-                        "is_last_in_group": index == len(reordered_items) - 1,
+                        "is_last_in_group": index == len(visible_items) - 1,
                         "is_first_in_group": index == 0,
                     }
                 )
@@ -986,7 +989,6 @@ class SessionService(QObject):
             return
         self._active_key = key
         self._model.set_active(key)
-        self._ensure_sidebar_group_expanded_for(key)
         self._rebuild_sidebar_projection()
         if _DEBUG_SWITCH:
             logger.debug("session_select_commit key={}", key)
@@ -1178,7 +1180,12 @@ class SessionService(QObject):
             if str(item.get("key", "")) == new_active:
                 item["has_unread"] = False
 
-        self._pending_deletes[key] = (sessions_before, active_before, new_active)
+        self._pending_deletes[key] = (
+            sessions_before,
+            active_before,
+            new_active,
+            dict(self._sidebar_expanded_groups),
+        )
         self._active_key = new_active
         self._model.reset_sessions(sessions_after, new_active)
         self._rebuild_sidebar_projection()
@@ -1489,9 +1496,6 @@ class SessionService(QObject):
                     self.newSession("")
                     return
 
-        if not self._gateway_ready:
-            active_for_view = ""
-
         if not sessions and self._active_key:
             self._active_key = ""
             self._emit_active_key_if_changed("")
@@ -1501,7 +1505,6 @@ class SessionService(QObject):
                 item["has_unread"] = False
         self._active_key = active_for_view
         self._model.reset_sessions(sessions, active_for_view)
-        self._ensure_sidebar_group_expanded_for(active_for_view)
         self._rebuild_sidebar_projection()
         self.sessionsChanged.emit()
         self._emit_active_summary(active_for_view)
@@ -1556,7 +1559,7 @@ class SessionService(QObject):
         snapshot = self._pending_deletes.pop(key, None)
         if not ok:
             if snapshot is not None:
-                sessions_before, active_before, optimistic_active = snapshot
+                sessions_before, active_before, optimistic_active, expanded_groups_before = snapshot
                 if self._active_key == optimistic_active:
                     pending_keys = set(self._pending_deletes.keys())
                     if pending_keys:
@@ -1566,11 +1569,11 @@ class SessionService(QObject):
                         if active_before in pending_keys:
                             active_before = self._active_key
                     self._active_key = active_before
+                    self._sidebar_expanded_groups = dict(expanded_groups_before)
                     for item in sessions_before:
                         if str(item.get("key", "")) == active_before:
                             item["has_unread"] = False
                     self._model.reset_sessions(sessions_before, active_before)
-                    self._ensure_sidebar_group_expanded_for(active_before)
                     self._rebuild_sidebar_projection()
                     self.sessionsChanged.emit()
                     self._emit_active_key_if_changed(active_before)

@@ -1114,6 +1114,186 @@ def test_toggle_sidebar_group_updates_backend_row_visibility(tmp_path, qt_app):
         runner.shutdown(grace_s=1.0)
 
 
+def test_collapsed_active_group_keeps_only_active_row_visible(tmp_path, qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = SessionManager(tmp_path)
+
+        active = sm.get_or_create("desktop:local::main")
+        active.add_message("assistant", "main")
+        sm.save(active)
+
+        sibling = sm.get_or_create("desktop:local::scratch")
+        sibling.add_message("assistant", "scratch")
+        sm.save(sibling)
+
+        other = sm.get_or_create("telegram:room")
+        other.add_message("assistant", "telegram")
+        sm.save(other)
+
+        sm.set_active_session_key("desktop:local", "desktop:local::main")
+
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        _spin_until(lambda: _sidebar_model(svc).rowCount() >= 3)
+        svc.toggleSidebarGroup("desktop")
+
+        model = _sidebar_model(svc)
+        item_key_role = _sidebar_role(model, b"itemKey")
+        is_header_role = _sidebar_role(model, b"isHeader")
+        channel_role = _sidebar_role(model, b"channel")
+        expanded_role = _sidebar_role(model, b"expanded")
+
+        def _desktop_collapsed_with_active_only() -> bool:
+            keys = [
+                model.data(model.index(i), item_key_role)
+                for i in range(model.rowCount())
+                if not model.data(model.index(i), is_header_role)
+            ]
+            desktop_headers = [
+                model.data(model.index(i), expanded_role)
+                for i in range(model.rowCount())
+                if model.data(model.index(i), is_header_role)
+                and model.data(model.index(i), channel_role) == "desktop"
+            ]
+            return (
+                desktop_headers == [False]
+                and "desktop:local::main" in keys
+                and "desktop:local::scratch" not in keys
+            )
+
+        _spin_until(_desktop_collapsed_with_active_only)
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_select_session_keeps_target_group_collapsed_when_user_never_expanded_it(tmp_path, qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = SessionManager(tmp_path)
+
+        active = sm.get_or_create("imessage:chat::main")
+        active.add_message("assistant", "main")
+        sm.save(active)
+
+        sibling = sm.get_or_create("imessage:chat::other")
+        sibling.add_message("assistant", "other")
+        sm.save(sibling)
+
+        desktop = sm.get_or_create("desktop:local::main")
+        desktop.add_message("assistant", "desktop")
+        sm.save(desktop)
+
+        sm.set_active_session_key("desktop:local", "desktop:local::main")
+
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        _spin_until(lambda: _sidebar_model(svc).rowCount() >= 3)
+        svc.selectSession("imessage:chat::main")
+        _spin_until(lambda: svc.activeKey == "imessage:chat::main")
+
+        model = _sidebar_model(svc)
+        item_key_role = _sidebar_role(model, b"itemKey")
+        is_header_role = _sidebar_role(model, b"isHeader")
+        channel_role = _sidebar_role(model, b"channel")
+        expanded_role = _sidebar_role(model, b"expanded")
+
+        def _target_group_stays_collapsed() -> bool:
+            header_collapsed = any(
+                model.data(model.index(i), is_header_role)
+                and model.data(model.index(i), channel_role) == "imessage"
+                and model.data(model.index(i), expanded_role) is False
+                for i in range(model.rowCount())
+            )
+            keys = [
+                model.data(model.index(i), item_key_role)
+                for i in range(model.rowCount())
+                if not model.data(model.index(i), is_header_role)
+            ]
+            return (
+                header_collapsed
+                and "imessage:chat::main" in keys
+                and "imessage:chat::other" not in keys
+            )
+
+        _spin_until(_target_group_stays_collapsed)
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_session_refresh_keeps_active_group_collapsed(tmp_path, qt_app):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = SessionManager(tmp_path)
+
+        active = sm.get_or_create("imessage:chat::main")
+        active.add_message("assistant", "main")
+        sm.save(active)
+
+        sibling = sm.get_or_create("imessage:chat::other")
+        sibling.add_message("assistant", "other")
+        sm.save(sibling)
+
+        sm.set_active_session_key("desktop:local", "imessage:chat::main")
+
+        svc.setGatewayReady()
+        svc.initialize(sm)
+
+        _spin_until(lambda: _sidebar_model(svc).rowCount() >= 3)
+        svc.selectSession("imessage:chat::main")
+        _spin_until(lambda: svc.activeKey == "imessage:chat::main")
+        svc.toggleSidebarGroup("imessage")
+
+        model = _sidebar_model(svc)
+        item_key_role = _sidebar_role(model, b"itemKey")
+        is_header_role = _sidebar_role(model, b"isHeader")
+        channel_role = _sidebar_role(model, b"channel")
+        expanded_role = _sidebar_role(model, b"expanded")
+
+        _spin_until(
+            lambda: any(
+                model.data(model.index(i), is_header_role)
+                and model.data(model.index(i), channel_role) == "imessage"
+                and model.data(model.index(i), expanded_role) is False
+                for i in range(model.rowCount())
+            )
+        )
+
+        refreshed = sm.get_or_create("imessage:chat::main")
+        refreshed.add_message("assistant", "reply")
+        sm.save(refreshed)
+
+        def _collapsed_after_refresh() -> bool:
+            header_collapsed = any(
+                model.data(model.index(i), is_header_role)
+                and model.data(model.index(i), channel_role) == "imessage"
+                and model.data(model.index(i), expanded_role) is False
+                for i in range(model.rowCount())
+            )
+            keys = [
+                model.data(model.index(i), item_key_role)
+                for i in range(model.rowCount())
+                if not model.data(model.index(i), is_header_role)
+            ]
+            return (
+                header_collapsed
+                and "imessage:chat::main" in keys
+                and "imessage:chat::other" not in keys
+            )
+
+        _spin_until(_collapsed_after_refresh)
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
 def test_active_sidebar_row_stays_within_its_group_when_rows_above_change(tmp_path, qt_app):
     runner = AsyncioRunner()
     runner.start()
@@ -1133,7 +1313,6 @@ def test_active_sidebar_row_stays_within_its_group_when_rows_above_change(tmp_pa
         _spin_until(lambda: _sidebar_model(svc).rowCount() >= 4)
         svc.selectSession("telegram:room2")
         _spin_until(lambda: svc.activeKey == "telegram:room2")
-        _spin_until(lambda: _sidebar_model(svc).rowCount() >= 6)
 
         extra = sm.get_or_create("desktop:local::newer")
         extra.add_message("assistant", "desktop update")
@@ -1264,14 +1443,14 @@ def test_service_refresh_populates_model():
         loop.exec()
 
         assert _sessions_model(svc).rowCount() == 1
-        assert svc.activeKey == ""
+        assert svc.activeKey == "desktop:local::s1"
         idx = _sessions_model(svc).index(0)
-        assert _sessions_model(svc).data(idx, Qt.UserRole + 3) is False
+        assert _sessions_model(svc).data(idx, Qt.UserRole + 3) is True
     finally:
         runner.shutdown(grace_s=1.0)
 
 
-def test_service_gateway_ready_restores_active_key():
+def test_service_refresh_exposes_active_key_before_gateway_ready():
     runner = AsyncioRunner()
     runner.start()
     try:
@@ -1286,15 +1465,6 @@ def test_service_gateway_ready_restores_active_key():
         loop = QEventLoop()
         QTimer.singleShot(300, loop.quit)
         loop.exec()
-
-        assert svc.activeKey == ""
-
-        svc.setGatewayReady()
-        svc.refresh()
-
-        loop2 = QEventLoop()
-        QTimer.singleShot(300, loop2.quit)
-        loop2.exec()
 
         assert svc.activeKey == "desktop:local::s1"
         idx = _sessions_model(svc).index(0)
@@ -2136,6 +2306,57 @@ def test_service_delete_false_result_restores_model():
         runner.shutdown(grace_s=1.0)
 
 
+def test_delete_failure_restores_collapsed_group_state_when_group_temporarily_disappears(
+    qt_app,
+):
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sessions_before = [
+            {"key": "desktop:local::main", "title": "Desktop", "channel": "desktop"},
+            {"key": "imessage:chat::main", "title": "Main", "channel": "imessage"},
+        ]
+        svc._active_key = "desktop:local::main"
+        svc._sidebar_expanded_groups = {"desktop": True}
+        svc._model.reset_sessions([sessions_before[0]], "desktop:local::main")
+        svc._pending_deletes = {
+            "imessage:chat::main": (
+                sessions_before,
+                "imessage:chat::main",
+                "desktop:local::main",
+                {"desktop": True, "imessage": False},
+            )
+        }
+
+        svc._handle_delete_result("imessage:chat::main", False, "delete failed")
+
+        model = _sidebar_model(svc)
+        item_key_role = _sidebar_role(model, b"itemKey")
+        is_header_role = _sidebar_role(model, b"isHeader")
+        channel_role = _sidebar_role(model, b"channel")
+        expanded_role = _sidebar_role(model, b"expanded")
+
+        keys = [
+            model.data(model.index(i), item_key_role)
+            for i in range(model.rowCount())
+            if not model.data(model.index(i), is_header_role)
+        ]
+        header_collapsed = any(
+            model.data(model.index(i), is_header_role)
+            and model.data(model.index(i), channel_role) == "imessage"
+            and model.data(model.index(i), expanded_role) is False
+            for i in range(model.rowCount())
+        )
+
+        assert svc.activeKey == "imessage:chat::main"
+        assert svc._sidebar_expanded_groups.get("imessage") is False
+        assert header_collapsed is True
+        assert keys.count("imessage:chat::main") == 1
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
 def test_service_delete_false_after_delete_treated_as_success():
     runner = AsyncioRunner()
     runner.start()
@@ -2390,11 +2611,13 @@ def test_service_delete_failure_rollback_respects_other_pending_deletes():
                 sessions_before,
                 "desktop:local::s1",
                 "desktop:local::s3",
+                {"desktop": True},
             ),
             "desktop:local::s2": (
                 sessions_before,
                 "desktop:local::s2",
                 "desktop:local::s3",
+                {"desktop": True},
             ),
         }
 
