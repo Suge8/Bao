@@ -320,7 +320,8 @@ async def test_telegram_start_uses_separate_requests_for_polling_and_api() -> No
     fake_builder = _FakeBuilder(fake_app)
 
     async def _start_polling(**_kwargs):
-        channel._running = False
+        if channel._stop_event is not None:
+            channel._stop_event.set()
 
     fake_updater.start_polling.side_effect = _start_polling
 
