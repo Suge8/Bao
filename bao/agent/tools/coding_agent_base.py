@@ -219,6 +219,12 @@ class BaseCodingAgentTool(Tool, ABC):
         """Validate tool-specific params. Return error string or None."""
         return None
 
+    async def _prepare_extra_params(
+        self, *, cwd: Path, timeout: int, extra_params: dict[str, Any]
+    ) -> dict[str, Any]:
+        del cwd, timeout
+        return extra_params
+
     def _build_command(
         self,
         *,
@@ -601,6 +607,12 @@ class BaseCodingAgentTool(Tool, ABC):
                 response_format=response_format,
                 extra_params=extra_params,
             )
+
+        extra_params = await self._prepare_extra_params(
+            cwd=cwd,
+            timeout=timeout,
+            extra_params=extra_params,
+        )
 
         resolved_session, session_from_cache = await self._resolve_session_for_execute(
             explicit_session_id=session_id,
