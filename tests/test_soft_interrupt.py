@@ -52,6 +52,30 @@ def _test_loop(loop_bus: MessageBus, provider: MagicMock) -> Iterator["AgentLoop
 
 
 @pytest.mark.asyncio
+async def test_agent_stop_unblocks_idle_run():
+    loop_bus = MessageBus()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    with _test_loop(loop_bus, provider) as loop:
+
+        async def _noop_mcp():
+            pass
+
+        loop._connect_mcp = _noop_mcp
+
+        runner = asyncio.create_task(loop.run())
+        try:
+            await asyncio.sleep(0)
+            loop.stop()
+            await asyncio.wait_for(runner, timeout=0.5)
+        finally:
+            if not runner.done():
+                runner.cancel()
+                await asyncio.gather(runner, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_soft_interrupt_presaves_user_message_when_busy():
     loop_bus = MessageBus()
     provider = MagicMock()

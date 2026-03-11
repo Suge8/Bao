@@ -452,6 +452,7 @@ class AgentLoop:
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_generations: dict[str, int] = {}
         self._session_running_task: dict[str, asyncio.Task[None]] = {}
+        self._run_task: asyncio.Task[None] | None = None
         self._interrupted_tasks: set[asyncio.Task[None]] = set()
         self._title_generation_inflight: set[str] = set()
         self._last_tool_budget: dict[str, int] = {
@@ -2423,95 +2424,102 @@ class AgentLoop:
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
+        self._run_task = asyncio.current_task()
         await self._connect_mcp()
         logger.debug("Agent loop started")
 
-        while self._running:
-            try:
-                msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
-            except asyncio.TimeoutError:
-                continue
+        try:
+            while self._running:
+                try:
+                    msg = await self.bus.consume_inbound()
+                except asyncio.CancelledError:
+                    if self._running:
+                        raise
+                    break
 
-            if (msg.content or "").strip().lower() == "/stop":
-                natural_key = self._dispatch_session_key(msg)
-                active_key = self.sessions.get_active_session_key(natural_key)
-                target_keys = [natural_key]
-                if active_key and active_key != natural_key:
-                    target_keys.append(active_key)
-                for target_key in target_keys:
-                    session = self.sessions.get_or_create(target_key)
-                    if self._clear_interactive_state(session):
-                        self.sessions.save(session)
-                await self._handle_stop(msg)
-            else:
-                session_key = self._dispatch_session_key(msg)
+                if (msg.content or "").strip().lower() == "/stop":
+                    natural_key = self._dispatch_session_key(msg)
+                    active_key = self.sessions.get_active_session_key(natural_key)
+                    target_keys = [natural_key]
+                    if active_key and active_key != natural_key:
+                        target_keys.append(active_key)
+                    for target_key in target_keys:
+                        session = self.sessions.get_or_create(target_key)
+                        if self._clear_interactive_state(session):
+                            self.sessions.save(session)
+                    await self._handle_stop(msg)
+                else:
+                    session_key = self._dispatch_session_key(msg)
 
-                task_list = self._active_tasks.get(session_key, [])
-                busy_tasks = [t for t in task_list if not t.done()]
-                if busy_tasks:
-                    self._session_generations[session_key] = (
-                        self._session_generations.get(session_key, 0) + 1
-                    )
-                    for t in busy_tasks:
-                        self._interrupted_tasks.add(t)
-
-                    running_task = self._session_running_task.get(session_key)
-                    if running_task and not running_task.done():
-                        self._interrupted_tasks.add(running_task)
-
-                    cmd = (msg.content or "").strip().lower()
-                    if msg.channel != "system" and not cmd.startswith("/"):
-                        natural_key = msg.session_key
-                        active_override = self.sessions.get_active_session_key(natural_key)
-                        key = active_override or natural_key
-                        session = self.sessions.get_or_create(key)
-                        pre_saved_token = msg.metadata.get("_pre_saved_token")
-                        if not isinstance(pre_saved_token, str) or not pre_saved_token:
-                            pre_saved_token = uuid.uuid4().hex
-                            msg.metadata["_pre_saved_token"] = pre_saved_token
-                        session.add_message(
-                            "user",
-                            msg.content,
-                            _pre_saved=True,
-                            _pre_saved_token=pre_saved_token,
+                    task_list = self._active_tasks.get(session_key, [])
+                    busy_tasks = [t for t in task_list if not t.done()]
+                    if busy_tasks:
+                        self._session_generations[session_key] = (
+                            self._session_generations.get(session_key, 0) + 1
                         )
-                        self.sessions.save(session)
-                        msg.metadata["_pre_saved"] = True
-
-                    resolve_mode = getattr(
-                        cast(Any, self.provider), "_resolve_effective_mode", None
-                    )
-                    if callable(resolve_mode) and resolve_mode() == "responses":
                         for t in busy_tasks:
-                            if not t.done():
-                                t.cancel()
+                            self._interrupted_tasks.add(t)
 
-                    logger.debug("Soft interrupt requested for busy session {}", session_key)
+                        running_task = self._session_running_task.get(session_key)
+                        if running_task and not running_task.done():
+                            self._interrupted_tasks.add(running_task)
 
-                task_gen = self._session_generations.get(session_key, 0)
-                task = asyncio.create_task(
-                    self._dispatch(msg, task_generation=task_gen, dispatch_key=session_key)
-                )
-                self._active_tasks.setdefault(session_key, []).append(task)
-                self._session_locks.setdefault(session_key, asyncio.Lock())
+                        cmd = (msg.content or "").strip().lower()
+                        if msg.channel != "system" and not cmd.startswith("/"):
+                            natural_key = msg.session_key
+                            active_override = self.sessions.get_active_session_key(natural_key)
+                            key = active_override or natural_key
+                            session = self.sessions.get_or_create(key)
+                            pre_saved_token = msg.metadata.get("_pre_saved_token")
+                            if not isinstance(pre_saved_token, str) or not pre_saved_token:
+                                pre_saved_token = uuid.uuid4().hex
+                                msg.metadata["_pre_saved_token"] = pre_saved_token
+                            session.add_message(
+                                "user",
+                                msg.content,
+                                _pre_saved=True,
+                                _pre_saved_token=pre_saved_token,
+                            )
+                            self.sessions.save(session)
+                            msg.metadata["_pre_saved"] = True
 
-                def _on_done(t: asyncio.Task[None], k: str = session_key) -> None:
-                    task_list = self._active_tasks.get(k)
-                    if not task_list:
+                        resolve_mode = getattr(
+                            cast(Any, self.provider), "_resolve_effective_mode", None
+                        )
+                        if callable(resolve_mode) and resolve_mode() == "responses":
+                            for t in busy_tasks:
+                                if not t.done():
+                                    t.cancel()
+
+                        logger.debug("Soft interrupt requested for busy session {}", session_key)
+
+                    task_gen = self._session_generations.get(session_key, 0)
+                    task = asyncio.create_task(
+                        self._dispatch(msg, task_generation=task_gen, dispatch_key=session_key)
+                    )
+                    self._active_tasks.setdefault(session_key, []).append(task)
+                    self._session_locks.setdefault(session_key, asyncio.Lock())
+
+                    def _on_done(t: asyncio.Task[None], k: str = session_key) -> None:
+                        task_list = self._active_tasks.get(k)
+                        if not task_list:
+                            self._interrupted_tasks.discard(t)
+                            return
+                        try:
+                            task_list.remove(t)
+                        except ValueError:
+                            self._interrupted_tasks.discard(t)
+                            return
                         self._interrupted_tasks.discard(t)
-                        return
-                    try:
-                        task_list.remove(t)
-                    except ValueError:
-                        self._interrupted_tasks.discard(t)
-                        return
-                    self._interrupted_tasks.discard(t)
-                    if not task_list:
-                        self._active_tasks.pop(k, None)
-                        self._session_locks.pop(k, None)
-                        self._session_running_task.pop(k, None)
+                        if not task_list:
+                            self._active_tasks.pop(k, None)
+                            self._session_locks.pop(k, None)
+                            self._session_running_task.pop(k, None)
 
-                task.add_done_callback(_on_done)
+                    task.add_done_callback(_on_done)
+        finally:
+            if self._run_task is asyncio.current_task():
+                self._run_task = None
 
     async def _handle_stop(self, msg: InboundMessage) -> None:
         """Cancel all active tasks and subagents for the session (fire-and-forget)."""
@@ -2626,6 +2634,9 @@ class AgentLoop:
 
     def stop(self) -> None:
         self._running = False
+        run_task = getattr(self, "_run_task", None)
+        if run_task and not run_task.done():
+            run_task.cancel()
         logger.info("👋 停止代理 / agent stopping: main loop")
 
     def close(self) -> None:
@@ -4085,9 +4096,12 @@ Respond with ONLY valid JSON, no markdown fences."""
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
         ephemeral: bool = False,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         await self._connect_mcp()
         msg = InboundMessage(channel=channel, sender_id="user", chat_id=chat_id, content=content)
+        if isinstance(metadata, dict):
+            msg.metadata.update(dict(metadata))
         if ephemeral:
             msg.metadata["_ephemeral"] = True
 
