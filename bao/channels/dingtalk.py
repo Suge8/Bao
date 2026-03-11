@@ -84,7 +84,7 @@ class DingTalkChannel(BaseChannel):
                 self.mark_ready()
                 return
 
-            self._running = True
+            self._start_lifecycle()
             self._http = httpx.AsyncClient()
             self.mark_ready()
 
@@ -144,15 +144,7 @@ class DingTalkChannel(BaseChannel):
 
             logger.info("✅ 钉钉已连接 / stream connected: stream mode started")
 
-            # Reconnect loop: restart stream if SDK exits or crashes
-            while self._running:
-                try:
-                    await self._client.start()
-                except Exception as e:
-                    logger.warning("⚠️ 钉钉连接异常 / stream error: {}", e)
-                if self._running:
-                    logger.info("🔄 钉钉准备重连 / reconnecting: in 5 seconds")
-                    await asyncio.sleep(5)
+            await self._run_reconnect_loop(self._client.start, label="钉钉 Stream")
 
         except Exception as e:
             logger.exception("❌ 钉钉启动失败 / start failed: {}", e)
@@ -161,7 +153,7 @@ class DingTalkChannel(BaseChannel):
     async def stop(self) -> None:
         """Stop the DingTalk bot."""
         self._clear_progress()
-        self._running = False
+        self._stop_lifecycle()
         self.mark_not_ready()
         # Close the shared HTTP client
         if self._http:
@@ -171,6 +163,7 @@ class DingTalkChannel(BaseChannel):
         for task in self._background_tasks:
             task.cancel()
         self._background_tasks.clear()
+        self._reset_lifecycle()
 
     async def _get_access_token(self) -> str | None:
         """Get or refresh Access Token."""
