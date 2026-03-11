@@ -4,7 +4,6 @@ import asyncio
 import json
 import os
 import re
-import threading
 from collections import OrderedDict
 from typing import Any
 
@@ -282,7 +281,6 @@ class FeishuChannel(BaseChannel):
         self.config: FeishuConfig = config
         self._client: Any = None
         self._ws_client: Any = None
-        self._ws_thread: threading.Thread | None = None
         self._processed_message_ids: OrderedDict[str, None] = OrderedDict()  # Ordered dedup cache
         self._loop: asyncio.AbstractEventLoop | None = None
         self._progress_handler = EditingProgress(
@@ -308,7 +306,7 @@ class FeishuChannel(BaseChannel):
             self.mark_ready()
             return
 
-        self._running = True
+        self._start_lifecycle()
         self._loop = asyncio.get_running_loop()
 
         # Create Lark client for sending messages
@@ -339,31 +337,16 @@ class FeishuChannel(BaseChannel):
             log_level=lark.LogLevel.INFO,
         )
 
-        # Start WebSocket client in a separate thread with reconnect loop
-        def run_ws():
-            while self._running:
-                try:
-                    self._ws_client.start()
-                except Exception as e:
-                    logger.warning("⚠️ 飞书连接异常 / ws error: {}", e)
-                if self._running:
-                    import time
-
-                    time.sleep(5)
-
-        self._ws_thread = threading.Thread(target=run_ws, daemon=True)
-        self._ws_thread.start()
-
         logger.info("✅ 飞书已连接 / ws connected: long connection started")
         logger.info("📡 飞书事件接收 / event recv: using WebSocket without public IP")
-
-        # Keep running until stopped
-        while self._running:
-            await asyncio.sleep(1)
+        await self._run_reconnect_loop(
+            lambda: asyncio.to_thread(self._ws_client.start),
+            label="飞书 WebSocket",
+        )
 
     async def stop(self) -> None:
         """Stop the Feishu bot."""
-        self._running = False
+        self._stop_lifecycle()
         self.mark_not_ready()
         self._clear_progress()
         ws_client = self._ws_client
@@ -372,12 +355,9 @@ class FeishuChannel(BaseChannel):
                 await asyncio.to_thread(ws_client.stop)
             except Exception as e:
                 logger.debug("Feishu ws stop failed: {}", e)
-        ws_thread = self._ws_thread
-        if ws_thread and ws_thread.is_alive():
-            await asyncio.to_thread(ws_thread.join, timeout=3)
-        self._ws_thread = None
         self._loop = None
         self._ws_client = None
+        self._reset_lifecycle()
         logger.info("ℹ️ 飞书已停止 / channel stopped: shutdown complete")
 
     def _add_reaction_sync(self, message_id: str, emoji_type: str) -> None:
