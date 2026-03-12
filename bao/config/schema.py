@@ -17,6 +17,9 @@ SlackModeLiteral = Literal["socket"]
 MochatReplyDelayModeLiteral = Literal["off", "non-mention"]
 ProviderTypeLiteral = Literal["openai", "anthropic", "gemini", "openai_codex"]
 ToolExposureModeLiteral = Literal["off", "auto"]
+TelegramGroupPolicyLiteral = Literal["open", "mention"]
+DiscordGroupPolicyLiteral = Literal["mention", "open"]
+FeishuGroupPolicyLiteral = Literal["mention", "open"]
 
 
 def _warn_unknown_policy(
@@ -62,6 +65,17 @@ class TelegramConfig(Base):
         None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
     )
     reply_to_message: bool = False  # If true, bot replies quote the original message
+    group_policy: str = "mention"  # "mention" when @mentioned or replied to, "open" for all
+
+    @model_validator(mode="after")
+    def _warn_group_policy(self) -> "TelegramConfig":
+        _warn_unknown_policy(
+            model_name="TelegramConfig",
+            field_name="group_policy",
+            value=self.group_policy,
+            allowed_values=get_args(TelegramGroupPolicyLiteral),
+        )
+        return self
 
 
 class FeishuConfig(Base):
@@ -80,6 +94,17 @@ class FeishuConfig(Base):
     react_emoji: str = (
         "THUMBSUP"  # Emoji type for message reactions (e.g. THUMBSUP, OK, DONE, SMILE)
     )
+    group_policy: str = "mention"  # "mention" responds when @mentioned, "open" responds to all
+
+    @model_validator(mode="after")
+    def _warn_group_policy(self) -> "FeishuConfig":
+        _warn_unknown_policy(
+            model_name="FeishuConfig",
+            field_name="group_policy",
+            value=self.group_policy,
+            allowed_values=get_args(FeishuGroupPolicyLiteral),
+        )
+        return self
 
 
 class DingTalkConfig(Base):
@@ -101,6 +126,17 @@ class DiscordConfig(Base):
     allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs
     gateway_url: str = "wss://gateway.discord.gg/?v=10&encoding=json"
     intents: int = 37377  # GUILDS + GUILD_MESSAGES + DIRECT_MESSAGES + MESSAGE_CONTENT
+    group_policy: str = "mention"  # "mention" or "open"
+
+    @model_validator(mode="after")
+    def _warn_group_policy(self) -> "DiscordConfig":
+        _warn_unknown_policy(
+            model_name="DiscordConfig",
+            field_name="group_policy",
+            value=self.group_policy,
+            allowed_values=get_args(DiscordGroupPolicyLiteral),
+        )
+        return self
 
 
 class EmailConfig(Base):
@@ -405,6 +441,7 @@ class ExecToolConfig(Base):
 class MCPServerConfig(Base):
     """MCP server connection configuration (stdio or HTTP)."""
 
+    type: str = ""  # Optional: stdio | sse | streamableHttp. Empty = infer from command/url
     command: str = ""  # Stdio: command to run (e.g. "npx")
     args: list[str] = Field(default_factory=list)  # Stdio: command arguments
     env: dict[str, str] = Field(default_factory=dict)  # Stdio: extra env vars
