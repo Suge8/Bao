@@ -7,6 +7,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, TypeVar
 
 from loguru import logger
@@ -186,6 +187,10 @@ class TelegramChannel(BaseChannel):
         self._media_group_buffers: dict[str, list[dict[str, object]]] = {}
         self._media_group_tasks: dict[str, asyncio.Task[None]] = {}
         self._progress_reply_params: dict[str, ReplyParameters | None] = {}
+        self._progress_thread_kwargs: dict[str, dict[str, int]] = {}
+        self._message_threads: dict[tuple[str, int], int] = {}
+        self._bot_user_id: int | None = None
+        self._bot_username: str | None = None
         self._progress_handler = EditingProgress(
             self._create_progress_text,
             self._update_progress_text,
@@ -205,14 +210,20 @@ class TelegramChannel(BaseChannel):
         self._start_lifecycle()
 
         api_req = HTTPXRequest(
-            connection_pool_size=16, pool_timeout=5.0, connect_timeout=30.0, read_timeout=30.0
+            connection_pool_size=16,
+            pool_timeout=5.0,
+            connect_timeout=30.0,
+            read_timeout=30.0,
+            proxy=self.config.proxy or None,
         )
         poll_req = HTTPXRequest(
-            connection_pool_size=1, pool_timeout=5.0, connect_timeout=30.0, read_timeout=30.0
+            connection_pool_size=1,
+            pool_timeout=5.0,
+            connect_timeout=30.0,
+            read_timeout=30.0,
+            proxy=self.config.proxy or None,
         )
         builder = Application.builder().token(token).request(api_req).get_updates_request(poll_req)
-        if self.config.proxy:
-            builder = builder.proxy(self.config.proxy).get_updates_proxy(self.config.proxy)
         self._app = builder.build()
         app = self._app
         app.add_error_handler(self._on_error)
@@ -249,6 +260,8 @@ class TelegramChannel(BaseChannel):
 
         # Get bot info and register command menu
         bot_info = await _run_start_step("get_me", app.bot.get_me)
+        self._bot_user_id = getattr(bot_info, "id", None)
+        self._bot_username = getattr(bot_info, "username", None)
         logger.info("✅ 连接成功 / connected: @{}", bot_info.username)
         self.mark_ready()
 
@@ -278,6 +291,7 @@ class TelegramChannel(BaseChannel):
         self.mark_not_ready()
         self._clear_progress()
         self._progress_reply_params.clear()
+        self._progress_thread_kwargs.clear()
 
         # Cancel all typing indicators
         for chat_id in list(self._typing_tasks):
@@ -322,7 +336,9 @@ class TelegramChannel(BaseChannel):
             logger.warning("⚠️ 未运行 / not running: Telegram bot")
             return
 
-        self._stop_typing(msg.chat_id)
+        meta = msg.metadata or {}
+        if not bool(meta.get("_progress")):
+            self._stop_typing(msg.chat_id)
 
         try:
             chat_id = int(msg.chat_id)
@@ -330,16 +346,16 @@ class TelegramChannel(BaseChannel):
             logger.error("❌ 参数无效 / invalid chat_id: {}", msg.chat_id)
             return
 
+        reply_to_message_id = self._coerce_int(msg.reply_to or meta.get("message_id"))
+        message_thread_id = self._coerce_int(meta.get("message_thread_id"))
+        if message_thread_id is None and reply_to_message_id is not None:
+            message_thread_id = self._message_threads.get((msg.chat_id, reply_to_message_id))
+        thread_kwargs: dict[str, int] = {}
+        if message_thread_id is not None:
+            thread_kwargs["message_thread_id"] = message_thread_id
+
         reply_params = None
         if self.config.reply_to_message:
-            reply_to_raw = msg.reply_to or msg.metadata.get("message_id")
-            reply_to_message_id = None
-            if isinstance(reply_to_raw, int) and not isinstance(reply_to_raw, bool):
-                reply_to_message_id = reply_to_raw
-            elif isinstance(reply_to_raw, str):
-                raw = reply_to_raw.strip()
-                if raw.lstrip("-").isdigit():
-                    reply_to_message_id = int(raw)
             if reply_to_message_id is not None:
                 reply_params = ReplyParameters(
                     message_id=reply_to_message_id, allow_sending_without_reply=True
@@ -362,7 +378,12 @@ class TelegramChannel(BaseChannel):
                     else "document"
                 )
                 with open(media_path, "rb") as f:
-                    await sender(chat_id=chat_id, **{param: f}, reply_parameters=reply_params)
+                    await sender(
+                        chat_id=chat_id,
+                        **{param: f},
+                        reply_parameters=reply_params,
+                        **thread_kwargs,
+                    )
             except Exception as e:
                 filename = media_path.rsplit("/", 1)[-1]
                 logger.error("❌ 发送失败 / media failed: {}: {}", media_path, e)
@@ -370,14 +391,16 @@ class TelegramChannel(BaseChannel):
                     chat_id=chat_id,
                     text=f"[Failed to send: {filename}]",
                     reply_parameters=reply_params,
+                    **thread_kwargs,
                 )
 
         # Send text content
         self._progress_reply_params[msg.chat_id] = reply_params
+        self._progress_thread_kwargs[msg.chat_id] = dict(thread_kwargs)
         await self._dispatch_progress_text(msg, flush_progress=True)
-        meta = msg.metadata or {}
         if bool(meta.get("_progress_clear")) or not meta.get("_progress"):
             self._progress_reply_params.pop(msg.chat_id, None)
+            self._progress_thread_kwargs.pop(msg.chat_id, None)
 
     async def _send_text(self, chat_id: str, text: str) -> None:
         if not self._app or not text:
@@ -388,8 +411,9 @@ class TelegramChannel(BaseChannel):
             return
 
         reply_params = self._progress_reply_params.get(chat_id)
+        thread_kwargs = self._progress_thread_kwargs.get(chat_id, {})
         for chunk in _split_message(text):
-            await self._send_text_message(chat_id_int, chunk, reply_params)
+            await self._send_text_message(chat_id_int, chunk, reply_params, thread_kwargs)
 
     async def _create_progress_text(self, chat_id: str, text: str) -> int | None:
         if not self._app or not text:
@@ -400,7 +424,8 @@ class TelegramChannel(BaseChannel):
             return None
 
         reply_params = self._progress_reply_params.get(chat_id)
-        message = await self._send_text_message(chat_id_int, text, reply_params)
+        thread_kwargs = self._progress_thread_kwargs.get(chat_id, {})
+        message = await self._send_text_message(chat_id_int, text, reply_params, thread_kwargs)
         return int(message.message_id)
 
     async def _update_progress_text(
@@ -447,6 +472,7 @@ class TelegramChannel(BaseChannel):
         chat_id: int,
         text: str,
         reply_params: ReplyParameters | None,
+        thread_kwargs: dict[str, int] | None = None,
     ) -> Any:
         assert self._app is not None
         html = _markdown_to_telegram_html(text)
@@ -456,6 +482,7 @@ class TelegramChannel(BaseChannel):
                 text=html,
                 parse_mode="HTML",
                 reply_parameters=reply_params,
+                **(thread_kwargs or {}),
             )
         except BadRequest as e:
             if not _is_telegram_parse_error(e):
@@ -465,6 +492,7 @@ class TelegramChannel(BaseChannel):
                 chat_id=chat_id,
                 text=text,
                 reply_parameters=reply_params,
+                **(thread_kwargs or {}),
             )
 
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -493,20 +521,212 @@ class TelegramChannel(BaseChannel):
             "/help — Show available commands"
         )
 
+    def is_allowed(self, sender_id: str) -> bool:
+        """Preserve Telegram's legacy id|username allowlist matching."""
+        if super().is_allowed(sender_id):
+            return True
+
+        allow_list = getattr(self.config, "allow_from", [])
+        if not allow_list:
+            return False
+
+        sender_str = str(sender_id)
+        if sender_str.count("|") != 1:
+            return False
+
+        sid, username = sender_str.split("|", 1)
+        if not sid.isdigit() or not username:
+            return False
+        return sid in allow_list or username in allow_list
+
     @staticmethod
     def _sender_id(user) -> str:
         """Build sender_id with username for allowlist matching."""
         sid = str(user.id)
         return f"{sid}|{user.username}" if user.username else sid
 
+    @staticmethod
+    def _coerce_int(value: object) -> int | None:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            raw = value.strip()
+            if raw.lstrip("-").isdigit():
+                return int(raw)
+        return None
+
+    @staticmethod
+    def _derive_topic_session_key(message: Any) -> str | None:
+        message_thread_id = getattr(message, "message_thread_id", None)
+        if message.chat.type == "private" or message_thread_id is None:
+            return None
+        return f"telegram:{message.chat_id}:topic:{message_thread_id}"
+
+    @staticmethod
+    def _extract_reply_context(message: Any) -> str | None:
+        reply = getattr(message, "reply_to_message", None)
+        if not reply:
+            return None
+        text = getattr(reply, "text", None) or getattr(reply, "caption", None) or ""
+        return f"[Reply to: {text}]" if text else None
+
+    def _build_message_metadata(self, message: Any, user: Any) -> dict[str, Any]:
+        reply_to = getattr(message, "reply_to_message", None)
+        metadata: dict[str, Any] = {
+            "message_id": message.message_id,
+            "user_id": user.id,
+            "username": user.username,
+            "first_name": user.first_name,
+            "is_group": message.chat.type != "private",
+            "message_thread_id": getattr(message, "message_thread_id", None),
+            "is_forum": bool(getattr(message.chat, "is_forum", False)),
+            "reply_to_message_id": getattr(reply_to, "message_id", None) if reply_to else None,
+        }
+        session_key = self._derive_topic_session_key(message)
+        if session_key is not None:
+            metadata["session_key"] = session_key
+        return metadata
+
+    async def _download_message_media(
+        self,
+        message: Any,
+        *,
+        add_failure_content: bool = False,
+    ) -> tuple[list[str], list[str]]:
+        media_file = None
+        media_type = None
+        if getattr(message, "photo", None):
+            media_file = message.photo[-1]
+            media_type = "image"
+        elif getattr(message, "voice", None):
+            media_file = message.voice
+            media_type = "voice"
+        elif getattr(message, "audio", None):
+            media_file = message.audio
+            media_type = "audio"
+        elif getattr(message, "document", None):
+            media_file = message.document
+            media_type = "file"
+        elif getattr(message, "video", None):
+            media_file = message.video
+            media_type = "video"
+        elif getattr(message, "video_note", None):
+            media_file = message.video_note
+            media_type = "video"
+        elif getattr(message, "animation", None):
+            media_file = message.animation
+            media_type = "animation"
+
+        if media_file is None or not self._app:
+            return [], []
+
+        try:
+            file = await self._app.bot.get_file(media_file.file_id)
+            media_kind = media_type or "file"
+            ext = self._get_extension(
+                media_kind,
+                getattr(media_file, "mime_type", None),
+                getattr(media_file, "file_name", None),
+            )
+            media_dir = get_media_path()
+            file_path = media_dir / f"{media_file.file_id[:16]}{ext}"
+            await file.download_to_drive(str(file_path))
+
+            path_str = str(file_path)
+            if media_type in ("voice", "audio"):
+                from bao.providers.transcription import GroqTranscriptionProvider
+
+                transcriber = GroqTranscriptionProvider(api_key=self.groq_api_key)
+                transcription = await transcriber.transcribe(file_path)
+                if transcription:
+                    logger.info(
+                        "🎙️ 转写完成 / transcribed: {}: {}...", media_type, transcription[:50]
+                    )
+                    return [path_str], [f"[transcription: {transcription}]"]
+            return [path_str], [f"[{media_kind}: {path_str}]"]
+        except Exception as e:
+            logger.error("❌ 下载失败 / download failed: {}", e)
+            if add_failure_content and media_type is not None:
+                return [], [f"[{media_type}: download failed]"]
+            return [], []
+
+    async def _ensure_bot_identity(self) -> tuple[int | None, str | None]:
+        if self._bot_user_id is not None or self._bot_username is not None:
+            return self._bot_user_id, self._bot_username
+        if not self._app:
+            return None, None
+        bot_info = await self._app.bot.get_me()
+        self._bot_user_id = getattr(bot_info, "id", None)
+        self._bot_username = getattr(bot_info, "username", None)
+        return self._bot_user_id, self._bot_username
+
+    @staticmethod
+    def _has_mention_entity(
+        text: str,
+        entities: Any,
+        bot_username: str,
+        bot_id: int | None,
+    ) -> bool:
+        handle = f"@{bot_username}".lower()
+        for entity in entities or []:
+            entity_type = getattr(entity, "type", None)
+            if entity_type == "text_mention":
+                user = getattr(entity, "user", None)
+                if user is not None and bot_id is not None and getattr(user, "id", None) == bot_id:
+                    return True
+                continue
+            if entity_type != "mention":
+                continue
+            offset = getattr(entity, "offset", None)
+            length = getattr(entity, "length", None)
+            if offset is None or length is None:
+                continue
+            if text[offset : offset + length].lower() == handle:
+                return True
+        return handle in text.lower()
+
+    async def _is_group_message_for_bot(self, message: Any) -> bool:
+        if message.chat.type == "private" or self.config.group_policy == "open":
+            return True
+
+        bot_id, bot_username = await self._ensure_bot_identity()
+        if bot_username:
+            text = message.text or ""
+            caption = message.caption or ""
+            if self._has_mention_entity(text, getattr(message, "entities", None), bot_username, bot_id):
+                return True
+            if self._has_mention_entity(
+                caption,
+                getattr(message, "caption_entities", None),
+                bot_username,
+                bot_id,
+            ):
+                return True
+
+        reply_user = getattr(getattr(message, "reply_to_message", None), "from_user", None)
+        return bool(bot_id and reply_user and reply_user.id == bot_id)
+
+    def _remember_thread_context(self, message: Any) -> None:
+        message_thread_id = self._coerce_int(getattr(message, "message_thread_id", None))
+        message_id = self._coerce_int(getattr(message, "message_id", None))
+        if message_thread_id is None or message_id is None:
+            return
+        self._message_threads[(str(message.chat_id), message_id)] = message_thread_id
+        if len(self._message_threads) > 1000:
+            self._message_threads.pop(next(iter(self._message_threads)))
+
     async def _forward_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Forward slash commands to the bus for unified handling in AgentLoop."""
         if not update.message or not update.effective_user:
             return
+        message = update.message
+        user = update.effective_user
+        self._remember_thread_context(message)
         await self._handle_message(
-            sender_id=self._sender_id(update.effective_user),
-            chat_id=str(update.message.chat_id),
-            content=update.message.text or "",
+            sender_id=self._sender_id(user),
+            chat_id=str(message.chat_id),
+            content=message.text or "",
+            metadata=self._build_message_metadata(message, user),
         )
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -518,6 +738,7 @@ class TelegramChannel(BaseChannel):
         user = update.effective_user
         chat_id = message.chat_id
         sender_id = self._sender_id(user)
+        self._remember_thread_context(message)
 
         if not self.is_allowed(sender_id):
             logger.warning(
@@ -529,9 +750,12 @@ class TelegramChannel(BaseChannel):
         # Store chat_id for replies
         self._chat_ids[sender_id] = chat_id
 
+        if not await self._is_group_message_for_bot(message):
+            return
+
         # Build content from text and/or media
-        content_parts = []
-        media_paths = []
+        content_parts: list[str] = []
+        media_paths: list[str] = []
 
         # Text content
         if message.text:
@@ -539,57 +763,24 @@ class TelegramChannel(BaseChannel):
         if message.caption:
             content_parts.append(message.caption)
 
-        # Handle media files
-        media_file = None
-        media_type = None
+        current_media_paths, current_media_parts = await self._download_message_media(
+            message, add_failure_content=True
+        )
+        media_paths.extend(current_media_paths)
+        content_parts.extend(current_media_parts)
 
-        if message.photo:
-            media_file = message.photo[-1]  # Largest photo
-            media_type = "image"
-        elif message.voice:
-            media_file = message.voice
-            media_type = "voice"
-        elif message.audio:
-            media_file = message.audio
-            media_type = "audio"
-        elif message.document:
-            media_file = message.document
-            media_type = "file"
-
-        # Download media if present
-        if media_file and self._app:
-            try:
-                file = await self._app.bot.get_file(media_file.file_id)
-                media_kind = media_type or "file"
-                ext = self._get_extension(media_kind, getattr(media_file, "mime_type", None))
-
-                media_dir = get_media_path()
-
-                file_path = media_dir / f"{media_file.file_id[:16]}{ext}"
-                await file.download_to_drive(str(file_path))
-
-                media_paths.append(str(file_path))
-
-                # Handle voice transcription
-                if media_type == "voice" or media_type == "audio":
-                    from bao.providers.transcription import GroqTranscriptionProvider
-
-                    transcriber = GroqTranscriptionProvider(api_key=self.groq_api_key)
-                    transcription = await transcriber.transcribe(file_path)
-                    if transcription:
-                        logger.info(
-                            "🎙️ 转写完成 / transcribed: {}: {}...", media_type, transcription[:50]
-                        )
-                        content_parts.append(f"[transcription: {transcription}]")
-                    else:
-                        content_parts.append(f"[{media_type}: {file_path}]")
-                else:
-                    content_parts.append(f"[{media_type}: {file_path}]")
-
-                logger.debug("Downloaded {} to {}", media_type, file_path)
-            except Exception as e:
-                logger.error("❌ 下载失败 / download failed: {}", e)
-                content_parts.append(f"[{media_type}: download failed]")
+        reply = getattr(message, "reply_to_message", None)
+        if reply is not None:
+            reply_context = self._extract_reply_context(message)
+            reply_media_paths, reply_media_parts = await self._download_message_media(reply)
+            if reply_media_paths:
+                media_paths = reply_media_paths + media_paths
+            reply_tag = (
+                reply_context
+                or (f"[Reply to: {reply_media_parts[0]}]" if reply_media_parts else None)
+            )
+            if reply_tag:
+                content_parts.insert(0, reply_tag)
 
         content = "\n".join(content_parts) if content_parts else "[empty message]"
 
@@ -597,16 +788,7 @@ class TelegramChannel(BaseChannel):
 
         str_chat_id = str(chat_id)
 
-        # Start typing indicator before processing
-        self._start_typing(str_chat_id)
-
-        metadata = {
-            "message_id": message.message_id,
-            "user_id": user.id,
-            "username": user.username,
-            "first_name": user.first_name,
-            "is_group": message.chat.type != "private",
-        }
+        metadata = self._build_message_metadata(message, user)
 
         media_group_id = getattr(message, "media_group_id", None)
         if media_group_id:
@@ -623,6 +805,9 @@ class TelegramChannel(BaseChannel):
             if key not in self._media_group_tasks or self._media_group_tasks[key].done():
                 self._media_group_tasks[key] = asyncio.create_task(self._flush_media_group(key))
             return
+
+        # Start typing indicator before processing
+        self._start_typing(str_chat_id)
 
         # Forward to the message bus
         await self._handle_message(
@@ -701,8 +886,13 @@ class TelegramChannel(BaseChannel):
         """Log polling / handler errors instead of silently swallowing them."""
         logger.error("❌ 处理异常 / handler error: {}", context.error)
 
-    def _get_extension(self, media_type: str, mime_type: str | None) -> str:
-        """Get file extension based on media type."""
+    def _get_extension(
+        self,
+        media_type: str,
+        mime_type: str | None,
+        filename: str | None = None,
+    ) -> str:
+        """Get file extension based on media type or original filename."""
         if mime_type:
             ext_map = {
                 "image/jpeg": ".jpg",
@@ -715,5 +905,10 @@ class TelegramChannel(BaseChannel):
             if mime_type in ext_map:
                 return ext_map[mime_type]
 
-        type_map = {"image": ".jpg", "voice": ".ogg", "audio": ".mp3", "file": ""}
-        return type_map.get(media_type, "")
+        type_map = {"image": ".jpg", "voice": ".ogg", "audio": ".mp3"}
+        if media_type in type_map:
+            return type_map[media_type]
+
+        if filename:
+            return "".join(Path(filename).suffixes)
+        return ""
