@@ -1,0 +1,341 @@
+{
+  "schemaVersion": 1,
+  "sources": {
+    "iconoir": {
+      "label": "Iconoir",
+      "license": "MIT",
+      "repo": "iconoir-icons/iconoir",
+      "commit": "2911b580e9df7238e5500baa41d8c98a4bb8ed56",
+      "rawBaseUrl": "https://raw.githubusercontent.com/iconoir-icons/iconoir/2911b580e9df7238e5500baa41d8c98a4bb8ed56/icons/regular"
+    },
+    "lucide-lab": {
+      "label": "Lucide Lab",
+      "license": "ISC",
+      "repo": "lucide-icons/lucide-lab",
+      "commit": "86fbd78b2c16815983e04fd8da898ae45d1d0d6d",
+      "rawBaseUrl": "https://raw.githubusercontent.com/lucide-icons/lucide-lab/86fbd78b2c16815983e04fd8da898ae45d1d0d6d/icons"
+    }
+  },
+  "audit": {
+    "brand": [
+      "channel-dingtalk.svg",
+      "channel-discord.svg",
+      "channel-feishu.svg",
+      "channel-imessage.svg",
+      "channel-qq.svg",
+      "channel-slack.svg",
+      "channel-telegram.svg",
+      "channel-whatsapp.svg"
+    ],
+    "productCore": [
+      "chat-light.svg",
+      "chat.svg",
+      "diag-section-events-dark.svg",
+      "diag-section-events-light.svg",
+      "diag-section-file-dark.svg",
+      "diag-section-file-light.svg",
+      "diag-section-gateway-dark.svg",
+      "diag-section-gateway-light.svg",
+      "diag-section-logtail-dark.svg",
+      "diag-section-logtail-light.svg",
+      "halt.svg",
+      "paperclip.svg",
+      "power.svg",
+      "send.svg",
+      "settings-light.svg",
+      "settings.svg",
+      "sidebar-chat-solid.svg",
+      "sidebar-chat.svg",
+      "sidebar-chevron-light.svg",
+      "sidebar-chevron.svg",
+      "sidebar-close-light.svg",
+      "sidebar-close.svg",
+      "sidebar-diagnostics-dark.svg",
+      "sidebar-diagnostics-light.svg",
+      "sidebar-diagnostics-solid.svg",
+      "sidebar-mail-solid.svg",
+      "sidebar-mail.svg",
+      "sidebar-monitor-dark.svg",
+      "sidebar-monitor-solid-dark.svg",
+      "sidebar-monitor-solid.svg",
+      "sidebar-monitor.svg",
+      "sidebar-settings-solid.svg",
+      "sidebar-settings.svg",
+      "stop.svg"
+    ],
+    "illustrativeSpecial": [
+      "gateway-error.svg",
+      "gateway-idle.svg",
+      "gateway-running.svg",
+      "gateway-starting.svg",
+      "ignite-dark.svg",
+      "ignite-light.svg",
+      "ignite.svg",
+      "sidebar-pulse-solid.svg",
+      "sidebar-pulse.svg",
+      "sidebar-sessions-title-light.svg",
+      "sidebar-sessions-title.svg",
+      "sidebar-subagent.svg",
+      "sidebar-zap-solid.svg",
+      "sidebar-zap.svg",
+      "zap-light.svg",
+      "zap.svg"
+    ]
+  },
+  "starterIcons": [
+    {
+      "source": "iconoir",
+      "upstream": "attachment.svg",
+      "local": "iconoir/attachment.svg",
+      "usage": [
+        "paperclip",
+        "composer-attachment"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "chat-bubble.svg",
+      "local": "iconoir/chat-bubble.svg",
+      "usage": [
+        "chat",
+        "sidebar-chat"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "chat-lines.svg",
+      "local": "iconoir/chat-lines.svg",
+      "usage": [
+        "sessions",
+        "conversation-list"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "mail.svg",
+      "local": "iconoir/mail.svg",
+      "usage": [
+        "mail",
+        "notifications"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "ios-settings.svg",
+      "local": "iconoir/ios-settings.svg",
+      "usage": [
+        "settings"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "bubble-xmark.svg",
+      "local": "iconoir/bubble-xmark.svg",
+      "usage": [
+        "dismiss",
+        "close-candidate"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "nav-arrow-left.svg",
+      "local": "iconoir/nav-arrow-left.svg",
+      "usage": [
+        "chevron-left",
+        "navigation"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "nav-arrow-right.svg",
+      "local": "iconoir/nav-arrow-right.svg",
+      "usage": [
+        "chevron-right",
+        "navigation"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "activity.svg",
+      "local": "iconoir/activity.svg",
+      "usage": [
+        "pulse",
+        "activity"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "page-search.svg",
+      "local": "iconoir/page-search.svg",
+      "usage": [
+        "diagnostics-log",
+        "file-section"
+      ]
+    },
+    {
+      "source": "lucide-lab",
+      "upstream": "gearbox.svg",
+      "local": "lucide-lab/gearbox.svg",
+      "usage": [
+        "diagnostics-experimental",
+        "advanced-tools"
+      ]
+    },
+    {
+      "source": "lucide-lab",
+      "upstream": "watch-activity.svg",
+      "local": "lucide-lab/watch-activity.svg",
+      "usage": [
+        "observability",
+        "runtime-health"
+      ]
+    },
+    {
+      "source": "lucide-lab",
+      "upstream": "toolbox.svg",
+      "local": "lucide-lab/toolbox.svg",
+      "usage": [
+        "tools",
+        "diagnostics-sections"
+      ]
+    },
+    {
+      "source": "lucide-lab",
+      "upstream": "copy-file-path.svg",
+      "local": "lucide-lab/copy-file-path.svg",
+      "usage": [
+        "copy-log-path",
+        "path-actions"
+      ]
+    },
+    {
+      "source": "lucide-lab",
+      "upstream": "chevrons-left-right-square.svg",
+      "local": "lucide-lab/chevrons-left-right-square.svg",
+      "usage": [
+        "sidebar-session-browser",
+        "panel-navigation"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "brain-electricity.svg",
+      "local": "iconoir/brain-electricity.svg",
+      "usage": [
+        "memory"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "book-stack.svg",
+      "local": "iconoir/book-stack.svg",
+      "usage": [
+        "skills"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "circle-spark.svg",
+      "local": "iconoir/circle-spark.svg",
+      "usage": [
+        "greeting",
+        "hero-spark"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "calendar-rotate.svg",
+      "local": "iconoir/calendar-rotate.svg",
+      "usage": [
+        "cron"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "database-settings.svg",
+      "local": "iconoir/database-settings.svg",
+      "usage": [
+        "gateway-section",
+        "system-data"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "message-alert.svg",
+      "local": "iconoir/message-alert.svg",
+      "usage": [
+        "gateway-error",
+        "warnings"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "message-text.svg",
+      "local": "iconoir/message-text.svg",
+      "usage": [
+        "log-tail",
+        "text-stream"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "nav-arrow-up.svg",
+      "local": "iconoir/nav-arrow-up.svg",
+      "usage": [
+        "send"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "play.svg",
+      "local": "iconoir/play.svg",
+      "usage": [
+        "gateway-idle",
+        "start-action"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "clock-rotate-right.svg",
+      "local": "iconoir/clock-rotate-right.svg",
+      "usage": [
+        "gateway-starting"
+      ]
+    },
+    {
+      "source": "iconoir",
+      "upstream": "computer.svg",
+      "local": "iconoir/computer.svg",
+      "usage": [
+        "desktop"
+      ]
+    },
+    {
+      "source": "lucide-lab",
+      "upstream": "tab-x.svg",
+      "local": "lucide-lab/tab-x.svg",
+      "usage": [
+        "close",
+        "dismiss"
+      ]
+    },
+    {
+      "source": "lucide-lab",
+      "upstream": "watch-loader.svg",
+      "local": "lucide-lab/watch-loader.svg",
+      "usage": [
+        "loading",
+        "gateway-starting-alternate"
+      ]
+    },
+    {
+      "source": "lucide-lab",
+      "upstream": "pac-man.svg",
+      "local": "lucide-lab/pac-man.svg",
+      "usage": [
+        "gateway-running",
+        "playful-running-state"
+      ]
+    }
+  ]
+}
