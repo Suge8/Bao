@@ -106,6 +106,7 @@ class _QueryEmbed:
         return [[0.4, 0.6]]
 
 
+
 def _build_store() -> MemoryStore:
     store = MemoryStore.__new__(MemoryStore)
     store._store_lock = threading.RLock()
@@ -367,6 +368,8 @@ def test_search_memory_merges_vector_and_text_candidates():
     assert "special token memory" in results
 
 
+
+
 def test_write_long_term_skips_embedding_schedule_when_unchanged():
     store = _build_store()
     setattr(
@@ -495,6 +498,35 @@ def test_update_memory_skips_aggregate_embedding_when_unchanged():
 
     store.update_memory("general", "delta")
     assert calls["count"] == 1
+
+
+def test_delete_long_term_by_key_schedules_aggregate_embedding() -> None:
+    store = _build_store()
+    setattr(
+        store,
+        "_tbl",
+        _FakeTable(
+            [
+                {
+                    "key": "long_term_general_20260312_0001",
+                    "content": "alpha",
+                    "type": "long_term",
+                    "category": "general",
+                }
+            ]
+        ),
+    )
+
+    calls = {"count": 0}
+
+    def _schedule() -> None:
+        calls["count"] += 1
+
+    setattr(store, "_schedule_long_term_embedding", _schedule)
+
+    assert store.delete_long_term_by_key("long_term_general_20260312_0001") is True
+    assert calls["count"] == 1
+    assert store._tbl.rows == []
 
 
 def test_merge_candidates_preserves_both_scores_on_duplicate():

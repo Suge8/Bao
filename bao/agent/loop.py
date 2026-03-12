@@ -23,6 +23,7 @@ from bao.agent.context import ContextBuilder
 from bao.agent.memory import MEMORY_CATEGORIES, MEMORY_CATEGORY_CAPS
 from bao.agent.protocol import StreamEvent, StreamEventType
 from bao.agent.subagent import SubagentManager
+from bao.agent.tool_result import tool_result_excerpt
 from bao.agent.tools.agent_browser import AgentBrowserTool
 from bao.agent.tools.base import Tool
 from bao.agent.tools.cron import CronTool
@@ -379,7 +380,7 @@ class AgentLoop:
         self._runtime_diagnostics = get_runtime_diagnostics_store()
         # Context management config
         _cm = config.agents.defaults if config else None
-        self._ctx_mgmt: str = _cm.context_management if _cm else "observe"
+        self._ctx_mgmt: str = _cm.context_management if _cm else "auto"
         self._tool_offload_chars: int = _cm.tool_output_offload_chars if _cm else 8000
         self._tool_preview_chars: int = _cm.tool_output_preview_chars if _cm else 3000
         self._tool_hard_chars: int = _cm.tool_output_hard_chars if _cm else 6000
@@ -489,6 +490,21 @@ class AgentLoop:
         # Callback for system message responses (subagent completion, etc.)
         # Desktop/CLI can register this to receive async notifications.
         self.on_system_response: Callable[[OutboundMessage], Awaitable[None]] | None = None
+
+    @property
+    def _running(self) -> bool:
+        return bool(getattr(self, "_running_state", False))
+
+    @_running.setter
+    def _running(self, value: bool) -> None:
+        normalized = bool(value)
+        previous = bool(getattr(self, "_running_state", False))
+        self._running_state = normalized
+        if normalized or previous == normalized:
+            return
+        run_task = getattr(self, "_run_task", None)
+        if run_task and not run_task.done() and run_task is not asyncio.current_task():
+            run_task.cancel()
 
     def _register_tool(
         self,
@@ -637,7 +653,7 @@ class AgentLoop:
                 for p, ok in [("tavily", has_tavily), ("brave", has_brave), ("exa", has_exa)]
                 if ok
             ]
-            logger.info("🔍 启用搜索 / search enabled: {}", ", ".join(providers))
+            logger.debug("🔍 启用搜索 / search enabled: {}", ", ".join(providers))
             self._register_tool(
                 search_tool,
                 bundle=_TOOL_BUNDLE_WEB,
@@ -843,7 +859,7 @@ class AgentLoop:
                     aliases=("screen info", "屏幕信息"),
                     keyword_aliases=("screen", "display", "屏幕", "坐标"),
                 )
-                logger.info("🖥️ 启用桌面 / desktop enabled: desktop automation tools")
+                logger.debug("🖥️ 启用桌面 / desktop enabled: desktop automation tools")
             except ImportError:
                 logger.warning(
                     "⚠️ 桌面依赖缺失 / desktop deps missing: mss, pyautogui, pillow are required"
@@ -1880,14 +1896,7 @@ class AgentLoop:
                 )
 
         tool_call_dicts = [
-            {
-                "id": tc.id,
-                "type": "function",
-                "function": {
-                    "name": tc.name,
-                    "arguments": json.dumps(tc.arguments, ensure_ascii=False),
-                },
-            }
+            tc.to_openai_tool_call()
             for tc in response.tool_calls
         ]
         messages = self.context.add_assistant_message(
@@ -1941,7 +1950,7 @@ class AgentLoop:
                     self.tools.execute(tool_call.name, tool_call.arguments)
                 )
                 raw_result = await self._await_tool_with_interrupt(tool_task, current_task_ref)
-                result_text = raw_result if isinstance(raw_result, str) else str(raw_result)
+                result_text = tool_result_excerpt(raw_result)
             _tool_err = shared.parse_tool_error(tool_call.name, result_text, _ERROR_KEYWORDS)
             if _tool_err:
                 if _tool_err.category == "invalid_params":
@@ -1970,7 +1979,7 @@ class AgentLoop:
                 store=artifact_store,
                 tool_name=tool_call.name,
                 tool_call_id=tool_call.id,
-                result=result_text,
+                result=raw_result,
                 offload_chars=self._tool_offload_chars,
                 preview_chars=self._tool_preview_chars,
                 hard_chars=self._tool_hard_chars,
@@ -2700,8 +2709,7 @@ class AgentLoop:
         self,
         session: Session,
         msg: InboundMessage,
-        related: list[Any],
-        experience_items: list[Any],
+        recall: dict[str, Any],
     ) -> list[dict[str, Any]]:
         history = self._prepare_user_history_for_context(session, msg)
         session_notes = self._build_child_session_notes(session.key)
@@ -2711,12 +2719,30 @@ class AgentLoop:
             media=msg.media if msg.media else None,
             channel=msg.channel,
             chat_id=msg.chat_id,
-            related_memory=related or None,
-            related_experience=experience_items or None,
+            long_term_memory=str(recall.get("long_term_memory") or ""),
+            related_memory=cast(list[Any], recall.get("related_memory") or None),
+            related_experience=cast(list[Any], recall.get("related_experience") or None),
             model=self.model,
             plan_state=session.metadata.get(plan_state.PLAN_STATE_KEY),
             session_notes=session_notes,
         )
+
+    @staticmethod
+    def _empty_recall_payload() -> dict[str, Any]:
+        return {
+            "long_term_memory": "",
+            "related_memory": [],
+            "related_experience": [],
+        }
+
+    async def _recall_context_for_query(self, query: str) -> dict[str, Any]:
+        if not query.strip():
+            return self._empty_recall_payload()
+        try:
+            recall = await asyncio.to_thread(self.context.recall, query)
+        except Exception:
+            return self._empty_recall_payload()
+        return recall if isinstance(recall, dict) else self._empty_recall_payload()
 
     def _build_child_session_notes(self, parent_session_key: str) -> list[str]:
         child_sessions = self.sessions.list_child_sessions(parent_session_key)
@@ -3233,22 +3259,11 @@ class AgentLoop:
         )
         if (t := self.tools.get("message")) and isinstance(t, MessageTool):
             t.start_turn()
-        if self.context.memory.should_skip_retrieval(msg.content):
-            related = []
-            experience = []
-        else:
-            _results = await asyncio.gather(
-                asyncio.to_thread(self.context.memory.search_memory, msg.content),
-                asyncio.to_thread(self.context.memory.search_experience, msg.content),
-                return_exceptions=True,
-            )
-            related = _results[0] if not isinstance(_results[0], BaseException) else []
-            experience = _results[1] if not isinstance(_results[1], BaseException) else []
+        recall = await self._recall_context_for_query(msg.content)
         initial_messages = self._build_initial_messages_for_user_turn(
             session,
             msg,
-            related=cast(list[Any], related),
-            experience_items=cast(list[Any], experience),
+            recall=recall,
         )
 
         if not msg.metadata.get("_pre_saved") and not msg.metadata.get("_ephemeral"):
@@ -3409,24 +3424,15 @@ class AgentLoop:
         if (t := self.tools.get("message")) and isinstance(t, MessageTool):
             t.start_turn()
         system_prompt_text, search_query = self._resolve_system_message_inputs(msg)
-        if search_query.strip() and not self.context.memory.should_skip_retrieval(search_query):
-            _results = await asyncio.gather(
-                asyncio.to_thread(self.context.memory.search_memory, search_query),
-                asyncio.to_thread(self.context.memory.search_experience, search_query),
-                return_exceptions=True,
-            )
-            related = _results[0] if not isinstance(_results[0], BaseException) else []
-            experience = _results[1] if not isinstance(_results[1], BaseException) else []
-        else:
-            related = []
-            experience = []
+        recall = await self._recall_context_for_query(search_query)
         initial_messages = self.context.build_messages(
             history=session.get_history(max_messages=self.memory_window),
             current_message=system_prompt_text,
             channel=origin_channel,
             chat_id=origin_chat_id,
-            related_memory=related or None,
-            related_experience=experience or None,
+            long_term_memory=str(recall.get("long_term_memory") or ""),
+            related_memory=cast(list[Any], recall.get("related_memory") or None),
+            related_experience=cast(list[Any], recall.get("related_experience") or None),
             model=self.model,
             plan_state=session.metadata.get(plan_state.PLAN_STATE_KEY),
         )
@@ -3672,10 +3678,6 @@ class AgentLoop:
                             if deleted_by_key:
                                 deleted += 1
                                 fresh_keys.discard(key)
-            if deleted:
-                asyncio.create_task(
-                    asyncio.to_thread(self.context.memory.embed_long_term_aggregate)
-                )
             self._clear_memory_state(session)
             self.sessions.save(session)
             if deleted:
@@ -3706,10 +3708,6 @@ class AgentLoop:
                         deleted = await asyncio.to_thread(
                             self.context.memory.delete_long_term_by_key, key
                         )
-                        if deleted:
-                            asyncio.create_task(
-                                asyncio.to_thread(self.context.memory.embed_long_term_aggregate)
-                            )
                 self._clear_memory_state(session)
                 self.sessions.save(session)
                 if deleted:
@@ -3859,6 +3857,9 @@ Respond with ONLY valid JSON, no markdown fences."""
                         {"role": "user", "content": prompt},
                     ],
                     model=model,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    reasoning_effort=self.reasoning_effort,
                     source="utility",
                 ),
                 timeout=90,

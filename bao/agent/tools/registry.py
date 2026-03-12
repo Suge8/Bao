@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any
 
+from bao.agent.tool_result import ToolResultValue
 from bao.agent.tools.base import Tool
 
 
@@ -111,7 +112,7 @@ class ToolRegistry:
             return [tool.to_schema() for tool in self._tools.values()]
         return [tool.to_schema() for tool in self._tools.values() if tool.name in names]
 
-    async def execute(self, name: str, params: dict[str, Any]) -> str:
+    async def execute(self, name: str, params: dict[str, Any]) -> ToolResultValue:
         """Execute a tool by name, returning result or error string."""
         tool = self._tools.get(name)
         if not tool:
@@ -122,6 +123,7 @@ class ToolRegistry:
             )
 
         try:
+            params = tool.cast_params(params)
             errors = tool.validate_params(params)
             if errors:
                 return (

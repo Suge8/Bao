@@ -59,6 +59,7 @@ class MemoryService(QObject):
     appendCommitted: ClassVar[Signal] = Signal()
 
     _runnerResult: ClassVar[Signal] = Signal(str, bool, bool, str, object)
+    _MUTATION_BUSY_MESSAGE = "Another memory operation is already in progress."
 
     def __init__(self, runner: AsyncioRunner, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -245,10 +246,14 @@ class MemoryService(QObject):
         self.readyChanged.emit()
 
     def _submit_task(self, kind: str, coro: Coroutine[Any, Any, Any]) -> None:
+        blocking = self._is_blocking_kind(kind)
+        if blocking and self._blocking_busy:
+            coro.close()
+            self.operationFinished.emit(self._MUTATION_BUSY_MESSAGE, False)
+            return
         future = self._submit_safe(coro)
         if future is None:
             return
-        blocking = self._is_blocking_kind(kind)
         self._set_busy(True)
         if blocking:
             self._set_blocking_busy(True)
@@ -562,6 +567,7 @@ class MemoryService(QObject):
             "used_categories": len(used),
             "total_categories": len(MEMORY_CATEGORIES),
             "total_chars": sum(int(item.get("char_count", 0) or 0) for item in items),
+            "total_facts": sum(int(item.get("fact_count", 0) or 0) for item in items),
             "latest_updated_at": latest,
             "latest_updated_label": _format_updated_label(latest),
         }

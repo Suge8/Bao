@@ -72,14 +72,21 @@ def test_list_memory_categories_returns_fixed_category_dtos() -> None:
     store = _build_store(
         [
             {
-                "key": "long_term_project",
+                "key": "long_term_project_1",
                 "type": "long_term",
                 "category": "project",
-                "content": "Keep auth flow simple\nReuse session manager",
+                "content": "Keep auth flow simple",
                 "updated_at": "2026-03-12T00:00:00",
             },
             {
-                "key": "long_term_general",
+                "key": "long_term_project_2",
+                "type": "long_term",
+                "category": "project",
+                "content": "Reuse session manager",
+                "updated_at": "2026-03-12T00:00:00",
+            },
+            {
+                "key": "long_term_general_1",
                 "type": "long_term",
                 "category": "general",
                 "content": "Prefer concise replies",
@@ -95,6 +102,7 @@ def test_list_memory_categories_returns_fixed_category_dtos() -> None:
     personal = next(item for item in items if item["category"] == "personal")
     assert project["char_count"] > 0
     assert project["line_count"] == 2
+    assert project["fact_count"] == 2
     assert personal["is_empty"] is True
     assert personal["key"] == "long_term_personal"
 
@@ -120,6 +128,51 @@ def test_memory_category_mutations_roundtrip_through_dtos() -> None:
     assert cleared is not None
     assert cleared["content"] == ""
     assert cleared["is_empty"] is True
+
+
+def test_write_long_term_stores_fact_rows_and_remember_dedupes() -> None:
+    store = _build_store()
+
+    store.write_long_term("Fact A\nFact B\nFact A", "project")
+    rows = store._tbl.rows
+
+    assert [row["content"] for row in rows] == ["Fact A", "Fact B"]
+
+    store.remember("Fact B\nFact C", "project")
+    detail = store.get_memory_category("project")
+
+    assert detail is not None
+    assert detail["content"] == "Fact A\nFact B\nFact C"
+    assert detail["fact_count"] == 3
+
+
+def test_forget_rewrites_category_with_fresh_updated_at() -> None:
+    store = _build_store(
+        [
+            {
+                "key": "long_term_project_1",
+                "type": "long_term",
+                "category": "project",
+                "content": "Fact A",
+                "updated_at": "2026-03-10T00:00:00",
+            },
+            {
+                "key": "long_term_project_2",
+                "type": "long_term",
+                "category": "project",
+                "content": "Fact B",
+                "updated_at": "2026-03-11T00:00:00",
+            },
+        ]
+    )
+
+    result = store.forget("Fact B")
+    detail = store.get_memory_category("project")
+
+    assert "Removed 1 memory entries" in result
+    assert detail is not None
+    assert detail["content"] == "Fact A"
+    assert detail["updated_at"] != "2026-03-10T00:00:00"
 
 
 def test_experience_workspace_api_supports_filter_mutate_and_promote() -> None:

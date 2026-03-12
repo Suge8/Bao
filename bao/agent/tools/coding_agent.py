@@ -5,6 +5,7 @@ from typing import Any
 
 from loguru import logger
 
+from bao.agent.tool_result import ToolResultValue, maybe_temp_text_result
 from bao.agent.tools.base import Tool
 
 
@@ -170,7 +171,7 @@ class CodingAgentTool(Tool):
         for details_tool in self._details_tools.values():
             details_tool.set_context(channel, chat_id, session_key)
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> ToolResultValue:
         agent_name = kwargs.pop("agent", None)
         if not isinstance(agent_name, str) or agent_name not in self._backends:
             available = ", ".join(self._backends.keys()) or "none"
@@ -251,7 +252,32 @@ class CodingAgentDetailsTool(Tool):
             "required": [],
         }
 
-    async def execute(self, **kwargs: Any) -> str:
+    @staticmethod
+    def _clip_text(text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars]
+
+    @classmethod
+    def _render_fallback_record(
+        cls,
+        *,
+        agent_name: str,
+        record: dict[str, Any],
+        max_chars: int,
+        include_stderr: bool,
+    ) -> ToolResultValue:
+        stdout = cls._clip_text(str(record.get("stdout", "")), max_chars)
+        stderr = str(record.get("stderr", ""))
+        parts = [f"[{agent_name}] request_id={record.get('request_id', '?')}"]
+        parts.append(f"Status: {record.get('status', '?')}")
+        if stdout:
+            parts.append(f"Output:\n{stdout}")
+        if include_stderr and stderr:
+            parts.append(f"Stderr:\n{cls._clip_text(stderr, max_chars)}")
+        return maybe_temp_text_result("\n".join(parts), prefix="bao_coding_details_")
+
+    async def execute(self, **kwargs: Any) -> ToolResultValue:
         request_id = kwargs.get("request_id")
         session_id = kwargs.get("session_id")
         agent_filter = kwargs.get("agent")
@@ -304,15 +330,11 @@ class CodingAgentDetailsTool(Tool):
             if not isinstance(max_chars, int):
                 max_chars = 4000
             max_chars = max(200, min(max_chars, 50000))
-
-            stdout = str(record.get("stdout", ""))[:max_chars]
-            stderr = str(record.get("stderr", ""))
-            parts = [f"[{agent_name}] request_id={record.get('request_id', '?')}"]
-            parts.append(f"Status: {record.get('status', '?')}")
-            if stdout:
-                parts.append(f"Output:\n{stdout}")
-            if kwargs.get("include_stderr") and stderr:
-                parts.append(f"Stderr:\n{stderr[:max_chars]}")
-            return "\n".join(parts)
+            return self._render_fallback_record(
+                agent_name=agent_name,
+                record=record,
+                max_chars=max_chars,
+                include_stderr=bool(kwargs.get("include_stderr")),
+            )
 
         return "No cached details found for the given request_id/session_id."

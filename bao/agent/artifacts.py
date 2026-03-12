@@ -10,6 +10,14 @@ from uuid import uuid4
 
 from loguru import logger
 
+from bao.agent.tool_result import (
+    ToolResultValue,
+    ToolTextResult,
+    cleanup_result_file,
+    make_file_preview,
+    make_preview,
+    read_head_chars,
+)
 from bao.utils.helpers import safe_filename
 
 
@@ -75,9 +83,46 @@ class ArtifactStore:
         file_path = self._write_file(kind, f"{safe_hint}_{self._short_uuid()}.txt", content)
         return ArtifactRef(path=file_path, kind=kind, size=size, redacted=False)
 
+    def write_text_file(
+        self,
+        kind: str,
+        name_hint: str,
+        source_path: Path,
+        *,
+        size: int,
+        move_source: bool = True,
+        redacted: bool | None = None,
+    ) -> ArtifactRef:
+        safe_hint = safe_filename(name_hint) or "artifact"
+        if redacted is None:
+            redacted = self._is_sensitive_file(source_path) or any(
+                tag in name_hint for tag in ("write_file", "edit_file")
+            )
+        if redacted:
+            return ArtifactRef(path=Path(safe_hint), kind=kind, size=size, redacted=True)
+        target_dir = self._kind_dir(kind)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        file_path = target_dir / f"{safe_hint}_{self._short_uuid()}.txt"
+        if move_source:
+            shutil.move(str(source_path), file_path)
+        else:
+            shutil.copyfile(source_path, file_path)
+        return ArtifactRef(path=file_path, kind=kind, size=size, redacted=False)
+
     @staticmethod
     def _is_sensitive(content: str) -> bool:
         return any(re.search(pattern, content) for pattern in ArtifactStore._SENSITIVE_PATTERNS)
+
+    @classmethod
+    def _is_sensitive_file(cls, path: Path) -> bool:
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if any(re.search(pattern, line) for pattern in cls._SENSITIVE_PATTERNS):
+                        return True
+        except Exception:
+            return False
+        return False
 
     def archive_json(self, kind: str, name_hint: str, obj: object) -> ArtifactRef:
         serialized = json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True)
@@ -135,53 +180,6 @@ class ArtifactStore:
             return str(path)
 
 
-def make_preview(text: str, max_chars: int) -> str:
-    """生成 head/tail 预览，尽量按行对齐，保留疑似 error 行。"""
-    if len(text) <= max_chars:
-        return text
-    half = max_chars // 2
-    error_lines = [
-        line
-        for line in text.splitlines()
-        if any(
-            kw in line.lower()
-            for kw in ("error", "traceback", "exception", "failed", "permission denied")
-        )
-    ]
-
-    head = text[:half].rsplit("\n", 1)[0] if "\n" in text[:half] else text[:half]
-    tail = text[-half:].split("\n", 1)[-1] if "\n" in text[-half:] else text[-half:]
-    parts = [head, "...", tail]
-    if error_lines:
-        parts.append(f"[Key errors:\n{chr(10).join(error_lines[:5])}]")
-    return "\n".join(parts)
-
-
-def maybe_offload_result(
-    store: "ArtifactStore | None",
-    tool_name: str,
-    tool_call_id: str,
-    result: str,
-    *,
-    offload_chars: int = 8000,
-    preview_chars: int = 3000,
-    ctx_mgmt: str = "observe",
-) -> str:
-    """Layer 1: 若结果超阈值且 store 可用，外置原文并返回指针预览；否则原样返回。
-
-    在 observe/off 模式下不修改 result。外置失败时静默降级返回原始 result。
-    """
-    if store is None or ctx_mgmt not in ("auto", "aggressive") or len(result) < offload_chars:
-        return result
-    try:
-        preview = make_preview(result, preview_chars)
-        ref = store.write_text("tool_output", f"{tool_name}_{tool_call_id}", result)
-        return store.format_pointer(ref, preview)
-    except Exception as exc:
-        logger.debug("ctx[L1] offload failed for {}: {}", tool_name, exc)
-        return result
-
-
 def hard_clip_tool_result(result: str, tool_name: str, hard_chars: int = 6000) -> tuple[str, int]:
     limit = max(500, int(hard_chars))
     if len(result) <= limit:
@@ -201,15 +199,46 @@ def apply_tool_output_budget(
     store: "ArtifactStore | None",
     tool_name: str,
     tool_call_id: str,
-    result: str,
+    result: ToolResultValue,
     offload_chars: int = 8000,
     preview_chars: int = 3000,
     hard_chars: int = 6000,
-    ctx_mgmt: str = "observe",
+    ctx_mgmt: str = "auto",
 ) -> tuple[str, ToolOutputBudgetEvent]:
     event = ToolOutputBudgetEvent()
-    processed = result
+    if isinstance(result, ToolTextResult):
+        try:
+            if store is not None and ctx_mgmt in ("auto", "aggressive") and result.chars >= offload_chars:
+                try:
+                    preview = make_file_preview(result.path, preview_chars)
+                    ref = store.write_text_file(
+                        "tool_output",
+                        f"{tool_name}_{tool_call_id}",
+                        result.path,
+                        size=result.chars,
+                        move_source=result.cleanup,
+                    )
+                    event.offloaded = True
+                    event.offloaded_chars = result.chars
+                    return store.format_pointer(ref, preview), event
+                except Exception as exc:
+                    logger.debug("ctx[L1] offload failed for {}: {}", tool_name, exc)
+            if result.chars <= hard_chars:
+                return result.path.read_text(encoding="utf-8", errors="replace"), event
+            preview = read_head_chars(result.path, hard_chars)
+            omitted = max(0, result.chars - len(preview))
+            clipped = preview + (
+                "\n... "
+                f"(hard-truncated {omitted} chars for context safety from tool '{tool_name}'; "
+                "request details explicitly if needed)"
+            )
+            event.hard_clipped = True
+            event.hard_clipped_chars = omitted
+            return clipped, event
+        finally:
+            cleanup_result_file(result)
 
+    processed = result
     if store is not None and ctx_mgmt in ("auto", "aggressive") and len(processed) >= offload_chars:
         try:
             preview = make_preview(processed, preview_chars)
@@ -220,9 +249,7 @@ def apply_tool_output_budget(
         except Exception as exc:
             logger.debug("ctx[L1] offload failed for {}: {}", tool_name, exc)
 
-    processed, omitted = hard_clip_tool_result(
-        processed, tool_name=tool_name, hard_chars=hard_chars
-    )
+    processed, omitted = hard_clip_tool_result(processed, tool_name=tool_name, hard_chars=hard_chars)
     if omitted > 0:
         event.hard_clipped = True
         event.hard_clipped_chars = omitted

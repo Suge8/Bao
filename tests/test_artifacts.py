@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Protocol, cast
 
+from bao.agent.tool_result import ToolTextResult
 from bao.utils.helpers import safe_filename
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,17 @@ class ArtifactStoreLike(Protocol):
 
     def write_text(
         self, kind: str, name_hint: str, content: str, *, redacted: bool = False
+    ) -> ArtifactRefLike: ...
+
+    def write_text_file(
+        self,
+        kind: str,
+        name_hint: str,
+        source_path: Path,
+        *,
+        size: int,
+        move_source: bool = True,
+        redacted: bool | None = None,
     ) -> ArtifactRefLike: ...
 
     def archive_json(self, kind: str, name_hint: str, obj: object) -> ArtifactRefLike: ...
@@ -169,6 +181,116 @@ def test_write_text_with_edit_file_name_hint_is_redacted(tmp_path: Path) -> None
 
     assert ref.redacted is True
     assert not ref.path.exists()
+
+
+def test_write_text_file_moves_existing_text_file(tmp_path: Path) -> None:
+    store = _make_store(tmp_path, "session:file")
+    source = tmp_path / "source.txt"
+    source.write_text("streamed artifact", encoding="utf-8")
+
+    ref = store.write_text_file("tool_output", "streamed", source, size=len("streamed artifact"))
+
+    assert ref.redacted is False
+    assert ref.path.exists()
+    assert ref.path.read_text(encoding="utf-8") == "streamed artifact"
+    assert not source.exists()
+
+
+def test_write_text_file_can_copy_without_removing_source(tmp_path: Path) -> None:
+    store = _make_store(tmp_path, "session:file-copy")
+    source = tmp_path / "source-copy.txt"
+    source.write_text("persistent artifact", encoding="utf-8")
+
+    ref = store.write_text_file(
+        "tool_output",
+        "persistent",
+        source,
+        size=len("persistent artifact"),
+        move_source=False,
+    )
+
+    assert ref.redacted is False
+    assert ref.path.exists()
+    assert ref.path.read_text(encoding="utf-8") == "persistent artifact"
+    assert source.exists()
+
+
+def test_apply_tool_output_budget_offloads_file_backed_result(tmp_path: Path) -> None:
+    from bao.agent.artifacts import apply_tool_output_budget
+
+    store = _make_store(tmp_path, "session:budget")
+    source = tmp_path / "large.txt"
+    payload = "x" * 12000
+    source.write_text(payload, encoding="utf-8")
+    result = ToolTextResult(path=source, chars=len(payload), excerpt="preview", cleanup=True)
+
+    processed, event = apply_tool_output_budget(
+        store=store,
+        tool_name="exec",
+        tool_call_id="call_1",
+        result=result,
+        offload_chars=8000,
+        preview_chars=3000,
+        hard_chars=6000,
+        ctx_mgmt="auto",
+    )
+
+    assert event.offloaded is True
+    assert event.offloaded_chars == len(payload)
+    assert "offloaded" in processed
+    assert not source.exists()
+
+
+def test_apply_tool_output_budget_clips_file_backed_result_in_observe_mode(tmp_path: Path) -> None:
+    from bao.agent.artifacts import apply_tool_output_budget
+
+    source = tmp_path / "observe.txt"
+    payload = "x" * 9000
+    source.write_text(payload, encoding="utf-8")
+    result = ToolTextResult(path=source, chars=len(payload), excerpt="preview", cleanup=True)
+
+    processed, event = apply_tool_output_budget(
+        store=None,
+        tool_name="exec",
+        tool_call_id="call_1",
+        result=result,
+        offload_chars=8000,
+        preview_chars=3000,
+        hard_chars=6000,
+        ctx_mgmt="observe",
+    )
+
+    assert event.offloaded is False
+    assert event.hard_clipped is True
+    assert "hard-truncated" in processed
+    assert not source.exists()
+
+
+def test_apply_tool_output_budget_offloads_persistent_file_without_removing_source(
+    tmp_path: Path,
+) -> None:
+    from bao.agent.artifacts import apply_tool_output_budget
+
+    store = _make_store(tmp_path, "session:persistent-budget")
+    source = tmp_path / "persistent.txt"
+    payload = "x" * 12000
+    source.write_text(payload, encoding="utf-8")
+    result = ToolTextResult(path=source, chars=len(payload), excerpt="preview", cleanup=False)
+
+    processed, event = apply_tool_output_budget(
+        store=store,
+        tool_name="read_file",
+        tool_call_id="call_1",
+        result=result,
+        offload_chars=8000,
+        preview_chars=3000,
+        hard_chars=6000,
+        ctx_mgmt="auto",
+    )
+
+    assert event.offloaded is True
+    assert "offloaded" in processed
+    assert source.exists()
 
 
 def test_is_sensitive_matches_aws_key() -> None:
