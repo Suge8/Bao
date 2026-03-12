@@ -6,6 +6,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.26] - 2026-03-13
+
+### Changed
+
+- **Bao 的对外叙事与图示全面收口到 desktop-first 主路径** — README 与官网图示资源现在统一强调桌面端是主入口，同时保留 core、memory、long-run engine、subagents 与 MCP 的真实能力边界。
+- **Desktop 左下角品牌区、setup 卡片与安装品牌资源统一到一套暖色视觉系统** — Sidebar brand dock、onboarding/setup 卡片、Windows 安装器 welcome/back/small 图以及 macOS DMG 背景现在共用同一套品牌 token 与图像生成脚本。
+- **CLI 启动首屏改为响应式 startup shell，并支持显式 runtime 路径覆盖** — `bao --config` / `--workspace` 现可覆盖运行时路径，启动首屏则按终端宽度自适应展示版本、端口、通道、定时任务、心跳与能力条。
+- **Memory recall 与工具大输出治理改为统一单路径** — 长期记忆现在以 fact rows 持久化、按 turn 一次性 recall 注入；`exec`、`read_file`、coding details 与 MCP 文本结果则统一进入 file-backed result 与 artifact/offload 预算链路。
+- **渠道群聊策略与回复路由进一步收口** — Telegram、Discord、Feishu、DingTalk 现在都支持更明确的 group policy / reply / attachment / rich card 路径，减少群聊与媒体消息在不同平台上的行为漂移。
+
+### Fixed
+
+- **CLI banner 真图 logo 现在只在支持协议的终端叠加一次，并稳定回退到 ASCII** — startup shell 会优先检测 Ghostty/Kitty/WezTerm/Konsole 的 kitty graphics protocol 与 iTerm2 inline image；支持时叠加透明 PNG logo，不支持时回退到更亮的 Braille ASCII logo，同时内部 overlay 布局探针改为内存输出，不再把白色探针 banner 泄露到终端。
+- **定时任务直连主代理时会显式带上 cron tool context** — gateway 的 cron callback 现在在 direct processing 前后成对设置与重置 cron 上下文，避免 reminder 运行路径与普通用户回合混淆。
+
 ## [0.3.24] - 2026-03-11
 
 ### Changed
