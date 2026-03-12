@@ -1,186 +1,141 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="800" height="480">
   <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f0a08"/>
+      <stop offset="50%" stop-color="#1a120d"/>
+      <stop offset="100%" stop-color="#0a0908"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#241914"/>
+      <stop offset="100%" stop-color="#16110d"/>
+    </linearGradient>
+    <linearGradient id="warm" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffdb9f"/>
+      <stop offset="100%" stop-color="#ff8e5a"/>
+    </linearGradient>
+    <linearGradient id="mint" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#b8f2d4"/>
+      <stop offset="100%" stop-color="#50b591"/>
+    </linearGradient>
+    <linearGradient id="rose" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffb8a3"/>
+      <stop offset="100%" stop-color="#ff7163"/>
+    </linearGradient>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#cae9ff"/>
+      <stop offset="100%" stop-color="#78abfc"/>
+    </linearGradient>
+    <linearGradient id="violet" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#e2cdff"/>
+      <stop offset="100%" stop-color="#af7fff"/>
+    </linearGradient>
+    <radialGradient id="glow1" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#ffb36a" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#ffb36a" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#4db28f" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#4db28f" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
     <style>
-      .t{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif}
-      @keyframes shimmer{0%{opacity:.4}50%{opacity:.8}100%{opacity:.4}}
-      .acc{animation:shimmer 4s ease-in-out infinite}
+      .display{font-family:"SF Pro Display","Avenir Next","Segoe UI",sans-serif}
+      .eyebrow{font-size:11px;font-weight:700;letter-spacing:1.8px;fill:#f0b87f}
+      .headline{font-size:28px;font-weight:700;fill:#fff5e8}
+      .title{font-size:18px;font-weight:700;fill:#fff2e1}
+      .body{font-size:12.5px;font-weight:600;fill:#d5b9a2}
+      .tag{font-size:10px;font-weight:700}
+      @keyframes pulse{0%,100%{opacity:0.5}50%{opacity:1}}
+      @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
+      @keyframes glow{0%,100%{filter:brightness(1)}50%{filter:brightness(1.2)}}
+      .pulse{animation:pulse 4s ease-in-out infinite}
+      .float{animation:float 3s ease-in-out infinite}
+      .glow{animation:glow 3s ease-in-out infinite}
     </style>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#090d14"/>
-      <stop offset="100%" stop-color="#0f1520"/>
-    </linearGradient>
-    <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#22c55e" stop-opacity=".12"/>
-      <stop offset="100%" stop-color="#22c55e" stop-opacity=".02"/>
-    </linearGradient>
-    <linearGradient id="g2" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#00d4ff" stop-opacity=".10"/>
-      <stop offset="100%" stop-color="#00d4ff" stop-opacity=".02"/>
-    </linearGradient>
-    <linearGradient id="g3" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#a855f7" stop-opacity=".10"/>
-      <stop offset="100%" stop-color="#a855f7" stop-opacity=".02"/>
-    </linearGradient>
-    <linearGradient id="g4" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#f59e0b" stop-opacity=".10"/>
-      <stop offset="100%" stop-color="#f59e0b" stop-opacity=".02"/>
-    </linearGradient>
-    <linearGradient id="g5" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#3b82f6" stop-opacity=".10"/>
-      <stop offset="100%" stop-color="#3b82f6" stop-opacity=".02"/>
-    </linearGradient>
-    <linearGradient id="g6" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#f43f5e" stop-opacity=".10"/>
-      <stop offset="100%" stop-color="#f43f5e" stop-opacity=".02"/>
-    </linearGradient>
-    <linearGradient id="topAccent" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#22c55e" stop-opacity="0"/>
-      <stop offset="25%" stop-color="#22c55e" stop-opacity=".6"/>
-      <stop offset="50%" stop-color="#00d4ff" stop-opacity=".5"/>
-      <stop offset="75%" stop-color="#a855f7" stop-opacity=".4"/>
-      <stop offset="100%" stop-color="#a855f7" stop-opacity="0"/>
-    </linearGradient>
   </defs>
 
-  <!-- Background -->
-  <rect width="800" height="480" fill="url(#bg)" rx="16"/>
+  <rect width="800" height="480" rx="20" fill="url(#bg)"/>
+  <circle cx="150" cy="100" r="200" fill="url(#glow1)"/>
+  <circle cx="650" cy="350" r="180" fill="url(#glow2)"/>
 
-  <!-- Subtle top accent line -->
-  <rect x="80" y="0" width="640" height="1.5" fill="url(#topAccent)" rx="1" class="acc"/>
-
-  <!-- CARD 1: Experience Learning — HERO (2-col span, row 1) -->
-  <g transform="translate(16,16)">
-    <rect width="504" height="200" rx="14" fill="#111720" stroke="#1c2535" stroke-width="1"/>
-    <rect width="504" height="200" rx="14" fill="url(#g1)"/>
-    <rect x="0" y="0" width="3" height="200" rx="1.5" fill="#22c55e" opacity=".7"/>
-    <g transform="translate(28,28)">
-      <circle cx="24" cy="24" r="24" fill="#22c55e08" stroke="#22c55e" stroke-width="1.2" opacity=".8"/>
-      <path d="M16 20a10 10 0 0 1 16 0" stroke="#22c55e" stroke-width="2" fill="none" stroke-linecap="round"/>
-      <path d="M32 28a10 10 0 0 1-16 0" stroke="#22c55e" stroke-width="2" fill="none" stroke-linecap="round"/>
-      <polygon points="32,18 32,22 29,20" fill="#22c55e"/>
-      <polygon points="16,30 16,26 19,28" fill="#22c55e"/>
-    </g>
-    <text x="88" y="44" class="t" fill="#f0f6fc" font-size="18" font-weight="700">Experience Learning</text>
-    <text x="88" y="63" class="t" fill="#22c55e" font-size="11" opacity=".7">ExperienceLoop</text>
-    <text x="28" y="100" class="t" fill="#b8bfc9" font-size="12.5" letter-spacing=".2">Closed-loop experience engine — auto-extracts lessons</text>
-    <text x="28" y="120" class="t" fill="#b8bfc9" font-size="12.5" letter-spacing=".2">and strategies after every task. Retrieves and injects</text>
-    <text x="28" y="140" class="t" fill="#b8bfc9" font-size="12.5" letter-spacing=".2">relevant experience. Other agents repeat mistakes. Bao evolves.</text>
-    <rect x="28" y="162" width="72" height="22" rx="11" fill="none" stroke="#22c55e" stroke-width=".6" opacity=".5"/>
-    <text x="64" y="177" class="t" text-anchor="middle" font-size="9.5" fill="#22c55e" font-weight="500" opacity=".8">Closed-loop</text>
-    <rect x="108" y="162" width="72" height="22" rx="11" fill="none" stroke="#22c55e" stroke-width=".6" opacity=".5"/>
-    <text x="144" y="177" class="t" text-anchor="middle" font-size="9.5" fill="#22c55e" font-weight="500" opacity=".8">Confidence</text>
-    <rect x="188" y="162" width="90" height="22" rx="11" fill="none" stroke="#22c55e" stroke-width=".6" opacity=".5"/>
-    <text x="233" y="177" class="t" text-anchor="middle" font-size="9.5" fill="#22c55e" font-weight="500" opacity=".8">Active Forgetting</text>
-    <rect x="286" y="162" width="96" height="22" rx="11" fill="none" stroke="#22c55e" stroke-width=".6" opacity=".5"/>
-    <text x="334" y="177" class="t" text-anchor="middle" font-size="9.5" fill="#22c55e" font-weight="500" opacity=".8">Negative Learning</text>
+  <g transform="translate(18 18)" filter="url(#shadow)">
+    <rect width="500" height="160" rx="22" fill="url(#card)" stroke="#4a3228" stroke-width="1.5"/>
+    <text x="28" y="36" class="display eyebrow">CORE ADVANTAGES</text>
+    <text x="28" y="76" class="display headline">Built for long-term use, not just chat</text>
+    <text x="28" y="104" class="display body">Persistent memory, experience learning, long-task engine, parallel subagents</text>
+    <text x="28" y="128" class="display body">A complete intelligent collaboration system</text>
   </g>
 
-  <!-- CARD 2: Persistent Memory — Tall right (spans 2 rows) -->
-  <g transform="translate(532,16)">
-    <rect width="252" height="308" rx="14" fill="#111720" stroke="#1c2535" stroke-width="1"/>
-    <rect width="252" height="308" rx="14" fill="url(#g2)"/>
-    <rect x="0" y="0" width="3" height="308" rx="1.5" fill="#00d4ff" opacity=".7"/>
-    <g transform="translate(24,24)">
-      <circle cx="20" cy="20" r="20" fill="#00d4ff08" stroke="#00d4ff" stroke-width="1.2" opacity=".8"/>
-      <ellipse cx="20" cy="15" rx="9" ry="4.5" fill="none" stroke="#00d4ff" stroke-width="1.5"/>
-      <path d="M11 15v9c0 2.5 4 4.5 9 4.5s9-2 9-4.5v-9" fill="none" stroke="#00d4ff" stroke-width="1.5"/>
-      <path d="M11 20c0 2.5 4 4.5 9 4.5s9-2 9-4.5" fill="none" stroke="#00d4ff" stroke-width="1" opacity=".4"/>
-    </g>
-    <text x="72" y="38" class="t" fill="#f0f6fc" font-size="16" font-weight="700">Persistent Memory</text>
-    <text x="72" y="54" class="t" fill="#00d4ff" font-size="10.5" opacity=".7">LanceDB</text>
-    <text x="24" y="84" class="t" fill="#b8bfc9" font-size="11.5">Vector search + keyword fallback.</text>
-    <text x="24" y="102" class="t" fill="#b8bfc9" font-size="11.5">Dual retrieval — works with</text>
-    <text x="24" y="120" class="t" fill="#b8bfc9" font-size="11.5">or without an embedding model.</text>
-    <text x="24" y="148" class="t" fill="#b8bfc9" font-size="11.5">Cross-session, cross-restart.</text>
-    <text x="24" y="166" class="t" fill="#b8bfc9" font-size="11.5">Remembers your preferences,</text>
-    <text x="24" y="184" class="t" fill="#b8bfc9" font-size="11.5">projects, and habits.</text>
-    <text x="24" y="212" class="t" fill="#b8bfc9" font-size="11.5">Auto-consolidates old context.</text>
-    <text x="24" y="230" class="t" fill="#b8bfc9" font-size="11.5">Keeps the important, cleans</text>
-    <text x="24" y="248" class="t" fill="#b8bfc9" font-size="11.5">the stale.</text>
-    <text x="24" y="262" class="t" fill="#8492a6" font-size="10" font-style="italic">The longer you use it, the better it knows you.</text>
-    <rect x="24" y="274" width="60" height="20" rx="10" fill="none" stroke="#00d4ff" stroke-width=".6" opacity=".5"/>
-    <text x="54" y="288" class="t" text-anchor="middle" font-size="9" fill="#00d4ff" font-weight="500" opacity=".8">Vector</text>
-    <rect x="92" y="274" width="68" height="20" rx="10" fill="none" stroke="#00d4ff" stroke-width=".6" opacity=".5"/>
-    <text x="126" y="288" class="t" text-anchor="middle" font-size="9" fill="#00d4ff" font-weight="500" opacity=".8">Keyword</text>
-    <rect x="168" y="274" width="68" height="20" rx="10" fill="none" stroke="#00d4ff" stroke-width=".6" opacity=".5"/>
-    <text x="202" y="288" class="t" text-anchor="middle" font-size="9" fill="#00d4ff" font-weight="500" opacity=".8">Persistent</text>
+  <g transform="translate(534 18)" filter="url(#shadow)" class="float">
+    <rect width="248" height="138" rx="22" fill="url(#card)" stroke="#4a3228" stroke-width="1.5"/>
+    <rect x="0" y="0" width="4" height="138" rx="2" fill="url(#warm)" class="glow"/>
+    <text x="22" y="34" class="display title">Persistent Memory</text>
+    <text x="22" y="58" class="display body">LanceDB vector retrieval</text>
+    <text x="22" y="78" class="display body">Cross-session preservation</text>
+    <rect x="22" y="100" width="68" height="22" rx="11" fill="#ffb36a" fill-opacity="0.15" stroke="#ffb36a" stroke-opacity="0.4"/>
+    <text x="56" y="115" text-anchor="middle" class="display tag" fill="#ffd9b1">Persistent</text>
+    <rect x="98" y="100" width="78" height="22" rx="11" fill="#ffb36a" fill-opacity="0.15" stroke="#ffb36a" stroke-opacity="0.4"/>
+    <text x="137" y="115" text-anchor="middle" class="display tag" fill="#ffd9b1">Smart Recall</text>
   </g>
 
-  <!-- CARD 3: Deep Thinking — Row 2 Left -->
-  <g transform="translate(16,228)">
-    <rect width="252" height="236" rx="14" fill="#111720" stroke="#1c2535" stroke-width="1"/>
-    <rect width="252" height="236" rx="14" fill="url(#g3)"/>
-    <rect x="0" y="0" width="3" height="236" rx="1.5" fill="#a855f7" opacity=".7"/>
-    <g transform="translate(24,24)">
-      <circle cx="18" cy="18" r="18" fill="#a855f708" stroke="#a855f7" stroke-width="1.2" opacity=".8"/>
-      <path d="M13 22c-1.2-3 0-7.5 5-9.5s8 .5 9 4.2 0 6.5-3 8.5c-1 .8-1.6 1.8-1.6 3v.8" fill="none" stroke="#a855f7" stroke-width="1.8" stroke-linecap="round"/>
-      <circle cx="18" cy="31" r="1" fill="#a855f7"/>
-    </g>
-    <text x="68" y="38" class="t" fill="#f0f6fc" font-size="16" font-weight="700">Deep Thinking</text>
-    <text x="68" y="54" class="t" fill="#a855f7" font-size="10.5" opacity=".7">Thinking Protocol</text>
-    <text x="24" y="82" class="t" fill="#b8bfc9" font-size="11.5">Deep reasoning protocol baked</text>
-    <text x="24" y="100" class="t" fill="#b8bfc9" font-size="11.5">into the system prompt. Zero</text>
-    <text x="24" y="118" class="t" fill="#b8bfc9" font-size="11.5">extra API call overhead,</text>
-    <text x="24" y="136" class="t" fill="#b8bfc9" font-size="11.5">measurably better answers.</text>
-    <text x="24" y="166" class="t" fill="#8492a6" font-size="10" font-style="italic">Not a more expensive model —</text>
-    <text x="24" y="182" class="t" fill="#8492a6" font-size="10" font-style="italic">a model that thinks better.</text>
-    <rect x="24" y="202" width="64" height="20" rx="10" fill="none" stroke="#a855f7" stroke-width=".6" opacity=".5"/>
-    <text x="56" y="216" class="t" text-anchor="middle" font-size="9" fill="#a855f7" font-weight="500" opacity=".8">Zero Cost</text>
-    <rect x="96" y="202" width="88" height="20" rx="10" fill="none" stroke="#a855f7" stroke-width=".6" opacity=".5"/>
-    <text x="140" y="216" class="t" text-anchor="middle" font-size="9" fill="#a855f7" font-weight="500" opacity=".8">Deep Reasoning</text>
+  <g transform="translate(18 196)" filter="url(#shadow)">
+    <rect width="244" height="118" rx="22" fill="url(#card)" stroke="#4a3228" stroke-width="1.5"/>
+    <rect x="0" y="0" width="4" height="118" rx="2" fill="url(#mint)" class="glow"/>
+    <text x="20" y="34" class="display title">Experience Engine</text>
+    <text x="20" y="58" class="display body">Auto-extract lessons</text>
+    <text x="20" y="78" class="display body">Similar task injection</text>
+    <text x="20" y="98" class="display body">Quality scoring system</text>
   </g>
 
-  <!-- CARD 4: Self-Correction — Row 2 Mid-left -->
-  <g transform="translate(280,228)">
-    <rect width="240" height="112" rx="14" fill="#111720" stroke="#1c2535" stroke-width="1"/>
-    <rect width="240" height="112" rx="14" fill="url(#g4)"/>
-    <rect x="0" y="0" width="3" height="112" rx="1.5" fill="#f59e0b" opacity=".7"/>
-    <g transform="translate(24,22)">
-      <circle cx="16" cy="16" r="16" fill="#f59e0b08" stroke="#f59e0b" stroke-width="1.2" opacity=".8"/>
-      <path d="M10 16a8 8 0 1 1 4 6.8" fill="none" stroke="#f59e0b" stroke-width="1.8" stroke-linecap="round"/>
-      <polygon points="12,23 16,23 14,27" fill="#f59e0b"/>
-      <circle cx="16" cy="16" r="2.5" fill="#f59e0b"/>
-    </g>
-    <text x="64" y="34" class="t" fill="#f0f6fc" font-size="15" font-weight="700">Self-Correction</text>
-    <text x="64" y="50" class="t" fill="#f59e0b" font-size="10" opacity=".7">Retry / Reflection</text>
-    <text x="24" y="74" class="t" fill="#b8bfc9" font-size="11">Auto-detects tool errors and retries. After 3</text>
-    <text x="24" y="92" class="t" fill="#b8bfc9" font-size="11">consecutive failures, escalates to deep reflection.</text>
+  <g transform="translate(278 196)" filter="url(#shadow)">
+    <rect width="240" height="118" rx="22" fill="url(#card)" stroke="#4a3228" stroke-width="1.5"/>
+    <rect x="0" y="0" width="4" height="118" rx="2" fill="url(#rose)" class="glow"/>
+    <text x="20" y="34" class="display title">Long-Task Engine</text>
+    <text x="20" y="58" class="display body">Trajectory compression</text>
+    <text x="20" y="78" class="display body">Sufficiency checks</text>
+    <text x="20" y="98" class="display body">Stable execution</text>
   </g>
 
-  <!-- CARD 5: MCP Ecosystem — Row 3 Mid-left -->
-  <g transform="translate(280,352)">
-    <rect width="240" height="112" rx="14" fill="#111720" stroke="#1c2535" stroke-width="1"/>
-    <rect width="240" height="112" rx="14" fill="url(#g5)"/>
-    <rect x="0" y="0" width="3" height="112" rx="1.5" fill="#3b82f6" opacity=".7"/>
-    <g transform="translate(24,22)">
-      <circle cx="16" cy="16" r="16" fill="#3b82f608" stroke="#3b82f6" stroke-width="1.2" opacity=".8"/>
-      <rect x="9" y="9" width="14" height="10" rx="2" fill="none" stroke="#3b82f6" stroke-width="1.5"/>
-      <line x1="13" y1="9" x2="13" y2="6" stroke="#3b82f6" stroke-width="1.8" stroke-linecap="round"/>
-      <line x1="19" y1="9" x2="19" y2="6" stroke="#3b82f6" stroke-width="1.8" stroke-linecap="round"/>
-      <line x1="16" y1="19" x2="16" y2="26" stroke="#3b82f6" stroke-width="1.8" stroke-linecap="round"/>
-    </g>
-    <text x="64" y="34" class="t" fill="#f0f6fc" font-size="15" font-weight="700">MCP Ecosystem</text>
-    <text x="64" y="50" class="t" fill="#3b82f6" font-size="10" opacity=".7">Model Context Protocol</text>
-    <text x="24" y="74" class="t" fill="#b8bfc9" font-size="11">Plug into any tool ecosystem. Config compatible</text>
-    <text x="24" y="92" class="t" fill="#b8bfc9" font-size="11">with Claude Desktop and Cursor. Plug and play.</text>
+  <g transform="translate(534 174)" filter="url(#shadow)" class="float" style="animation-delay: 0.5s">
+    <rect width="248" height="140" rx="22" fill="url(#card)" stroke="#4a3228" stroke-width="1.5"/>
+    <rect x="0" y="0" width="4" height="140" rx="2" fill="url(#sky)" class="glow"/>
+    <text x="22" y="34" class="display title">Parallel Subagents</text>
+    <text x="22" y="58" class="display body">Background execution</text>
+    <text x="22" y="78" class="display body">Progress transparency</text>
+    <text x="22" y="98" class="display body">Cancel & resume support</text>
   </g>
 
-  <!-- CARD 6: Lean & Compact — Row 3 Right -->
-  <g transform="translate(532,336)">
-    <rect width="252" height="128" rx="14" fill="#111720" stroke="#1c2535" stroke-width="1"/>
-    <rect width="252" height="128" rx="14" fill="url(#g6)"/>
-    <rect x="0" y="0" width="3" height="128" rx="1.5" fill="#f43f5e" opacity=".7"/>
-    <g transform="translate(24,22)">
-      <circle cx="16" cy="16" r="16" fill="#f43f5e08" stroke="#f43f5e" stroke-width="1.2" opacity=".8"/>
-      <polygon points="18,6 11,19 15,19 13,28 22,15 18,15" fill="#f43f5e"/>
-    </g>
-    <text x="64" y="34" class="t" fill="#f0f6fc" font-size="15" font-weight="700">Lean &amp; Compact</text>
-    <text x="64" y="50" class="t" fill="#f43f5e" font-size="10" opacity=".7">~12,000 Lines</text>
-    <text x="24" y="76" class="t" fill="#b8bfc9" font-size="11">Complete AI assistant framework in ~12,000 lines.</text>
-    <text x="24" y="94" class="t" fill="#b8bfc9" font-size="11">99% lighter than OpenClaw. 2-minute setup.</text>
-    <rect x="24" y="106" width="72" height="18" rx="9" fill="none" stroke="#f43f5e" stroke-width=".6" opacity=".5"/>
-    <text x="60" y="119" class="t" text-anchor="middle" font-size="9" fill="#f43f5e" font-weight="500" opacity=".8">99% Lighter</text>
-    <rect x="104" y="106" width="72" height="18" rx="9" fill="none" stroke="#f43f5e" stroke-width=".6" opacity=".5"/>
-    <text x="140" y="119" class="t" text-anchor="middle" font-size="9" fill="#f43f5e" font-weight="500" opacity=".8">2-min Setup</text>
+  <g transform="translate(18 332)" filter="url(#shadow)">
+    <rect width="244" height="128" rx="22" fill="url(#card)" stroke="#4a3228" stroke-width="1.5"/>
+    <rect x="0" y="0" width="4" height="128" rx="2" fill="url(#violet)" class="glow"/>
+    <text x="20" y="34" class="display title">Coding Agents</text>
+    <text x="20" y="58" class="display body">Codex / Claude Code</text>
+    <text x="20" y="78" class="display body">OpenCode native</text>
+    <text x="20" y="98" class="display body">Main & sub-agents</text>
+  </g>
+
+  <g transform="translate(278 332)" filter="url(#shadow)">
+    <rect width="240" height="128" rx="22" fill="url(#card)" stroke="#4a3228" stroke-width="1.5"/>
+    <rect x="0" y="0" width="4" height="128" rx="2" fill="url(#warm)" class="glow"/>
+    <text x="20" y="34" class="display title">MCP Ecosystem</text>
+    <text x="20" y="58" class="display body">Claude Desktop compatible</text>
+    <text x="20" y="78" class="display body">Smart tool routing</text>
+    <text x="20" y="98" class="display body">Auto schema optimization</text>
+  </g>
+
+  <g transform="translate(534 332)" filter="url(#shadow)">
+    <rect width="248" height="128" rx="22" fill="url(#card)" stroke="#4a3228" stroke-width="1.5"/>
+    <rect x="0" y="0" width="4" height="128" rx="2" fill="url(#sky)" class="glow"/>
+    <text x="22" y="34" class="display title">9 Platforms + Desktop</text>
+    <text x="22" y="58" class="display body">One capability, multi-delivery</text>
+    <text x="22" y="78" class="display body">Screen, click, type, scroll</text>
+    <text x="22" y="98" class="display body">Shared Bao Core</text>
+  </g>
+
+  <g transform="translate(726 46)" class="pulse">
+    <circle r="9" fill="#ffb36a" filter="url(#shadow)"/>
+    <circle r="5" fill="#fff"/>
   </g>
 </svg>

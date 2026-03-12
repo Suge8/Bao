@@ -1,190 +1,139 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 520">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 520" width="800" height="520">
   <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#120d0a"/>
+      <stop offset="100%" stop-color="#0d0b0a"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1d1511"/>
+      <stop offset="100%" stop-color="#15100d"/>
+    </linearGradient>
+    <linearGradient id="warm" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffd39a"/>
+      <stop offset="100%" stop-color="#ff8b58"/>
+    </linearGradient>
+    <linearGradient id="mint" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#b6f0d2"/>
+      <stop offset="100%" stop-color="#4db28f"/>
+    </linearGradient>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#c8e7ff"/>
+      <stop offset="100%" stop-color="#76a9fa"/>
+    </linearGradient>
+    <linearGradient id="violet" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#e0cbff"/>
+      <stop offset="100%" stop-color="#ad7dff"/>
+    </linearGradient>
+    <linearGradient id="rose" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffb6a1"/>
+      <stop offset="100%" stop-color="#ff6f61"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto">
+      <path d="M0 0 L10 4 L0 8 Z" fill="#ffb36a" fill-opacity=".7"/>
+    </marker>
     <style>
-      .t{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif}
-      @keyframes dashFlow{from{stroke-dashoffset:0}to{stroke-dashoffset:-20}}
-      @keyframes expLoop{from{stroke-dashoffset:0}to{stroke-dashoffset:-24}}
-      @keyframes corePulse{
-        0%,100%{stroke:#00d4ff;filter:drop-shadow(0 0 6px #00d4ff33)}
-        50%{stroke:#38bdf8;filter:drop-shadow(0 0 22px #00d4ff77)}
-      }
-      @keyframes pulse{0%,100%{opacity:.3}50%{opacity:.65}}
-      @keyframes sweep{0%{transform:translateX(-820px)}100%{transform:translateX(820px)}}
-      .flow{stroke:#00d4ff;stroke-width:1.5;fill:none;stroke-dasharray:6 8;animation:dashFlow 2s linear infinite;opacity:.6}
-      .exp{stroke:#22c55e;stroke-width:2;fill:none;stroke-dasharray:8 6;animation:expLoop 2.5s linear infinite;opacity:.5}
-      .core-glow{animation:corePulse 3.5s ease-in-out infinite}
-      .float{animation:pulse 5s ease-in-out infinite}
-      .sweep-line{animation:sweep 4.5s linear infinite}
+      .display{font-family:"Avenir Next","Segoe UI","Helvetica Neue",sans-serif}
+      .eyebrow{font-size:11px;font-weight:700;letter-spacing:1.5px;fill:#efb67d}
+      .title{font-size:18px;font-weight:700;fill:#fff1df}
+      .body{font-size:12px;font-weight:600;fill:#d2b49d}
+      .tag{font-size:10px;font-weight:700;fill:#ffe4c7}
+      .wire{fill:none;stroke:#ffb36a;stroke-width:1.6;stroke-opacity:.45;stroke-dasharray:6 7;marker-end:url(#arrow)}
+      @keyframes pulse{0%,100%{opacity:.48}50%{opacity:1}}
+      .pulse{animation:pulse 4.2s ease-in-out infinite}
     </style>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#0a0e17"/>
-      <stop offset="100%" stop-color="#0d1220"/>
-    </linearGradient>
-    <linearGradient id="sw" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#22c55e" stop-opacity="0"/>
-      <stop offset="30%" stop-color="#00d4ff" stop-opacity=".5"/>
-      <stop offset="70%" stop-color="#a855f7" stop-opacity=".4"/>
-      <stop offset="100%" stop-color="#f43f5e" stop-opacity="0"/>
-    </linearGradient>
-    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
-      <circle cx="12" cy="12" r=".4" fill="#1e293b" opacity=".5"/>
-    </pattern>
-    <marker id="ac" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-      <path d="M0,0 L0,6 L8,3z" fill="#00d4ff" opacity=".6"/>
-    </marker>
-    <marker id="ag" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-      <path d="M0,0 L0,6 L8,3z" fill="#22c55e" opacity=".6"/>
-    </marker>
-    <radialGradient id="coreGlow" cx=".5" cy=".5" r=".5">
-      <stop offset="0%" stop-color="#00d4ff" stop-opacity=".05"/>
-      <stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="s1" cx=".2" cy=".3" r=".6">
-      <stop offset="0%" stop-color="#22c55e" stop-opacity=".06"/>
-      <stop offset="100%" stop-color="#22c55e" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="s2" cx=".8" cy=".2" r=".5">
-      <stop offset="0%" stop-color="#a855f7" stop-opacity=".04"/>
-      <stop offset="100%" stop-color="#a855f7" stop-opacity="0"/>
-    </radialGradient>
   </defs>
 
-  <!-- Background -->
-  <rect width="800" height="520" fill="url(#bg)" rx="14"/>
-  <rect width="800" height="520" fill="url(#dots)" rx="14"/>
-  <rect width="800" height="520" fill="url(#s1)" rx="14"/>
-  <rect width="800" height="520" fill="url(#s2)" rx="14"/>
+  <rect width="800" height="520" rx="22" fill="url(#bg)"/>
 
-  <!-- Sweep -->
-  <rect x="0" y="0" width="820" height="2" fill="url(#sw)" class="sweep-line" rx="1"/>
+  <text x="32" y="40" class="display eyebrow">HOW THE ADVANTAGES CONNECT</text>
+  <text x="32" y="68" class="display title" font-size="24">Not a pile of features. A system that works together.</text>
 
-  <!-- Particles -->
-  <circle cx="60" cy="60" r="1.2" fill="#22c55e" class="float" opacity=".5"/>
-  <circle cx="740" cy="50" r="1" fill="#00d4ff" class="float" opacity=".4"/>
-  <circle cx="750" cy="480" r="1.3" fill="#a855f7" class="float" opacity=".3"/>
-  <circle cx="50" cy="460" r=".9" fill="#f59e0b" class="float" opacity=".4"/>
-
-  <!-- Input (Left) -->
-  <g>
-    <text x="50" y="84" class="t" fill="#6b7280" font-size="9" font-weight="700" letter-spacing="1" text-anchor="middle">INPUT</text>
-    <rect x="12" y="96" width="76" height="36" rx="8" fill="#111827" stroke="#1f2937" stroke-width="1"/>
-    <text x="50" y="119" class="t" fill="#d1d5db" font-size="11" font-weight="600" text-anchor="middle">User</text>
-    <rect x="12" y="146" width="76" height="42" rx="8" fill="#111827" stroke="#1f2937" stroke-width="1"/>
-    <text x="50" y="165" class="t" fill="#d1d5db" font-size="10" font-weight="600" text-anchor="middle">Scheduled</text>
-    <text x="50" y="180" class="t" fill="#6b7280" font-size="8" text-anchor="middle">Cron / Heartbeat</text>
+  <g transform="translate(28 106)">
+    <rect width="156" height="72" rx="18" fill="url(#card)" stroke="#463127"/>
+    <rect x="0" y="0" width="4" height="72" rx="2" fill="url(#warm)"/>
+    <text x="18" y="30" class="display title">User Requests</text>
+    <text x="18" y="50" class="display body">chat, tasks, files, automation</text>
   </g>
 
-  <!-- 9 Channels (Center-Left) -->
-  <g>
-    <text x="170" y="44" class="t" fill="#6b7280" font-size="9" font-weight="700" letter-spacing="1" text-anchor="middle">9 CHANNELS</text>
-    <rect x="110" y="54" width="120" height="260" rx="10" fill="none" stroke="#1f2937" stroke-width="1" stroke-dasharray="4 3"/>
-    <rect x="118" y="66" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="143" y="80" class="t" fill="#9ca3af" font-size="8.5" text-anchor="middle">Telegram</text>
-    <rect x="174" y="66" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="199" y="80" class="t" fill="#9ca3af" font-size="8.5" text-anchor="middle">Discord</text>
-    <rect x="118" y="92" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="143" y="106" class="t" fill="#9ca3af" font-size="8" text-anchor="middle">WhatsApp</text>
-    <rect x="174" y="92" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="199" y="106" class="t" fill="#9ca3af" font-size="8.5" text-anchor="middle">Slack</text>
-    <rect x="118" y="118" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="143" y="132" class="t" fill="#9ca3af" font-size="8.5" text-anchor="middle">Feishu</text>
-    <rect x="174" y="118" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="199" y="132" class="t" fill="#9ca3af" font-size="8.5" text-anchor="middle">Email</text>
-    <rect x="118" y="144" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="143" y="158" class="t" fill="#9ca3af" font-size="8.5" text-anchor="middle">QQ</text>
-    <rect x="174" y="144" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="199" y="158" class="t" fill="#9ca3af" font-size="8.5" text-anchor="middle">DingTalk</text>
-    <rect x="146" y="170" width="50" height="20" rx="10" fill="#1e293b"/>
-    <text x="171" y="184" class="t" fill="#9ca3af" font-size="8.5" text-anchor="middle">Mochat</text>
-    <rect x="118" y="202" width="104" height="24" rx="6" fill="#111827" stroke="#00d4ff" stroke-width=".6"/>
-    <text x="170" y="218" class="t" fill="#00d4ff" font-size="9" font-weight="600" text-anchor="middle">Message Bus</text>
-    <rect x="118" y="238" width="104" height="62" rx="6" fill="#111827" stroke="#3b82f6" stroke-width=".6"/>
-    <text x="170" y="264" class="t" fill="#d1d5db" font-size="10" font-weight="600" text-anchor="middle">Subagent</text>
-    <text x="170" y="282" class="t" fill="#6b7280" font-size="8" text-anchor="middle">Background Tasks</text>
-    <text x="170" y="294" class="t" fill="#6b7280" font-size="8" text-anchor="middle">Subagent</text>
+  <g transform="translate(28 206)">
+    <rect width="156" height="72" rx="18" fill="url(#card)" stroke="#463127"/>
+    <rect x="0" y="0" width="4" height="72" rx="2" fill="url(#sky)"/>
+    <text x="18" y="30" class="display title">Multi-Channel Input</text>
+    <text x="18" y="50" class="display body">desktop app + 9 platforms</text>
   </g>
 
-  <!-- AGENT Core (Center) -->
-  <g>
-    <text x="355" y="44" class="t" fill="#00d4ff" font-size="9" font-weight="700" letter-spacing="1" text-anchor="middle">AGENT CORE  ~12,000 lines</text>
-    <rect x="250" y="54" width="210" height="290" rx="12" fill="#0a0e17" stroke="#00d4ff" stroke-width="2" class="core-glow"/>
-    <rect x="250" y="54" width="210" height="290" rx="12" fill="url(#coreGlow)"/>
-    <rect x="264" y="72" width="182" height="38" rx="6" fill="#111827" stroke="#a855f7" stroke-width=".8"/>
-    <text x="355" y="90" class="t" fill="#e2e8f0" font-size="11" font-weight="600" text-anchor="middle">Thinking Protocol</text>
-    <text x="355" y="104" class="t" fill="#a855f7" font-size="8" text-anchor="middle">Deep Reasoning</text>
-
-    <rect x="264" y="122" width="182" height="48" rx="6" fill="#111827" stroke="#22c55e" stroke-width=".8"/>
-    <text x="355" y="142" class="t" fill="#e2e8f0" font-size="11" font-weight="600" text-anchor="middle">Context Builder</text>
-    <text x="355" y="160" class="t" fill="#22c55e" font-size="8" text-anchor="middle">+ Experience Injection</text>
-
-    <rect x="264" y="182" width="182" height="48" rx="6" fill="#111827" stroke="#f59e0b" stroke-width=".8"/>
-    <text x="355" y="202" class="t" fill="#e2e8f0" font-size="11" font-weight="600" text-anchor="middle">Tool Executor</text>
-    <text x="355" y="220" class="t" fill="#f59e0b" font-size="8" text-anchor="middle">+ Retry / Reflection</text>
-
-    <rect x="264" y="242" width="86" height="36" rx="6" fill="#111827" stroke="#374151" stroke-width=".6"/>
-    <text x="307" y="264" class="t" fill="#9ca3af" font-size="9" font-weight="600" text-anchor="middle">Utility Model</text>
-
-    <rect x="360" y="242" width="86" height="36" rx="6" fill="#111827" stroke="#374151" stroke-width=".6"/>
-    <text x="403" y="264" class="t" fill="#9ca3af" font-size="9" font-weight="600" text-anchor="middle">Cache</text>
-
-    <rect x="264" y="290" width="182" height="24" rx="6" fill="#111827" stroke="#374151" stroke-width=".4"/>
-    <text x="355" y="306" class="t" fill="#6b7280" font-size="8" text-anchor="middle">Skills + Heartbeat</text>
+  <g transform="translate(28 306)">
+    <rect width="156" height="72" rx="18" fill="url(#card)" stroke="#463127"/>
+    <rect x="0" y="0" width="4" height="72" rx="2" fill="url(#violet)"/>
+    <text x="18" y="30" class="display title">Tools + Environment</text>
+    <text x="18" y="50" class="display body">files, shell, desktop, browser, MCP</text>
   </g>
 
-  <!-- Resources (Right) -->
-  <g>
-    <text x="620" y="44" class="t" fill="#6b7280" font-size="9" font-weight="700" letter-spacing="1" text-anchor="middle">RESOURCES</text>
-    <rect x="490" y="56" width="260" height="88" rx="8" fill="#111827" stroke="#1f2937" stroke-width="1"/>
-    <text x="620" y="78" class="t" fill="#e2e8f0" font-size="11" font-weight="600" text-anchor="middle">LLM Providers</text>
-    <text x="620" y="96" class="t" fill="#6b7280" font-size="9" text-anchor="middle">OpenRouter / Anthropic / OpenAI</text>
-    <text x="620" y="112" class="t" fill="#6b7280" font-size="9" text-anchor="middle">DeepSeek / Gemini / Groq / 16+ total</text>
-    <text x="620" y="130" class="t" fill="#4b5563" font-size="8" text-anchor="middle">Add your own provider in 2 steps</text>
-    <rect x="490" y="158" width="260" height="52" rx="8" fill="#111827" stroke="#1f2937" stroke-width="1"/>
-    <text x="620" y="180" class="t" fill="#e2e8f0" font-size="11" font-weight="600" text-anchor="middle">MCP Tools</text>
-    <text x="620" y="198" class="t" fill="#6b7280" font-size="9" text-anchor="middle">stdio + HTTP | Compatible with Claude / Cursor</text>
-    <rect x="490" y="224" width="260" height="52" rx="8" fill="#111827" stroke="#1f2937" stroke-width="1"/>
-    <text x="620" y="246" class="t" fill="#e2e8f0" font-size="11" font-weight="600" text-anchor="middle">Skills</text>
-    <text x="620" y="264" class="t" fill="#6b7280" font-size="9" text-anchor="middle">GitHub / Cron / Weather / Custom</text>
+  <g transform="translate(220 88)">
+    <rect width="320" height="330" rx="28" fill="#17120f" stroke="#57392a"/>
+    <rect x="20" y="20" width="280" height="290" rx="22" fill="url(#card)" stroke="#6a4633"/>
+    <text x="40" y="48" class="display eyebrow">BAO CORE</text>
+    <text x="40" y="78" class="display title" font-size="24">AgentLoop / Gateway</text>
+
+    <rect x="40" y="102" width="112" height="58" rx="16" fill="#201610" stroke="#4f3425"/>
+    <text x="58" y="126" class="display title">Memory</text>
+    <text x="58" y="146" class="display body">LanceDB persistence</text>
+
+    <rect x="168" y="102" width="112" height="58" rx="16" fill="#201610" stroke="#4f3425"/>
+    <text x="186" y="126" class="display title">Experience</text>
+    <text x="186" y="146" class="display body">closed-loop learning</text>
+
+    <rect x="40" y="176" width="112" height="58" rx="16" fill="#201610" stroke="#4f3425"/>
+    <text x="58" y="200" class="display title">Long-Run Engine</text>
+    <text x="58" y="220" class="display body">compress, validate, close</text>
+
+    <rect x="168" y="176" width="112" height="58" rx="16" fill="#201610" stroke="#4f3425"/>
+    <text x="186" y="200" class="display title">Subagents</text>
+    <text x="186" y="220" class="display body">background execution</text>
+
+    <rect x="40" y="250" width="240" height="40" rx="14" fill="#221711" stroke="#5d3a29"/>
+    <text x="58" y="275" class="display title">planning / diagnostics / context governance</text>
   </g>
 
-  <!-- Persistence (Bottom) -->
-  <g>
-    <rect x="12" y="370" width="776" height="136" rx="10" fill="#0a0e17" stroke="#1f2937" stroke-width="1"/>
-    <text x="400" y="394" class="t" fill="#00d4ff" font-size="9" font-weight="700" letter-spacing="1" text-anchor="middle">PERSISTENCE  —  LanceDB</text>
-
-    <rect x="28" y="408" width="236" height="82" rx="8" fill="#111827" stroke="#1f2937" stroke-width=".6"/>
-    <text x="146" y="432" class="t" fill="#d1d5db" font-size="11" font-weight="600" text-anchor="middle">Long-term Memory</text>
-    <text x="146" y="450" class="t" fill="#6b7280" font-size="9" text-anchor="middle">User preferences, project knowledge</text>
-    <text x="146" y="466" class="t" fill="#6b7280" font-size="9" text-anchor="middle">Auto-consolidation + active cleanup</text>
-    <text x="146" y="482" class="t" fill="#6b7280" font-size="8" text-anchor="middle">Vector + keyword dual retrieval</text>
-
-    <rect x="280" y="408" width="220" height="82" rx="8" fill="#111827" stroke="#1f2937" stroke-width=".6"/>
-    <text x="390" y="432" class="t" fill="#d1d5db" font-size="11" font-weight="600" text-anchor="middle">Chat History</text>
-    <text x="390" y="450" class="t" fill="#6b7280" font-size="9" text-anchor="middle">Session context</text>
-    <text x="390" y="466" class="t" fill="#6b7280" font-size="9" text-anchor="middle">Trajectory compression</text>
-
-    <rect x="516" y="408" width="256" height="82" rx="8" fill="#111827" stroke="#22c55e" stroke-width=".6"/>
-    <text x="644" y="430" class="t" fill="#22c55e" font-size="11" font-weight="600" text-anchor="middle">Experience Store</text>
-    <text x="644" y="448" class="t" fill="#6b7280" font-size="9" text-anchor="middle">Lessons / strategies / keywords</text>
-    <text x="644" y="464" class="t" fill="#6b7280" font-size="9" text-anchor="middle">Confidence calibration</text>
-    <text x="644" y="480" class="t" fill="#6b7280" font-size="9" text-anchor="middle">Active forgetting</text>
+  <g transform="translate(576 88)">
+    <rect width="196" height="100" rx="22" fill="url(#card)" stroke="#463127"/>
+    <rect x="0" y="0" width="4" height="100" rx="2" fill="url(#mint)"/>
+    <text x="20" y="32" class="display title">Coding Agents</text>
+    <text x="20" y="54" class="display body">Codex / Claude Code / OpenCode</text>
+    <text x="20" y="76" class="display body">usable by the main agent and subagents</text>
   </g>
 
-  <!-- Connections -->
-  <path d="M88 114 L110 114" class="flow" marker-end="url(#ac)"/>
-  <path d="M88 167 L100 167 L100 180 L110 180" class="flow" marker-end="url(#ac)"/>
-  <path d="M230 190 L250 190" class="flow" marker-end="url(#ac)"/>
-  <path d="M460 100 L490 100" class="flow" marker-end="url(#ac)"/>
-  <path d="M460 184 L490 184" class="flow" marker-end="url(#ac)"/>
-  <path d="M460 250 L490 250" class="flow" marker-end="url(#ac)"/>
-  <path d="M355 344 L355 370" class="flow" marker-end="url(#ac)"/>
+  <g transform="translate(576 212)">
+    <rect width="196" height="100" rx="22" fill="url(#card)" stroke="#463127"/>
+    <rect x="0" y="0" width="4" height="100" rx="2" fill="url(#rose)"/>
+    <text x="20" y="32" class="display title">MCP Ecosystem</text>
+    <text x="20" y="54" class="display body">stdio / HTTP</text>
+    <text x="20" y="76" class="display body">schema and budget control included</text>
+  </g>
 
-  <!-- Experience Loop -->
-  <path d="M650 408 L650 356 L480 356 L480 170 L460 170" class="exp" marker-end="url(#ag)"/>
-  <path d="M430 344 L430 356 L620 356 L620 408" class="exp" marker-end="url(#ag)"/>
-  <rect x="484" y="348" width="84" height="16" rx="8" fill="#22c55e12"/>
-  <text x="526" y="360" class="t" fill="#22c55e" font-size="8" font-weight="600" text-anchor="middle">Experience Loop</text>
+  <g transform="translate(576 336)">
+    <rect width="196" height="100" rx="22" fill="url(#card)" stroke="#463127"/>
+    <rect x="0" y="0" width="4" height="100" rx="2" fill="url(#sky)"/>
+    <text x="20" y="32" class="display title">Desktop Automation</text>
+    <text x="20" y="54" class="display body">screen, click, type, scroll, drag</text>
+    <text x="20" y="76" class="display body">model-agnostic and wired into the core</text>
+  </g>
 
-  <!-- Bottom sweep -->
-  <rect x="0" y="518" width="820" height="2" fill="url(#sw)" class="sweep-line" rx="1" style="animation-delay:2.2s"/>
+  <g transform="translate(220 446)">
+    <rect width="552" height="48" rx="18" fill="url(#card)" stroke="#463127"/>
+    <rect x="0" y="0" width="4" height="48" rx="2" fill="url(#violet)"/>
+    <text x="18" y="30" class="display body">Bao is strong because these capabilities reinforce each other instead of living as separate point features.</text>
+  </g>
+
+  <path d="M184 142 H220" class="wire"/>
+  <path d="M184 242 H220" class="wire"/>
+  <path d="M184 342 H220" class="wire"/>
+  <path d="M540 140 H576" class="wire"/>
+  <path d="M540 264 H576" class="wire"/>
+  <path d="M540 388 H576" class="wire"/>
+
+  <g transform="translate(680 52)" class="pulse">
+    <rect width="78" height="24" rx="12" fill="#2d1b14" stroke="#5c3929"/>
+    <text x="39" y="16" text-anchor="middle" class="display tag">real stack</text>
+  </g>
 </svg>
