@@ -1,5 +1,6 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
+import QtQuick.Dialogs
 import QtQuick.Layouts 1.15
 
 Rectangle {
@@ -18,6 +19,7 @@ Rectangle {
     readonly property int composerBottomMargin: Math.max(spacingXs, windowContentInsetBottom - spacingSm)
     readonly property int composerDockGap: windowContentInsetBottom
     readonly property int composerEdgeInset: spacingSm
+    readonly property bool hasDraftAttachments: chatService ? chatService.draftAttachmentCount > 0 : false
     readonly property bool hasSessionService: typeof sessionService !== "undefined" && sessionService !== null
     readonly property bool activeSessionReadOnly: hasSessionService ? sessionService.activeSessionReadOnly : false
     signal messageCopied()
@@ -688,7 +690,7 @@ Rectangle {
         id: composerBar
         objectName: "composerBar"
         readonly property bool active: chatService && chatService.state === "running" && !root.activeSessionReadOnly
-        readonly property real visibleHeight: inputRow.implicitHeight + 24
+        readonly property real visibleHeight: composerContent.implicitHeight + 20
         readonly property int revealDuration: motionPanel + 40
         // targetListBottomInset is the layout fact; presentedListBottomInset is the animated projection.
         readonly property real targetListBottomInset: active
@@ -715,154 +717,517 @@ Rectangle {
         Behavior on opacity { NumberAnimation { duration: motionUi + 40; easing.type: easeStandard } }
         Behavior on scale { NumberAnimation { duration: composerBar.revealDuration; easing.type: easeEmphasis } }
 
-        RowLayout {
-            id: inputRow
+        Column {
+            id: composerContent
             anchors {
                 left: parent.left; right: parent.right
                 verticalCenter: parent.verticalCenter
                 leftMargin: 18; rightMargin: 18
             }
-            spacing: 0
+            spacing: root.hasDraftAttachments ? 10 : 0
 
             Rectangle {
-                id: composerField
-                Layout.fillWidth: true
-                Layout.alignment: Qt.AlignVCenter
-                readonly property bool focused: messageInput.activeFocus
-                readonly property bool hovered: messageInput.hovered
-                readonly property color fillColor: focused ? bgInputFocus : (hovered ? bgInputHover : bgInput)
-                readonly property color strokeColor: focused ? borderFocus : (hovered ? borderDefault : borderSubtle)
-                readonly property real strokeWidth: focused ? 1.35 : 1.0
-                readonly property real fieldScale: focused ? 1.006 : (hovered ? 1.003 : 1.0)
-                Layout.preferredHeight: Math.min(
-                                          Math.max(
-                                              messageInput.contentHeight
-                                              + messageInput.topPadding
-                                              + messageInput.bottomPadding
-                                              + root.composerScrollInset,
-                                              root.composerMinHeight
-                                          ),
-                                          root.composerMaxHeight
-                                      )
-                radius: root.composerFieldRadius
-                color: fillColor
-                border.color: strokeColor
-                border.width: strokeWidth
+                id: attachmentStrip
+                objectName: "attachmentStrip"
+                width: parent.width
+                height: root.hasDraftAttachments ? 72 : 0
+                radius: 22
+                color: isDark ? "#E623170F" : "#F7FFFFFF"
+                border.width: 1
+                border.color: root.hasDraftAttachments ? borderDefault : borderSubtle
+                opacity: root.hasDraftAttachments ? 1.0 : 0.0
                 clip: true
-                scale: fieldScale
+                visible: opacity > 0
+                Behavior on height { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
+                Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
                 Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-                Behavior on border.width { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
-                Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
-                Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
 
                 Rectangle {
-                    id: innerSendButton
-                    width: sizeButton
-                    height: sizeButton
-                    radius: width / 2
-                    anchors.right: parent.right
-                    anchors.rightMargin: 8
-                    anchors.verticalCenter: parent.verticalCenter
-                    property bool canSend: messageInput.text.trim().length > 0
-                                          && chatService
-                                          && chatService.state === "running"
-                    color: sendHover.containsMouse && canSend
-                           ? accentHover
-                           : (canSend ? accent : chatComposerSendDisabled)
-                    border.width: canSend ? 0 : 1
-                    border.color: canSend ? "transparent" : borderSubtle
-                    scale: sendHover.pressed && canSend
-                           ? motionPressScaleStrong
-                           : (sendHover.containsMouse && canSend ? motionHoverScaleSubtle : 1.0)
-                    antialiasing: true
-                    Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-                    Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-                    Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
-
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: parent.radius
-                        gradient: Gradient {
-                            GradientStop { position: 0.0; color: chatComposerSendHighlight }
-                            GradientStop { position: 1.0; color: "#00FFFFFF" }
-                        }
-                        opacity: parent.canSend ? (sendHover.containsMouse ? 0.82 : 0.66) : 0.0
-                        Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
-                    }
-
-                    Image {
-                        anchors.centerIn: parent
-                        source: "../resources/icons/send.svg"
-                        width: 20
-                        height: 20
-                        sourceSize: Qt.size(20, 20)
-                        opacity: parent.canSend ? 1.0 : 0.3
-                        Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
-                    }
-
-                    MouseArea {
-                        id: sendHover
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: parent.canSend ? Qt.PointingHandCursor : Qt.ArrowCursor
-                        onClicked: if (parent.canSend) sendMessage()
-                    }
+                    anchors.fill: parent
+                    radius: parent.radius
+                    color: "transparent"
+                    border.width: 1
+                    border.color: isDark ? "#15FFFFFF" : "#22FFFFFF"
+                    opacity: root.hasDraftAttachments ? 1.0 : 0.0
                 }
 
-                ScrollView {
-                    id: inputScroll
+                Rectangle {
                     anchors.left: parent.left
-                    anchors.right: innerSendButton.left
+                    anchors.right: parent.right
                     anchors.top: parent.top
-                    anchors.bottom: parent.bottom
-                    anchors.rightMargin: 8
+                    height: 28
+                    radius: parent.radius
+                    gradient: Gradient {
+                        GradientStop { position: 0.0; color: isDark ? "#20FFFFFF" : "#D9FFFFFF" }
+                        GradientStop { position: 1.0; color: "#00FFFFFF" }
+                    }
+                    opacity: 0.55
+                }
+
+                ListView {
+                    id: attachmentList
+                    objectName: "attachmentList"
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    orientation: ListView.Horizontal
+                    spacing: 8
                     clip: true
-                    ScrollBar.vertical.policy: ScrollBar.AsNeeded
-
-                    TextArea {
-                        id: messageInput
-                        objectName: "chatMessageInput"
-                        property bool baoClickAwayEditor: true
-                        hoverEnabled: true
-                        placeholderText: strings.chat_placeholder
-                        placeholderTextColor: textPlaceholder
-                        color: textPrimary
-                        background: null
-                        wrapMode: TextArea.Wrap
-                        leftPadding: sizeFieldPaddingX
-                        rightPadding: sizeFieldPaddingX
-                        topPadding: 15
-                        bottomPadding: 5
-                        font.pixelSize: typeBody
-                        selectionColor: textSelectionBg
-                        selectedTextColor: textSelectionFg
-
-                        onCursorPositionChanged: {
-                            if (!activeFocus || cursorPosition !== length) return
-                            var flick = inputScroll.contentItem
-                            if (!flick) return
-                            if (flick.contentHeight > flick.height)
-                                flick.contentY = flick.contentHeight - flick.height + root.composerBottomSafeGap
+                    boundsBehavior: Flickable.StopAtBounds
+                    model: chatService ? chatService.draftAttachments : null
+                    add: Transition {
+                        ParallelAnimation {
+                            NumberAnimation {
+                                property: "opacity"
+                                from: 0.0
+                                to: 1.0
+                                duration: motionUi
+                                easing.type: easeStandard
+                            }
+                            NumberAnimation {
+                                property: "scale"
+                                from: 0.94
+                                to: 1.0
+                                duration: motionUi + 20
+                                easing.type: easeEmphasis
+                            }
+                            NumberAnimation {
+                                property: "x"
+                                from: ViewTransition.item.x + 8
+                                to: ViewTransition.item.x
+                                duration: motionUi
+                                easing.type: easeEmphasis
+                            }
                         }
+                    }
+                    addDisplaced: Transition {
+                        NumberAnimation {
+                            properties: "x"
+                            duration: motionUi
+                            easing.type: easeEmphasis
+                        }
+                    }
+                    removeDisplaced: Transition {
+                        NumberAnimation {
+                            properties: "x"
+                            duration: motionUi
+                            easing.type: easeEmphasis
+                        }
+                    }
 
-                        Keys.onReturnPressed: function(event) {
-                            if (event.modifiers & Qt.ShiftModifier) {
-                                event.accepted = false
-                            } else {
-                                event.accepted = true
-                                sendMessage()
+                    delegate: Item {
+                        required property int index
+                        required property string fileName
+                        required property string fileSizeLabel
+                        required property string previewUrl
+                        required property bool isImage
+                        required property string extensionLabel
+
+                        width: isImage ? 72 : 164
+                        height: 56
+
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: 18
+                            color: isImage ? (isDark ? "#241A12" : "#FFF9F4") : (isDark ? "#1D150F" : "#FFFCF9")
+                            border.width: 1
+                            border.color: chipHover.containsMouse ? accent : borderSubtle
+                            scale: chipHover.containsMouse ? 1.018 : 1.0
+                            Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                            Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: parent.radius
+                                color: "transparent"
+                                border.width: 1
+                                border.color: isDark ? "#18FFFFFF" : "#36FFFFFF"
+                                opacity: 0.9
+                            }
+
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                height: isImage ? 26 : 20
+                                radius: parent.radius
+                                gradient: Gradient {
+                                    GradientStop { position: 0.0; color: isImage ? "#30FFFFFF" : (isDark ? "#16FFFFFF" : "#26FFFFFF") }
+                                    GradientStop { position: 1.0; color: "#00FFFFFF" }
+                                }
+                            }
+
+                            Item {
+                                anchors.fill: parent
+                                anchors.margins: 4
+                                visible: isImage
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    radius: 14
+                                    color: bgInput
+                                    clip: true
+
+                                    Image {
+                                        anchors.fill: parent
+                                        source: previewUrl
+                                        fillMode: Image.PreserveAspectCrop
+                                        sourceSize: Qt.size(width * 2, height * 2)
+                                        asynchronous: true
+                                        smooth: true
+                                        mipmap: true
+                                    }
+
+                                    Rectangle {
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.bottom: parent.bottom
+                                        height: 22
+                                        gradient: Gradient {
+                                            GradientStop { position: 0.0; color: "#00000000" }
+                                            GradientStop { position: 1.0; color: "#99000000" }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        width: 26
+                                        height: 16
+                                        radius: 8
+                                        anchors.left: parent.left
+                                        anchors.bottom: parent.bottom
+                                        anchors.leftMargin: 7
+                                        anchors.bottomMargin: 7
+                                        color: "#B8130F0B"
+                                        border.width: 1
+                                        border.color: "#33FFFFFF"
+
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: extensionLabel
+                                            color: "#FFF9F3"
+                                            font.pixelSize: typeCaption - 2
+                                            font.weight: weightDemiBold
+                                        }
+                                    }
+                                }
+                            }
+
+                            Row {
+                                anchors.fill: parent
+                                anchors.leftMargin: 10
+                                anchors.rightMargin: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 10
+                                visible: !isImage
+
+                                Rectangle {
+                                    width: 34
+                                    height: 34
+                                    radius: 11
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    color: isDark ? "#2EF38F1A" : "#1CE68A18"
+                                    border.width: 1
+                                    border.color: isDark ? "#2CFFC36B" : "#2AF0AF47"
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: extensionLabel
+                                        color: accent
+                                        font.pixelSize: typeCaption - 1
+                                        font.weight: weightDemiBold
+                                    }
+                                }
+
+                                Column {
+                                    width: parent.width - 44
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 1
+
+                                    Text {
+                                        width: parent.width
+                                        text: fileName
+                                        color: textPrimary
+                                        font.pixelSize: typeMeta + 1
+                                        font.weight: weightDemiBold
+                                        elide: Text.ElideMiddle
+                                    }
+
+                                    Text {
+                                        width: parent.width
+                                        text: fileSizeLabel
+                                        color: textTertiary
+                                        font.pixelSize: typeCaption
+                                        elide: Text.ElideRight
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                width: 22
+                                height: 22
+                                radius: 11
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                anchors.rightMargin: 6
+                                anchors.topMargin: 6
+                                color: removeArea.containsMouse ? accent : (isDark ? "#F21B120D" : "#F8FFFFFF")
+                                border.width: 1
+                                border.color: removeArea.containsMouse ? accent : borderSubtle
+                                scale: removeArea.containsMouse ? 1.04 : 1.0
+                                Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                                Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                                Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+
+                                Image {
+                                    anchors.centerIn: parent
+                                    source: "../resources/icons/sidebar-close.svg"
+                                    width: 10
+                                    height: 10
+                                    sourceSize: Qt.size(10, 10)
+                                    opacity: 0.9
+                                }
+
+                                MouseArea {
+                                    id: removeArea
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: if (chatService) chatService.removeDraftAttachment(index)
+                                }
+                            }
+
+                            MouseArea {
+                                id: chipHover
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                acceptedButtons: Qt.NoButton
+                                cursorShape: Qt.ArrowCursor
                             }
                         }
                     }
                 }
             }
 
+            RowLayout {
+                id: inputRow
+                width: parent.width
+                spacing: 0
+
+                Rectangle {
+                    id: composerField
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignVCenter
+                    readonly property bool focused: messageInput.activeFocus
+                    readonly property bool hovered: messageInput.hovered || attachHover.containsMouse
+                    readonly property color fillColor: focused ? bgInputFocus : (hovered ? bgInputHover : bgInput)
+                    readonly property color strokeColor: focused ? borderFocus : (hovered ? borderDefault : borderSubtle)
+                    readonly property real strokeWidth: focused ? 1.35 : 1.0
+                    readonly property real fieldScale: focused ? 1.006 : (hovered ? 1.003 : 1.0)
+                    Layout.preferredHeight: Math.min(
+                                              Math.max(
+                                                  messageInput.contentHeight
+                                                  + messageInput.topPadding
+                                                  + messageInput.bottomPadding
+                                                  + root.composerScrollInset,
+                                                  root.composerMinHeight
+                                              ),
+                                              root.composerMaxHeight
+                                          )
+                    radius: root.composerFieldRadius
+                    color: fillColor
+                    border.color: strokeColor
+                    border.width: strokeWidth
+                    clip: true
+                    scale: fieldScale
+                    Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                    Behavior on border.width { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+                    Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
+                    Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
+
+                    Rectangle {
+                        id: attachButton
+                        width: 32
+                        height: 32
+                        radius: 16
+                        anchors.left: parent.left
+                        anchors.leftMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: attachHover.containsMouse ? (isDark ? "#38F38F1A" : "#1AE68A18") : "transparent"
+                        scale: attachHover.containsMouse ? motionHoverScaleSubtle : 1.0
+                        Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                        Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: parent.radius
+                            color: "transparent"
+                            border.width: 1
+                            border.color: root.hasDraftAttachments ? accent : "transparent"
+                            opacity: root.hasDraftAttachments ? 0.42 : 0.0
+                            scale: root.hasDraftAttachments ? 1.0 : 0.92
+                            Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                            Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+                            Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
+                        }
+
+                        Rectangle {
+                            width: 6
+                            height: 6
+                            radius: 3
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.rightMargin: 3
+                            anchors.topMargin: 3
+                            color: accent
+                            opacity: root.hasDraftAttachments ? 0.95 : 0.0
+                            scale: root.hasDraftAttachments ? 1.0 : 0.6
+                            Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+                            Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
+                        }
+
+                        Image {
+                            anchors.centerIn: parent
+                            source: "../resources/icons/paperclip.svg"
+                            width: 19
+                            height: 19
+                            sourceSize: Qt.size(19, 19)
+                            opacity: attachHover.containsMouse ? 1.0 : 0.78
+                            Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+                        }
+
+                        MouseArea {
+                            id: attachHover
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: attachmentDialog.open()
+                        }
+                    }
+
+                    Rectangle {
+                        id: innerSendButton
+                        width: sizeButton
+                        height: sizeButton
+                        radius: width / 2
+                        anchors.right: parent.right
+                        anchors.rightMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        property bool canSend: (messageInput.text.trim().length > 0 || root.hasDraftAttachments)
+                                              && chatService
+                                              && chatService.state === "running"
+                        color: sendHover.containsMouse && canSend
+                               ? accentHover
+                               : (canSend ? accent : chatComposerSendDisabled)
+                        border.width: canSend ? 0 : 1
+                        border.color: canSend ? "transparent" : borderSubtle
+                        scale: sendHover.pressed && canSend
+                               ? motionPressScaleStrong
+                               : (sendHover.containsMouse && canSend ? motionHoverScaleSubtle : 1.0)
+                        antialiasing: true
+                        Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                        Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                        Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: parent.radius
+                            gradient: Gradient {
+                                GradientStop { position: 0.0; color: chatComposerSendHighlight }
+                                GradientStop { position: 1.0; color: "#00FFFFFF" }
+                            }
+                            opacity: parent.canSend ? (sendHover.containsMouse ? 0.82 : 0.66) : 0.0
+                            Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+                        }
+
+                        Image {
+                            anchors.centerIn: parent
+                            source: "../resources/icons/send.svg"
+                            width: 20
+                            height: 20
+                            sourceSize: Qt.size(20, 20)
+                            opacity: parent.canSend ? 1.0 : 0.3
+                            Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+                        }
+
+                        MouseArea {
+                            id: sendHover
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: parent.canSend ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            onClicked: if (parent.canSend) sendMessage()
+                        }
+                    }
+
+                    ScrollView {
+                        id: inputScroll
+                        anchors.left: attachButton.right
+                        anchors.right: innerSendButton.left
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        anchors.leftMargin: 4
+                        anchors.rightMargin: 8
+                        clip: true
+                        ScrollBar.vertical.policy: ScrollBar.AsNeeded
+
+                        TextArea {
+                            id: messageInput
+                            objectName: "chatMessageInput"
+                            property bool baoClickAwayEditor: true
+                            hoverEnabled: true
+                            placeholderText: strings.chat_placeholder
+                            placeholderTextColor: textPlaceholder
+                            color: textPrimary
+                            background: null
+                            wrapMode: TextArea.Wrap
+                            leftPadding: sizeFieldPaddingX - 2
+                            rightPadding: sizeFieldPaddingX
+                            topPadding: 15
+                            bottomPadding: 5
+                            font.pixelSize: typeBody
+                            selectionColor: textSelectionBg
+                            selectedTextColor: textSelectionFg
+
+                            onCursorPositionChanged: {
+                                if (!activeFocus || cursorPosition !== length) return
+                                var flick = inputScroll.contentItem
+                                if (!flick) return
+                                if (flick.contentHeight > flick.height)
+                                    flick.contentY = flick.contentHeight - flick.height + root.composerBottomSafeGap
+                            }
+
+                            Keys.onReturnPressed: function(event) {
+                                if (event.modifiers & Qt.ShiftModifier) {
+                                    event.accepted = false
+                                } else {
+                                    event.accepted = true
+                                    sendMessage()
+                                }
+                            }
+
+                            Keys.onPressed: function(event) {
+                                if (!event.matches(StandardKey.Paste))
+                                    return
+                                if (!chatService)
+                                    return
+                                if (chatService.pasteClipboardAttachment())
+                                    event.accepted = true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        FileDialog {
+            id: attachmentDialog
+            title: strings.chat_attach_title
+            fileMode: FileDialog.OpenFiles
+            onAccepted: if (chatService) chatService.addDraftAttachments(selectedFiles)
         }
     }
 
     function sendMessage() {
         var text = messageInput.text.trim()
-        if (!text || !chatService) return
+        if ((!text && !root.hasDraftAttachments) || !chatService) return
         chatService.sendMessage(text)
         messageInput.text = ""
     }

@@ -1,10 +1,11 @@
 import QtQuick 2.15
-import QtQuick.Layouts 1.15
 
 Rectangle {
     id: root
 
     property string text: ""
+    property string iconSource: ""
+    property real iconSize: 15
     property bool busy: false
     property bool buttonEnabled: true
     property color fillColor: accent
@@ -18,7 +19,7 @@ Rectangle {
     property real minHeight: 30
     readonly property bool interactive: root.buttonEnabled && !root.busy
     readonly property color currentFillColor: buttonArea.containsMouse ? root.hoverFillColor : root.fillColor
-    readonly property real currentOpacity: root.busy ? 0.72 : 1.0
+    readonly property real currentOpacity: root.busy ? 0.72 : (root.buttonEnabled ? 1.0 : 0.42)
     readonly property real currentScale: buttonArea.pressed ? 0.988 : (buttonArea.containsMouse ? motionHoverScaleSubtle : 1.0)
     signal clicked()
 
@@ -38,7 +39,19 @@ Rectangle {
         anchors.centerIn: parent
         spacing: 7
 
+        Image {
+            visible: root.iconSource !== "" && !root.busy
+            source: root.iconSource
+            width: root.iconSize
+            height: root.iconSize
+            sourceSize: Qt.size(root.iconSize, root.iconSize)
+            fillMode: Image.PreserveAspectFit
+            smooth: true
+            mipmap: true
+        }
+
         LoadingOrbit {
+            visible: root.busy
             width: 14
             height: 14
             anchors.verticalCenter: parent.verticalCenter
