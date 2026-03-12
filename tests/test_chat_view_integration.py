@@ -23,6 +23,8 @@ QModelIndex = QtCore.QModelIndex
 QObject = QtCore.QObject
 QPoint = QtCore.QPoint
 QPointF = QtCore.QPointF
+QRect = QtCore.QRect
+QImage = QtGui.QImage
 Property = QtCore.Property
 QQuickItem = QtQuick.QQuickItem
 QTimer = QtCore.QTimer
@@ -1318,6 +1320,33 @@ def _center_point(item: QObject) -> QPoint:
     return QPoint(int(center.x()), int(center.y()))
 
 
+def _grab_item_image(root: QObject, item: QObject, *, padding: int = 10) -> QImage:
+    window_image = root.grabWindow()
+    top_left = item.mapToScene(QPointF(0, 0))
+    x = max(0, int(top_left.x()) - padding)
+    y = max(0, int(top_left.y()) - padding)
+    width = min(
+        int(item.property("width")) + padding * 2,
+        max(1, window_image.width() - x),
+    )
+    height = min(
+        int(item.property("height")) + padding * 2,
+        max(1, window_image.height() - y),
+    )
+    return window_image.copy(QRect(x, y, width, height))
+
+
+def _count_pixel_differences(image_a: QImage, image_b: QImage) -> int:
+    width = min(image_a.width(), image_b.width())
+    height = min(image_a.height(), image_b.height())
+    changed = 0
+    for y in range(height):
+        for x in range(width):
+            if image_a.pixel(x, y) != image_b.pixel(x, y):
+                changed += 1
+    return changed
+
+
 def _provider_list_snapshot(settings_view: QObject) -> list[dict[str, object]]:
     provider_list = settings_view.property("_providerList")
     to_variant = getattr(provider_list, "toVariant", None)
@@ -2223,6 +2252,49 @@ def test_settings_page_moves_sidebar_selection_to_app_icon(qapp):
         assert str(sidebar.property("selectionTarget")) == "settings"
         assert bool(app_icon.property("active")) is True
         assert float(highlight.property("opacity")) == 0.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_sidebar_brand_dock_keeps_logo_clear_of_diagnostics(qapp):
+    _ = qapp
+    engine, root = _load_main_window()
+
+    try:
+        app_icon = _find_object(root, "sidebarAppIconButton")
+        diagnostics_pill = _find_object(root, "sidebarDiagnosticsPill")
+
+        icon_right = float(app_icon.property("x")) + float(app_icon.property("width"))
+        diagnostics_left = float(diagnostics_pill.property("x"))
+
+        assert icon_right <= diagnostics_left - 8
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_sidebar_brand_dock_idle_logo_motion_animates_without_hover(qapp):
+    _ = qapp
+    engine, root = _load_main_window()
+
+    try:
+        motion = _find_object(root, "sidebarBrandMarkMotion")
+        _process(120)
+        first_y = float(motion.property("y"))
+        first_scale = float(motion.property("scale"))
+        first_frame = _grab_item_image(root, motion, padding=14)
+
+        _process(900)
+        second_y = float(motion.property("y"))
+        second_scale = float(motion.property("scale"))
+        second_frame = _grab_item_image(root, motion, padding=14)
+
+        assert second_y != first_y
+        assert second_scale != first_scale
+        assert _count_pixel_differences(first_frame, second_frame) > 80
     finally:
         root.deleteLater()
         engine.deleteLater()

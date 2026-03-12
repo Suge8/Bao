@@ -11,21 +11,49 @@ Rectangle {
     property bool selected: false
     property bool clickable: true
     property real pulsePhase: 0.0
+    readonly property color fillColor: _fillColor()
+    readonly property color strokeColor: _strokeColor()
     signal clicked()
 
+    function _fillColor() {
+        if (selected)
+            return isDark ? "#16FFB33D" : "#12FFB33D"
+        return isDark ? "#0EFFFFFF" : "#FFFFFFFF"
+    }
+
+    function _strokeColor() {
+        if (selected)
+            return accent
+        if (cardArea.containsMouse)
+            return borderDefault
+        return borderSubtle
+    }
+
+    function _accentOverlayOpacity() {
+        if (selected)
+            return 0.06 + pulsePhase * 0.04
+        if (cardArea.containsMouse)
+            return 0.03
+        return 0.0
+    }
+
+    function _selectionRailOpacity() {
+        if (selected)
+            return 1.0
+        if (cardArea.containsMouse)
+            return 0.35
+        return 0.0
+    }
+
     radius: radiusMd
-    color: selected ? (isDark ? "#18FFB33D" : "#14FFB33D") : (isDark ? "#0DFFFFFF" : "#08000000")
-    border.color: selected ? accent : (cardArea.containsMouse ? accent : borderSubtle)
+    color: root.fillColor
+    border.color: root.strokeColor
     border.width: selected || cardArea.containsMouse ? 1.2 : 1
-    scale: cardArea.pressed
-           ? 0.992
-           : (selected ? motionSelectionScaleHover : (cardArea.containsMouse ? motionHoverScaleSubtle : 1.0))
-    implicitHeight: cardCol.implicitHeight + 24
+    implicitHeight: cardCol.implicitHeight + 26
 
     Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
     Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
     Behavior on border.width { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
-    Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeEmphasis } }
 
     SequentialAnimation on pulsePhase {
         running: root.selected
@@ -38,28 +66,22 @@ Rectangle {
         anchors.fill: parent
         radius: parent.radius
         color: accent
-        opacity: root.selected
-                 ? (0.06 + root.pulsePhase * 0.04)
-                 : (cardArea.containsMouse ? 0.04 : 0.0)
-        scale: root.selected ? (1.0 + root.pulsePhase * 0.018) : (cardArea.containsMouse ? 1.01 : 0.98)
+        opacity: root._accentOverlayOpacity()
         visible: opacity > 0.001
         Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
-        Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
     }
 
     Rectangle {
-        width: Math.max(44, parent.width * 0.26)
-        height: parent.height * 0.88
-        radius: height / 2
-        anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
-        anchors.rightMargin: -height * 0.08
+        width: 3
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.margins: 10
+        radius: width / 2
         color: accent
-        opacity: root.selected ? 0.10 : (cardArea.containsMouse ? 0.06 : 0.0)
-        scale: root.selected ? 1.0 : 0.96
+        opacity: root._selectionRailOpacity()
         visible: opacity > 0.001
         Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
-        Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
     }
 
     ColumnLayout {
@@ -67,8 +89,9 @@ Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.margins: 12
-        spacing: 8
+        anchors.margins: 14
+        anchors.leftMargin: 16
+        spacing: 10
 
         RowLayout {
             Layout.fillWidth: true
@@ -77,12 +100,12 @@ Rectangle {
             Rectangle {
                 visible: badgeText !== ""
                 implicitWidth: badgeLabel.implicitWidth + 16
-                implicitHeight: 24
+                implicitHeight: 22
                 radius: 12
-                color: root.selected ? accent : (isDark ? "#14FFFFFF" : "#10FFFFFF")
-                scale: root.selected ? 1.0 : (cardArea.containsMouse ? motionHoverScaleSubtle : 1.0)
+                color: root.selected ? accent : (isDark ? "#12FFFFFF" : "#10F3ECE6")
+                border.color: root.selected ? accent : borderSubtle
+                border.width: root.selected ? 0 : 1
                 Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-                Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeEmphasis } }
 
                 Text {
                     id: badgeLabel
@@ -99,7 +122,7 @@ Rectangle {
             Text {
                 visible: trailingText !== ""
                 text: root.trailingText
-                color: root.selected ? accent : textSecondary
+                color: root.selected ? accent : textTertiary
                 font.pixelSize: typeCaption
                 font.weight: Font.DemiBold
             }
@@ -110,7 +133,7 @@ Rectangle {
             text: root.title
             color: textPrimary
             font.pixelSize: typeBody
-            font.weight: Font.DemiBold
+            font.weight: Font.Bold
             wrapMode: Text.WordWrap
         }
 

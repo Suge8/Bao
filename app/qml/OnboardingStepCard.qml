@@ -12,145 +12,198 @@ Rectangle {
     property bool done: false
     property bool current: false
     property bool clickable: true
-    property real pulsePhase: 0.0
-    readonly property color surfaceColor: root.current
-                                         ? (isDark ? "#18FFB33D" : "#14FFB33D")
-                                         : (root.done ? (isDark ? "#10FFFFFF" : "#0A000000") : (isDark ? "#0DFFFFFF" : "#05000000"))
-    readonly property color outlineColor: root.current ? accent : (root.done ? (isDark ? "#24FFD699" : "#22D0892C") : borderSubtle)
-    readonly property real surfaceScale: stepArea.pressed
-                                         ? 0.992
-                                         : (root.current
-                                            ? motionSelectionScaleActive
-                                            : (root.done ? motionSelectionScaleHover : (stepArea.containsMouse ? motionHoverScaleSubtle : 1.0)))
-    readonly property string statusText: root.done ? tr("已完成", "Done") : (root.current ? tr("现在就做", "Do this now") : tr("接下来", "Up next"))
-    readonly property color statusTextColor: root.current ? accent : textTertiary
-    readonly property color badgeColor: root.done ? accent : "transparent"
-    readonly property color badgeOutlineColor: root.done ? accent : (root.current ? accent : borderSubtle)
-    readonly property color badgeTextColor: root.done ? "#FFFFFFFF" : (root.current ? accent : textSecondary)
-    readonly property color ctaFillColor: root.current ? accent : (root.done ? (isDark ? "#14FFFFFF" : "#10000000") : "transparent")
-    readonly property color ctaTextColor: root.current ? "#FFFFFFFF" : (root.done ? textPrimary : textSecondary)
+    readonly property color surfaceColor: _surfaceColor()
+    readonly property color outlineColor: _outlineColor()
+    readonly property string statusText: _statusText()
+    readonly property color statusTextColor: _statusTextColor()
+    readonly property color badgeColor: _badgeColor()
+    readonly property color badgeOutlineColor: _badgeOutlineColor()
+    readonly property color badgeTextColor: _badgeTextColor()
+    readonly property color ctaFillColor: _ctaFillColor()
+    readonly property color ctaTextColor: _ctaTextColor()
     signal clicked()
+
+    function _surfaceColor() {
+        if (current)
+            return isDark ? "#16110D" : "#FFF9F3"
+        if (done)
+            return isDark ? "#14110F" : "#FFFDFC"
+        return isDark ? "#0F0C0A" : "#FFFFFFFF"
+    }
+
+    function _outlineColor() {
+        if (current)
+            return accent
+        if (done)
+            return isDark ? "#26FFB33D" : "#20A8641F"
+        return borderSubtle
+    }
+
+    function _statusText() {
+        if (done)
+            return tr("已完成", "Done")
+        if (current)
+            return tr("当前步骤", "Current step")
+        return tr("待执行", "Up next")
+    }
+
+    function _statusTextColor() {
+        if (current)
+            return accent
+        if (done)
+            return textPrimary
+        return textTertiary
+    }
+
+    function _badgeColor() {
+        if (done)
+            return accent
+        if (current)
+            return isDark ? "#20FFB33D" : "#18FFB33D"
+        return isDark ? "#14FFFFFF" : "#10F3ECE6"
+    }
+
+    function _badgeOutlineColor() {
+        if (done || current)
+            return accent
+        return borderSubtle
+    }
+
+    function _badgeTextColor() {
+        if (done)
+            return "#FFFFFFFF"
+        if (current)
+            return accent
+        return textSecondary
+    }
+
+    function _ctaFillColor() {
+        if (current)
+            return accent
+        if (done)
+            return isDark ? "#14FFFFFF" : "#10F3ECE6"
+        return "transparent"
+    }
+
+    function _ctaTextColor() {
+        if (current)
+            return "#FFFFFFFF"
+        if (done)
+            return textPrimary
+        return textSecondary
+    }
+
+    function _selectionRailOpacity() {
+        if (current)
+            return 1.0
+        if (done)
+            return 0.45
+        if (stepArea.containsMouse)
+            return 0.28
+        return 0.0
+    }
 
     radius: radiusLg
     color: root.surfaceColor
     border.color: root.outlineColor
     border.width: root.current ? 1.3 : 1
-    scale: root.surfaceScale
     implicitHeight: stepCardCol.implicitHeight + 28
 
     Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
     Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
-    Behavior on scale { NumberAnimation { duration: motionPanel; easing.type: easeEmphasis } }
-
-    SequentialAnimation on pulsePhase {
-        running: root.current && !root.done
-        loops: Animation.Infinite
-        NumberAnimation { from: 0.0; to: 1.0; duration: motionStatusPulse; easing.type: easeStandard }
-        NumberAnimation { from: 1.0; to: 0.0; duration: motionStatusPulse; easing.type: easeSoft }
-    }
 
     Rectangle {
-        anchors.fill: parent
-        radius: parent.radius
+        width: 3
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.margins: 10
+        radius: width / 2
         color: accent
-        opacity: root.current ? (0.03 + root.pulsePhase * 0.03) : (stepArea.containsMouse ? 0.02 : 0.0)
-        scale: root.current ? (1.0 + root.pulsePhase * 0.01) : 1.0
+        opacity: root._selectionRailOpacity()
         visible: opacity > 0.001
         Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
-        Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
-    }
-
-    Rectangle {
-        width: 34
-        height: 34
-        radius: 17
-        anchors.top: parent.top
-        anchors.right: parent.right
-        anchors.topMargin: 14
-        anchors.rightMargin: 14
-        color: root.badgeColor
-        border.color: root.badgeOutlineColor
-        border.width: root.current || !root.done ? 1.2 : 0
-        opacity: root.done ? 1.0 : 0.92
-
-        Text {
-            anchors.centerIn: parent
-            text: root.done ? "OK" : String(root.stepNumber + 1)
-            color: root.badgeTextColor
-            font.pixelSize: typeLabel
-            font.weight: Font.DemiBold
-        }
-    }
-
-    Rectangle {
-        visible: root.current && !root.done
-        width: 42
-        height: 42
-        radius: 21
-        anchors.top: parent.top
-        anchors.right: parent.right
-        anchors.topMargin: 10
-        anchors.rightMargin: 10
-        color: accent
-        opacity: 0.04 + root.pulsePhase * 0.12
-        scale: 0.86 + root.pulsePhase * 0.20
     }
 
     ColumnLayout {
         id: stepCardCol
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.margins: 14
-        spacing: 10
+        anchors.fill: parent
+        anchors.margins: 16
+        anchors.leftMargin: 18
+        spacing: 12
 
-        Text {
+        RowLayout {
             Layout.fillWidth: true
-            text: root.overlineText !== "" ? root.overlineText : root.statusText
-            color: root.statusTextColor
-            font.pixelSize: typeMeta
-            font.weight: Font.DemiBold
-            font.letterSpacing: letterWide
-        }
+            spacing: 12
 
-        Text {
-            Layout.fillWidth: true
-            text: root.title
-            color: textPrimary
-            font.pixelSize: typeBody
-            font.weight: Font.DemiBold
-            wrapMode: Text.WordWrap
+            Rectangle {
+                Layout.alignment: Qt.AlignTop
+                width: 30
+                height: 30
+                radius: 15
+                color: root.badgeColor
+                border.color: root.badgeOutlineColor
+                border.width: root.current || !root.done ? 1.1 : 0
+
+                Text {
+                    anchors.centerIn: parent
+                    text: root.done ? "OK" : String(root.stepNumber + 1)
+                    color: root.badgeTextColor
+                    font.pixelSize: typeLabel
+                    font.weight: Font.DemiBold
+                }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 4
+
+                Text {
+                    Layout.fillWidth: true
+                    text: root.overlineText !== "" ? root.overlineText : root.statusText
+                    color: root.statusTextColor
+                    font.pixelSize: typeCaption
+                    font.weight: Font.DemiBold
+                    font.letterSpacing: letterWide
+                    wrapMode: Text.WordWrap
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    text: root.title
+                    color: textPrimary
+                    font.pixelSize: typeBody
+                    font.weight: Font.Bold
+                    wrapMode: Text.WordWrap
+                }
+            }
+
+            Rectangle {
+                implicitWidth: stepActionLabel.implicitWidth + 18
+                implicitHeight: 28
+                radius: 14
+                color: root.ctaFillColor
+                border.color: root.current ? accent : borderSubtle
+                border.width: root.current ? 0 : 1
+
+                Text {
+                    id: stepActionLabel
+                    anchors.centerIn: parent
+                    text: root.ctaText
+                    color: root.ctaTextColor
+                    font.pixelSize: typeCaption
+                    font.weight: Font.DemiBold
+                }
+            }
         }
 
         Text {
             Layout.fillWidth: true
             text: root.description
             color: textSecondary
-            font.pixelSize: typeLabel
+            font.pixelSize: typeMeta
             wrapMode: Text.WordWrap
-            lineHeight: 1.2
-        }
-
-        Rectangle {
-            implicitWidth: stepActionLabel.implicitWidth + 22
-            implicitHeight: 32
-            radius: 16
-            color: root.ctaFillColor
-            border.color: root.current ? accent : borderSubtle
-            border.width: root.current ? 0 : 1
-            scale: stepArea.containsMouse ? motionHoverScaleSubtle : 1.0
-
-            Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-            Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeEmphasis } }
-
-            Text {
-                id: stepActionLabel
-                anchors.centerIn: parent
-                text: root.ctaText
-                color: root.ctaTextColor
-                font.pixelSize: typeMeta
-                font.weight: Font.DemiBold
-            }
+            lineHeight: 1.18
         }
     }
 

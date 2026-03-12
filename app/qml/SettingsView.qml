@@ -34,6 +34,10 @@ Rectangle {
     property var _onboardingProviderApiKeyFieldRef: null
     property var _onboardingProviderTypeFieldRef: null
     property var _onboardingProviderApiBaseFieldRef: null
+    readonly property int setupTopInset: appRoot ? appRoot.windowContentInsetTop : spacingLg
+    readonly property int setupSideInset: appRoot ? appRoot.windowContentInsetSide : spacingLg
+    readonly property int setupBottomInset: appRoot ? appRoot.windowContentInsetBottom : spacingLg
+    readonly property int setupMaxContentWidth: onboardingMode ? 900 : 820
     readonly property string configFilePath: configService ? configService.getConfigFilePath() : ""
     readonly property bool languageConfigured: {
         if (!desktopPreferences)
@@ -44,6 +48,29 @@ Rectangle {
     readonly property bool providerConfigured: _hasConfiguredProvider()
     readonly property bool modelConfigured: _hasConfiguredModel()
     readonly property var onboardingPrimaryProvider: _primaryProviderDraft()
+    readonly property var onboardingStepSpecs: [
+        {
+            "heroTitle": tr("先选界面语言", "Start with your interface language"),
+            "heroBody": tr("只影响界面显示语言，选完会立即生效。", "This only changes the interface language and applies immediately."),
+            "title": tr("界面语言", "UI language"),
+            "body": tr("先把界面切到你读起来最舒服的语言。", "Start by switching the interface to the language that feels natural to you."),
+            "cta": tr("去选择", "Choose")
+        },
+        {
+            "heroTitle": tr("现在连接一个 AI 服务", "Now connect one AI service"),
+            "heroBody": tr("先让 Bao 能连上一个可聊天的服务。大多数平台保持 openai 就够了。", "Get Bao connected to one working chat service first. Most platforms should stay on openai."),
+            "title": tr("选择 AI 服务", "Choose an AI service"),
+            "body": tr("只要连好一个能用的服务和 API Key，就能继续下一步。", "You only need one working service and API key to move on."),
+            "cta": tr("去连接", "Connect it")
+        },
+        {
+            "heroTitle": tr("最后确认默认聊天 AI", "Finally confirm the default chat AI"),
+            "heroBody": tr("选一个默认模型，保存后就会直接进入聊天。", "Pick one default model and the app will take you straight into chat after saving."),
+            "title": tr("确认默认模型", "Confirm the default model"),
+            "body": tr("选一个默认模型，保存后会自动回到聊天界面。", "Choose the default model and the app will drop you into chat after saving."),
+            "cta": tr("去确认", "Confirm it")
+        }
+    ]
     readonly property string onboardingDraftModel: {
         var field = onboardingPrimaryModelField
         if (field && field.currentValue !== undefined && field.currentValue !== null)
@@ -65,6 +92,8 @@ Rectangle {
             return 1
         return 2
     }
+    readonly property string onboardingCurrentTitle: _onboardingStepSpec(onboardingStepIndex).heroTitle || ""
+    readonly property string onboardingCurrentBody: _onboardingStepSpec(onboardingStepIndex).heroBody || ""
     readonly property string onboardingUiLanguage: {
         if (!desktopPreferences)
             return "auto"
@@ -264,6 +293,29 @@ Rectangle {
         flick.contentY = Math.max(0, Math.min(maxY, top - offset))
     }
 
+    function _flowColumnCount(availableWidth, minWidth, maxColumns, gap) {
+        var width = Math.max(0, Number(availableWidth || 0))
+        var columns = Math.max(1, Number(maxColumns || 1))
+        var spacing = Number(gap || 0)
+        while (columns > 1) {
+            if ((width - spacing * (columns - 1)) / columns >= minWidth)
+                break
+            columns -= 1
+        }
+        return columns
+    }
+
+    function _flowItemWidth(availableWidth, minWidth, maxColumns, gap) {
+        var width = Math.max(0, Number(availableWidth || 0))
+        var spacing = Number(gap || 0)
+        if (width <= 0)
+            return minWidth
+        var columns = _flowColumnCount(width, minWidth, maxColumns, spacing)
+        if (columns <= 1)
+            return width
+        return Math.floor((width - spacing * (columns - 1)) / columns)
+    }
+
     function _focusLanguageStep() {
         _scrollToItem(appSection)
     }
@@ -286,6 +338,12 @@ Rectangle {
             return
         }
         _focusModelStep()
+    }
+
+    function _onboardingStepSpec(step) {
+        if (step < 0 || step >= onboardingStepSpecs.length)
+            return {}
+        return onboardingStepSpecs[step] || {}
     }
 
     function _applyUiLanguageChoice(value) {
@@ -861,16 +919,22 @@ Rectangle {
         Item {
             id: scrollContent
             width: settingsScroll.width
-            height: innerCol.implicitHeight + 96
+            height: innerCol.implicitHeight + setupBottomInset + 48
             implicitHeight: height
 
             ColumnLayout {
                 id: innerCol
-                width: Math.min(Math.max(settingsScroll.availableWidth - 64, 320), 820)
+                width: Math.min(
+                           Math.max(
+                               settingsScroll.availableWidth - Math.max(32, setupSideInset * 2 + 16),
+                               320
+                           ),
+                           setupMaxContentWidth
+                       )
                 height: implicitHeight
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.top: parent.top
-                anchors.topMargin: root.onboardingMode ? 22 : 32
+                anchors.topMargin: setupTopInset + (root.onboardingMode ? spacingSm : spacingLg)
                 spacing: root.onboardingMode ? spacingLg : spacingXl
 
                 Rectangle {
@@ -949,10 +1013,10 @@ Rectangle {
                     id: onboardingHeroSection
                     Layout.fillWidth: true
                     visible: root.onboardingMode
-                    title: tr("三步开始和 Bao 聊天", "Three quick steps to start chatting with Bao")
+                    title: tr("把 Bao 准备好，然后直接开始聊天", "Set up Bao, then jump straight into chat")
                     description: tr(
-                        "首次使用只保留一条线：先选界面语言，再连一个 AI 服务，最后确认默认模型。完成后会自动进入聊天界面。",
-                        "First launch now follows one path: choose your UI language, connect one AI service, then confirm the default model. Once done, the app drops you straight into chat."
+                        "首次使用只保留一条主路径：选语言、连服务、定默认模型。页面里的每一块都围绕这三步，不再重复解释同一件事。",
+                        "First launch now follows one clear path: choose a language, connect one service, and confirm the default model. Every block on this page serves those three steps without repeating the same explanation."
                     )
 
                     ColumnLayout {
@@ -962,22 +1026,22 @@ Rectangle {
                         CalloutPanel {
                             Layout.fillWidth: true
                             radius: radiusLg
-                            padding: 14
-                            panelColor: isDark ? "#12FFB33D" : "#10FFB33D"
-                            panelBorderColor: isDark ? "#28FFD699" : "#20D0892C"
+                            padding: 18
+                            panelColor: isDark ? "#15110D" : "#FFF8F1"
+                            panelBorderColor: isDark ? "#26FFB33D" : "#18A8641F"
                             overlayVisible: true
-                            overlayColor: isDark ? "#08FFFFFF" : "#10FFFFFF"
+                            overlayColor: isDark ? "#04FFFFFF" : "#08FFFFFF"
                             sideGlowVisible: true
-                            sideGlowColor: isDark ? "#10FFFFFF" : "#0EFFFFFF"
-                            sideGlowWidthFactor: 0.3
+                            sideGlowColor: isDark ? "#14FFB33D" : "#12FFC38A"
+                            sideGlowWidthFactor: 0.22
                             accentBlobVisible: true
-                            accentBlobColor: isDark ? "#14FFD699" : "#10FFD699"
-                            accentBlobWidthFactor: 0.2
+                            accentBlobColor: isDark ? "#16FFB33D" : "#18FFB33D"
+                            accentBlobWidthFactor: 0.16
 
                             ColumnLayout {
                                 id: onboardingIntroCol
                                 width: parent.width
-                                spacing: 8
+                                spacing: spacingMd
 
                                 RowLayout {
                                     Layout.fillWidth: true
@@ -985,15 +1049,17 @@ Rectangle {
 
                                     Rectangle {
                                         implicitWidth: introBadge.implicitWidth + 18
-                                        implicitHeight: 28
-                                        radius: 14
-                                        color: accent
+                                        implicitHeight: 26
+                                        radius: 13
+                                        color: isDark ? "#20FFB33D" : "#18FFB33D"
+                                        border.color: isDark ? "#2EFFB33D" : "#20A8641F"
+                                        border.width: 1
 
                                         Text {
                                             id: introBadge
                                             anchors.centerIn: parent
-                                            text: tr("新用户引导", "New user flow")
-                                            color: "#FFFFFFFF"
+                                            text: tr("安装后首次配置", "First-run setup")
+                                            color: accent
                                             font.pixelSize: typeMeta
                                             font.weight: Font.DemiBold
                                             font.letterSpacing: letterWide
@@ -1004,7 +1070,7 @@ Rectangle {
 
                                     Text {
                                         text: onboardingCompletedCount + "/3"
-                                        color: textSecondary
+                                        color: textTertiary
                                         font.pixelSize: typeLabel
                                         font.weight: weightDemiBold
                                     }
@@ -1012,27 +1078,26 @@ Rectangle {
 
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    spacing: 16
+                                    spacing: spacingLg
 
                                     ColumnLayout {
                                         Layout.fillWidth: true
-                                        spacing: 8
+                                        spacing: 10
 
                                         Text {
                                             Layout.fillWidth: true
-                                            text: tr("把 Bao 准备好，马上就能开始聊天", "Get Bao ready and start chatting in a minute")
+                                            text: onboardingCurrentTitle
                                             color: textPrimary
-                                            font.pixelSize: typeTitle + 1
+                                            font.pixelSize: typeTitle
                                             font.weight: Font.Bold
                                             wrapMode: Text.WordWrap
                                         }
 
                                         Text {
                                             Layout.fillWidth: true
-                                            text: tr("先选语言，再选一个 AI 服务，最后确认默认模型。做完就能直接开始聊天。", "Choose your language, pick one AI service, then confirm the default model. After that, you can start chatting right away.")
-                                            color: textPrimary
-                                            font.pixelSize: typeBody
-                                            font.weight: weightMedium
+                                            text: onboardingCurrentBody
+                                            color: textSecondary
+                                            font.pixelSize: typeLabel
                                             wrapMode: Text.WordWrap
                                         }
 
@@ -1042,18 +1107,18 @@ Rectangle {
 
                                             Repeater {
                                                 model: [
-                                                    tr("预计 1 分钟", "About 1 minute"),
-                                                    tr("只要 1 个 AI 服务", "Only 1 AI service needed"),
-                                                    tr("完成后自动进入聊天", "Auto-enters chat when done")
+                                                    tr("单一路径", "One clear path"),
+                                                    tr("支持 Win / mac", "Works cleanly on Win / mac"),
+                                                    tr("完成后直接进入聊天", "Drops into chat when done")
                                                 ]
 
                                                 delegate: Rectangle {
                                                     required property string modelData
                                                     implicitWidth: chipLabel.implicitWidth + 18
-                                                    implicitHeight: 28
+                                                    implicitHeight: 26
                                                     radius: 14
-                                                    color: isDark ? "#12FFFFFF" : "#10FFFFFF"
-                                                    border.color: isDark ? "#18FFFFFF" : "#12000000"
+                                                    color: isDark ? "#10FFFFFF" : "#0B000000"
+                                                    border.color: borderSubtle
                                                     border.width: 1
 
                                                     Text {
@@ -1070,26 +1135,26 @@ Rectangle {
                                     }
 
                                     Rectangle {
-                                        Layout.alignment: Qt.AlignTop
-                                        Layout.preferredWidth: 92
-                                        Layout.preferredHeight: 92
-                                        radius: 46
-                                        color: isDark ? "#0DFFFFFF" : "#10FFFFFF"
-                                        border.color: isDark ? "#18FFFFFF" : "#14FFFFFF"
+                                        Layout.alignment: Qt.AlignVCenter
+                                        Layout.preferredWidth: 112
+                                        Layout.preferredHeight: 112
+                                        radius: 28
+                                        color: isDark ? "#12000000" : "#FFFFFFFF"
+                                        border.color: isDark ? "#18FFFFFF" : "#12000000"
                                         border.width: 1
 
                                         Rectangle {
-                                            width: 66
-                                            height: 66
-                                            radius: 33
+                                            width: 72
+                                            height: 72
+                                            radius: 24
                                             anchors.centerIn: parent
-                                            color: isDark ? "#18FFB33D" : "#14FFB33D"
+                                            color: isDark ? "#1AFFB33D" : "#16FFB33D"
                                         }
 
                                         Image {
                                             anchors.centerIn: parent
-                                            width: 52
-                                            height: 52
+                                            width: 58
+                                            height: 58
                                             source: "../resources/logo-circle.png"
                                             fillMode: Image.PreserveAspectFit
                                             smooth: true
@@ -1100,9 +1165,9 @@ Rectangle {
 
                                 Rectangle {
                                     Layout.fillWidth: true
-                                    height: 8
-                                    radius: 4
-                                    color: isDark ? "#10FFFFFF" : "#10000000"
+                                    height: 6
+                                    radius: 3
+                                    color: isDark ? "#0EFFFFFF" : "#10000000"
 
                                     Rectangle {
                                         height: parent.height
@@ -1118,51 +1183,28 @@ Rectangle {
                         Flow {
                             id: onboardingStepsFlow
                             width: parent.width
-                            spacing: spacingMd
+                            spacing: spacingSm
 
                             Repeater {
-                                model: [
-                                    {
-                                        "step": 0,
-                                        "title": tr("界面语言", "UI language"),
-                                        "body": tr("先把界面切到你读起来最舒服的语言。", "Start by switching the interface to the language that feels natural to you."),
-                                        "cta": tr("去选择", "Choose"),
-                                        "done": root.languageConfigured,
-                                        "current": root.onboardingStepIndex === 0
-                                    },
-                                    {
-                                        "step": 1,
-                                        "title": tr("选择 AI 服务", "Choose an AI service"),
-                                        "body": tr("只要连好一个能用的服务和 API Key，就能继续下一步。", "You only need one working service and API key to move on."),
-                                        "cta": tr("去连接", "Connect it"),
-                                        "done": root.providerConfigured,
-                                        "current": root.onboardingStepIndex === 1
-                                    },
-                                    {
-                                        "step": 2,
-                                        "title": tr("确认默认模型", "Confirm the default model"),
-                                        "body": tr("选一个默认模型，保存后会自动回到聊天界面。", "Choose the default model and the app will drop you into chat after saving."),
-                                        "cta": tr("去确认", "Confirm it"),
-                                        "done": root.modelConfigured,
-                                        "current": root.onboardingStepIndex === 2
-                                    }
-                                ]
+                                model: root.onboardingStepSpecs
 
                                 delegate: OnboardingStepCard {
+                                    required property int index
                                     required property var modelData
-                                    readonly property bool compact: onboardingStepsFlow.width < 720
 
-                                    width: compact
-                                           ? onboardingStepsFlow.width
-                                           : Math.floor((onboardingStepsFlow.width - (onboardingStepsFlow.spacing * 2)) / 3)
-                                    stepNumber: modelData.step || 0
-                                    overlineText: modelData.done === true ? tr("已完成", "Done") : (modelData.current === true ? tr("现在就做", "Do this now") : tr("接下来", "Up next"))
+                                    width: root._flowItemWidth(
+                                               onboardingStepsFlow.width,
+                                               210,
+                                               3,
+                                               onboardingStepsFlow.spacing
+                                           )
+                                    stepNumber: index
                                     title: modelData.title || ""
                                     description: modelData.body || ""
                                     ctaText: modelData.cta || ""
-                                    done: modelData.done === true
-                                    current: modelData.current === true
-                                    onClicked: root._openOnboardingStep(modelData.step)
+                                    done: index < root.onboardingStepIndex
+                                    current: index === root.onboardingStepIndex
+                                    onClicked: root._openOnboardingStep(index)
                                 }
                             }
                         }
@@ -1224,7 +1266,7 @@ Rectangle {
                                     required property var modelData
                                     readonly property bool selectedCard: root.onboardingUiLanguage === modelData.value
 
-                                    width: Math.max(170, Math.floor((appSectionBody.width - (spacingSm * 2)) / 3))
+                                    width: root._flowItemWidth(appSectionBody.width, 190, 3, spacingSm)
                                     badgeText: modelData.accent || ""
                                     title: modelData.title || ""
                                     description: modelData.body || ""
@@ -1485,7 +1527,7 @@ Rectangle {
                                     required property var modelData
                                     objectName: "onboardingProviderPreset_" + (modelData.id || "unknown")
 
-                                    width: Math.max(170, Math.floor((providerSectionBody.width - (spacingSm * 2)) / 3))
+                                    width: root._flowItemWidth(providerSectionBody.width, 210, 3, spacingSm)
                                     badgeText: modelData.accent || ""
                                     title: modelData.title || ""
                                     description: modelData.subtitle || ""
@@ -1768,7 +1810,7 @@ Rectangle {
                                 delegate: ChoiceCard {
                                     required property var modelData
 
-                                    width: Math.max(170, Math.floor((onboardingModelSectionBody.width - (spacingSm * 2)) / 3))
+                                    width: root._flowItemWidth(onboardingModelSectionBody.width, 210, 3, spacingSm)
                                     title: modelData.label || ""
                                     description: modelData.hint || ""
                                     selected: root._modelPresetSelected(modelData)

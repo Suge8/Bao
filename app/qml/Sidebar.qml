@@ -20,6 +20,7 @@ Rectangle {
     readonly property bool hasChatService: typeof chatService !== "undefined" && chatService !== null
     readonly property bool hasSessionService: typeof sessionService !== "undefined" && sessionService !== null
     readonly property bool hasDiagnosticsService: typeof diagnosticsService !== "undefined" && diagnosticsService !== null
+    readonly property bool hasDiagnosticsCount: hasDiagnosticsService && typeof diagnosticsService.eventCount !== "undefined"
     readonly property bool uiIsDark: isDark
     readonly property color uiBgCanvas: "transparent"
     readonly property color uiTextPrimary: textPrimary
@@ -799,274 +800,42 @@ Rectangle {
 
         Item { Layout.fillHeight: true }
 
-        Item {
-            id: bottomActions
+        SidebarBrandDock {
+            id: brandDock
             Layout.fillWidth: true
-            Layout.preferredHeight: 60
+            Layout.preferredHeight: implicitHeight
             Layout.bottomMargin: 6
-            property bool diagnosticsHovered: diagnosticsArea.containsMouse
-
-            Rectangle {
-                id: glowRing
-                anchors.centerIn: appIconBtn
-                width: appIconBtn.width + spacingMd + 2
-                height: appIconBtn.height + spacingMd + 2
-                radius: width / 2
-                color: "transparent"
-                border.width: 1.5
-                border.color: accent
-                opacity: root.settingsActive ? 0.38 : 0
-                antialiasing: true
-                scale: appIconBtn.scale
-                rotation: appIconBtn.rotation
-
-                SequentialAnimation {
-                    id: breatheAnim
-                    running: !root.settingsActive && !appIconArea.containsMouse
-                    loops: Animation.Infinite
-                    NumberAnimation {
-                        target: glowRing; property: "opacity"
-                        from: 0; to: motionRingIdlePeakOpacity; duration: motionFloat + motionPanel
-                        easing.type: easeSoft
-                    }
-                    NumberAnimation {
-                        target: glowRing; property: "opacity"
-                        from: motionRingIdlePeakOpacity; to: 0; duration: motionFloat + motionPanel
-                        easing.type: easeSoft
-                    }
-                }
-
-                states: State {
-                    name: "hovered"; when: appIconArea.containsMouse
-                    PropertyChanges { target: glowRing; opacity: motionRingHoverOpacity }
-                }
-                transitions: Transition {
-                    NumberAnimation {
-                        property: "opacity"; duration: motionPanel
-                        easing.type: easeStandard
-                    }
-                }
-            }
-
-            Rectangle {
-                id: glowRingOuter
-                anchors.centerIn: appIconBtn
-                width: appIconBtn.width + spacingXl
-                height: appIconBtn.height + spacingXl
-                radius: width / 2
-                color: "transparent"
-                border.width: 1
-                border.color: accent
-                opacity: root.settingsActive ? 0.18 : (appIconArea.containsMouse ? 0.25 : 0)
-                antialiasing: true
-                scale: appIconBtn.scale
-                rotation: appIconBtn.rotation
-                Behavior on opacity {
-                    NumberAnimation { duration: motionAmbient; easing.type: easeStandard }
-                }
-            }
-
-            Rectangle {
-                id: diagnosticsGlow
-                anchors.verticalCenter: diagnosticsPill.verticalCenter
-                anchors.horizontalCenter: diagnosticsPill.horizontalCenter
-                width: diagnosticsPill.width + 12
-                height: diagnosticsPill.height + 12
-                radius: height / 2
-                color: accent
-                opacity: bottomActions.diagnosticsHovered ? 0.12 : 0.0
-                scale: bottomActions.diagnosticsHovered ? 1.0 : 0.985
-                visible: opacity > 0.01
-                Behavior on opacity {
-                    NumberAnimation { duration: motionPanel; easing.type: easeStandard }
-                }
-                Behavior on scale {
-                    NumberAnimation { duration: motionPanel; easing.type: easeEmphasis }
-                }
-            }
-
-            Rectangle {
-                id: appIconBtn
-                objectName: "sidebarAppIconButton"
-                readonly property bool active: root.settingsActive
-                width: sizeAppIcon
-                height: sizeAppIcon
-                radius: sizeAppIcon / 2
-                anchors.left: parent.left
-                anchors.leftMargin: 18
-                anchors.bottom: parent.bottom
-                anchors.bottomMargin: 6
-                color: active ? (isDark ? "#251910" : "#F8EBDD") : "transparent"
-                border.width: 1.5
-                border.color: active ? accent : (appIconArea.containsMouse ? accent : borderSubtle)
-                antialiasing: true
-                scale: appIconArea.pressed ? motionPressScaleStrong
-                       : (active ? motionSelectionScaleActive : (appIconArea.containsMouse ? motionHoverScaleStrong : 1.0))
-                rotation: active ? 0 : (appIconArea.containsMouse ? -10 : 0)
-
-                Behavior on scale {
-                    NumberAnimation { duration: motionUi; easing.type: easeEmphasis }
-                }
-                Behavior on border.color {
-                    ColorAnimation { duration: motionUi; easing.type: easeStandard }
-                }
-                Behavior on rotation {
-                    NumberAnimation { duration: motionPanel; easing.type: easeEmphasis }
-                }
-
-                Image {
-                    anchors.fill: parent
-                    source: "../resources/logo-circle.png"
-                    sourceSize: Qt.size(88, 88)
-                    fillMode: Image.PreserveAspectFit
-                    smooth: true
-                    mipmap: true
-                }
-
-                MouseArea {
-                    id: appIconArea
-                    anchors.fill: parent
-                    anchors.margins: -8
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onEntered: {
-                        var idx = Math.floor(Math.random() * 5)
-                        bubbleText.text = strings["bubble_" + idx] || ""
-                    }
-                    onClicked: root.settingsRequested()
-                }
-            }
-
-            Rectangle {
-                id: diagnosticsPill
-                width: 106
-                height: 40
-                radius: 20
-                anchors.left: appIconBtn.right
-                anchors.leftMargin: 26
-                anchors.verticalCenter: appIconBtn.verticalCenter
-                anchors.verticalCenterOffset: 2
-                color: bottomActions.diagnosticsHovered ? (isDark ? "#2A1A12" : "#FFF4E8") : (isDark ? "#211711" : "#FFF9F5")
-                border.width: 0
-                antialiasing: true
-                scale: diagnosticsArea.pressed ? motionPressScaleStrong
-                       : (bottomActions.diagnosticsHovered ? motionHoverScaleSubtle : 1.0)
-
-                Behavior on color {
-                    ColorAnimation { duration: motionUi; easing.type: easeStandard }
-                }
-                Behavior on scale {
-                    NumberAnimation { duration: motionUi; easing.type: easeEmphasis }
-                }
-
-                Rectangle {
-                    anchors.fill: parent
-                    radius: parent.radius
-                    color: isDark ? "#10FFFFFF" : "#08000000"
-                }
-
-                Row {
-                    anchors.centerIn: parent
-                    spacing: 6
-
-                    Image {
-                        width: 18
-                        height: 18
-                        anchors.verticalCenter: parent.verticalCenter
-                        source: isDark
-                                ? "../resources/icons/sidebar-diagnostics-dark.svg"
-                                : "../resources/icons/sidebar-diagnostics-light.svg"
-                        sourceSize: Qt.size(18, 18)
-                        fillMode: Image.PreserveAspectFit
-                        smooth: true
-                        mipmap: true
-                    }
-
-                    Column {
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 0
-
-                        Text {
-                            text: strings.sidebar_diagnostics
-                            color: textPrimary
-                            font.pixelSize: typeMeta + 1
-                            font.weight: weightBold
-                        }
-
-                        Text {
-                            text: strings.sidebar_diagnostics_hint
-                            color: textSecondary
-                            font.pixelSize: typeMeta - 1
-                            font.weight: weightMedium
-                        }
-                    }
-                }
-
-                Rectangle {
-                    visible: hasDiagnosticsService && diagnosticsService.eventCount > 0
-                    width: 17
-                    height: 17
-                    radius: 8.5
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.rightMargin: -3
-                    anchors.topMargin: -3
-                    color: accent
-                    border.width: 0
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: hasDiagnosticsService && diagnosticsService.eventCount > 9 ? "9+" : String(hasDiagnosticsService ? diagnosticsService.eventCount : 0)
-                        color: isDark ? "#241106" : "#FFFFFF"
-                        font.pixelSize: 8
-                        font.weight: weightBold
-                    }
-                }
-
-                MouseArea {
-                    id: diagnosticsArea
-                    anchors.fill: parent
-                    anchors.margins: -4
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.diagnosticsRequested()
-                }
-            }
-
-            Rectangle {
-                id: speechBubble
-                property bool show: appIconArea.containsMouse
-
-                anchors.left: appIconBtn.right
-                anchors.leftMargin: 12
-                anchors.verticalCenter: appIconBtn.verticalCenter
-                width: bubbleText.implicitWidth + 24
-                height: bubbleText.implicitHeight + 16
-                radius: radiusMd
-                color: bgElevated
-                border.width: 1
-                border.color: borderDefault
-                opacity: speechBubble.show ? 1.0 : 0.0
-                scale: speechBubble.show ? 1.0 : motionBubbleHiddenScale
-                transformOrigin: Item.Left
-                visible: speechBubble.show
-
-                Behavior on opacity {
-                    NumberAnimation { duration: motionUi; easing.type: easeStandard }
-                }
-                Behavior on scale {
-                    NumberAnimation { duration: motionUi; easing.type: easeEmphasis }
-                }
-
-                Text {
-                    id: bubbleText
-                    anchors.centerIn: parent
-                    font.pixelSize: typeMeta
-                    font.weight: weightMedium
-                    color: textSecondary
-                    text: ""
-                }
-            }
+            active: root.settingsActive
+            isDark: isDark
+            hasDiagnostics: root.hasDiagnosticsCount
+            diagnosticsCount: root.hasDiagnosticsCount ? diagnosticsService.eventCount : 0
+            diagnosticsLabel: strings.sidebar_diagnostics
+            diagnosticsHint: strings.sidebar_diagnostics_hint
+            bubbleMessages: [
+                strings.bubble_0,
+                strings.bubble_1,
+                strings.bubble_2,
+                strings.bubble_3,
+                strings.bubble_4
+            ]
+            accent: accent
+            textPrimary: textPrimary
+            textSecondary: textSecondary
+            typeMeta: typeMeta
+            weightMedium: weightMedium
+            weightDemiBold: weightDemiBold
+            weightBold: weightBold
+            motionFast: motionFast
+            motionUi: motionUi
+            motionPanel: motionPanel
+            easeStandard: easeStandard
+            easeEmphasis: easeEmphasis
+            easeSoft: easeSoft
+            motionHoverScaleSubtle: 1.02
+            motionPressScaleStrong: 0.94
+            motionSelectionScaleActive: motionSelectionScaleActive
+            onSettingsRequested: root.settingsRequested()
+            onDiagnosticsRequested: root.diagnosticsRequested()
         }
     }
 }
