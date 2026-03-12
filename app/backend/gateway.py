@@ -123,6 +123,7 @@ class ChatService(QObject):
     gatewayChannelsChanged = Signal()
     messageAppended = Signal(int)
     contentUpdated = Signal(int, str)
+    cronServiceChanged = Signal(object)
     statusUpdated = Signal(int, str)
     gatewayReady = Signal(object, list)  # session_manager, enabled_channels
     historyLoadingChanged = Signal(bool)
@@ -308,6 +309,9 @@ class ChatService(QObject):
         self._clear_gateway_detail()
         self._lifecycle_request_id += 1
         self._set_state("stopped")
+        if self._cron is not None:
+            self._cron = None
+            self.cronServiceChanged.emit(None)
         self._refresh_gateway_channels()
         if self._agent is not None:
             try:
@@ -544,15 +548,13 @@ class ChatService(QObject):
             self._history_fingerprint = None
             self._set_active_session_state(False, False)
             self._model.clear()
-        elif cached_snapshot is None:
-            prepared_messages = ChatMessageModel.prepare_history(raw_tail_snapshot or [])
-            fingerprint = self._history_signature(prepared_messages)
-            has_messages = bool(raw_tail_snapshot)
+        elif cached_snapshot is None and not raw_tail_snapshot:
+            fingerprint = self._history_signature([])
             self._history_initialized = True
             self._history_fingerprint = fingerprint
-            self._set_active_session_state(True, has_messages)
-            self._cache_history_snapshot(key, fingerprint, prepared_messages, has_messages)
-            self._model.load_prepared([dict(msg) for msg in prepared_messages])
+            self._set_active_session_state(True, False)
+            self._cache_history_snapshot(key, fingerprint, [], False)
+            self._model.clear()
             self._emit_session_viewport_ready(key)
         else:
             self._history_initialized = True
@@ -570,7 +572,12 @@ class ChatService(QObject):
         )
 
     def _request_history_load(
-        self, key: str, nav_id: int, *, show_loading: bool | None = None
+        self,
+        key: str,
+        nav_id: int,
+        *,
+        show_loading: bool | None = None,
+        raw_messages_override: list[dict[str, Any]] | None = None,
     ) -> None:
         if show_loading is None:
             show_loading = not self._history_initialized
@@ -578,14 +585,39 @@ class ChatService(QObject):
             self._set_history_loading(True)
         if _DEBUG_SWITCH:
             logger.debug("history_load key={} nav_id={}", key, nav_id)
-        fut = self._runner.submit(self._load_history(key, nav_id, _HISTORY_FULL_LIMIT))
+        fut = self._runner.submit(
+            self._load_history(
+                key,
+                nav_id,
+                _HISTORY_FULL_LIMIT,
+                raw_messages_override=raw_messages_override,
+            )
+        )
         self._history_future = fut
         fut.add_done_callback(self._on_history_done)
 
     async def _load_history(
-        self, key: str, nav_id: int, limit: int
+        self,
+        key: str,
+        nav_id: int,
+        limit: int,
+        *,
+        raw_messages_override: list[dict[str, Any]] | None = None,
     ) -> tuple[str, int, tuple[int, str], list[dict[str, Any]], bool]:
         """Load session message history from SessionManager (runs on asyncio thread)."""
+        elif cached_snapshot is None:
+            self._history_initialized = False
+            self._history_fingerprint = None
+            self._set_active_session_state(False, False)
+            self._model.clear()
+            self._emit_session_view_applied(key, switched_session=switched_session)
+            self._request_history_load(
+                key,
+                nav_id,
+                show_loading=False,
+                raw_messages_override=raw_tail_snapshot,
+            )
+            return
         import time
 
         t0 = time.perf_counter() if _PROFILE else 0
@@ -609,7 +641,10 @@ class ChatService(QObject):
                     fallback = fallback[-limit:]
                 return fallback
 
-        raw_messages: list[dict[str, Any]] = await self._run_user_io(_read_raw_messages)
+        if raw_messages_override is not None:
+            raw_messages = [dict(message) for message in raw_messages_override]
+        else:
+            raw_messages = await self._run_user_io(_read_raw_messages)
         t1 = time.perf_counter() if _PROFILE else 0
         if _PROFILE:
             logger.debug("📊 History load: read_raw={:.3f}s", t1 - t0)
@@ -936,6 +971,7 @@ class ChatService(QObject):
         assistant_row = self._append_typing_row()
         self._active_streaming_row = assistant_row
         self._active_streaming_session_key = request.session_key
+        self.cronServiceChanged.emit(self._cron)
         self._active_has_content = False
         self._pending_split = False
 

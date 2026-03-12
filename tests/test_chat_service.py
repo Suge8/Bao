@@ -1076,8 +1076,10 @@ def test_session_change_reloads_active_history_for_message_commit():
 
     called = []
     svc._cancel_history_future = lambda: called.append(("cancel",))
-    svc._request_history_load = lambda key, nav_id, show_loading=None: called.append(
-        (key, nav_id, show_loading)
+    svc._request_history_load = (
+        lambda key, nav_id, *, show_loading=None, raw_messages_override=None: called.append(
+            (key, nav_id, show_loading)
+        )
     )
 
     sm.emit("desktop:local", "messages")
@@ -1446,12 +1448,19 @@ def test_set_session_key_uses_manager_tail_snapshot_before_async_reload():
 
     svc.setSessionKey("desktop:new")
 
-    assert model.rowCount() == 1
-    assert model._messages[0]["content"] == "from-manager"
-    assert svc.activeSessionReady is True
-    assert svc.activeSessionHasMessages is True
+    svc._request_history_load = _capture_request
+
+    with patch(
+        "app.backend.gateway.ChatMessageModel.prepare_history",
+        side_effect=AssertionError("sync prepare"),
+    ):
+        svc.setSessionKey("desktop:new")
+
+    assert model.rowCount() == 0
+    assert svc.activeSessionReady is False
+    assert svc.activeSessionHasMessages is False
     assert svc.historyLoading is False
-    assert called == [("desktop:new", False)]
+    assert called == [("desktop:new", False, raw_tail)]
 
 
 def test_set_session_key_without_memory_snapshot_uses_async_load_path():
@@ -1468,7 +1477,15 @@ def test_set_session_key_without_memory_snapshot_uses_async_load_path():
         (key, kwargs.get("show_loading"))
     )
 
-    svc.setSessionKey("desktop:new")
+    def _capture_request(
+        key: str,
+        nav_id: int,
+        *,
+        show_loading: bool | None = None,
+        raw_messages_override: list[dict[str, Any]] | None = None,
+    ) -> None:
+        _ = nav_id
+        called.append((key, show_loading, raw_messages_override))
 
     assert model.rowCount() == 0
     assert svc.activeSessionReady is False
@@ -1577,9 +1594,6 @@ def test_set_session_key_does_not_render_uncommitted_tail_after_failed_save(tmp_
     svc._desired_session_key = "desktop:old"
     svc._committed_session_key = "desktop:old"
     called = []
-    svc._request_history_load = lambda key, *_args, **kwargs: called.append(
-        (key, kwargs.get("show_loading"))
-    )
 
     svc.setSessionKey(key)
 

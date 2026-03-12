@@ -533,6 +533,23 @@ def test_initialize_registers_and_shutdown_removes_change_listener():
         runner.shutdown(grace_s=1.0)
 
 
+def test_initialize_with_same_session_manager_is_noop():
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        svc = _new_session_service(runner)
+        sm = _make_mock_session_manager()
+
+        with patch.object(svc, "refresh") as refresh:
+            svc.initialize(sm)
+            assert refresh.call_count == 1
+
+            svc.initialize(sm)
+            assert refresh.call_count == 1
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
 def test_bootstrap_workspace_initializes_session_manager_async(qt_app, tmp_path):
     runner = AsyncioRunner()
     runner.start()

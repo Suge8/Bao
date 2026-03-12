@@ -77,7 +77,11 @@ def test_settings_select_uses_mouse_area_cursor_owner() -> None:
 
 def test_session_item_partitions_main_and_delete_click_areas() -> None:
     text = _read_qml("SessionItem.qml")
-    assert "deleteBtn.visible ? deleteBtn.width + deleteBtn.anchors.rightMargin : -2" in text
+    assert (
+        "readonly property real deleteHitZoneWidth: deleteBtn.width + deleteBtn.anchors.rightMargin"
+        in text
+    )
+    assert "rightMargin: root.deleteHitZoneWidth - 2" in text
     assert text.count("cursorShape: Qt.PointingHandCursor") >= 2
 
 
@@ -136,10 +140,10 @@ def test_sidebar_guards_injected_services_at_root() -> None:
         'readonly property bool hasDiagnosticsService: typeof diagnosticsService !== "undefined" && diagnosticsService !== null'
         in text
     )
-    assert (
-        'property bool gatewayIdle: !hasChatService || chatService.state === "idle" || chatService.state === "stopped"'
-        in text
-    )
+    assert 'property string currentState: hasChatService ? chatService.state : "idle"' in text
+    assert 'property bool isRunning: hasChatService && chatService.state === "running"' in text
+    assert 'property bool isStarting: hasChatService && chatService.state === "starting"' in text
+    assert 'property bool isError: hasChatService && chatService.state === "error"' in text
 
 
 def test_main_guards_injected_services_at_root() -> None:

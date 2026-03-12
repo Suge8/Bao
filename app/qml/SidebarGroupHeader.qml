@@ -146,7 +146,7 @@ Rectangle {
                 fillMode: Image.PreserveAspectFit
                 smooth: true
                 mipmap: true
-                rotation: root.expanded ? 0 : -90
+                rotation: root.expanded ? 90 : 0
                 opacity: headerArea.containsMouse ? 1.0 : 0.86
 
                 Behavior on rotation { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
