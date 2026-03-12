@@ -4,9 +4,10 @@ import asyncio
 import json
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Coroutine
+from typing import Any, Coroutine
 
 from loguru import logger
 
@@ -75,6 +76,22 @@ class CronService:
         self._last_mtime: float = 0.0
         self._timer_task: asyncio.Task[None] | None = None
         self._running = False
+        self._change_listeners: list[Callable[[], None]] = []
+
+    def add_change_listener(self, listener: Callable[[], None]) -> None:
+        if listener not in self._change_listeners:
+            self._change_listeners.append(listener)
+
+    def remove_change_listener(self, listener: Callable[[], None]) -> None:
+        if listener in self._change_listeners:
+            self._change_listeners.remove(listener)
+
+    def _notify_changed(self) -> None:
+        for listener in list(self._change_listeners):
+            try:
+                listener()
+            except Exception as exc:
+                logger.debug("Skip cron change listener: {}", exc)
 
     def _load_store(self) -> CronStore:
         """Load jobs from disk."""
@@ -176,6 +193,7 @@ class CronService:
 
         self.store_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         self._last_mtime = self.store_path.stat().st_mtime
+        self._notify_changed()
 
     async def start(self) -> None:
         """Start the cron service."""
@@ -291,11 +309,19 @@ class CronService:
         jobs = store.jobs if include_disabled else [j for j in store.jobs if j.enabled]
         return sorted(jobs, key=lambda j: j.state.next_run_at_ms or float("inf"))
 
+    def get_job(self, job_id: str) -> CronJob | None:
+        store = self._load_store()
+        for job in store.jobs:
+            if job.id == job_id:
+                return job
+        return None
+
     def add_job(
         self,
         name: str,
         schedule: CronSchedule,
         message: str,
+        enabled: bool = True,
         deliver: bool = False,
         channel: str | None = None,
         to: str | None = None,
@@ -309,7 +335,7 @@ class CronService:
         job = CronJob(
             id=str(uuid.uuid4())[:8],
             name=name,
-            enabled=True,
+            enabled=enabled,
             schedule=schedule,
             payload=CronPayload(
                 kind="agent_turn",
@@ -318,7 +344,9 @@ class CronService:
                 channel=channel,
                 to=to,
             ),
-            state=CronJobState(next_run_at_ms=_compute_next_run(schedule, now)),
+            state=CronJobState(
+                next_run_at_ms=_compute_next_run(schedule, now) if enabled else None
+            ),
             created_at_ms=now,
             updated_at_ms=now,
             delete_after_run=delete_after_run,
@@ -330,6 +358,42 @@ class CronService:
 
         logger.debug("⏰ 定时任务已添加 / added: '{}' ({})", name, job.id)
         return job
+
+    def update_job(
+        self,
+        job_id: str,
+        *,
+        name: str,
+        enabled: bool,
+        schedule: CronSchedule,
+        message: str,
+        deliver: bool = False,
+        channel: str | None = None,
+        to: str | None = None,
+        delete_after_run: bool = False,
+    ) -> CronJob | None:
+        store = self._load_store()
+        _validate_schedule_for_add(schedule)
+        now = _now_ms()
+        for job in store.jobs:
+            if job.id != job_id:
+                continue
+            job.name = name
+            job.enabled = enabled
+            job.schedule = schedule
+            job.payload.kind = "agent_turn"
+            job.payload.message = message
+            job.payload.deliver = deliver
+            job.payload.channel = channel
+            job.payload.to = to
+            job.delete_after_run = delete_after_run
+            job.updated_at_ms = now
+            job.state.next_run_at_ms = _compute_next_run(schedule, now) if enabled else None
+            self._save_store()
+            self._arm_timer()
+            logger.debug("⏰ 定时任务已更新 / updated: '{}' ({})", name, job.id)
+            return job
+        return None
 
     def remove_job(self, job_id: str) -> bool:
         """Remove a job by ID."""

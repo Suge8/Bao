@@ -386,3 +386,46 @@ async def connect_mcp_servers(
             await _close_stack_quietly(server_stack)
 
     return total_registered, connected_servers
+
+
+async def probe_mcp_server(
+    server_name: str,
+    cfg: Any,
+    *,
+    connect_timeout: int | None = None,
+) -> dict[str, object]:
+    from mcp import ClientSession
+
+    timeout = connect_timeout or _resolve_tool_timeout_seconds(cfg)
+    server_stack = AsyncExitStack()
+    await server_stack.__aenter__()
+    try:
+        streams = await _open_server_streams(cfg, server_stack, timeout)
+        if streams is None:
+            return {
+                "serverName": server_name,
+                "canConnect": False,
+                "toolNames": [],
+                "error": "Missing command or URL.",
+            }
+        read, write = streams
+        session = await server_stack.enter_async_context(ClientSession(read, write))
+        await asyncio.wait_for(session.initialize(), timeout=timeout)
+        tools = await asyncio.wait_for(session.list_tools(), timeout=timeout)
+        return {
+            "serverName": server_name,
+            "canConnect": True,
+            "toolNames": [str(tool.name) for tool in tools.tools],
+            "error": "",
+        }
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        return {
+            "serverName": server_name,
+            "canConnect": False,
+            "toolNames": [],
+            "error": str(exc),
+        }
+    finally:
+        await _close_stack_quietly(server_stack)
