@@ -1,90 +1,57 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200" width="800" height="200">
   <defs>
-    <linearGradient id="glow" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#6366f1"/>
-      <stop offset="50%" stop-color="#8b5cf6"/>
-      <stop offset="100%" stop-color="#a78bfa"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#120d0a"/>
+      <stop offset="100%" stop-color="#0d0b0a"/>
     </linearGradient>
-    <linearGradient id="line-grad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#6366f1" stop-opacity="0"/>
-      <stop offset="50%" stop-color="#8b5cf6" stop-opacity="0.3"/>
-      <stop offset="100%" stop-color="#a78bfa" stop-opacity="0"/>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#ffb36a" stop-opacity="0"/>
+      <stop offset="48%" stop-color="#ffb36a" stop-opacity=".8"/>
+      <stop offset="100%" stop-color="#ff7a45" stop-opacity="0"/>
     </linearGradient>
-    <filter id="blur-glow">
-      <feGaussianBlur stdDeviation="8" result="blur"/>
-      <feMerge>
-        <feMergeNode in="blur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-    <radialGradient id="orb1" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#8b5cf6" stop-opacity="0.15"/>
-      <stop offset="100%" stop-color="#8b5cf6" stop-opacity="0"/>
+    <radialGradient id="glow" cx="0" cy="0" r="1">
+      <stop offset="0%" stop-color="#ffb36a" stop-opacity=".24"/>
+      <stop offset="100%" stop-color="#ffb36a" stop-opacity="0"/>
     </radialGradient>
-    <radialGradient id="orb2" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#6366f1" stop-opacity="0.1"/>
-      <stop offset="100%" stop-color="#6366f1" stop-opacity="0"/>
-    </radialGradient>
+    <style>
+      .display{font-family:"Avenir Next","PingFang SC","Noto Sans SC",sans-serif}
+      .title{font-size:52px;font-weight:700;fill:#fff4e7}
+      .sub{font-size:16px;font-weight:600;fill:#dfc5af}
+      .pill{font-size:12px;font-weight:700;fill:#ffe4c7}
+      @keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}
+      .pulse{animation:pulse 4.1s ease-in-out infinite}
+    </style>
   </defs>
-  <style>
-    @keyframes breathe {
-      0%, 100% { opacity: 0.7; }
-      50% { opacity: 1; }
-    }
-    @keyframes glow-pulse {
-      0%, 100% { filter: url(#blur-glow); opacity: 0.9; }
-      50% { filter: url(#blur-glow); opacity: 1; }
-    }
-    @keyframes float-orb {
-      0%, 100% { transform: translate(0, 0); }
-      33% { transform: translate(15px, -8px); }
-      66% { transform: translate(-10px, 5px); }
-    }
-    @keyframes float-orb2 {
-      0%, 100% { transform: translate(0, 0); }
-      33% { transform: translate(-12px, 10px); }
-      66% { transform: translate(8px, -6px); }
-    }
-    @keyframes dash-flow {
-      to { stroke-dashoffset: -20; }
-    }
-    .title { animation: glow-pulse 4s ease-in-out infinite; }
-    .subtitle { animation: breathe 5s ease-in-out infinite; }
-    .orb-1 { animation: float-orb 12s ease-in-out infinite; }
-    .orb-2 { animation: float-orb2 15s ease-in-out infinite; }
-    .grid-line { animation: breathe 6s ease-in-out infinite; }
-    .dash-line { animation: dash-flow 2s linear infinite; }
-  </style>
 
-  <rect width="800" height="200" fill="#0d1117" rx="12"/>
+  <rect width="800" height="200" rx="18" fill="url(#bg)"/>
+  <circle cx="124" cy="44" r="124" fill="url(#glow)"/>
+  <circle cx="706" cy="154" r="164" fill="url(#glow)"/>
+  <path d="M28 30 H772" stroke="url(#line)" stroke-width="1.2"/>
+  <path d="M28 170 H772" stroke="url(#line)" stroke-width="1.2"/>
 
-  <!-- Grid lines -->
-  <g class="grid-line" opacity="0.06">
-    <line x1="0" y1="50" x2="800" y2="50" stroke="#8b5cf6" stroke-width="0.5"/>
-    <line x1="0" y1="100" x2="800" y2="100" stroke="#8b5cf6" stroke-width="0.5"/>
-    <line x1="0" y1="150" x2="800" y2="150" stroke="#8b5cf6" stroke-width="0.5"/>
-    <line x1="200" y1="0" x2="200" y2="200" stroke="#8b5cf6" stroke-width="0.5"/>
-    <line x1="400" y1="0" x2="400" y2="200" stroke="#8b5cf6" stroke-width="0.5"/>
-    <line x1="600" y1="0" x2="600" y2="200" stroke="#8b5cf6" stroke-width="0.5"/>
+  <g transform="translate(50 62)">
+    <text class="display title">Bao</text>
+    <text y="36" class="display sub">超强记忆 · 长任务引擎 · 子代理并行 · 编码代理 · MCP 生态</text>
   </g>
 
-  <!-- Floating orbs -->
-  <circle class="orb-1" cx="150" cy="80" r="80" fill="url(#orb1)"/>
-  <circle class="orb-2" cx="650" cy="120" r="100" fill="url(#orb2)"/>
+  <g transform="translate(50 128)">
+    <rect width="112" height="28" rx="14" fill="#2b1b14" stroke="#5a3829"/>
+    <text x="56" y="19" text-anchor="middle" class="display pill">持久记忆</text>
+    <rect x="122" width="122" height="28" rx="14" fill="#2b1b14" stroke="#5a3829"/>
+    <text x="183" y="19" text-anchor="middle" class="display pill">长任务稳定</text>
+    <rect x="254" width="118" height="28" rx="14" fill="#2b1b14" stroke="#5a3829"/>
+    <text x="313" y="19" text-anchor="middle" class="display pill">后台并行</text>
+    <rect x="382" width="110" height="28" rx="14" fill="#2b1b14" stroke="#5a3829"/>
+    <text x="437" y="19" text-anchor="middle" class="display pill">自动化</text>
+  </g>
 
-  <!-- Decorative dashed lines -->
-  <line class="dash-line" x1="50" y1="170" x2="300" y2="170" stroke="url(#line-grad)" stroke-width="1" stroke-dasharray="4 6"/>
-  <line class="dash-line" x1="500" y1="30" x2="750" y2="30" stroke="url(#line-grad)" stroke-width="1" stroke-dasharray="4 6"/>
-
-  <!-- Dots -->
-  <circle cx="100" cy="40" r="1.5" fill="#6366f1" opacity="0.4"/>
-  <circle cx="700" cy="160" r="1.5" fill="#a78bfa" opacity="0.3"/>
-  <circle cx="300" cy="30" r="1" fill="#8b5cf6" opacity="0.3"/>
-  <circle cx="550" cy="170" r="1" fill="#6366f1" opacity="0.25"/>
-
-  <!-- Title -->
-  <text class="title" x="400" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="56" font-weight="700" fill="url(#glow)" letter-spacing="8">Bao</text>
-
-  <!-- Subtitle -->
-  <text class="subtitle" x="400" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="16" fill="#9ca3af" letter-spacing="3" font-weight="300">手机发消息，AI 帮你干活</text>
+  <g transform="translate(588 42)" class="pulse">
+    <rect width="152" height="116" rx="22" fill="#18120f" stroke="#3b281e"/>
+    <rect x="14" y="14" width="124" height="88" rx="16" fill="#221711" stroke="#563628"/>
+    <rect x="26" y="28" width="34" height="58" rx="11" fill="#19130f" stroke="#3a2a21"/>
+    <circle cx="38" cy="46" r="5" fill="#ffb36a"/>
+    <circle cx="38" cy="64" r="5" fill="#7d5b45"/>
+    <rect x="72" y="34" width="48" height="16" rx="8" fill="#2b1b14" stroke="#5a3829"/>
+    <rect x="72" y="58" width="48" height="16" rx="8" fill="#2b1b14" stroke="#4b3124"/>
+  </g>
 </svg>
