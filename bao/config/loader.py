@@ -7,6 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from bao.config.paths import get_config_path as resolve_config_path
+from bao.config.paths import get_data_dir as resolve_data_dir
+from bao.config.paths import set_runtime_config_path
 from bao.config.schema import Config
 
 
@@ -290,19 +293,11 @@ _JSONC_TEMPLATE = """\
 
 
 def get_config_path() -> Path:
-    from bao.utils.helpers import get_data_path
-
-    base = get_data_path()
-    jsonc = base / "config.jsonc"
-    if jsonc.exists():
-        return jsonc
-    return base / "config.json"
+    return resolve_config_path()
 
 
 def get_data_dir() -> Path:
-    from bao.utils.helpers import get_data_path
-
-    return get_data_path()
+    return resolve_data_dir()
 
 
 def ensure_first_run() -> bool:
@@ -408,6 +403,8 @@ def _apply_env_overlay(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_config(config_path: Path | None = None) -> Config:
+    if config_path is not None:
+        set_runtime_config_path(config_path)
     path = config_path or get_config_path()
 
     if path.exists():
@@ -474,6 +471,8 @@ def _dump_with_secrets(config: Config) -> dict[str, Any]:
 
 
 def save_config(config: Config, config_path: Path | None = None) -> None:
+    if config_path is not None:
+        set_runtime_config_path(config_path)
     path = config_path or get_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 

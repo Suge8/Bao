@@ -11,8 +11,8 @@ from typing import Any
 
 from loguru import logger
 
+from bao.config.paths import get_legacy_sessions_dir
 from bao.utils.db import get_db, open_or_create_table
-from bao.utils.helpers import get_data_path
 
 # legacy safety net — runtime context is no longer injected as user message,
 # but keep filtering in case old sessions contain such entries.
@@ -585,7 +585,7 @@ class SessionManager:
             logger.debug("⚠️ 索引创建跳过 / index creation skipped: {}", e)
 
     def _migrate_legacy(self, workspace: Path, meta_tbl: Any) -> None:
-        for d in (workspace / "sessions", get_data_path() / "sessions"):
+        for d in (workspace / "sessions", get_legacy_sessions_dir()):
             if not d.exists():
                 continue
             for path in d.glob("*.jsonl"):
