@@ -24,12 +24,14 @@ from typing import Any
 
 from loguru import logger
 from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QGuiApplication, QImage
 
 from app.backend.asyncio_runner import AsyncioRunner
 from app.backend.attachment import AttachmentDraftModel
 from app.backend.chat import ChatMessageModel
 from bao.gateway.builder import DesktopStartupMessage
 from bao.session.manager import SessionChangeEvent
+from bao.utils.helpers import get_media_path, safe_filename
 
 _DEBUG_SWITCH = os.getenv("BAO_DESKTOP_DEBUG_SWITCH") == "1"
 _PROFILE = os.getenv("BAO_DESKTOP_PROFILE") == "1"
@@ -121,9 +123,9 @@ class ChatService(QObject):
     errorChanged = Signal(str)
     gatewayDetailChanged = Signal(str)
     gatewayChannelsChanged = Signal()
+    cronServiceChanged = Signal(object)
     messageAppended = Signal(int)
     contentUpdated = Signal(int, str)
-    cronServiceChanged = Signal(object)
     statusUpdated = Signal(int, str)
     gatewayReady = Signal(object, list)  # session_manager, enabled_channels
     historyLoadingChanged = Signal(bool)
@@ -256,7 +258,7 @@ class ChatService(QObject):
 
     @Property(int, notify=draftAttachmentCountChanged)
     def draftAttachmentCount(self) -> int:
-        return self._draft_attachments.count
+        return self._draft_attachments.rowCount()
 
     # ------------------------------------------------------------------
     # Public slots
@@ -307,11 +309,11 @@ class ChatService(QObject):
         self._channel_errors.clear()
         self._enabled_gateway_channels = []
         self._clear_gateway_detail()
-        self._lifecycle_request_id += 1
-        self._set_state("stopped")
         if self._cron is not None:
             self._cron = None
             self.cronServiceChanged.emit(None)
+        self._lifecycle_request_id += 1
+        self._set_state("stopped")
         self._refresh_gateway_channels()
         if self._agent is not None:
             try:
@@ -386,6 +388,36 @@ class ChatService(QObject):
     @Slot()
     def clearDraftAttachments(self) -> None:
         self._draft_attachments.clear()
+
+    @Slot(result=bool)
+    def pasteClipboardAttachment(self) -> bool:
+        clipboard = QGuiApplication.clipboard()
+        if clipboard is None:
+            return False
+        mime_data = clipboard.mimeData()
+        if mime_data is None:
+            return False
+
+        local_paths: list[str] = []
+        if mime_data.hasUrls():
+            for url in mime_data.urls():
+                if not url.isLocalFile():
+                    continue
+                local_file = url.toLocalFile()
+                if local_file:
+                    local_paths.append(local_file)
+        if local_paths:
+            return self._draft_attachments.add_local_paths(local_paths)
+
+        if not mime_data.hasImage():
+            return False
+        image_obj = clipboard.image()
+        if image_obj.isNull():
+            return False
+        saved_path = self._save_clipboard_image(image_obj)
+        if not saved_path:
+            return False
+        return self._draft_attachments.add_local_paths([saved_path])
 
     @Slot(str)
     def setSessionKey(self, key: str) -> None:
@@ -556,6 +588,19 @@ class ChatService(QObject):
             self._cache_history_snapshot(key, fingerprint, [], False)
             self._model.clear()
             self._emit_session_viewport_ready(key)
+        elif cached_snapshot is None:
+            self._history_initialized = False
+            self._history_fingerprint = None
+            self._set_active_session_state(False, False)
+            self._model.clear()
+            self._emit_session_view_applied(key, switched_session=switched_session)
+            self._request_history_load(
+                key,
+                nav_id,
+                show_loading=False,
+                raw_messages_override=raw_tail_snapshot,
+            )
+            return
         else:
             self._history_initialized = True
             self._history_fingerprint = cached_snapshot.fingerprint
@@ -605,19 +650,6 @@ class ChatService(QObject):
         raw_messages_override: list[dict[str, Any]] | None = None,
     ) -> tuple[str, int, tuple[int, str], list[dict[str, Any]], bool]:
         """Load session message history from SessionManager (runs on asyncio thread)."""
-        elif cached_snapshot is None:
-            self._history_initialized = False
-            self._history_fingerprint = None
-            self._set_active_session_state(False, False)
-            self._model.clear()
-            self._emit_session_view_applied(key, switched_session=switched_session)
-            self._request_history_load(
-                key,
-                nav_id,
-                show_loading=False,
-                raw_messages_override=raw_tail_snapshot,
-            )
-            return
         import time
 
         t0 = time.perf_counter() if _PROFILE else 0
@@ -939,6 +971,7 @@ class ChatService(QObject):
         self.setSessionManager(session_manager)
         if not self._last_error:
             self._set_gateway_summary(" — ".join(parts))
+        self.cronServiceChanged.emit(self._cron)
         self.gatewayReady.emit(session_manager, channels)
         self._drain_queue()
 
@@ -971,7 +1004,6 @@ class ChatService(QObject):
         assistant_row = self._append_typing_row()
         self._active_streaming_row = assistant_row
         self._active_streaming_session_key = request.session_key
-        self.cronServiceChanged.emit(self._cron)
         self._active_has_content = False
         self._pending_split = False
 
@@ -1155,7 +1187,9 @@ class ChatService(QObject):
         to_local_file = getattr(value, "toLocalFile", None)
         if callable(to_local_file):
             local = to_local_file()
-            return local or None
+            if isinstance(local, str) and local:
+                return local
+            return None
         if isinstance(value, str):
             raw = value.strip()
             if not raw:
@@ -1165,6 +1199,21 @@ class ChatService(QObject):
                 return local or None
             return raw
         return None
+
+    @staticmethod
+    def _save_clipboard_image(image: QImage) -> str | None:
+        media_dir = get_media_path()
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        filename = safe_filename(f"desktop-paste-{timestamp}-{uuid.uuid4().hex[:8]}.png")
+        target = media_dir / filename
+        try:
+            saved = image.save(str(target))
+        except Exception as exc:
+            logger.warning("Failed to save pasted clipboard image: {}", exc)
+            return None
+        if not saved:
+            return None
+        return str(target)
 
     @staticmethod
     def _persist_user_message_with_manager(

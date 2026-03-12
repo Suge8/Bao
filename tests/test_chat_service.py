@@ -19,6 +19,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.gui]
 QtCore = pytest.importorskip("PySide6.QtCore")
 QtGui = pytest.importorskip("PySide6.QtGui")
 QGuiApplication = QtGui.QGuiApplication
+QImage = QtGui.QImage
 _T = TypeVar("_T")
 
 
@@ -161,6 +162,41 @@ def test_call_agent_pre_saves_user_message_and_passes_metadata() -> None:
     assert captured["metadata"] == {"_pre_saved": True, "_pre_saved_token": token}
 
 
+def test_call_agent_passes_media_paths_to_process_direct() -> None:
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    svc, _model = make_service()
+    session = MagicMock()
+    sm = MagicMock()
+    sm.get_or_create.return_value = session
+    svc._session_manager = sm
+
+    captured: dict[str, Any] = {}
+
+    async def _process_direct(text: str, **kwargs: Any) -> str:
+        captured["text"] = text
+        captured.update(kwargs)
+        return "ok"
+
+    svc._agent = SimpleNamespace(process_direct=_process_direct)
+
+    media_path = str(Path("/tmp") / "sample.png")
+    result = asyncio.run(
+        svc._call_agent(
+            "describe this",
+            "desktop:local::s1",
+            display_text="describe this\n\n[Attachments] sample.png",
+            media_paths=[media_path],
+        )
+    )
+
+    assert result == "ok"
+    assert captured["text"] == "describe this"
+    assert captured["media"] == [media_path]
+    assert captured["metadata"]["_pre_saved"] is True
+
+
 def test_call_agent_falls_back_when_presave_fails() -> None:
     from types import SimpleNamespace
 
@@ -205,6 +241,87 @@ def test_send_message_ignored_for_read_only_session():
     svc.setActiveSessionReadOnly(True)
     svc.sendMessage("hello")
     assert model.rowCount() == 0
+
+
+def test_send_message_with_attachments_uses_single_queue_path(tmp_path) -> None:
+    svc, model = make_service()
+    attachment = tmp_path / "image.png"
+    attachment.write_bytes(b"png")
+
+    svc.addDraftAttachments([attachment.as_uri()])
+    svc.sendMessage("")
+
+    assert model.rowCount() == 1
+    assert model._messages[0]["role"] == "user"
+    assert model._messages[0]["status"] == "pending"
+    assert "image.png" in model._messages[0]["content"]
+    assert svc.draftAttachmentCount == 0
+
+
+def test_paste_clipboard_attachment_adds_local_file_urls(tmp_path, monkeypatch) -> None:
+    svc, _model = make_service()
+    attachment = tmp_path / "note.txt"
+    attachment.write_text("hello", encoding="utf-8")
+
+    fake_mime_data = type(
+        "FakeMimeData",
+        (),
+        {
+            "hasUrls": lambda self: True,
+            "urls": lambda self: [QtCore.QUrl.fromLocalFile(str(attachment))],
+            "hasImage": lambda self: False,
+        },
+    )()
+    fake_clipboard = type(
+        "FakeClipboard",
+        (),
+        {
+            "mimeData": lambda self: fake_mime_data,
+            "image": lambda self: QImage(),
+        },
+    )()
+
+    monkeypatch.setattr(QGuiApplication, "clipboard", staticmethod(lambda: fake_clipboard))
+
+    assert svc.pasteClipboardAttachment() is True
+    assert svc.draftAttachmentCount == 1
+    draft_attachments = svc.property("draftAttachments")
+    assert draft_attachments is not None
+    assert draft_attachments.rowCount() == 1
+    assert draft_attachments.snapshot_names() == ["note.txt"]
+
+
+def test_paste_clipboard_attachment_saves_image_to_draft(monkeypatch) -> None:
+    svc, _model = make_service()
+    image = QImage(8, 8, QImage.Format.Format_ARGB32)
+    image.fill(0xFFCC8844)
+
+    fake_mime_data = type(
+        "FakeMimeData",
+        (),
+        {
+            "hasUrls": lambda self: False,
+            "urls": lambda self: [],
+            "hasImage": lambda self: True,
+        },
+    )()
+    fake_clipboard = type(
+        "FakeClipboard",
+        (),
+        {
+            "mimeData": lambda self: fake_mime_data,
+            "image": lambda self: image,
+        },
+    )()
+
+    monkeypatch.setattr(QGuiApplication, "clipboard", staticmethod(lambda: fake_clipboard))
+
+    assert svc.pasteClipboardAttachment() is True
+    assert svc.draftAttachmentCount == 1
+    draft_attachments = svc.property("draftAttachments")
+    assert draft_attachments is not None
+    saved_path = draft_attachments.snapshot_paths()[0]
+    assert saved_path.endswith(".png")
 
 
 def test_send_message_emits_signal():
@@ -1442,11 +1559,16 @@ def test_set_session_key_uses_manager_tail_snapshot_before_async_reload():
     svc._committed_session_key = "desktop:old"
     model.append_assistant("old", status="done")
     called = []
-    svc._request_history_load = lambda key, *_args, **kwargs: called.append(
-        (key, kwargs.get("show_loading"))
-    )
 
-    svc.setSessionKey("desktop:new")
+    def _capture_request(
+        key: str,
+        nav_id: int,
+        *,
+        show_loading: bool | None = None,
+        raw_messages_override: list[dict[str, Any]] | None = None,
+    ) -> None:
+        _ = nav_id
+        called.append((key, show_loading, raw_messages_override))
 
     svc._request_history_load = _capture_request
 
@@ -1477,15 +1599,7 @@ def test_set_session_key_without_memory_snapshot_uses_async_load_path():
         (key, kwargs.get("show_loading"))
     )
 
-    def _capture_request(
-        key: str,
-        nav_id: int,
-        *,
-        show_loading: bool | None = None,
-        raw_messages_override: list[dict[str, Any]] | None = None,
-    ) -> None:
-        _ = nav_id
-        called.append((key, show_loading, raw_messages_override))
+    svc.setSessionKey("desktop:new")
 
     assert model.rowCount() == 0
     assert svc.activeSessionReady is False
@@ -1594,6 +1708,9 @@ def test_set_session_key_does_not_render_uncommitted_tail_after_failed_save(tmp_
     svc._desired_session_key = "desktop:old"
     svc._committed_session_key = "desktop:old"
     called = []
+    svc._request_history_load = lambda key, *_args, **kwargs: called.append(
+        (key, kwargs.get("show_loading"))
+    )
 
     svc.setSessionKey(key)
 

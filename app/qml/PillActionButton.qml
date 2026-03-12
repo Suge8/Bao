@@ -6,6 +6,8 @@ Rectangle {
 
     property string text: ""
     property string leadingText: ""
+    property string iconSource: ""
+    property real iconSize: 15
     property bool buttonEnabled: true
     property color fillColor: accent
     property color hoverFillColor: accentHover
@@ -40,7 +42,19 @@ Rectangle {
     RowLayout {
         id: contentRow
         anchors.centerIn: parent
-        spacing: root.leadingText !== "" ? 7 : 0
+        spacing: (root.leadingText !== "" || root.iconSource !== "") ? 7 : 0
+
+        Image {
+            visible: root.iconSource !== ""
+            source: root.iconSource
+            width: root.iconSize
+            height: root.iconSize
+            sourceSize: Qt.size(root.iconSize, root.iconSize)
+            fillMode: Image.PreserveAspectFit
+            smooth: true
+            mipmap: true
+            opacity: root.buttonEnabled ? 1.0 : 0.6
+        }
 
         Text {
             visible: root.leadingText !== ""
