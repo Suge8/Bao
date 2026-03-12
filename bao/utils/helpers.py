@@ -3,6 +3,8 @@
 from datetime import datetime
 from pathlib import Path
 
+from bao.config.paths import get_data_dir, get_media_dir
+
 
 def ensure_dir(path: Path) -> Path:
     """Ensure a directory exists, creating it if necessary."""
@@ -11,8 +13,8 @@ def ensure_dir(path: Path) -> Path:
 
 
 def get_data_path() -> Path:
-    """Get the Bao data directory (~/.bao)."""
-    return ensure_dir(Path.home() / ".bao")
+    """Get the Bao runtime data directory."""
+    return get_data_dir()
 
 
 def get_data_subdir(*parts: str) -> Path:
@@ -20,7 +22,7 @@ def get_data_subdir(*parts: str) -> Path:
 
 
 def get_media_path() -> Path:
-    return get_data_subdir("media")
+    return get_media_dir()
 
 
 def timestamp() -> str:
