@@ -144,12 +144,12 @@ def test_app_readme_documents_unified_installer_brand_assets() -> None:
     assert "windowContentInsetTop/Side/Bottom" in text
 
 
-def test_app_agents_documents_shared_installer_brand_source() -> None:
-    text = _read("app/AGENTS.md")
+def test_app_readme_documents_shared_installer_brand_source() -> None:
+    text = _read("app/README.md")
 
     assert "generate_installer_assets.py" in text
     assert "dmg-background.png" in text
-    assert "不要再分别维护两套图像或文案事实源" in text
+    assert "避免 Win/mac 安装体验与桌面端首屏漂移" in text
 
 
 def test_package_win_installer_script_resolves_inno_setup_before_compile() -> None:
