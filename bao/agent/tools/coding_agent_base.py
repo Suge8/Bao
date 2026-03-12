@@ -19,6 +19,7 @@ from typing import Any, TypedDict
 
 from loguru import logger
 
+from bao.agent.tool_result import ToolResultValue, maybe_temp_text_result
 from bao.agent.tools.base import Tool
 
 # ---------------------------------------------------------------------------
@@ -526,7 +527,7 @@ class BaseCodingAgentTool(Tool, ABC):
 
     # -- main execute (template method) --
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> ToolResultValue:
         _session_retry = kwargs.pop("__session_retry", False)
         _original_kwargs = dict(kwargs)
         options, option_error = self._parse_execute_options(kwargs)
@@ -1127,7 +1128,10 @@ class BaseCodingAgentTool(Tool, ABC):
 
     def _render_payload(self, payload: dict[str, Any], response_format: str) -> str:
         if response_format == "json":
-            return json.dumps(payload, ensure_ascii=False)
+            return maybe_temp_text_result(
+                json.dumps(payload, ensure_ascii=False),
+                prefix="bao_coding_details_",
+            )
 
         if response_format == "text":
             parts = [payload["message"]]
@@ -1242,7 +1246,64 @@ class BaseCodingDetailsTool(Tool, ABC):
             "required": [],
         }
 
-    async def execute(self, **kwargs: Any) -> str:
+    @staticmethod
+    def _clip_detail_text(text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        omitted = len(text) - max_chars
+        return text[:max_chars] + f"\n... (truncated {omitted} chars)"
+
+    def _build_payload(
+        self,
+        *,
+        record: _DetailRecord,
+        stdout: str,
+        stderr: str,
+    ) -> dict[str, Any]:
+        return {
+            "request_id": record["request_id"],
+            "status": record["status"],
+            "session_id": record["session_id"],
+            "project_path": record["project_path"],
+            "command_preview": record["command_preview"],
+            "summary": record["summary"],
+            "attempts": record["attempts"],
+            "duration_ms": record["duration_ms"],
+            "exit_code": record["exit_code"],
+            "cache_truncated": record["cache_truncated"],
+            "stdout": stdout,
+            "stderr": stderr,
+        }
+
+    def _render_detail_response(
+        self,
+        *,
+        payload: dict[str, Any],
+        response_format: str,
+        prefix: str = "bao_coding_details_",
+    ) -> ToolResultValue:
+        if response_format == "json":
+            return maybe_temp_text_result(
+                json.dumps(payload, ensure_ascii=False),
+                prefix=prefix,
+            )
+
+        title = (
+            f"{self._tool_label} details: request_id={payload['request_id']} "
+            f"status={payload['status']}"
+        )
+        parts: list[str] = [title, "Summary:", str(payload["summary"])]
+        if response_format == "hybrid":
+            parts.insert(1, f"{self._meta_prefix}=" + json.dumps(payload, ensure_ascii=False))
+        stdout = str(payload.get("stdout", ""))
+        stderr = str(payload.get("stderr", ""))
+        if stdout:
+            parts.extend(["Output:", stdout])
+        if stderr:
+            parts.extend(["STDERR:", stderr])
+        return maybe_temp_text_result("\n\n".join(str(part) for part in parts), prefix=prefix)
+
+    async def execute(self, **kwargs: Any) -> ToolResultValue:
         request_id = kwargs.get("request_id")
         if request_id is not None and not isinstance(request_id, str):
             return "Error: request_id must be a string"
@@ -1274,38 +1335,13 @@ class BaseCodingDetailsTool(Tool, ABC):
                 f"or run {self.name.replace('_details', '')} first in this chat context."
             )
 
-        stdout = record["stdout"]
-        if len(stdout) > max_chars:
-            stdout = stdout[:max_chars] + f"\n... (truncated {len(stdout) - max_chars} chars)"
-
+        stdout = self._clip_detail_text(record["stdout"], max_chars)
         stderr = record["stderr"] if include_stderr else ""
-        if len(stderr) > max_chars:
-            stderr = stderr[:max_chars] + f"\n... (truncated {len(stderr) - max_chars} chars)"
-
-        payload = {
-            "request_id": record["request_id"],
-            "status": record["status"],
-            "session_id": record["session_id"],
-            "project_path": record["project_path"],
-            "command_preview": record["command_preview"],
-            "summary": record["summary"],
-            "attempts": record["attempts"],
-            "duration_ms": record["duration_ms"],
-            "exit_code": record["exit_code"],
-            "cache_truncated": record["cache_truncated"],
-            "stdout": stdout,
-            "stderr": stderr,
-        }
-
-        if response_format == "json":
-            return json.dumps(payload, ensure_ascii=False)
-
-        title = f"{self._tool_label} details: request_id={payload['request_id']} status={payload['status']}"
-        parts: list[str] = [title, "Summary:", str(payload["summary"])]
-        if response_format == "hybrid":
-            parts.insert(1, f"{self._meta_prefix}=" + json.dumps(payload, ensure_ascii=False))
-        if stdout:
-            parts.extend(["Output:", stdout])
         if stderr:
-            parts.extend(["STDERR:", stderr])
-        return "\n\n".join(str(part) for part in parts)
+            stderr = self._clip_detail_text(stderr, max_chars)
+        payload = self._build_payload(record=record, stdout=stdout, stderr=stderr)
+        return self._render_detail_response(
+            payload=payload,
+            response_format=response_format,
+            prefix="bao_coding_details_",
+        )

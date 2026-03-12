@@ -9,13 +9,14 @@ always: true
 ## Structure
 
 - Long-term memory is split into four categories: **preference**, **personal**, **project**, **general**.
-- Each category is stored independently in LanceDB; consolidation outputs `memory_updates` dict with per-category content.
+- Long-term memory is stored as fact rows in LanceDB and exposed as category-level read models; consolidation writes per-category durable facts.
 - Experience entries use a columnar schema (quality, uses, successes, category, outcome as dedicated columns).
 - Experience ranking uses quality-based retention (quality 5 = 365 days, 1 = 14 days) with Laplace-smoothed confidence.
 - High-quality, frequently reused experiences (quality ≥ 5, uses ≥ 3) are immune from cleanup unless deprecated.
 - Old text-based schemas are auto-migrated on first load.
 - Retrieval is query-aware: low-information turns can skip heavy recall.
-- Retrieval results are cached and automatically invalidated when memory/experience content changes.
+- Recall is resolved once per turn and then injected into prompt sections, avoiding split memory-trigger paths.
+- Query embeddings use a short TTL cache; memory recall itself still follows the current store state each turn.
 - If a query has no useful tokens, relevant long-term-memory injection can return empty context (zero-injection path).
 
 ## Explicit Memory Tools

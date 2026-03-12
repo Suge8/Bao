@@ -15,11 +15,20 @@ class CronTool(Tool):
         self._cron = cron_service
         self._channel_ctx: ContextVar[str] = ContextVar("cron_channel", default="")
         self._chat_id_ctx: ContextVar[str] = ContextVar("cron_chat_id", default="")
+        self._in_cron_context: ContextVar[bool] = ContextVar("cron_in_context", default=False)
 
     def set_context(self, channel: str, chat_id: str) -> None:
         """Set the current session context for delivery."""
         self._channel_ctx.set(channel)
         self._chat_id_ctx.set(chat_id)
+
+    def set_cron_context(self, active: bool):
+        """Mark whether execution is happening inside a cron callback."""
+        return self._in_cron_context.set(active)
+
+    def reset_cron_context(self, token: object) -> None:
+        """Restore the previous cron execution context."""
+        self._in_cron_context.reset(token)
 
     @property
     def name(self) -> str:
@@ -86,6 +95,8 @@ class CronTool(Tool):
             return "Error: job_id must be a string"
 
         if action == "add":
+            if self._in_cron_context.get():
+                return "Error: cannot schedule new jobs from within a cron job execution"
             return self._add_job(message, every_seconds, cron_expr, tz, at)
         elif action == "list":
             return self._list_jobs()

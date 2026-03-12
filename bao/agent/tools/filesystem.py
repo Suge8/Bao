@@ -4,6 +4,7 @@ import difflib
 from pathlib import Path
 from typing import Any
 
+from bao.agent.tool_result import ToolResultValue, maybe_file_text_result
 from bao.agent.tools.base import Tool
 
 
@@ -46,16 +47,14 @@ class ReadFileTool(Tool):
             "required": ["path"],
         }
 
-    async def execute(self, path: str, **kwargs: Any) -> str:
+    async def execute(self, path: str, **kwargs: Any) -> ToolResultValue:
         try:
             file_path = _resolve_path(path, self._workspace, self._allowed_dir)
             if not file_path.exists():
                 return f"Error: File not found: {path}"
             if not file_path.is_file():
                 return f"Error: Not a file: {path}"
-
-            content = file_path.read_text(encoding="utf-8")
-            return content
+            return maybe_file_text_result(file_path, cleanup=False)
         except PermissionError as e:
             return f"Error: {e}"
         except Exception as e:

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from bao.agent.context import build_runtime_block
+from bao.agent.tools.cron import CronTool
 
 
 @dataclass
@@ -326,14 +327,16 @@ def build_gateway_stack(
 
     # --- cron callback (defensive, from Desktop version) ---
     async def on_cron_job(job: CronJob) -> str | None:
-        from loguru import logger
-
+        cron_tool = agent.tools.get("cron")
+        cron_token = None
         try:
             reminder_note = (
                 "[Scheduled Task] Timer finished.\n\n"
                 f"Task '{job.name}' has been triggered.\n"
                 f"Scheduled instruction: {job.payload.message}"
             )
+            if isinstance(cron_tool, CronTool):
+                cron_token = cron_tool.set_cron_context(True)
             response = await agent.process_direct(
                 reminder_note,
                 session_key=f"cron:{job.id}",
@@ -343,6 +346,9 @@ def build_gateway_stack(
         except Exception as e:
             logger.warning("⚠️ 定时任务失败 / cron failed: {} — {}", job.id, e)
             return f"Error: {e}"
+        finally:
+            if isinstance(cron_tool, CronTool) and cron_token is not None:
+                cron_tool.reset_cron_context(cron_token)
         if job.payload.deliver and job.payload.to:
             await bus.publish_outbound(
                 OutboundMessage(

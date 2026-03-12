@@ -187,7 +187,7 @@ class ContextBuilder:
         if bootstrap:
             parts.append(bootstrap)
 
-        # Long-term memory injection moved to build_messages() for query-aware filtering
+        # Long-term memory recall is resolved outside the system prompt and injected per turn.
 
         always_skills = self.skills.get_always_skills()
         if always_skills:
@@ -336,6 +336,7 @@ Your workspace is at: {workspace_path}"""
         chat_id: str | None = None,
         related_memory: list[str] | None = None,
         related_experience: list[str] | None = None,
+        long_term_memory: str | None = None,
         plan_state: dict[str, Any] | None = None,
         session_notes: list[str] | None = None,
         *,
@@ -362,10 +363,7 @@ Your workspace is at: {workspace_path}"""
                     f"{note_block}"
                 )
 
-        # --- Query-aware long-term memory injection ---
-        ltm = self.memory.get_relevant_memory_context(
-            current_message, max_chars=MAX_LONG_TERM_MEMORY_CHARS
-        )
+        ltm = long_term_memory or ""
         if ltm:
             system_prompt += (
                 "\n\n# Memory\n"
@@ -424,6 +422,19 @@ Your workspace is at: {workspace_path}"""
         messages.append({"role": "user", "content": user_content})
 
         return messages
+
+    def recall(self, query: str) -> dict[str, Any]:
+        bundle = self.memory.recall(
+            query,
+            related_limit=MAX_MEMORY_ITEMS,
+            experience_limit=MAX_EXPERIENCE_ITEMS,
+            long_term_chars=MAX_LONG_TERM_MEMORY_CHARS,
+        )
+        return {
+            "long_term_memory": bundle.long_term_context,
+            "related_memory": list(bundle.related_memory),
+            "related_experience": list(bundle.related_experience),
+        }
 
     # Formats natively supported by vision APIs
     _SUPPORTED_IMAGE_MIMES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
