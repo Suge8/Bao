@@ -6,59 +6,44 @@ Rectangle {
     id: root
     objectName: "sidebarRoot"
 
-    property bool showingSettings: false
-    property string activeSessionKey: ""
-    property bool showChatSelection: true
+    property string selectionTarget: "sessions"
+    readonly property bool settingsActive: selectionTarget === "settings"
     signal settingsRequested()
     signal diagnosticsRequested()
     signal newSessionRequested()
     signal sessionSelected(string key)
     signal sessionDeleteRequested(string key)
+    signal sectionRequested(string section)
 
     color: "transparent"
-
-    Rectangle {
-        anchors.fill: parent
-        radius: 20
-        color: bgSidebar
-        antialiasing: true
-
-        Rectangle {
-            anchors { top: parent.top; left: parent.left; right: parent.right }
-            height: parent.radius
-            color: parent.color
-        }
-        Rectangle {
-            anchors { top: parent.top; bottom: parent.bottom; right: parent.right }
-            width: parent.radius
-            color: parent.color
-        }
-    }
 
     readonly property bool hasChatService: typeof chatService !== "undefined" && chatService !== null
     readonly property bool hasSessionService: typeof sessionService !== "undefined" && sessionService !== null
     readonly property bool hasDiagnosticsService: typeof diagnosticsService !== "undefined" && diagnosticsService !== null
-    property bool gatewayIdle: !hasChatService || chatService.state === "idle" || chatService.state === "stopped"
-    property string lastSidebarUnreadFingerprint: ""
-    property real headerPulseScale: 0.0
-    property real headerBadgeScale: 0.0
-    property bool stickyHeaderVisible: false
-    property string stickyHeaderChannel: ""
-    property bool stickyHeaderExpanded: false
-    property int stickyHeaderItemCount: 0
-    property int stickyHeaderUnreadCount: 0
-    property bool stickyHeaderHasRunning: false
-    property real stickyHeaderOffset: 0.0
-    property bool uiIsDark: isDark
-    property color uiBgCanvas: "transparent"
-    property color uiTextPrimary: textPrimary
-    property color uiTextSecondary: textSecondary
-    property color uiStatusSuccess: statusSuccess
-    property color uiStatusError: statusError
-    property color uiStatusWarning: statusWarning
+    readonly property bool uiIsDark: isDark
+    readonly property color uiBgCanvas: "transparent"
+    readonly property color uiTextPrimary: textPrimary
+    readonly property color uiTextSecondary: textSecondary
+    readonly property color uiStatusSuccess: statusSuccess
+    readonly property color uiStatusError: statusError
+    readonly property color uiStatusWarning: statusWarning
+    property real navHighlightY: 0.0
+    property real navHighlightHeight: 50
+    property real navHighlightOpacity: 0.0
 
-    function requestNewSession() {
-        root.newSessionRequested()
+    function sectionIconSource(section) {
+        switch (section) {
+        case "memory":
+            return "../resources/icons/sidebar-memory.svg"
+        case "skills":
+            return "../resources/icons/sidebar-skills.svg"
+        case "tools":
+            return "../resources/icons/sidebar-tools.svg"
+        case "cron":
+            return "../resources/icons/sidebar-cron.svg"
+        default:
+            return themedIconSource("sidebar-sessions-title")
+        }
     }
 
     function channelVisualSource(channel, filled) {
@@ -86,13 +71,13 @@ Rectangle {
                        : "../resources/icons/sidebar-monitor-solid.svg"
             return isDark ? "../resources/icons/sidebar-monitor-dark.svg" : "../resources/icons/sidebar-monitor.svg"
         case "subagent":
-            return isDark ? "../resources/icons/ignite-dark.svg" : "../resources/icons/ignite.svg"
+            return filled ? "../resources/icons/sidebar-subagent-solid.svg" : "../resources/icons/sidebar-subagent.svg"
         case "system":
-            return filled ? "../resources/icons/sidebar-settings-solid.svg" : "../resources/icons/sidebar-settings.svg"
+            return filled ? "../resources/icons/sidebar-system-solid.svg" : "../resources/icons/sidebar-system.svg"
         case "heartbeat":
-            return filled ? "../resources/icons/sidebar-pulse-solid.svg" : "../resources/icons/sidebar-pulse.svg"
+            return filled ? "../resources/icons/sidebar-heartbeat-solid.svg" : "../resources/icons/sidebar-heartbeat.svg"
         case "cron":
-            return filled ? "../resources/icons/sidebar-zap-solid.svg" : "../resources/icons/sidebar-zap.svg"
+            return filled ? "../resources/icons/sidebar-cron-solid.svg" : "../resources/icons/sidebar-cron.svg"
         case "email":
             return filled ? "../resources/icons/sidebar-mail-solid.svg" : "../resources/icons/sidebar-mail.svg"
         default:
@@ -106,22 +91,6 @@ Rectangle {
 
     function channelFilledIconSource(channel) {
         return channelVisualSource(channel, true)
-    }
-
-    function channelUsesTint(channel) {
-        switch (channel) {
-        case "telegram":
-        case "discord":
-        case "whatsapp":
-        case "feishu":
-        case "slack":
-        case "qq":
-        case "dingtalk":
-        case "imessage":
-            return true
-        default:
-            return false
-        }
     }
 
     function channelAccent(channel) {
@@ -159,259 +128,80 @@ Rectangle {
         }
     }
 
-    function syncUnreadState() {
-        if (!hasSessionService) {
-            root.lastSidebarUnreadFingerprint = ""
-            return
-        }
-        var nextFingerprint = sessionService.sidebarUnreadFingerprint || ""
-        var unreadCount = sessionService.sidebarUnreadCount || 0
-        if (root.lastSidebarUnreadFingerprint !== "" && nextFingerprint !== root.lastSidebarUnreadFingerprint && unreadCount > 0)
-            sessionsHeaderPulse.restart()
-        root.lastSidebarUnreadFingerprint = nextFingerprint
-    }
-
-    function listContentYBounds() {
-        var minY = sessionList ? sessionList.originY : 0
-        var maxY = minY
-        if (sessionList)
-            maxY = minY + Math.max(0, sessionList.contentHeight - sessionList.height)
-        return { minY: minY, maxY: maxY }
-    }
-
-    function clampListContentY(y) {
-        var bounds = root.listContentYBounds()
-        return Math.max(bounds.minY, Math.min(y, bounds.maxY))
-    }
-
-    function sidebarRowData(rowIndex) {
-        if (!hasSessionService)
+    function activeNavTarget() {
+        switch (selectionTarget) {
+        case "memory":
+            return memoryNavItem
+        case "skills":
+            return skillsNavItem
+        case "tools":
+            return toolsNavItem
+        case "cron":
+            return cronNavItem
+        case "settings":
             return null
-        var model = sessionService.sidebarModel
-        if (!model || rowIndex < 0 || rowIndex >= model.rowCount())
-            return null
-        var idx = model.index(rowIndex, 0)
-        return {
-            isHeader: model.data(idx, Qt.UserRole + 102) || false,
-            channel: model.data(idx, Qt.UserRole + 103) || "other",
-            expanded: model.data(idx, Qt.UserRole + 104) || false,
-            itemCount: model.data(idx, Qt.UserRole + 115) || 0,
-            groupUnreadCount: model.data(idx, Qt.UserRole + 116) || 0,
-            groupHasRunning: model.data(idx, Qt.UserRole + 117) || false,
+        default:
+            return sessionsNavItem
         }
     }
 
-    function resetStickyHeader() {
-        root.stickyHeaderVisible = false
-        root.stickyHeaderChannel = ""
-        root.stickyHeaderExpanded = false
-        root.stickyHeaderItemCount = 0
-        root.stickyHeaderUnreadCount = 0
-        root.stickyHeaderHasRunning = false
-        root.stickyHeaderOffset = 0.0
-    }
-
-    function refreshStickyHeader() {
-        if (!sessionList || !hasSessionService || sessionList.count === 0) {
-            root.resetStickyHeader()
+    function updateNavHighlight() {
+        var target = activeNavTarget()
+        if (!target) {
+            navHighlightOpacity = 0.0
             return
         }
-        var delegates = root.visibleDelegates()
-        var contentY = sessionList.contentY
-        var first = null
-        for (var i = 0; i < delegates.length; i++) {
-            var delegate = delegates[i]
-            if (delegate.height <= 0)
-                continue
-            if (delegate.y + delegate.height <= contentY)
-                continue
-            first = delegate
-            break
-        }
-        if (!first || !first.anchorChannel) {
-            root.resetStickyHeader()
-            return
-        }
-
-        var stickyNeeded = !first.anchorIsHeader || first.y < contentY + 0.5
-        if (!stickyNeeded) {
-            root.resetStickyHeader()
-            return
-        }
-
-        var stickyRow = null
-        for (var rowIndex = 0; rowIndex < sessionList.count; rowIndex++) {
-            var row = root.sidebarRowData(rowIndex)
-            if (!row || !row.isHeader || row.channel !== first.anchorChannel)
-                continue
-            stickyRow = row
-            break
-        }
-        if (!stickyRow) {
-            root.resetStickyHeader()
-            return
-        }
-
-        var nextHeaderViewportY = Number.POSITIVE_INFINITY
-        for (var j = i + 1; j < delegates.length; j++) {
-            var nextDelegate = delegates[j]
-            if (!nextDelegate.anchorIsHeader)
-                continue
-            if (nextDelegate.anchorChannel === first.anchorChannel)
-                continue
-            nextHeaderViewportY = nextDelegate.y - contentY
-            break
-        }
-
-        var stickyOffset = 0.0
-        if (nextHeaderViewportY < sizeSidebarHeader)
-            stickyOffset = nextHeaderViewportY - sizeSidebarHeader
-
-        root.stickyHeaderVisible = true
-        root.stickyHeaderChannel = stickyRow.channel
-        root.stickyHeaderExpanded = stickyRow.expanded
-        root.stickyHeaderItemCount = stickyRow.itemCount
-        root.stickyHeaderUnreadCount = stickyRow.groupUnreadCount
-        root.stickyHeaderHasRunning = stickyRow.groupHasRunning
-        root.stickyHeaderOffset = Math.max(-sizeSidebarHeader, Math.min(0.0, stickyOffset))
+        navHighlightY = navContent.y + target.y
+        navHighlightHeight = target.height
+        navHighlightOpacity = 1.0
     }
 
-    function visibleDelegates() {
-        if (!sessionList || !sessionList.contentItem)
-            return []
-        var delegates = []
-        var children = sessionList.contentItem.children
-        var minY = sessionList.contentY - sizeSidebarHeader
-        var maxY = sessionList.contentY + sessionList.height + sizeSidebarHeader
-        for (var i = 0; i < children.length; i++) {
-            var child = children[i]
-            if (!child || child.anchorReady !== true)
-                continue
-            var childTop = child.y
-            var childBottom = child.y + child.height
-            if (childBottom < minY || childTop > maxY)
-                continue
-            delegates.push(child)
-        }
-        delegates.sort(function(a, b) { return a.y - b.y })
-        return delegates
-    }
+    onSelectionTargetChanged: Qt.callLater(function() { root.updateNavHighlight() })
+    Component.onCompleted: Qt.callLater(function() { root.updateNavHighlight() })
 
-    function findVisibleAnchorDelegate(targetY) {
-        var delegates = root.visibleDelegates()
-        for (var i = 0; i < delegates.length; i++) {
-            var delegate = delegates[i]
-            if (delegate.height <= 0)
-                continue
-            if (delegate.y + delegate.height > targetY)
-                return delegate
-        }
-        return null
-    }
+    Rectangle {
+        anchors.fill: parent
+        radius: 24
+        color: bgSidebar
+        antialiasing: true
 
-    function findVisibleDelegateByAnchor(anchor) {
-        if (!anchor)
-            return null
-        var delegates = root.visibleDelegates()
-        for (var i = 0; i < delegates.length; i++) {
-            var delegate = delegates[i]
-            if (anchor.isHeader) {
-                if (delegate.anchorIsHeader && delegate.anchorChannel === anchor.channel)
-                    return delegate
-                continue
-            }
-            if (!delegate.anchorIsHeader && delegate.anchorKey === anchor.key)
-                return delegate
-        }
-        return null
-    }
-
-    function captureScrollAnchor() {
-        if (!sessionList || sessionList.count === 0)
-            return { contentY: sessionList ? sessionList.contentY : 0, key: "", channel: "", isHeader: false, offset: 0 }
-        var targetY = sessionList.contentY
-        var anchorDelegate = root.findVisibleAnchorDelegate(targetY)
-        if (anchorDelegate) {
-            if (!anchorDelegate.anchorIsHeader && anchorDelegate.anchorKey === (root.activeSessionKey || ""))
-                return { contentY: targetY, key: "", channel: "", isHeader: false, offset: 0 }
-            return {
-                contentY: targetY,
-                key: anchorDelegate.anchorIsHeader ? "" : (anchorDelegate.anchorKey || ""),
-                channel: anchorDelegate.anchorChannel || "",
-                isHeader: anchorDelegate.anchorIsHeader === true,
-                offset: targetY - anchorDelegate.y,
-            }
-        }
-        return { contentY: targetY, key: "", channel: "", isHeader: false, offset: 0 }
-    }
-
-    function restoreScrollAnchor(anchor) {
-        if (!sessionList) {
-            return
-        }
-        var targetY = anchor && anchor.contentY !== undefined ? anchor.contentY : sessionList.contentY
-        var anchorDelegate = root.findVisibleDelegateByAnchor(anchor)
-        if (anchorDelegate)
-            targetY = anchorDelegate.y + (anchor.offset || 0)
-        sessionList.contentY = root.clampListContentY(targetY)
-        root.refreshStickyHeader()
-    }
-
-    function toggleGroup(channel) {
-        if (!hasSessionService)
-            return
-        sessionService.toggleSidebarGroup(channel)
-    }
-
-    Connections {
-        target: hasSessionService ? sessionService : null
-        property var pendingAnchor: null
-
-        function onSidebarProjectionWillChange() {
-            pendingAnchor = root.captureScrollAnchor()
+        Rectangle {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: parent.radius
+            color: parent.color
         }
 
-        function onSidebarProjectionChanged() {
-            root.syncUnreadState()
-            if (!pendingAnchor) {
-                root.refreshStickyHeader()
-                return
-            }
-            var anchor = pendingAnchor
-            pendingAnchor = null
-            Qt.callLater(function() {
-                sessionList.forceLayout()
-                root.restoreScrollAnchor(anchor)
-            })
+        Rectangle {
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            anchors.right: parent.right
+            width: parent.radius
+            color: parent.color
         }
-    }
-
-    Component.onCompleted: {
-        Qt.callLater(function() {
-            root.syncUnreadState()
-            root.refreshStickyHeader()
-        })
     }
 
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
 
-        // ── Gateway status capsule ────────────────────────────────────
         Rectangle {
             id: gwCapsule
             objectName: "gatewayCapsule"
             Layout.fillWidth: true
-            Layout.leftMargin: 16; Layout.rightMargin: 16
-            Layout.topMargin: 16; Layout.bottomMargin: 0
+            Layout.leftMargin: 16
+            Layout.rightMargin: 16
+            Layout.topMargin: 16
+            Layout.bottomMargin: 0
             implicitHeight: sizeCapsuleHeight
             radius: height / 2
-                visible: hasChatService
+            visible: hasChatService
 
-                    property string currentState: hasChatService ? chatService.state : "idle"
-                    property bool isRunning: hasChatService && chatService.state === "running"
-                    property bool isStarting: hasChatService && chatService.state === "starting"
-                    property bool isError: hasChatService && chatService.state === "error"
+            property string currentState: hasChatService ? chatService.state : "idle"
+            property bool isRunning: hasChatService && chatService.state === "running"
+            property bool isStarting: hasChatService && chatService.state === "starting"
+            property bool isError: hasChatService && chatService.state === "error"
             property bool isIdleVisual: !isRunning && !isStarting && !isError
             property string previousState: currentState
             property bool isHovered: gwHover.containsMouse
@@ -419,71 +209,66 @@ Rectangle {
             property real iconLift: 0.0
             property real iconPulse: 0.0
             property real iconTurn: 0.0
+            property real pacmanMouth: 0.2
+            property real pacmanPhase: 0.0
             readonly property int stateTransitionDuration: motionPanel + 40
-            // currentState stays canonical; these properties only project the handoff visually.
+            readonly property real pacmanMouthRest: 0.2
+            readonly property real pacmanMouthWide: 0.34
+            readonly property real pacmanMouthClosed: 0.06
             property string displayedPrimaryLabel: primaryLabel
             property string outgoingPrimaryLabel: ""
             property real primaryLabelTransition: 1.0
-
-            function stateValue(runningValue, errorValue, startingValue, idleValue) {
-                switch (currentState) {
-                    case "running":
-                        return runningValue
-                    case "error":
-                        return errorValue
-                    case "starting":
-                        return startingValue
-                    default:
-                        return idleValue
+            readonly property var gatewayStateSpecs: ({
+                "running": {
+                    surfaceColor: gatewaySurfaceRunningTop,
+                    statusColor: gatewayTextRunning,
+                    actionColor: statusSuccess,
+                    dotColor: statusSuccess,
+                    primaryLabel: strings.gateway_running,
+                    actionIconSource: ""
+                },
+                "error": {
+                    surfaceColor: gatewaySurfaceErrorTop,
+                    statusColor: statusError,
+                    actionColor: statusError,
+                    dotColor: statusError,
+                    primaryLabel: strings.gateway_error,
+                    actionIconSource: "../resources/icons/gateway-error.svg"
+                },
+                "starting": {
+                    surfaceColor: gatewaySurfaceStartingTop,
+                    statusColor: gatewayTextStarting,
+                    actionColor: statusWarning,
+                    dotColor: statusWarning,
+                    primaryLabel: strings.gateway_starting,
+                    actionIconSource: "../resources/icons/gateway-starting.svg"
+                },
+                "idle": {
+                    surfaceColor: gatewaySurfaceIdleTop,
+                    statusColor: gatewayTextIdle,
+                    actionColor: accent,
+                    dotColor: accent,
+                    primaryLabel: strings.button_start_gateway,
+                    actionIconSource: "../resources/icons/gateway-idle.svg"
                 }
-            }
-
-            property var stateSpec: stateValue(
-                                       {
-                                           surfaceColor: gatewaySurfaceRunningTop,
-                                           statusColor: gatewayTextRunning,
-                                           actionColor: statusSuccess,
-                                           dotColor: statusSuccess,
-                                           primaryLabel: strings.gateway_running,
-                                           actionIconSource: "../resources/icons/gateway-running.svg"
-                                       },
-                                       {
-                                           surfaceColor: gatewaySurfaceErrorTop,
-                                           statusColor: statusError,
-                                           actionColor: statusError,
-                                           dotColor: statusError,
-                                           primaryLabel: strings.gateway_error,
-                                           actionIconSource: "../resources/icons/gateway-error.svg"
-                                       },
-                                       {
-                                           surfaceColor: gatewaySurfaceStartingTop,
-                                           statusColor: gatewayTextStarting,
-                                           actionColor: statusWarning,
-                                           dotColor: statusWarning,
-                                           primaryLabel: strings.gateway_starting,
-                                           actionIconSource: "../resources/icons/gateway-starting.svg"
-                                       },
-                                       {
-                                           surfaceColor: gatewaySurfaceIdleTop,
-                                           statusColor: gatewayTextIdle,
-                                           actionColor: accent,
-                                           dotColor: accent,
-                                           primaryLabel: strings.button_start_gateway,
-                                           actionIconSource: "../resources/icons/gateway-idle.svg"
-                                       })
+            })
+            readonly property var stateSpec: gatewayStateSpecs[currentState] || gatewayStateSpecs.idle
             property color surfaceColor: stateSpec.surfaceColor
             property color statusColor: stateSpec.statusColor
             property color actionColor: stateSpec.actionColor
             property color dotColor: stateSpec.dotColor
             property string primaryLabel: stateSpec.primaryLabel
             property string actionIconSource: stateSpec.actionIconSource
-                    property string detailText: hasChatService ? (chatService.gatewayDetail || "") : ""
-                    property var gatewayChannels: hasChatService ? (chatService.gatewayChannels || []) : []
-                    property bool hasErrorDetail: hasChatService ? Boolean(chatService.gatewayDetailIsError) : false
+            readonly property bool useRunningPacman: currentState === "running"
+            property string detailText: hasChatService ? (chatService.gatewayDetail || "") : ""
+            property var gatewayChannels: hasChatService ? (chatService.gatewayChannels || []) : []
+            property bool hasErrorDetail: hasChatService ? Boolean(chatService.gatewayDetailIsError) : false
             z: 6
 
             function resetVisualState() {
                 applyVisualSeed(0.0, 0.0, 0.0, 0.0)
+                gwCapsule.pacmanMouth = pacmanMouthRest
+                gwCapsule.pacmanPhase = 0.0
             }
             function applyVisualSeed(actionPulseValue, iconLiftValue, iconPulseValue, iconTurnValue) {
                 gwCapsule.actionPulse = actionPulseValue
@@ -506,19 +291,20 @@ Rectangle {
                     return
 
                 if (gwCapsule.previousState === "starting" && gwCapsule.currentState === "running") {
-                    applyVisualSeed(Math.max(gwCapsule.actionPulse, 0.02), -0.16, Math.max(gwCapsule.iconPulse, 0.03), 0.0)
+                    applyVisualSeed(Math.max(gwCapsule.actionPulse, 0.03), -0.18, Math.max(gwCapsule.iconPulse, 0.05), 2.2)
+                    gwCapsule.pacmanMouth = 0.26
                     gwCapsule.previousState = gwCapsule.currentState
                     return
                 }
 
                 if (gwCapsule.previousState === "starting") {
-                    applyVisualSeed(Math.max(gwCapsule.actionPulse, 0.015), 0.0, Math.max(gwCapsule.iconPulse, 0.02), 0.0)
+                    applyVisualSeed(Math.max(gwCapsule.actionPulse, 0.02), 0.0, Math.max(gwCapsule.iconPulse, 0.03), 0.0)
                     gwCapsule.previousState = gwCapsule.currentState
                     return
                 }
 
                 if (gwCapsule.currentState === "starting") {
-                    applyVisualSeed(Math.max(gwCapsule.actionPulse, 0.02), 0.0, Math.max(gwCapsule.iconPulse, 0.02), gwCapsule.iconTurn)
+                    applyVisualSeed(Math.max(gwCapsule.actionPulse, 0.04), 0.0, Math.max(gwCapsule.iconPulse, 0.04), gwCapsule.iconTurn)
                     gwCapsule.previousState = gwCapsule.currentState
                     return
                 }
@@ -527,13 +313,14 @@ Rectangle {
                 gwCapsule.previousState = gwCapsule.currentState
             }
             function triggerGatewayAction() {
-                        if (!hasChatService || gwCapsule.isStarting)
-                            return
+                if (!hasChatService || gwCapsule.isStarting)
+                    return
                 if (gwCapsule.isRunning)
                     chatService.stop()
                 else
                     chatService.start()
             }
+
             onCurrentStateChanged: handoffVisualState()
             onPrimaryLabelChanged: transitionPrimaryLabel(primaryLabel)
             activeFocusOnTab: true
@@ -556,6 +343,7 @@ Rectangle {
             Behavior on color { ColorAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeStandard } }
             Behavior on border.color { ColorAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeStandard } }
             Behavior on scale { NumberAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeEmphasis } }
+
             NumberAnimation {
                 id: primaryLabelTransitionAnim
                 target: gwCapsule
@@ -565,6 +353,7 @@ Rectangle {
                 duration: gwCapsule.stateTransitionDuration
                 easing.type: easeSoft
             }
+
             Item {
                 anchors.fill: parent
 
@@ -593,46 +382,62 @@ Rectangle {
                         Behavior on color { ColorAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeStandard } }
                     }
 
+                    Rectangle {
+                        id: gwActionRing
+                        width: gwActionFace.width
+                        height: width
+                        radius: width / 2
+                        anchors.centerIn: gwActionFace
+                        color: "transparent"
+                        border.width: 1.4
+                        border.color: gwCapsule.isError ? "#66FFF7F6" : (gwCapsule.isRunning ? "#7AF7FFF9" : "#72FFFFFF")
+                        opacity: gwCapsule.isIdleVisual ? 0.08 : (0.18 + gwCapsule.actionPulse * 2.2)
+                        scale: 1.0 + gwCapsule.actionPulse * (gwCapsule.isStarting ? 1.25 : 0.9)
+                        Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeSoft } }
+                        Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeSoft } }
+                        Behavior on border.color { ColorAnimation { duration: gwCapsule.stateTransitionDuration; easing.type: easeStandard } }
+                    }
+
                     SequentialAnimation {
                         running: gwCapsule.isRunning
                         loops: Animation.Infinite
-                        NumberAnimation { target: gwCapsule; property: "actionPulse"; to: 0.03; duration: motionBreath; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "actionPulse"; to: 0.075; duration: motionBreath; easing.type: easeSoft }
                         NumberAnimation { target: gwCapsule; property: "actionPulse"; to: 0.0; duration: motionBreath; easing.type: easeSoft }
                     }
                     SequentialAnimation {
                         running: gwCapsule.isStarting
                         loops: Animation.Infinite
-                        NumberAnimation { target: gwCapsule; property: "actionPulse"; to: 0.10; duration: motionAmbient; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "actionPulse"; to: 0.14; duration: motionAmbient; easing.type: easeSoft }
                         NumberAnimation { target: gwCapsule; property: "actionPulse"; to: 0.0; duration: motionAmbient; easing.type: easeSoft }
                     }
                     SequentialAnimation {
                         running: gwCapsule.isError
                         loops: Animation.Infinite
-                        NumberAnimation { target: gwCapsule; property: "actionPulse"; to: 0.06; duration: motionStatusPulse; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "actionPulse"; to: 0.09; duration: motionStatusPulse; easing.type: easeSoft }
                         NumberAnimation { target: gwCapsule; property: "actionPulse"; to: 0.0; duration: motionStatusPulse; easing.type: easeSoft }
                     }
                     SequentialAnimation {
                         running: gwCapsule.isIdleVisual
                         loops: Animation.Infinite
-                        NumberAnimation { target: gwCapsule; property: "iconLift"; to: -0.8; duration: motionAmbient; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconLift"; to: -0.55; duration: motionAmbient; easing.type: easeSoft }
                         NumberAnimation { target: gwCapsule; property: "iconLift"; to: 0.0; duration: motionAmbient; easing.type: easeSoft }
                     }
                     SequentialAnimation {
                         running: gwCapsule.isIdleVisual
                         loops: Animation.Infinite
-                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.06; duration: motionAmbient; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.045; duration: motionAmbient; easing.type: easeSoft }
                         NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.0; duration: motionAmbient; easing.type: easeSoft }
                     }
                     SequentialAnimation {
                         running: gwCapsule.isIdleVisual
                         loops: Animation.Infinite
-                        NumberAnimation { target: gwCapsule; property: "iconTurn"; to: 6; duration: motionAmbient; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconTurn"; to: 3; duration: motionAmbient; easing.type: easeSoft }
                         NumberAnimation { target: gwCapsule; property: "iconTurn"; to: 0; duration: motionAmbient; easing.type: easeSoft }
                     }
                     SequentialAnimation {
                         running: gwCapsule.isStarting
                         loops: Animation.Infinite
-                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.10; duration: motionAmbient; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.13; duration: motionAmbient; easing.type: easeSoft }
                         NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.0; duration: motionAmbient; easing.type: easeSoft }
                     }
                     NumberAnimation {
@@ -648,20 +453,54 @@ Rectangle {
                     SequentialAnimation {
                         running: gwCapsule.isRunning
                         loops: Animation.Infinite
-                        NumberAnimation { target: gwCapsule; property: "iconLift"; to: -0.6; duration: motionBreath; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconLift"; to: -0.45; duration: motionBreath; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconLift"; to: 0.45; duration: motionBreath; easing.type: easeSoft }
                         NumberAnimation { target: gwCapsule; property: "iconLift"; to: 0.0; duration: motionBreath; easing.type: easeSoft }
                     }
                     SequentialAnimation {
                         running: gwCapsule.isRunning
                         loops: Animation.Infinite
-                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.08; duration: motionBreath; easing.type: easeSoft }
-                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.0; duration: motionBreath; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.085; duration: motionBreath; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.02; duration: motionBreath; easing.type: easeSoft }
+                    }
+                    SequentialAnimation {
+                        running: gwCapsule.isRunning
+                        loops: Animation.Infinite
+                        NumberAnimation { target: gwCapsule; property: "pacmanMouth"; to: gwCapsule.pacmanMouthWide; duration: 220; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "pacmanMouth"; to: gwCapsule.pacmanMouthClosed; duration: 140; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "pacmanMouth"; to: gwCapsule.pacmanMouthRest; duration: 120; easing.type: easeSoft }
+                    }
+                    NumberAnimation {
+                        target: gwCapsule
+                        property: "pacmanPhase"
+                        from: 0.0
+                        to: 1.0
+                        duration: 480
+                        loops: Animation.Infinite
+                        easing.type: easeLinear
+                        running: gwCapsule.isRunning
                     }
                     SequentialAnimation {
                         running: gwCapsule.isError
                         loops: Animation.Infinite
-                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.05; duration: motionStatusPulse; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.07; duration: motionStatusPulse; easing.type: easeSoft }
                         NumberAnimation { target: gwCapsule; property: "iconPulse"; to: 0.0; duration: motionStatusPulse; easing.type: easeSoft }
+                    }
+                    SequentialAnimation {
+                        running: gwCapsule.isError
+                        loops: Animation.Infinite
+                        NumberAnimation { target: gwCapsule; property: "iconTurn"; to: 4; duration: motionStatusPulse; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconTurn"; to: -4; duration: motionStatusPulse; easing.type: easeSoft }
+                        NumberAnimation { target: gwCapsule; property: "iconTurn"; to: 0; duration: motionStatusPulse; easing.type: easeSoft }
+                    }
+
+                    NumberAnimation {
+                        target: gwCapsule
+                        property: "iconTurn"
+                        to: 0
+                        duration: motionUi
+                        easing.type: easeSoft
+                        running: gwCapsule.isRunning && Math.abs(gwCapsule.iconTurn) > 0.01
                     }
 
                     Item {
@@ -669,6 +508,7 @@ Rectangle {
                         width: sizeGatewayActionIcon
                         height: sizeGatewayActionIcon
                         anchors.centerIn: gwActionFace
+                        transformOrigin: Item.Center
                         y: gwCapsule.iconLift
                         scale: 1.0 + gwCapsule.iconPulse
                         rotation: gwCapsule.iconTurn
@@ -684,8 +524,20 @@ Rectangle {
                             fillMode: Image.PreserveAspectFit
                             smooth: true
                             mipmap: true
-                            opacity: gwCapsule.isHovered ? 1.0 : 0.92
+                            opacity: gwCapsule.isHovered ? 1.0 : 0.98
+                            visible: !gwCapsule.useRunningPacman && gwCapsule.actionIconSource != ""
                             Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
+                        }
+
+                        Item {
+                            anchors.fill: parent
+                            visible: gwCapsule.useRunningPacman
+
+                            GatewayPacmanGlyph {
+                                anchors.fill: parent
+                                mouth: gwCapsule.pacmanMouth
+                                phase: gwCapsule.pacmanPhase
+                            }
                         }
                     }
                 }
@@ -823,462 +675,130 @@ Rectangle {
                     gwCapsule.triggerGatewayAction()
                 }
             }
-
         }
 
-        // ── Session list ──────────────────────────────────────────────────
         Rectangle {
+            id: navCard
             Layout.fillWidth: true
-            Layout.fillHeight: true
             Layout.leftMargin: 12
             Layout.rightMargin: 12
-            Layout.topMargin: 14
-            Layout.bottomMargin: 0
+            Layout.topMargin: 18
+            implicitHeight: navContent.implicitHeight + 20
             radius: 22
-            color: sidebarListPanelBg
+            color: isDark ? "#15100D" : "#FAF4EE"
             border.width: 1
-            border.color: sidebarListPanelBorder
+            border.color: isDark ? "#20FFFFFF" : "#14000000"
 
             Rectangle {
-                anchors.fill: parent
-                radius: parent.radius
-                color: sidebarListPanelOverlay
-                opacity: 0.9
-            }
+                id: navHighlight
+                objectName: "sidebarNavHighlight"
+                z: 1
+                x: 8
+                y: root.navHighlightY
+                width: navContent.width + 4
+                height: root.navHighlightHeight
+                radius: 16
+                color: isDark ? "#2A1C14" : "#F3E7D8"
+                border.width: 1
+                border.color: isDark ? "#3A2A20" : "#E9D6C0"
+                opacity: root.navHighlightOpacity
 
-            Item {
-                id: sessionsHeaderBar
-                objectName: "sessionsHeaderBar"
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.leftMargin: 14
-                anchors.rightMargin: 12
-                anchors.topMargin: 8
-                height: 30
-                scale: 1.0 + headerPulseScale
+                Behavior on y { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
+                Behavior on height { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
+                Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
 
-                Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
-
-                Item {
+                Rectangle {
+                    width: 3
+                    height: 26
+                    radius: 1.5
                     anchors.left: parent.left
-                    anchors.right: newSessionButton.left
-                    anchors.rightMargin: 10
+                    anchors.leftMargin: 8
                     anchors.verticalCenter: parent.verticalCenter
-                    height: parent.height
-
-                    Row {
-                        id: sessionsHeaderContent
-                        anchors.centerIn: parent
-                        spacing: 8
-
-                        Image {
-                            objectName: "sidebarSessionsTitleIcon"
-                            width: 22
-                            height: 22
-                            anchors.verticalCenter: parent.verticalCenter
-                            y: 1
-                            source: themedIconSource("sidebar-sessions-title")
-                            sourceSize: Qt.size(22, 22)
-                            fillMode: Image.PreserveAspectFit
-                            smooth: true
-                            mipmap: true
-                            opacity: 0.98
-                        }
-
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: strings.sidebar_sessions
-                            color: textPrimary
-                            font.pixelSize: typeBody + 2
-                            font.weight: weightBold
-                            font.letterSpacing: 0.35
-                            textFormat: Text.PlainText
-                            opacity: 0.96
-                        }
-
-                        UnreadBadge {
-                            id: unreadBadge
-                            badgeObjectName: "sessionsHeaderUnreadBadge"
-                            textObjectName: "sessionsHeaderUnreadText"
-                            anchors.verticalCenter: parent.verticalCenter
-                            active: hasSessionService && (sessionService.sidebarUnreadCount || 0) > 0
-                            count: hasSessionService ? (sessionService.sidebarUnreadCount || 0) : 0
-                            mode: "count"
-                            fillColor: sidebarHeaderBadgeBg
-                            textColor: sidebarHeaderBadgeText
-                            visualScale: 1.0 + headerBadgeScale
-                        }
-                    }
+                    color: accent
                 }
 
-                IconCircleButton {
-                    id: newSessionButton
-                    objectName: "newSessionButton"
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    buttonSize: sizeControlHeight - 6
-                    glyphText: "+"
-                    glyphSize: 18
-                    fillColor: isDark ? "#12FFFFFF" : "#16000000"
-                    hoverFillColor: accent
-                    outlineColor: newSessionButton.hovered ? accent : "transparent"
-                    glyphColor: newSessionButton.hovered ? "#FFFFFFFF" : textPrimary
-                    hoverScale: motionHoverScaleMedium
-                    onClicked: root.requestNewSession()
-                }
-
-                SequentialAnimation {
-                    id: sessionsHeaderPulse
-                    running: false
-                    ParallelAnimation {
-                        NumberAnimation { target: root; property: "headerPulseScale"; from: 0.0; to: 0.03; duration: motionFast; easing.type: easeStandard }
-                        NumberAnimation { target: root; property: "headerBadgeScale"; from: 0.0; to: 0.12; duration: motionFast; easing.type: easeEmphasis }
-                    }
-                    PauseAnimation { duration: motionMicro }
-                    ParallelAnimation {
-                        NumberAnimation { target: root; property: "headerPulseScale"; to: 0.0; duration: motionPanel; easing.type: easeSoft }
-                        NumberAnimation { target: root; property: "headerBadgeScale"; to: 0.0; duration: motionPanel; easing.type: easeSoft }
-                    }
+                Rectangle {
+                    anchors.fill: parent
+                    anchors.margins: 1
+                    radius: parent.radius - 1
+                    color: isDark ? "#08FFFFFF" : "#10FFFFFF"
+                    opacity: 0.8
                 }
             }
 
-            ListView {
-                id: sessionList
-                objectName: "sidebarSessionList"
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.bottom: parent.bottom
-                anchors.leftMargin: 8
-                anchors.rightMargin: 8
-                anchors.topMargin: sessionsHeaderBar.y + sessionsHeaderBar.height + 6
-                anchors.bottomMargin: 0
-                clip: true
-                boundsBehavior: Flickable.StopAtBounds
-                boundsMovement: Flickable.StopAtBounds
-                model: hasSessionService ? sessionService.sidebarModel : null
-                spacing: 0
-                onContentHeightChanged: {
-                    contentY = root.clampListContentY(contentY)
-                    root.refreshStickyHeader()
-                }
-                onHeightChanged: {
-                    contentY = root.clampListContentY(contentY)
-                    root.refreshStickyHeader()
-                }
-                ScrollBar.vertical: ScrollBar {
-                    policy: ScrollBar.AsNeeded
-                    width: 4
-                    background: Item {}
-                    contentItem: Rectangle {
-                        implicitWidth: 4
-                        radius: 2
-                        color: sidebarScrollbarThumb
-                        opacity: 0.72
-                    }
-                }
-                footer: Item {
-                    width: sessionList.width
-                    height: 0
+            ColumnLayout {
+                id: navContent
+                z: 2
+                anchors.fill: parent
+                anchors.margins: 10
+                spacing: 4
+
+                Text {
+                    Layout.leftMargin: 8
+                    Layout.topMargin: 6
+                    text: strings.sidebar_library_title
+                    color: textSecondary
+                    font.pixelSize: typeMeta
+                    font.weight: weightBold
+                    font.letterSpacing: letterWide
                 }
 
-                onContentYChanged: root.refreshStickyHeader()
-
-                delegate: Item {
-                    property bool anchorReady: true
-                    property bool anchorIsHeader: model.isHeader === true
-                    property string anchorKey: model.itemKey || ""
-                    property string anchorChannel: model.channel || ""
-                    readonly property real sessionTopGap: model.isFirstInGroup ? sizeSidebarHeaderToRowGap : 0
-                    readonly property real sessionBottomGap: model.isLastInGroup ? sizeSidebarGroupGap : sizeSidebarGroupInnerGap
-                    width: sessionList.width
-                    height: model.isHeader
-                            ? (sizeSidebarHeader + (!model.expanded ? sizeSidebarGroupGap : 0))
-                            : (sizeSessionRow + sessionTopGap + sessionBottomGap)
-
-                    // ── Group header row ──────────────────────────────────────
-                    SidebarGroupHeader {
-                        id: groupHeaderCard
-                        visible: model.isHeader
-                        anchors { left: parent.left; right: parent.right; top: parent.top }
-                        height: sizeSidebarHeader
-                        channel: model.channel || "other"
-                        expanded: model.expanded ?? false
-                        itemCount: model.itemCount || 0
-                        unreadCount: model.groupUnreadCount || 0
-                        groupHasRunning: model.groupHasRunning ?? false
-                        iconSource: root.channelIconSource(model.channel)
-                        chevronObjectName: "sidebarGroupChevronIcon_" + (model.channel || "other")
-                        unreadBadgeObjectName: "sidebarGroupUnreadBadge_" + (model.channel || "other")
-                        unreadTextObjectName: "sidebarGroupUnreadText_" + (model.channel || "other")
-                        onClicked: root.toggleGroup(model.channel)
-                    }
-
-                    // ── Session item row ──────────────────────────────────────
-                    Item {
-                        id: sessionRow
-                        visible: !model.isHeader
-                        anchors { left: parent.left; right: parent.right; top: parent.top }
-                        y: sessionTopGap
-                        height: sizeSessionRow + sessionBottomGap
-                        clip: true
-
-                        SessionItem {
-                            id: inner
-                            width: parent.width - 16 - ((model.isChildSession ?? false) ? 12 : 0)
-                            x: 8 + ((model.isChildSession ?? false) ? 12 : 0)
-                            sessionKey:   model.itemKey   ?? ""
-                            sessionTitle: model.itemTitle ?? model.itemKey ?? ""
-                            sessionRelativeTime: model.itemUpdatedText ?? ""
-                            filledIconSource: (model.isChildSession ?? false)
-                                              ? "../resources/icons/sidebar-subagent.svg"
-                                              : root.channelFilledIconSource(model.visualChannel ?? model.channel)
-                            iconTintColor: root.channelAccent(model.visualChannel ?? model.channel)
-                            useIconTint: (model.isChildSession ?? false)
-                                         ? false
-                                         : root.channelUsesTint(model.visualChannel ?? model.channel)
-                            isRunning:    model.isRunning ?? false
-                            childIndent: (model.isChildSession ?? false) ? 2 : 0
-                            isActive:     root.showChatSelection && sessionKey === root.activeSessionKey
-                            dimmed:       root.gatewayIdle
-                            hasUnread:    model.itemHasUnread ?? false
-                            readOnlySession: model.isReadOnly ?? false
-                            onSelected:       root.sessionSelected(sessionKey)
-                            onDeleteRequested: root.sessionDeleteRequested(sessionKey)
-                        }
-                    }
+                SidebarNavItem {
+                    id: sessionsNavItem
+                    Layout.fillWidth: true
+                    label: strings.sidebar_sessions
+                    iconSource: root.sectionIconSource("sessions")
+                    active: root.selectionTarget === "sessions"
+                    badgeCount: hasSessionService ? (sessionService.sidebarUnreadCount || 0) : 0
+                    useAccentBadge: true
+                    useExternalHighlight: true
+                    onClicked: root.sectionRequested("sessions")
                 }
 
-                Item {
-                    id: stickyHeaderViewport
-                    objectName: "sidebarStickyHeaderViewport"
-                    parent: sessionList.parent
-                    visible: root.stickyHeaderVisible
-                    z: 3
-                    x: sessionList.x
-                    y: sessionList.y
-                    width: sessionList.width
-                    height: sizeSidebarHeader
-                    clip: true
-
-                    SidebarGroupHeader {
-                        id: stickyHeader
-                        objectName: "sidebarStickyHeader"
-                        visible: root.stickyHeaderVisible
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        y: root.stickyHeaderOffset
-                        height: sizeSidebarHeader
-                        channel: root.stickyHeaderChannel
-                        expanded: root.stickyHeaderExpanded
-                        itemCount: root.stickyHeaderItemCount
-                        unreadCount: root.stickyHeaderUnreadCount
-                        groupHasRunning: root.stickyHeaderHasRunning
-                        iconSource: root.channelIconSource(root.stickyHeaderChannel)
-                        chevronObjectName: "sidebarStickyGroupChevronIcon_" + (root.stickyHeaderChannel || "other")
-                        unreadBadgeObjectName: "sidebarStickyGroupUnreadBadge_" + (root.stickyHeaderChannel || "other")
-                        unreadTextObjectName: "sidebarStickyGroupUnreadText_" + (root.stickyHeaderChannel || "other")
-                        onClicked: root.toggleGroup(root.stickyHeaderChannel)
-                    }
+                SidebarNavItem {
+                    id: memoryNavItem
+                    Layout.fillWidth: true
+                    label: strings.sidebar_memory
+                    iconSource: root.sectionIconSource("memory")
+                    active: root.selectionTarget === "memory"
+                    useExternalHighlight: true
+                    onClicked: root.sectionRequested("memory")
                 }
 
-
-                // Loading state
-                Item {
-                    id: loadingStateWrap
-                    objectName: "sidebarLoadingState"
-                    anchors.top: parent.top
-                    anchors.topMargin: 18
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: Math.min(sessionList.width - 20, 216)
-                    height: loadingStateCard.implicitHeight
-                visible: sessionList.count === 0 && hasSessionService && sessionService.sessionsLoading
-
-                    Rectangle {
-                        id: loadingStateCard
-                        width: parent.width
-                        implicitHeight: loadingStateContent.implicitHeight + 24
-                        radius: 18
-                        color: isDark ? "#18FFFFFF" : "#0B000000"
-                        border.width: 1
-                        border.color: isDark ? "#32FFFFFF" : "#26000000"
-
-                        Column {
-                            id: loadingStateContent
-                            anchors.centerIn: parent
-                            anchors.verticalCenterOffset: 2
-                            width: parent.width - 24
-                            spacing: 10
-
-                            Rectangle {
-                                width: 46
-                                height: 46
-                                radius: 23
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                color: isDark ? "#16FFFFFF" : "#10FFB33D"
-                                border.width: 1
-                                border.color: isDark ? "#22FFFFFF" : borderSubtle
-
-                                LoadingOrbit {
-                                    anchors.centerIn: parent
-                                    width: 28
-                                    height: 28
-                                    running: loadingStateWrap.visible
-                                    haloOpacity: 0.16
-                                }
-                            }
-
-                            Text {
-                                width: parent.width
-                                horizontalAlignment: Text.AlignHCenter
-                                text: strings.sidebar_loading_title
-                                color: isDark ? "#FFF1E1" : "#4B2D12"
-                                font.pixelSize: typeBody + 1
-                                font.weight: weightBold
-                                wrapMode: Text.WordWrap
-                                lineHeight: 1.12
-                            }
-
-                            Text {
-                                width: parent.width
-                                horizontalAlignment: Text.AlignHCenter
-                                text: strings.sidebar_loading_hint
-                                color: isDark ? "#DCC5A8" : "#74512F"
-                                font.pixelSize: typeMeta
-                                wrapMode: Text.WordWrap
-                                lineHeight: 1.18
-                            }
-                        }
-                    }
+                SidebarNavItem {
+                    id: skillsNavItem
+                    Layout.fillWidth: true
+                    label: strings.sidebar_skills
+                    iconSource: root.sectionIconSource("skills")
+                    active: root.selectionTarget === "skills"
+                    useExternalHighlight: true
+                    onClicked: root.sectionRequested("skills")
                 }
 
-                // Empty state
-                Item {
-                    id: emptyStateWrap
-                    objectName: "sidebarEmptyStateWrap"
-                    anchors.top: parent.top
-                    anchors.topMargin: 18
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: Math.min(sessionList.width - 28, 196)
-                    height: emptyStateCard.implicitHeight
-                visible: sessionList.count === 0 && !(hasSessionService && sessionService.sessionsLoading)
+                SidebarNavItem {
+                    id: toolsNavItem
+                    Layout.fillWidth: true
+                    label: strings.sidebar_tools_nav
+                    iconSource: root.sectionIconSource("tools")
+                    active: root.selectionTarget === "tools"
+                    useExternalHighlight: true
+                    onClicked: root.sectionRequested("tools")
+                }
 
-                    Rectangle {
-                        id: emptyStateCard
-                        objectName: "sidebarEmptyState"
-                        width: parent.width
-                        implicitHeight: emptyStateContent.implicitHeight + 24
-                        radius: 18
-                        color: emptyStateHover.containsMouse ? (isDark ? "#22FFFFFF" : "#14000000") : (isDark ? "#18FFFFFF" : "#0B000000")
-                        border.width: 1
-                        border.color: emptyStateHover.containsMouse ? sessionRowActiveBorder : (isDark ? "#46FFFFFF" : "#26000000")
-                        scale: emptyStateHover.pressed ? 0.988 : (emptyStateHover.containsMouse ? motionHoverScaleMedium : 1.0)
-
-                    Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-                    Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-                    Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
-
-                    Column {
-                        id: emptyStateContent
-                        anchors.centerIn: parent
-                        anchors.verticalCenterOffset: 4
-                        width: parent.width - 28
-                        spacing: 11
-
-                        Item {
-                            width: 50
-                            height: 50
-                            anchors.horizontalCenter: parent.horizontalCenter
-
-                            Rectangle {
-                                width: 46
-                                height: 46
-                                radius: 23
-                                anchors.centerIn: parent
-                                color: emptyStateHover.containsMouse ? (isDark ? "#18FFFFFF" : "#10000000") : chatEmptyIconBg
-                                border.width: 1
-                                border.color: emptyStateHover.containsMouse ? sessionRowActiveBorder : (isDark ? "#38FFFFFF" : chatEmptyIconBorder)
-
-                                Image {
-                                    objectName: "sidebarEmptyChatIcon"
-                        width: 18
-                        height: 18
-                                    anchors.centerIn: parent
-                                    source: themedIconSource("chat")
-                        sourceSize: Qt.size(18, 18)
-                                    fillMode: Image.PreserveAspectFit
-                                    smooth: true
-                                    mipmap: true
-                                    opacity: 0.96
-                                }
-                            }
-
-                            Rectangle {
-                                width: 16
-                                height: 16
-                                radius: 8
-                                anchors.right: parent.right
-                                anchors.top: parent.top
-                                anchors.rightMargin: 4
-                                anchors.topMargin: 4
-                                color: emptyStateHover.containsMouse ? accent : accentGlow
-
-                                PlusGlyph {
-                                    glyphSize: 7
-                                    barThickness: 1.8
-                                    glyphColor: bgSidebar
-                                    anchors.centerIn: parent
-                                }
-                            }
-                        }
-
-                        Text {
-                            width: parent.width
-                            horizontalAlignment: Text.AlignHCenter
-                            text: strings.sidebar_empty_title
-                            color: isDark ? "#FFF1E1" : "#4B2D12"
-                            font.pixelSize: typeBody + 1
-                            font.weight: weightBold
-                            wrapMode: Text.WordWrap
-                        }
-
-                        Text {
-                            width: parent.width
-                            horizontalAlignment: Text.AlignHCenter
-                            text: strings.sidebar_empty_hint
-                            color: isDark ? "#DCC5A8" : "#74512F"
-                            font.pixelSize: typeMeta
-                            wrapMode: Text.WordWrap
-                        }
-
-                        PillActionButton {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            text: strings.sidebar_empty_cta
-                            leadingText: "+"
-                            minHeight: 28
-                            horizontalPadding: 18
-                            fillColor: emptyStateHover.containsMouse ? accent : accentGlow
-                            hoverFillColor: emptyStateHover.containsMouse ? accent : accentGlow
-                            outlineColor: emptyStateHover.containsMouse ? accent : sessionRowActiveBorder
-                            hoverOutlineColor: emptyStateHover.containsMouse ? accent : sessionRowActiveBorder
-                            textColor: bgSidebar
-                        }
-                    }
-
-                        MouseArea {
-                            id: emptyStateHover
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.requestNewSession()
-                        }
-                    }
+                SidebarNavItem {
+                    id: cronNavItem
+                    Layout.fillWidth: true
+                    label: strings.sidebar_cron
+                    iconSource: root.sectionIconSource("cron")
+                    active: root.selectionTarget === "cron"
+                    useExternalHighlight: true
+                    onClicked: root.sectionRequested("cron")
                 }
             }
         }
 
-        // ── App icon (bottom) ────────────────────────────────────────
+        Item { Layout.fillHeight: true }
+
         Item {
             id: bottomActions
             Layout.fillWidth: true
@@ -1286,23 +806,23 @@ Rectangle {
             Layout.bottomMargin: 6
             property bool diagnosticsHovered: diagnosticsArea.containsMouse
 
-            // Outer glow ring (sibling — never clipped)
             Rectangle {
                 id: glowRing
                 anchors.centerIn: appIconBtn
-                width: appIconBtn.width + spacingMd + 2; height: appIconBtn.height + spacingMd + 2
+                width: appIconBtn.width + spacingMd + 2
+                height: appIconBtn.height + spacingMd + 2
                 radius: width / 2
                 color: "transparent"
                 border.width: 1.5
                 border.color: accent
-                opacity: 0
+                opacity: root.settingsActive ? 0.38 : 0
                 antialiasing: true
                 scale: appIconBtn.scale
                 rotation: appIconBtn.rotation
 
                 SequentialAnimation {
                     id: breatheAnim
-                    running: !appIconArea.containsMouse
+                    running: !root.settingsActive && !appIconArea.containsMouse
                     loops: Animation.Infinite
                     NumberAnimation {
                         target: glowRing; property: "opacity"
@@ -1328,16 +848,16 @@ Rectangle {
                 }
             }
 
-            // Second subtle ring (depth layer)
             Rectangle {
                 id: glowRingOuter
                 anchors.centerIn: appIconBtn
-                width: appIconBtn.width + spacingXl; height: appIconBtn.height + spacingXl
+                width: appIconBtn.width + spacingXl
+                height: appIconBtn.height + spacingXl
                 radius: width / 2
                 color: "transparent"
                 border.width: 1
                 border.color: accent
-                opacity: appIconArea.containsMouse ? 0.25 : 0
+                opacity: root.settingsActive ? 0.18 : (appIconArea.containsMouse ? 0.25 : 0)
                 antialiasing: true
                 scale: appIconBtn.scale
                 rotation: appIconBtn.rotation
@@ -1357,7 +877,6 @@ Rectangle {
                 opacity: bottomActions.diagnosticsHovered ? 0.12 : 0.0
                 scale: bottomActions.diagnosticsHovered ? 1.0 : 0.985
                 visible: opacity > 0.01
-
                 Behavior on opacity {
                     NumberAnimation { duration: motionPanel; easing.type: easeStandard }
                 }
@@ -1366,22 +885,24 @@ Rectangle {
                 }
             }
 
-            // Icon body
             Rectangle {
                 id: appIconBtn
-                width: sizeAppIcon; height: sizeAppIcon; radius: sizeAppIcon / 2
+                objectName: "sidebarAppIconButton"
+                readonly property bool active: root.settingsActive
+                width: sizeAppIcon
+                height: sizeAppIcon
+                radius: sizeAppIcon / 2
                 anchors.left: parent.left
                 anchors.leftMargin: 18
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: 6
-                color: "transparent"
+                color: active ? (isDark ? "#251910" : "#F8EBDD") : "transparent"
                 border.width: 1.5
-                border.color: appIconArea.containsMouse ? accent : borderSubtle
+                border.color: active ? accent : (appIconArea.containsMouse ? accent : borderSubtle)
                 antialiasing: true
-
                 scale: appIconArea.pressed ? motionPressScaleStrong
-                       : (appIconArea.containsMouse ? motionHoverScaleStrong : 1.0)
-                rotation: appIconArea.containsMouse ? -10 : 0
+                       : (active ? motionSelectionScaleActive : (appIconArea.containsMouse ? motionHoverScaleStrong : 1.0))
+                rotation: active ? 0 : (appIconArea.containsMouse ? -10 : 0)
 
                 Behavior on scale {
                     NumberAnimation { duration: motionUi; easing.type: easeEmphasis }
@@ -1393,7 +914,6 @@ Rectangle {
                     NumberAnimation { duration: motionPanel; easing.type: easeEmphasis }
                 }
 
-                // Circular logo (pre-clipped PNG)
                 Image {
                     anchors.fill: parent
                     source: "../resources/logo-circle.png"
@@ -1413,10 +933,7 @@ Rectangle {
                         var idx = Math.floor(Math.random() * 5)
                         bubbleText.text = strings["bubble_" + idx] || ""
                     }
-                    onClicked: {
-                        if (!root.showingSettings)
-                            root.settingsRequested()
-                    }
+                    onClicked: root.settingsRequested()
                 }
             }
 
@@ -1486,7 +1003,7 @@ Rectangle {
                 }
 
                 Rectangle {
-            visible: hasDiagnosticsService && diagnosticsService.eventCount > 0
+                    visible: hasDiagnosticsService && diagnosticsService.eventCount > 0
                     width: 17
                     height: 17
                     radius: 8.5
@@ -1499,7 +1016,7 @@ Rectangle {
 
                     Text {
                         anchors.centerIn: parent
-                    text: hasDiagnosticsService && diagnosticsService.eventCount > 9 ? "9+" : String(hasDiagnosticsService ? diagnosticsService.eventCount : 0)
+                        text: hasDiagnosticsService && diagnosticsService.eventCount > 9 ? "9+" : String(hasDiagnosticsService ? diagnosticsService.eventCount : 0)
                         color: isDark ? "#241106" : "#FFFFFF"
                         font.pixelSize: 8
                         font.weight: weightBold
@@ -1516,7 +1033,6 @@ Rectangle {
                 }
             }
 
-            // ── Speech bubble (hover tooltip) ──────────────────────────
             Rectangle {
                 id: speechBubble
                 property bool show: appIconArea.containsMouse
@@ -1524,14 +1040,12 @@ Rectangle {
                 anchors.left: appIconBtn.right
                 anchors.leftMargin: 12
                 anchors.verticalCenter: appIconBtn.verticalCenter
-
                 width: bubbleText.implicitWidth + 24
                 height: bubbleText.implicitHeight + 16
                 radius: radiusMd
                 color: bgElevated
                 border.width: 1
                 border.color: borderDefault
-
                 opacity: speechBubble.show ? 1.0 : 0.0
                 scale: speechBubble.show ? 1.0 : motionBubbleHiddenScale
                 transformOrigin: Item.Left
@@ -1544,7 +1058,6 @@ Rectangle {
                     NumberAnimation { duration: motionUi; easing.type: easeEmphasis }
                 }
 
-                // Bubble text
                 Text {
                     id: bubbleText
                     anchors.centerIn: parent

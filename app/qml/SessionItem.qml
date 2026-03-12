@@ -2,6 +2,8 @@ import QtQuick 2.15
 
 Rectangle {
     id: root
+    z: 1
+    objectName: "sessionItem"
 
     property string sessionKey: ""
     property string sessionTitle: ""
@@ -15,6 +17,8 @@ Rectangle {
     property bool readOnlySession: false
     property bool isRunning: false
     property int childIndent: 0
+    property bool useExternalActiveHighlight: false
+    readonly property real deleteHitZoneWidth: deleteBtn.width + deleteBtn.anchors.rightMargin
     readonly property string deleteIconSource: isDark
                                                ? "../resources/icons/sidebar-close.svg"
                                                : "../resources/icons/sidebar-close-light.svg"
@@ -23,15 +27,25 @@ Rectangle {
 
     height: sizeSessionRow
     radius: 12
-    scale: isActive ? motionSelectionScaleActive : (hoverArea.containsMouse ? motionSelectionScaleHover : 1.0)
-    color: isActive
+    scale: useExternalActiveHighlight
+           ? (hoverArea.pressed ? motionPressScaleStrong : (hoverArea.containsMouse && !isActive ? motionHoverScaleSubtle : 1.0))
+           : (isActive ? motionSelectionScaleActive : (hoverArea.containsMouse ? motionSelectionScaleHover : 1.0))
+    color: isActive && useExternalActiveHighlight
+           ? "transparent"
+           : useExternalActiveHighlight && hoverArea.containsMouse
+           ? (isDark ? "#11FFFFFF" : "#12000000")
+           : useExternalActiveHighlight
+           ? "transparent"
+           : isActive && !useExternalActiveHighlight
            ? sessionRowActiveBg
            : (hoverArea.containsMouse ? sessionRowHoverBg : sessionRowIdleBg)
     border.width: 0
-    border.color: isActive ? sessionRowActiveBorder : (hoverArea.containsMouse ? sessionRowHoverBorder : sessionRowIdleBorder)
+    border.color: useExternalActiveHighlight
+                  ? "transparent"
+                  : (isActive ? sessionRowActiveBorder : (hoverArea.containsMouse ? sessionRowHoverBorder : sessionRowIdleBorder))
     opacity: dimmed ? (isActive ? opacityDimmedActive : opacityDimmedIdle) : 1.0
 
-    Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+    Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
     Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
     Behavior on border.width { NumberAnimation { duration: motionMicro; easing.type: easeStandard } }
     Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
@@ -54,26 +68,22 @@ Rectangle {
             height: 16
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            scale: root.isActive ? motionHoverScaleSubtle : (hoverArea.containsMouse ? 1.03 : 1.0)
-
-            Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
+            scale: 1.0
 
             Image {
                 id: iconImage
                 anchors.centerIn: parent
                 source: root.filledIconSource
-                sourceSize: Qt.size(root.isActive ? 16 : 14, root.isActive ? 16 : 14)
-                width: root.isActive ? 16 : 14
-                height: root.isActive ? 16 : 14
+                sourceSize: Qt.size(14, 14)
+                width: 14
+                height: 14
                 fillMode: Image.PreserveAspectFit
                 smooth: true
                 mipmap: true
-                opacity: root.isActive ? 1.0 : 0.94
-                scale: root.isActive ? 1.05 : 1.0
+                opacity: root.isActive ? 1.0 : (hoverArea.containsMouse ? 0.92 : 0.72)
                 visible: !root.useIconTint
 
                 Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
-                Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
             }
 
             Image {
@@ -85,12 +95,10 @@ Rectangle {
                 fillMode: Image.PreserveAspectFit
                 smooth: true
                 mipmap: true
-                opacity: root.isActive ? 1.0 : 0.94
+                opacity: root.isActive ? 1.0 : (hoverArea.containsMouse ? 0.92 : 0.72)
                 visible: root.useIconTint
-                scale: root.isActive ? 1.05 : 1.0
 
                 Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
-                Behavior on scale { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
             }
 
             Rectangle {
@@ -225,7 +233,7 @@ Rectangle {
             leftMargin: -2
             topMargin: -2
             bottomMargin: -2
-            rightMargin: deleteBtn.visible ? deleteBtn.width + deleteBtn.anchors.rightMargin : -2
+            rightMargin: root.deleteHitZoneWidth - 2
         }
         hoverEnabled: true
         acceptedButtons: Qt.LeftButton

@@ -606,14 +606,23 @@ def main() -> int:
         app.setWindowIcon(logo_icon)
     engine = QQmlApplicationEngine()
 
+    import importlib
+
     from app.backend.asyncio_runner import AsyncioRunner
     from app.backend.chat import ChatMessageModel
     from app.backend.config import ConfigService
     from app.backend.diagnostics import DiagnosticsService
     from app.backend.gateway import ChatService
+    from app.backend.memory import MemoryService
     from app.backend.preferences import DesktopPreferences
     from app.backend.session import SessionService
+    from app.backend.skills import SkillsService
     from app.backend.update import UpdateBridge, UpdateService
+
+    cron_module = importlib.import_module("app.backend.cron")
+    cron_bridge_service_cls = getattr(cron_module, "CronBridgeService")
+    tools_module = importlib.import_module("app.backend.tools")
+    tools_service_cls = getattr(tools_module, "ToolsService")
 
     runner = AsyncioRunner()
     runner.start()
@@ -621,6 +630,10 @@ def main() -> int:
     chat_service = ChatService(messages_model, runner)
     config_service = ConfigService()
     session_service = SessionService(runner)
+    cron_service = cron_bridge_service_cls(runner)
+    memory_service = MemoryService(runner)
+    skills_service = SkillsService(runner, "~/.bao/workspace")
+    tools_service = tools_service_cls(runner, config_service)
     update_service = UpdateService(runner, config_service)
     diagnostics_service = DiagnosticsService()
     update_bridge = UpdateBridge()
@@ -661,14 +674,46 @@ def main() -> int:
     set_config_data(config_service.exportData())
     _ = config_service.configLoaded.connect(lambda: set_config_data(config_service.exportData()))
     _ = config_service.saveDone.connect(lambda: set_config_data(config_service.exportData()))
+    tools_service.setConfigData(config_service.exportData())
+    _ = config_service.configLoaded.connect(
+        lambda: tools_service.setConfigData(config_service.exportData())
+    )
+    _ = config_service.saveDone.connect(
+        lambda: tools_service.setConfigData(config_service.exportData())
+    )
 
     workspace_value = config_service.get("agents.defaults.workspace", "~/.bao/workspace")
     workspace_str = workspace_value if isinstance(workspace_value, str) else "~/.bao/workspace"
     _ws = Path(workspace_str).expanduser()
+
+    def refresh_workspace_services() -> None:
+        workspace_value_inner = config_service.get("agents.defaults.workspace", "~/.bao/workspace")
+        workspace_str_inner = (
+            workspace_value_inner if isinstance(workspace_value_inner, str) else "~/.bao/workspace"
+        )
+        workspace_path = str(Path(workspace_str_inner).expanduser())
+        bootstrap_memory_workspace = cast(Callable[[str], None], memory_service.bootstrapWorkspace)
+        bootstrap_memory_workspace(workspace_path)
+        skills_service.setWorkspacePath(workspace_path)
+
     set_session_manager = cast(Callable[[object], None], chat_service.setSessionManager)
     _ = session_service.sessionManagerReady.connect(set_session_manager)
 
     set_gateway_ready = cast(Callable[[], None], session_service.setGatewayReady)
+    set_cron_session_service = cast(Callable[[object], None], cron_service.setSessionService)
+    set_cron_session_service(session_service)
+    set_cron_language = cast(Callable[[str], None], cron_service.setLanguage)
+    set_cron_language(effective_desktop_language(desktop_preferences))
+    _ = desktop_preferences.effectiveLanguageChanged.connect(
+        lambda: set_cron_language(effective_desktop_language(desktop_preferences))
+    )
+
+    def sync_cron_gateway_state(state: str) -> None:
+        cron_service.setGatewayRunning(state == "running")
+
+    sync_cron_gateway_state(cast(str, cast(object, chat_service.state)))
+    _ = chat_service.stateChanged.connect(sync_cron_gateway_state)
+    _ = getattr(chat_service, "cronServiceChanged").connect(cron_service.setLiveCronService)
 
     def _on_gateway_ready(sm: object, _ch: object) -> None:
         set_gateway_ready()
@@ -700,6 +745,9 @@ def main() -> int:
     _ = session_service.deleteCompleted.connect(handle_deleted)
     bootstrap_workspace = cast(Callable[[str], None], session_service.bootstrapWorkspace)
     bootstrap_workspace(str(_ws))
+    refresh_workspace_services()
+    _ = config_service.configLoaded.connect(refresh_workspace_services)
+    _ = config_service.saveDone.connect(refresh_workspace_services)
     _ = update_bridge.checkRequested.connect(update_service.check_for_updates)
     _ = update_bridge.installRequested.connect(update_service.install_update)
     _ = update_bridge.reloadRequested.connect(update_service.reloadConfig)
@@ -709,6 +757,10 @@ def main() -> int:
     context.setContextProperty("chatService", chat_service)
     context.setContextProperty("configService", config_service)
     context.setContextProperty("sessionService", session_service)
+    context.setContextProperty("cronService", cron_service)
+    context.setContextProperty("memoryService", memory_service)
+    context.setContextProperty("skillsService", skills_service)
+    context.setContextProperty("toolsService", tools_service)
     context.setContextProperty("updateService", update_service)
     context.setContextProperty("diagnosticsService", diagnostics_service)
     context.setContextProperty("updateBridge", update_bridge)
@@ -781,6 +833,8 @@ def main() -> int:
     ret = app.exec()
     stop_chat = cast(Callable[[], None], chat_service.stop)
     stop_chat()
+    shutdown_memory = cast(Callable[[], None], memory_service.shutdown)
+    shutdown_memory()
     runner.shutdown(grace_s=2.0)
     return ret
 

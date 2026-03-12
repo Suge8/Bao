@@ -35,6 +35,7 @@ QQmlApplicationEngine = QtQml.QQmlApplicationEngine
 QQuickStyle = QtQuickControls2.QQuickStyle
 QTest = QtTest.QTest
 
+from app.backend.cron import CronTasksModel
 from app.main import WindowFocusDismissFilter
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -133,6 +134,7 @@ class DummyChatService(QObject):
         self._state = state
         self._active_session_ready = active_session_ready
         self._active_session_has_messages = active_session_has_messages
+        self._draft_attachments = EmptyMessagesModel(self)
 
     @Property(QObject, constant=True)
     def messages(self) -> QObject:
@@ -182,6 +184,14 @@ class DummyChatService(QObject):
     def activeSessionHasMessages(self) -> bool:
         return self._active_session_has_messages
 
+    @Property(QObject, constant=True)
+    def draftAttachments(self) -> QObject:
+        return self._draft_attachments
+
+    @Property(int, constant=True)
+    def draftAttachmentCount(self) -> int:
+        return 0
+
     def setActiveSessionState(self, ready: bool, has_messages: bool) -> None:
         if (
             self._active_session_ready == ready
@@ -211,6 +221,14 @@ class DummyChatService(QObject):
     @Slot(str)
     def sendMessage(self, text: str) -> None:
         _ = text
+
+    @Slot("QVariant")
+    def addDraftAttachments(self, values: object) -> None:
+        _ = values
+
+    @Slot(int)
+    def removeDraftAttachment(self, index: int) -> None:
+        _ = index
 
 
 class DummyConfigService(QObject):
@@ -747,6 +765,205 @@ class DummySessionService(QObject):
         self.sidebarProjectionChanged.emit()
 
 
+class DummyCronService(QObject):
+    tasksChanged = Signal()
+    selectedTaskChanged = Signal()
+    draftChanged = Signal()
+    busyChanged = Signal(bool)
+    errorChanged = Signal(str)
+    noticeChanged = Signal(str, bool)
+    filtersChanged = Signal()
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._tasks_model = CronTasksModel(self)
+        self._tasks: list[dict[str, object]] = [
+            {
+                "id": "task-1",
+                "name": "Existing Task",
+                "enabled": True,
+                "status_key": "scheduled",
+                "status_label": "已调度",
+                "schedule_summary": "每 3 小时",
+                "next_run_text": "2026-03-12 17:00",
+                "last_result_text": "成功",
+                "last_error": "",
+                "session_key": "cron:task-1",
+            }
+        ]
+        self._tasks_model.reset_rows(self._tasks)
+        self._selected_task_id = ""
+        self._draft: dict[str, object] = {}
+        self._draft_dirty = False
+        self._busy = False
+        self._notice_text = ""
+        self._notice_success = True
+        self._filter_query = ""
+        self._status_filter = "all"
+
+    def _sync_rows(self) -> None:
+        rows = list(self._tasks)
+        if self.editingNewTask:
+            rows = [
+                {
+                    "id": "__draft__",
+                    "name": self._draft.get("name") or "未命名任务",
+                    "enabled": True,
+                    "status_key": "draft",
+                    "status_label": "新草稿",
+                    "schedule_summary": "保存后生成",
+                    "next_run_text": "保存后生成",
+                    "last_result_text": "尚未保存",
+                    "last_error": "",
+                    "session_key": "",
+                    "is_draft": True,
+                },
+                *rows,
+            ]
+        self._tasks_model.reset_rows(rows)
+
+    @Property(QObject, constant=True)
+    def tasksModel(self) -> QObject:
+        return self._tasks_model
+
+    @Property(int, constant=True)
+    def totalTaskCount(self) -> int:
+        return len(self._tasks) + (1 if self.editingNewTask else 0)
+
+    @Property(int, constant=True)
+    def visibleTaskCount(self) -> int:
+        return self._tasks_model.rowCount()
+
+    @Property(str, notify=selectedTaskChanged)
+    def activeListItemId(self) -> str:
+        return "__draft__" if self.editingNewTask else self._selected_task_id
+
+    @Property(str, notify=selectedTaskChanged)
+    def selectedTaskId(self) -> str:
+        return self._selected_task_id
+
+    @Property(bool, notify=selectedTaskChanged)
+    def hasSelection(self) -> bool:
+        return bool(self._selected_task_id)
+
+    @Property(dict, notify=selectedTaskChanged)
+    def selectedTask(self) -> dict[str, object]:
+        for task in self._tasks:
+            if task["id"] == self._selected_task_id:
+                return dict(task)
+        return {}
+
+    @Property(dict, notify=draftChanged)
+    def draft(self) -> dict[str, object]:
+        return dict(self._draft)
+
+    @Property(bool, notify=draftChanged)
+    def hasDraft(self) -> bool:
+        return bool(self._draft.get("id") or self._draft_dirty or self._draft.get("name"))
+
+    @Property(bool, notify=draftChanged)
+    def editingNewTask(self) -> bool:
+        return self.hasDraft and not bool(self._draft.get("id"))
+
+    @Property(bool, notify=draftChanged)
+    def draftDirty(self) -> bool:
+        return self._draft_dirty
+
+    @Property(bool, notify=busyChanged)
+    def busy(self) -> bool:
+        return self._busy
+
+    @Property(str, notify=errorChanged)
+    def lastError(self) -> str:
+        return ""
+
+    @Property(str, notify=noticeChanged)
+    def noticeText(self) -> str:
+        return self._notice_text
+
+    @Property(bool, notify=noticeChanged)
+    def noticeSuccess(self) -> bool:
+        return self._notice_success
+
+    @Property(str, notify=filtersChanged)
+    def filterQuery(self) -> str:
+        return self._filter_query
+
+    @Property(str, notify=filtersChanged)
+    def statusFilter(self) -> str:
+        return self._status_filter
+
+    @Slot()
+    def refresh(self) -> None:
+        return None
+
+    @Slot(str)
+    def selectTask(self, task_id: str) -> None:
+        self._selected_task_id = task_id
+        self._draft = self.selectedTask
+        self._draft_dirty = False
+        self.selectedTaskChanged.emit()
+        self.draftChanged.emit()
+
+    @Slot()
+    def newDraft(self) -> None:
+        self._selected_task_id = ""
+        self._draft = {
+            "id": "",
+            "name": "",
+            "enabled": True,
+            "schedule_kind": "every",
+            "every_minutes": "60",
+            "message": "",
+            "deliver": False,
+            "channel": "",
+            "target": "",
+            "delete_after_run": False,
+        }
+        self._draft_dirty = True
+        self._sync_rows()
+        self.selectedTaskChanged.emit()
+        self.draftChanged.emit()
+
+    @Slot()
+    def duplicateSelected(self) -> None:
+        return None
+
+    @Slot(str, "QVariant")
+    def updateDraftField(self, path: str, value: object) -> None:
+        _ = (path, value)
+
+    @Slot(str)
+    def setFilterQuery(self, query: str) -> None:
+        self._filter_query = query
+        self.filtersChanged.emit()
+
+    @Slot(str)
+    def setStatusFilter(self, value: str) -> None:
+        self._status_filter = value
+        self.filtersChanged.emit()
+
+    @Slot()
+    def saveDraft(self) -> None:
+        return None
+
+    @Slot()
+    def deleteSelected(self) -> None:
+        return None
+
+    @Slot(bool)
+    def setSelectedEnabled(self, enabled: bool) -> None:
+        _ = enabled
+
+    @Slot()
+    def runSelectedNow(self) -> None:
+        return None
+
+    @Slot()
+    def openSelectedSession(self) -> None:
+        return None
+
+
 class DummyUpdateService(QObject):
     quitRequested = Signal()
 
@@ -873,6 +1090,7 @@ def _load_main_window(
     session_model: QAbstractListModel | None = None,
     chat_service: DummyChatService | None = None,
     diagnostics_service: QObject | None = None,
+    cron_service: QObject | None = None,
     desktop_preferences: DummyDesktopPreferences | None = None,
 ) -> tuple[QQmlApplicationEngine, QObject]:
     messages_model = messages_model or EmptyMessagesModel()
@@ -882,6 +1100,7 @@ def _load_main_window(
     update_service = DummyUpdateService()
     update_bridge = DummyUpdateBridge()
     diagnostics_service = diagnostics_service or QObject()
+    cron_service = cron_service or DummyCronService()
     desktop_preferences = desktop_preferences or DummyDesktopPreferences()
     engine = QQmlApplicationEngine()
     engine._test_refs = {
@@ -892,12 +1111,14 @@ def _load_main_window(
         "update_service": update_service,
         "update_bridge": update_bridge,
         "diagnostics_service": diagnostics_service,
+        "cron_service": cron_service,
         "desktop_preferences": desktop_preferences,
     }
     context = engine.rootContext()
     context.setContextProperty("chatService", chat_service)
     context.setContextProperty("configService", config_service)
     context.setContextProperty("sessionService", session_service)
+    context.setContextProperty("cronService", cron_service)
     context.setContextProperty("updateService", update_service)
     context.setContextProperty("updateBridge", update_bridge)
     context.setContextProperty("diagnosticsService", diagnostics_service)
@@ -1971,6 +2192,43 @@ def test_sidebar_session_selection_keeps_stack_bound_to_start_view(qapp):
         _process(0)
 
 
+def test_settings_page_moves_sidebar_selection_to_app_icon(qapp):
+    _ = qapp
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            }
+        ]
+    )
+    engine, root = _load_main_window(session_model=session_model)
+
+    try:
+        sidebar = _find_object(root, "appSidebar")
+        highlight = _find_object(root, "sidebarNavHighlight")
+        app_icon = _find_object(root, "sidebarAppIconButton")
+
+        _process(60)
+        assert str(sidebar.property("selectionTarget")) == "sessions"
+        assert bool(app_icon.property("active")) is False
+        assert float(highlight.property("opacity")) > 0.0
+
+        _ = root.setProperty("startView", "settings")
+        _process(380)
+
+        assert str(sidebar.property("selectionTarget")) == "settings"
+        assert bool(app_icon.property("active")) is True
+        assert float(highlight.property("opacity")) == 0.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
 def test_gateway_detail_bubble_shows_error_without_hover(qapp):
     _ = qapp
 
@@ -2281,6 +2539,240 @@ def test_gateway_capsule_primary_label_crossfades_between_states(qapp):
 
         assert float(incoming.property("opacity")) > 0.98
         assert float(outgoing.property("opacity")) < 0.02
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_session_switch_animates_only_chat_detail_stage(qapp):
+    _ = qapp
+
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            },
+            {
+                "key": "desktop:local::second",
+                "title": "Second",
+                "updated_at": "2026-03-06T10:01:00",
+                "channel": "desktop",
+                "has_unread": False,
+            },
+        ]
+    )
+    engine, root = _load_main_window(session_model=session_model)
+
+    try:
+        session_service = engine._test_refs["session_service"]
+        rail = _find_object(root, "sessionRailStage")
+        detail = _find_object(root, "chatDetailStage")
+
+        _process(60)
+        session_service.setActiveKey("desktop:local::second")
+        _process(40)
+
+        assert float(rail.property("opacity")) > 0.98
+        assert float(detail.property("opacity")) < 1.0
+
+        _process(360)
+
+        assert float(rail.property("opacity")) > 0.98
+        assert float(detail.property("opacity")) > 0.98
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_workspace_nav_highlight_slides_between_sections(qapp):
+    _ = qapp
+
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            }
+        ]
+    )
+    engine, root = _load_main_window(session_model=session_model)
+
+    try:
+        highlight = _find_object(root, "sidebarNavHighlight")
+        _process(60)
+
+        before_y = float(highlight.property("y"))
+        root.setProperty("activeWorkspace", "tools")
+        _process(40)
+        mid_y = float(highlight.property("y"))
+        _process(320)
+        final_y = float(highlight.property("y"))
+
+        assert before_y != final_y
+        assert min(before_y, final_y) < mid_y < max(before_y, final_y)
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_cron_workspace_loads_real_panels(qapp):
+    _ = qapp
+
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            }
+        ]
+    )
+    engine, root = _load_main_window(session_model=session_model)
+
+    try:
+        root.setProperty("activeWorkspace", "cron")
+        _process(120)
+
+        cron_root = _find_object(root, "cronWorkspaceRoot")
+        list_panel = _find_object(root, "cronListPanel")
+        detail_panel = _find_object(root, "cronDetailPanel")
+        status_panel = _find_object(root, "cronStatusPanel")
+
+        assert cron_root.property("visible") is True
+        assert float(list_panel.property("width")) > 0
+        assert float(detail_panel.property("width")) > 0
+        assert float(status_panel.property("width")) > 0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_cron_workspace_hides_existing_selection_for_new_draft(qapp):
+    _ = qapp
+
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            }
+        ]
+    )
+    cron_service = DummyCronService()
+    engine, root = _load_main_window(session_model=session_model, cron_service=cron_service)
+
+    try:
+        root.setProperty("activeWorkspace", "cron")
+        _process(120)
+
+        cron_root = _find_object(root, "cronWorkspaceRoot")
+        cron_service.selectTask("task-1")
+        _process(40)
+        cron_service.newDraft()
+        _process(40)
+
+        assert cron_service.selectedTaskId == ""
+        assert cron_service.editingNewTask is True
+        assert cron_root.property("showingExistingTask") is False
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_session_highlight_slides_between_selected_sessions(qapp):
+    _ = qapp
+
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            },
+            {
+                "key": "desktop:local::second",
+                "title": "Second",
+                "updated_at": "2026-03-06T10:01:00",
+                "channel": "desktop",
+                "has_unread": False,
+            },
+            {
+                "key": "desktop:local::third",
+                "title": "Third",
+                "updated_at": "2026-03-06T10:02:00",
+                "channel": "desktop",
+                "has_unread": False,
+            },
+        ]
+    )
+    engine, root = _load_main_window(session_model=session_model)
+
+    try:
+        session_service = engine._test_refs["session_service"]
+        highlight = _find_object(root, "activeSessionHighlight")
+        _process(60)
+
+        before_y = float(highlight.property("y"))
+        session_service.setActiveKey("desktop:local::third")
+        _process(40)
+        mid_y = float(highlight.property("y"))
+        _process(320)
+        final_y = float(highlight.property("y"))
+
+        assert before_y != final_y
+        assert min(before_y, final_y) < mid_y < max(before_y, final_y)
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_session_highlight_uses_viewport_overlay_parent(qapp):
+    _ = qapp
+
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            },
+            {
+                "key": "desktop:local::second",
+                "title": "Second",
+                "updated_at": "2026-03-06T10:01:00",
+                "channel": "desktop",
+                "has_unread": False,
+            },
+        ]
+    )
+    engine, root = _load_main_window(session_model=session_model)
+
+    try:
+        highlight = _find_object(root, "activeSessionHighlight")
+        viewport = _find_object(root, "sessionHighlightViewport")
+        assert highlight.parent() is viewport
     finally:
         root.deleteLater()
         engine.deleteLater()
@@ -2726,7 +3218,7 @@ def test_sidebar_unread_does_not_revive_after_switching_away(qapp):
 def test_sidebar_delete_above_viewport_preserves_visible_anchor(qapp):
     _ = qapp
     rows = []
-    for i in range(12):
+    for i in range(20):
         rows.append(
             {
                 "key": f"desktop:local::s{i}",
@@ -2819,66 +3311,6 @@ def test_sidebar_active_session_reorder_does_not_jump_to_top(qapp):
         after_y = float(session_list.property("contentY"))
         assert after_y > origin_y + 100.0
         assert abs(after_y - before_y) < 40.0
-    finally:
-        root.deleteLater()
-        engine.deleteLater()
-        _process(0)
-
-
-def test_sidebar_sticky_header_tracks_scrolled_group(qapp):
-    _ = qapp
-    rows = []
-    for i in range(12):
-        rows.append(
-            {
-                "key": f"desktop:local::s{i}",
-                "title": f"Desktop {i}",
-                "updated_at": f"2026-03-06T10:{i:02d}:00",
-                "channel": "desktop",
-                "has_unread": False,
-            }
-        )
-    for i in range(12):
-        rows.append(
-            {
-                "key": f"telegram:room{i}",
-                "title": f"Telegram {i}",
-                "updated_at": f"2026-03-06T11:{i:02d}:00",
-                "channel": "telegram",
-                "has_unread": i == 0,
-                "is_running": i == 8,
-            }
-        )
-    session_model = SessionsModel(rows)
-    engine, root = _load_main_window(session_model=session_model)
-
-    try:
-        session_service = engine._test_refs["session_service"]
-        session_list = _find_object(root, "sidebarSessionList")
-        sticky = _find_object(root, "sidebarStickyHeader")
-        sticky_viewport = _find_object(root, "sidebarStickyHeaderViewport")
-
-        session_service.toggleSidebarGroup("telegram")
-        session_service.setActiveKey("telegram:room8")
-        session_service.sessionsChanged.emit()
-        for _ in range(4):
-            _process(30)
-
-        max_y_before = max(
-            0.0,
-            float(session_list.property("contentHeight")) - float(session_list.property("height")),
-        )
-        session_list.setProperty("contentY", max_y_before)
-        for _ in range(4):
-            _process(30)
-
-        assert bool(sticky.property("visible")) is True
-        assert sticky.property("channel") == "telegram"
-        assert bool(sticky.property("groupHasRunning")) is True
-        assert float(sticky_viewport.property("y")) >= float(session_list.property("y")) - 1.0
-        assert float(sticky_viewport.property("y")) <= float(session_list.property("y")) + 1.0
-        assert float(sticky.property("y")) >= -float(sticky.property("height")) - 1.0
-        assert float(sticky.property("y")) <= 1.0
     finally:
         root.deleteLater()
         engine.deleteLater()

@@ -600,6 +600,8 @@ class SessionService(QObject):
     def initialize(self, session_manager: Any) -> None:
         if self._disposed:
             return
+        if self._session_manager is session_manager:
+            return
         self._attach_session_manager(session_manager)
         self.refresh()
 
