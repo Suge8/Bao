@@ -788,6 +788,47 @@ class MemoryStore:
             except Exception:
                 return []
 
+    def list_memory_categories(self) -> list[dict[str, Any]]:
+        with self._store_lock:
+            try:
+                rows = self._read_long_term_rows_locked()
+            except Exception:
+                rows = []
+
+        by_category = {
+            str(row.get("category") or "general"): dict(row)
+            for row in rows
+            if str(row.get("category") or "general") in MEMORY_CATEGORIES
+        }
+        items: list[dict[str, Any]] = []
+        for category in MEMORY_CATEGORIES:
+            row = by_category.get(category, {})
+            content = str(row.get("content", "")).strip()
+            preview = content.replace("\n", " ")[:160]
+            if len(content.replace("\n", " ")) > 160:
+                preview += "…"
+            items.append(
+                {
+                    "key": str(row.get("key") or f"long_term_{category}"),
+                    "category": category,
+                    "content": content,
+                    "preview": preview,
+                    "updated_at": str(row.get("updated_at", "")),
+                    "char_count": len(content),
+                    "line_count": len([line for line in content.splitlines() if line.strip()]),
+                    "is_empty": not bool(content),
+                }
+            )
+        return items
+
+    def get_memory_category(self, category: str) -> dict[str, Any] | None:
+        if category not in MEMORY_CATEGORIES:
+            return None
+        for item in self.list_memory_categories():
+            if item.get("category") == category:
+                return item
+        return None
+
     def exists_long_term_key(self, key: str) -> bool:
         if not key:
             return False
@@ -860,6 +901,18 @@ class MemoryStore:
             changed = self._upsert_long_term_locked(category, normalized)
         if changed:
             self._schedule_long_term_embedding()
+
+    def append_memory_category(self, category: str, content: str) -> dict[str, Any] | None:
+        if category not in MEMORY_CATEGORIES:
+            return None
+        self.remember(content, category)
+        return self.get_memory_category(category)
+
+    def clear_memory_category(self, category: str) -> dict[str, Any] | None:
+        if category not in MEMORY_CATEGORIES:
+            return None
+        self.write_long_term("", category)
+        return self.get_memory_category(category)
 
     def write_categorized_memory(self, updates: dict[str, Any]) -> None:
         """Write multiple memory categories at once."""
@@ -1146,6 +1199,190 @@ class MemoryStore:
         if hit_rows:
             self._schedule_hit_stats_update(hit_rows)
         return final
+
+    @staticmethod
+    def _experience_preview(task: str, lessons: str) -> str:
+        base = f"{task} — {lessons}" if task and lessons else (task or lessons)
+        cleaned = base.replace("\n", " ").strip()
+        if len(cleaned) <= 180:
+            return cleaned
+        return cleaned[:179].rstrip() + "…"
+
+    def _experience_row_to_item(self, row: dict[str, Any]) -> dict[str, Any]:
+        content = str(row.get("content") or "")
+        task = self._extract_field(content, "Task")
+        lessons = self._extract_field(content, "Lessons")
+        keywords = self._extract_field(content, "Keywords")
+        trace = self._extract_field(content, "Trace")
+        return {
+            "key": str(row.get("key") or ""),
+            "task": task,
+            "lessons": lessons,
+            "keywords": keywords,
+            "trace": trace,
+            "content": content,
+            "preview": self._experience_preview(task, lessons),
+            "category": str(row.get("category") or "general"),
+            "outcome": str(row.get("outcome") or ""),
+            "quality": int(row.get("quality", 0) or 0),
+            "uses": int(row.get("uses", 0) or 0),
+            "successes": int(row.get("successes", 0) or 0),
+            "deprecated": bool(row.get("deprecated", False)),
+            "updated_at": str(row.get("updated_at", "")),
+            "hit_count": int(row.get("hit_count", 0) or 0),
+            "last_hit_at": str(row.get("last_hit_at", "")),
+        }
+
+    def list_experience_items(
+        self,
+        query: str = "",
+        *,
+        category: str = "",
+        outcome: str = "",
+        deprecated: bool | None = None,
+        min_quality: int = 0,
+        sort_by: str = "updated_desc",
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        with self._store_lock:
+            try:
+                rows = (
+                    self._tbl.search()
+                    .where("type = 'experience'")
+                    .limit(max(limit * 2, 200))
+                    .to_list()
+                )
+            except Exception:
+                return []
+
+        items = [self._experience_row_to_item(row) for row in rows]
+        if query and not self.should_skip_retrieval(query):
+            query_tokens = set(self._tokenize(query))
+            if query_tokens:
+                items = [
+                    item
+                    for item in items
+                    if query_tokens
+                    & set(
+                        self._tokenize(
+                            " ".join(
+                                [
+                                    str(item.get("task", "")),
+                                    str(item.get("lessons", "")),
+                                    str(item.get("keywords", "")),
+                                    str(item.get("category", "")),
+                                    str(item.get("outcome", "")),
+                                ]
+                            )
+                        )
+                    )
+                ]
+        if category:
+            items = [item for item in items if item.get("category") == category]
+        if outcome:
+            items = [item for item in items if item.get("outcome") == outcome]
+        if deprecated is not None:
+            items = [item for item in items if bool(item.get("deprecated")) is deprecated]
+        if min_quality > 0:
+            items = [item for item in items if int(item.get("quality", 0)) >= min_quality]
+
+        if sort_by == "quality_desc":
+            items.sort(
+                key=lambda item: (
+                    int(item.get("quality", 0)),
+                    int(item.get("uses", 0)),
+                    str(item.get("updated_at", "")),
+                ),
+                reverse=True,
+            )
+        elif sort_by == "uses_desc":
+            items.sort(
+                key=lambda item: (
+                    int(item.get("uses", 0)),
+                    int(item.get("successes", 0)),
+                    str(item.get("updated_at", "")),
+                ),
+                reverse=True,
+            )
+        else:
+            items.sort(key=lambda item: str(item.get("updated_at", "")), reverse=True)
+        return items[:limit]
+
+    def get_experience_item(self, key: str) -> dict[str, Any] | None:
+        if not key:
+            return None
+        key_safe = key.replace("'", "''")
+        with self._store_lock:
+            try:
+                rows = (
+                    self._tbl.search()
+                    .where(f"type = 'experience' AND key = '{key_safe}'")
+                    .limit(1)
+                    .to_list()
+                )
+            except Exception:
+                return None
+        if not rows:
+            return None
+        return self._experience_row_to_item(rows[0])
+
+    def set_experience_deprecated(self, key: str, deprecated: bool) -> bool:
+        item = self.get_experience_item(key)
+        if item is None:
+            return False
+        key_safe = key.replace("'", "''")
+        with self._store_lock:
+            try:
+                rows = (
+                    self._tbl.search()
+                    .where(f"type = 'experience' AND key = '{key_safe}'")
+                    .limit(1)
+                    .to_list()
+                )
+                if not rows:
+                    return False
+                self._update_experience(rows[0], deprecated=deprecated)
+                return True
+            except Exception as e:
+                logger.warning("⚠️ 更新经验停用状态失败 / set deprecated failed: {}", e)
+                return False
+
+    def delete_experience(self, key: str) -> bool:
+        if not key:
+            return False
+        key_safe = key.replace("'", "''")
+        with self._store_lock:
+            try:
+                rows = (
+                    self._tbl.search()
+                    .where(f"type = 'experience' AND key = '{key_safe}'")
+                    .limit(1)
+                    .to_list()
+                )
+                if not rows:
+                    return False
+                self._tbl.delete(f"type = 'experience' AND key = '{key_safe}'")
+                self._delete_vector_by_key(key)
+                return True
+            except Exception as e:
+                logger.warning("⚠️ 删除经验失败 / delete experience failed: {}", e)
+                return False
+
+    def promote_experience_to_memory(
+        self, key: str, category: str = "project"
+    ) -> dict[str, Any] | None:
+        item = self.get_experience_item(key)
+        if item is None or category not in MEMORY_CATEGORIES:
+            return None
+        task = str(item.get("task", "")).strip()
+        lessons = str(item.get("lessons", "")).strip()
+        keywords = str(item.get("keywords", "")).strip()
+        if not (task or lessons):
+            return None
+        line = f"{task} — {lessons}" if task and lessons else (task or lessons)
+        if keywords:
+            line = f"{line} [{keywords}]"
+        return self.append_memory_category(category, line)
 
     def _fetch_experience_candidates(self, query: str, fetch: int) -> list[dict[str, Any]]:
         """Fetch experience candidates via vector or BM25 fallback."""
