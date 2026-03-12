@@ -30,6 +30,7 @@ ApplicationWindow {
     color: useNativeTitleBar ? root.bgBase : "transparent"
 
     property string startView: "chat"
+    property string activeWorkspace: "sessions"
     readonly property bool hasDesktopPreferences: typeof desktopPreferences !== "undefined" && desktopPreferences !== null
     readonly property bool hasConfigService: typeof configService !== "undefined" && configService !== null
     readonly property bool hasSessionService: typeof sessionService !== "undefined" && sessionService !== null
@@ -49,6 +50,11 @@ ApplicationWindow {
 
     readonly property var stringsZh: ({
         "sidebar_sessions": "会话",
+        "sidebar_library_title": "工作区",
+        "sidebar_memory": "记忆",
+        "sidebar_skills": "技能",
+        "sidebar_tools_nav": "工具",
+        "sidebar_cron": "定时任务",
         "sidebar_empty_title": "开始一个新对话",
         "sidebar_empty_hint": "点击即可新建会话",
         "sidebar_empty_cta": "新建对话",
@@ -65,6 +71,7 @@ ApplicationWindow {
         "gateway_channels_error": "异常渠道",
         "button_start_gateway": "启动",
         "chat_placeholder": "给 Bao 发消息…",
+        "chat_attach_title": "选择附件",
         "chat_loading_history": "加载会话中…",
         "section_app": "应用",
         "section_updates": "桌面更新",
@@ -159,10 +166,24 @@ ApplicationWindow {
         "diagnostics_gateway_running": "运行正常",
         "diagnostics_gateway_error": "启动异常",
         "diagnostics_metrics_title": "运行观测",
+        "workspace_memory_title": "记忆档案",
+        "workspace_memory_caption": "这里将承载 Bao 的长期记忆浏览、筛选与管理。",
+        "workspace_skills_title": "技能画廊",
+        "workspace_skills_caption": "这里将集中呈现可用技能、来源与能力说明。",
+        "workspace_tools_title": "工具工作台",
+        "workspace_tools_caption": "这里将展示工具清单、可用状态与调用能力。",
+        "workspace_cron_title": "定时任务",
+        "workspace_cron_caption": "这里将展示 cron 任务、下一次运行时间与调度状态。",
+        "workspace_kicker_future": "即将到来",
     })
 
     readonly property var stringsEn: ({
         "sidebar_sessions": "Sessions",
+        "sidebar_library_title": "Workspace",
+        "sidebar_memory": "Memory",
+        "sidebar_skills": "Skills",
+        "sidebar_tools_nav": "Tools",
+        "sidebar_cron": "Cron",
         "sidebar_empty_title": "Start a new chat",
         "sidebar_empty_hint": "Click to create one",
         "sidebar_empty_cta": "New chat",
@@ -179,6 +200,7 @@ ApplicationWindow {
         "gateway_channels_error": "Channel issues",
         "button_start_gateway": "Start",
         "chat_placeholder": "Message Bao\u2026",
+        "chat_attach_title": "Choose Attachments",
         "chat_loading_history": "Loading session\u2026",
         "section_app": "App",
         "section_updates": "Desktop Updates",
@@ -272,6 +294,15 @@ ApplicationWindow {
         "diagnostics_gateway_starting": "Starting",
         "diagnostics_gateway_running": "Running normally",
         "diagnostics_gateway_error": "Startup issue",
+        "workspace_memory_title": "Memory Archive",
+        "workspace_memory_caption": "This area will host Bao's long-term memory browsing, filters, and editing flow.",
+        "workspace_skills_title": "Skills Gallery",
+        "workspace_skills_caption": "This area will gather available skills, their source, and what each one can do.",
+        "workspace_tools_title": "Tool Workbench",
+        "workspace_tools_caption": "This area will present registered tools, availability, and invocation capabilities.",
+        "workspace_cron_title": "Scheduled Tasks",
+        "workspace_cron_caption": "This area will present cron jobs, next run timing, and scheduling status.",
+        "workspace_kicker_future": "Coming next",
     })
 
     readonly property var strings: {
@@ -399,13 +430,11 @@ ApplicationWindow {
                                      : true
     property bool _previousSetupMode: true
     property int setupCompletionToken: 0
-    readonly property int currentPageIndex: {
-        if (setupMode)
-            return 1
-        if (startView === "settings")
-            return 1
-        return 0
-    }
+    readonly property var workspaceOrder: ["sessions", "memory", "skills", "tools", "cron"]
+    readonly property bool showingSettings: setupMode || startView === "settings"
+    readonly property int currentPageIndex: showingSettings ? 1 : 0
+    readonly property string sidebarSelectionTarget: showingSettings ? "settings" : activeWorkspace
+    readonly property int activeWorkspaceIndex: Math.max(0, workspaceOrder.indexOf(activeWorkspace))
     onSetupModeChanged: {
         if (_previousSetupMode && !setupMode)
             setupCompletionToken += 1
@@ -771,14 +800,17 @@ ApplicationWindow {
                         Layout.fillHeight: true
                         z: 20
                         visible: !root.setupMode
-                        showingSettings: root.currentPageIndex === 1
-                        activeSessionKey: hasSessionService ? sessionService.activeKey : ""
-                        showChatSelection: root.currentPageIndex === 0
+                        selectionTarget: root.sidebarSelectionTarget
                         onSettingsRequested: root.startView = "settings"
                         onDiagnosticsRequested: diagnosticsModal.open()
+                        onSectionRequested: function(section) {
+                            root.activeWorkspace = section
+                            root.startView = "chat"
+                        }
                         onNewSessionRequested: if (hasSessionService) sessionService.newSession("")
                         onSessionSelected: function(key) {
                             if (hasSessionService) sessionService.selectSession(key)
+                            root.activeWorkspace = "sessions"
                             root.startView = "chat"
                         }
                         onSessionDeleteRequested: function(key) {
@@ -801,7 +833,7 @@ ApplicationWindow {
                             Layout.fillHeight: true
                             clip: true
 
-                            property bool active: root.currentPageIndex === 0
+                            property bool active: !root.showingSettings
                             property real revealOpacity: 1.0
                             property real revealScale: 1.0
                             property real revealShift: 0.0
@@ -827,14 +859,6 @@ ApplicationWindow {
                             onActiveChanged: {
                                 if (active)
                                     playReveal(-1, motionPageShift)
-                            }
-
-                            Connections {
-                                target: hasSessionService ? sessionService : null
-                                function onActiveKeyChanged(_key) {
-                                    if (chatPage.active)
-                                        chatPage.playReveal(1, motionPageShiftSubtle)
-                                }
                             }
 
                             Connections {
@@ -870,10 +894,51 @@ ApplicationWindow {
                                 scale: chatPage.revealScale
                                 transform: Translate { x: chatPage.revealShift }
 
-                                ChatView {
-                                    id: chatView
+                                StackLayout {
+                                    id: workspaceStack
                                     anchors.fill: parent
-                                    onMessageCopied: globalToast.show(strings.copied_ok, true)
+                                    currentIndex: root.activeWorkspaceIndex
+
+                                    SessionsWorkspace {
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                        active: root.activeWorkspace === "sessions"
+                                    }
+
+                                    Loader {
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                        active: root.activeWorkspace === "memory"
+                                        source: "MemoryWorkspace.qml"
+                                        onLoaded: if (item) item.active = true
+                                    }
+
+                                    Loader {
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                        active: root.activeWorkspace === "skills"
+                                        source: "SkillsWorkspace.qml"
+                                        onLoaded: if (item) item.active = true
+                                    }
+
+                                    Loader {
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                        active: root.activeWorkspace === "tools"
+                                        source: "ToolsWorkspace.qml"
+                                        onLoaded: if (item) item.active = true
+                                    }
+
+                                    Loader {
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                        active: root.activeWorkspace === "cron"
+                                        source: "CronWorkspace.qml"
+                                        onLoaded: if (item) {
+                                            item.active = true
+                                            item.appRoot = root
+                                        }
+                                    }
                                 }
                             }
 
@@ -945,7 +1010,7 @@ ApplicationWindow {
                             Layout.fillHeight: true
                             clip: true
 
-                            property bool active: root.currentPageIndex === 1
+                            property bool active: root.showingSettings
                             property real revealOpacity: 1.0
                             property real revealScale: 1.0
                             property real revealShift: 0.0
