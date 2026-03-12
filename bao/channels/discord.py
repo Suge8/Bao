@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -56,6 +57,7 @@ class DiscordChannel(BaseChannel):
         self._typing_tasks: dict[str, asyncio.Task[None]] = {}
         self._http: httpx.AsyncClient | None = None
         self._progress_reply_to: dict[str, str | None] = {}
+        self._bot_user_id: str | None = None
         self._progress_handler = EditingProgress(
             self._create_progress_text,
             self._update_progress_text,
@@ -114,11 +116,30 @@ class DiscordChannel(BaseChannel):
             logger.warning("⚠️ 未初始化 / client not initialized: Discord HTTP")
             return
 
-        self._progress_reply_to[msg.chat_id] = msg.reply_to
+        sent_media = False
+        failed_media: list[str] = []
+        for media_path in msg.media or []:
+            if await self._send_file(msg.chat_id, media_path, reply_to=msg.reply_to):
+                sent_media = True
+            else:
+                failed_media.append(Path(media_path).name)
+
+        dispatch_msg = msg
+        if (not dispatch_msg.content) and failed_media and not sent_media:
+            dispatch_msg = OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="\n".join(f"[attachment: {name} - send failed]" for name in failed_media),
+                reply_to=msg.reply_to,
+                media=[],
+                metadata=dict(msg.metadata),
+            )
+
+        self._progress_reply_to[msg.chat_id] = msg.reply_to if not sent_media else None
 
         try:
-            await self._dispatch_progress_text(msg, flush_progress=True)
-            meta = msg.metadata or {}
+            await self._dispatch_progress_text(dispatch_msg, flush_progress=True)
+            meta = dispatch_msg.metadata or {}
             if bool(meta.get("_progress_clear")) or not bool(meta.get("_progress")):
                 self._progress_reply_to.pop(msg.chat_id, None)
         finally:
@@ -126,22 +147,20 @@ class DiscordChannel(BaseChannel):
 
     async def _send_text(self, chat_id: str, text: str) -> None:
         url = f"{DISCORD_API_BASE}/channels/{chat_id}/messages"
-        payload: dict[str, Any] = {"content": text}
-        reply_to = self._progress_reply_to.get(chat_id)
-        if reply_to:
-            payload["message_reference"] = {"message_id": reply_to}
-            payload["allowed_mentions"] = {"replied_user": False}
-        await self._send_payload(url, payload)
+        await self._send_payload(url, self._build_text_payload(chat_id, text))
 
     async def _create_progress_text(self, chat_id: str, text: str) -> str | None:
         url = f"{DISCORD_API_BASE}/channels/{chat_id}/messages"
+        response = await self._send_payload(url, self._build_text_payload(chat_id, text))
+        return str(response.get("id", "")) if response else None
+
+    def _build_text_payload(self, chat_id: str, text: str) -> dict[str, Any]:
         payload: dict[str, Any] = {"content": text}
         reply_to = self._progress_reply_to.get(chat_id)
         if reply_to:
             payload["message_reference"] = {"message_id": reply_to}
             payload["allowed_mentions"] = {"replied_user": False}
-        response = await self._send_payload(url, payload)
-        return str(response.get("id", "")) if response else None
+        return payload
 
     async def _update_progress_text(
         self, chat_id: str, handle: str | None, text: str
@@ -213,6 +232,8 @@ class DiscordChannel(BaseChannel):
                 # Store session info for future RESUME
                 self._session_id = payload.get("session_id")
                 self._resume_gateway_url = payload.get("resume_gateway_url")
+                user = payload.get("user") or {}
+                self._bot_user_id = str(user.get("id")) if user.get("id") else None
                 self._should_resume = True
                 logger.debug("Discord gateway READY (session={})", self._session_id)
             elif op == 0 and event_type == "RESUMED":
@@ -302,11 +323,15 @@ class DiscordChannel(BaseChannel):
         sender_id = str(author.get("id", ""))
         channel_id = str(payload.get("channel_id", ""))
         content = payload.get("content") or ""
+        guild_id = payload.get("guild_id")
 
         if not sender_id or not channel_id:
             return
 
         if not self.is_allowed(sender_id):
+            return
+
+        if guild_id is not None and not self._should_respond_in_group(payload, content):
             return
 
         content_parts = [content] if content else []
@@ -348,13 +373,64 @@ class DiscordChannel(BaseChannel):
             media=media_paths,
             metadata={
                 "message_id": str(payload.get("id", "")),
-                "guild_id": payload.get("guild_id"),
+                "guild_id": guild_id,
                 "reply_to": reply_to or None,
                 "referenced_message_id": str(referenced_message_id)
                 if referenced_message_id
                 else None,
             },
         )
+
+    def _should_respond_in_group(self, payload: dict[str, Any], content: str) -> bool:
+        if self.config.group_policy == "open":
+            return True
+
+        bot_user_id = self._bot_user_id
+        if bot_user_id:
+            for mention in payload.get("mentions") or []:
+                if str(mention.get("id")) == bot_user_id:
+                    return True
+            if f"<@{bot_user_id}>" in content or f"<@!{bot_user_id}>" in content:
+                return True
+
+        logger.debug("Discord message in {} ignored (bot not mentioned)", payload.get("channel_id"))
+        return False
+
+    async def _send_file(self, chat_id: str, file_path: str, reply_to: str | None = None) -> bool:
+        if not self._http:
+            return False
+
+        path = Path(file_path)
+        if not path.is_file():
+            logger.warning("⚠️ 文件缺失 / file missing: {}", file_path)
+            return False
+        if path.stat().st_size > MAX_ATTACHMENT_BYTES:
+            logger.warning("⚠️ 附件过大 / attachment too large: {}", path.name)
+            return False
+
+        token = self.config.token.get_secret_value()
+        headers = {"Authorization": f"Bot {token}"}
+        url = f"{DISCORD_API_BASE}/channels/{chat_id}/messages"
+        payload_json: dict[str, Any] = {}
+        if reply_to:
+            payload_json["message_reference"] = {"message_id": reply_to}
+            payload_json["allowed_mentions"] = {"replied_user": False}
+
+        try:
+            with open(path, "rb") as f:
+                files = {"files[0]": (path.name, f, "application/octet-stream")}
+                data: dict[str, Any] = {}
+                if payload_json:
+                    data["payload_json"] = json.dumps(payload_json)
+                response = await self._http.post(url, headers=headers, files=files, data=data)
+            if response.status_code == 429:
+                logger.warning("⚠️ 限流失败 / attachment rate limited: {}", path.name)
+                return False
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error("❌ 发送失败 / attachment send failed: {}: {}", path.name, e)
+        return False
 
     async def _start_typing(self, channel_id: str) -> None:
         """Start periodic typing indicator for a channel."""

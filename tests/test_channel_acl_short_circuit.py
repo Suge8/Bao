@@ -6,9 +6,29 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from bao.channels.discord import DiscordChannel
 from bao.channels.telegram import TelegramChannel
 from bao.channels.whatsapp import WhatsAppChannel
-from bao.config.schema import TelegramConfig, WhatsAppConfig
+from bao.config.schema import DiscordConfig, TelegramConfig, WhatsAppConfig
+
+
+def _discord_payload(
+    *,
+    content: str,
+    guild_id: str | None = "g1",
+    mentions: list[dict[str, str]] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "id": "m1",
+        "channel_id": "c1",
+        "content": content,
+        "author": {"id": "123", "bot": False},
+        "mentions": mentions or [],
+        "attachments": [],
+    }
+    if guild_id is not None:
+        payload["guild_id"] = guild_id
+    return payload
 
 
 @pytest.mark.asyncio
@@ -114,6 +134,13 @@ async def test_whatsapp_dedup_skips_duplicate_message_id() -> None:
     assert channel._handle_message.await_count == 1
 
 
+def test_whatsapp_acl_does_not_split_sender_tokens() -> None:
+    cfg = WhatsAppConfig(enabled=True, allow_from=["999"])
+    channel = WhatsAppChannel(cfg, MagicMock())
+
+    assert channel.is_allowed("123|999") is False
+
+
 @pytest.mark.asyncio
 async def test_whatsapp_without_message_id_does_not_dedup() -> None:
     bus = MagicMock()
@@ -134,3 +161,83 @@ async def test_whatsapp_without_message_id_does_not_dedup() -> None:
     await channel._handle_bridge_message(json.dumps(payload))
 
     assert channel._handle_message.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_discord_group_policy_mention_blocks_unmentioned_guild_message() -> None:
+    channel = DiscordChannel(
+        DiscordConfig(enabled=True, token="token", allow_from=["123"], group_policy="mention"),
+        MagicMock(),
+    )
+    channel._http = MagicMock()
+    channel._bot_user_id = "999"
+    channel._handle_message = AsyncMock()
+    channel._start_typing = AsyncMock()
+
+    await channel._handle_message_create(_discord_payload(content="hello everyone"))
+
+    channel._handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_group_policy_mention_accepts_mentions_array() -> None:
+    channel = DiscordChannel(
+        DiscordConfig(enabled=True, token="token", allow_from=["123"], group_policy="mention"),
+        MagicMock(),
+    )
+    channel._http = MagicMock()
+    channel._bot_user_id = "999"
+    channel._handle_message = AsyncMock()
+    channel._start_typing = AsyncMock()
+
+    await channel._handle_message_create(
+        _discord_payload(content="hello", mentions=[{"id": "999"}])
+    )
+
+    channel._handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_group_policy_mention_accepts_inline_mention_syntax() -> None:
+    channel = DiscordChannel(
+        DiscordConfig(enabled=True, token="token", allow_from=["123"], group_policy="mention"),
+        MagicMock(),
+    )
+    channel._http = MagicMock()
+    channel._bot_user_id = "999"
+    channel._handle_message = AsyncMock()
+    channel._start_typing = AsyncMock()
+
+    await channel._handle_message_create(_discord_payload(content="<@!999> hi"))
+
+    channel._handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_group_policy_open_accepts_plain_guild_message() -> None:
+    channel = DiscordChannel(
+        DiscordConfig(enabled=True, token="token", allow_from=["123"], group_policy="open"),
+        MagicMock(),
+    )
+    channel._http = MagicMock()
+    channel._handle_message = AsyncMock()
+    channel._start_typing = AsyncMock()
+
+    await channel._handle_message_create(_discord_payload(content="hello everyone"))
+
+    channel._handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_dm_ignores_group_policy() -> None:
+    channel = DiscordChannel(
+        DiscordConfig(enabled=True, token="token", allow_from=["123"], group_policy="mention"),
+        MagicMock(),
+    )
+    channel._http = MagicMock()
+    channel._handle_message = AsyncMock()
+    channel._start_typing = AsyncMock()
+
+    await channel._handle_message_create(_discord_payload(content="hello dm", guild_id=None))
+
+    channel._handle_message.assert_awaited_once()
