@@ -104,6 +104,10 @@ def test_chat_composer_click_target_covers_full_field(qapp):
     assert root is not None, component.errors()
 
     try:
+        request_activate = getattr(root, "requestActivate", None)
+        if callable(request_activate):
+            request_activate()
+            _process(30)
         composer = root.findChild(QObject, "composerField")
         message_input = root.findChild(QObject, "messageInput")
         assert composer is not None
@@ -133,3 +137,11 @@ def test_chat_view_composer_uses_capped_radius_and_clipping() -> None:
     assert "readonly property real composerFieldRadius: composerMinHeight / 2" in text
     assert "radius: root.composerFieldRadius" in text
     assert "clip: true" in text
+    assert 'objectName: "attachmentStrip"' in text
+    assert 'source: "../resources/icons/paperclip.svg"' in text
+    assert "event.matches(StandardKey.Paste)" in text
+    assert "chatService.pasteClipboardAttachment()" in text
+    assert 'GradientStop { position: 1.0; color: "#99000000" }' in text
+    assert "border.color: chipHover.containsMouse ? accent : borderSubtle" in text
+    assert "add: Transition" in text
+    assert 'border.color: root.hasDraftAttachments ? accent : "transparent"' in text
