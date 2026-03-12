@@ -15,6 +15,7 @@ from loguru import logger
 from bao.agent import shared
 from bao.agent.artifacts import ArtifactStore, apply_tool_output_budget
 from bao.agent.protocol import ToolErrorCategory
+from bao.agent.tool_result import tool_result_excerpt
 from bao.agent.tools.diagnostics import RuntimeDiagnosticsTool
 from bao.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from bao.agent.tools.registry import ToolRegistry
@@ -158,7 +159,7 @@ class SubagentManager:
         exec_config: "ExecToolConfig | None" = None,
         restrict_to_workspace: bool = False,
         max_iterations: int = 20,
-        context_management: str = "observe",
+        context_management: str = "auto",
         tool_output_offload_chars: int = 8000,
         tool_output_preview_chars: int = 3000,
         tool_output_hard_chars: int = 6000,
@@ -1132,12 +1133,12 @@ class SubagentManager:
             if progress_backend and hasattr(progress_backend, "set_progress_callback"):
                 progress_backend.set_progress_callback(None)
 
-        result_text = raw_result if isinstance(raw_result, str) else str(raw_result)
+        result_text = tool_result_excerpt(raw_result)
         result, budget_event = apply_tool_output_budget(
             store=artifact_store,
             tool_name=tool_call.name,
             tool_call_id=tool_call.id,
-            result=result_text,
+            result=raw_result,
             offload_chars=self._tool_offload_chars,
             preview_chars=self._tool_preview_chars,
             hard_chars=self._tool_hard_chars,
@@ -1397,14 +1398,7 @@ class SubagentManager:
                         reasoning_snippets.append(clean[:200])
 
                     tool_call_dicts = [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": json.dumps(tc.arguments, ensure_ascii=False),
-                            },
-                        }
+                        tc.to_openai_tool_call()
                         for tc in response.tool_calls
                     ]
                     messages.append(

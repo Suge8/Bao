@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from bao.agent.loop import AgentLoop
+from bao.agent.tool_result import ToolTextResult, cleanup_result_file
 from bao.agent.tools.mcp import (
     MCPToolWrapper,
     _reached_global_cap,
@@ -12,6 +16,7 @@ from bao.agent.tools.mcp import (
     _register_pending_wrappers,
     _resolve_server_max_tools,
     _resolve_server_slim_schema,
+    _resolve_transport_type,
     _slim_schema,
 )
 from bao.agent.tools.registry import ToolRegistry
@@ -153,6 +158,24 @@ def test_mcp_cap_helpers() -> None:
     assert _reached_server_cap(server_count=1, pending_count=1, server_max_tools=2) is True
 
 
+def test_resolve_transport_type_prefers_explicit_type() -> None:
+    cfg = SimpleNamespace(type="sse", command="ignored", url="https://example.com/mcp")
+    assert _resolve_transport_type(cfg) == "sse"
+
+
+def test_resolve_transport_type_infers_from_command_or_url() -> None:
+    assert _resolve_transport_type(SimpleNamespace(type="", command="npx", url="")) == "stdio"
+    assert (
+        _resolve_transport_type(SimpleNamespace(type="", command="", url="https://x/y/sse"))
+        == "sse"
+    )
+    assert (
+        _resolve_transport_type(SimpleNamespace(type="", command="", url="https://x/y/mcp"))
+        == "streamableHttp"
+    )
+    assert _resolve_transport_type(SimpleNamespace(type="", command="", url="")) is None
+
+
 async def test_agentloop_passes_mcp_slim_and_max_tools(monkeypatch: Any, tmp_path: Path) -> None:
     captured: dict[str, Any] = {}
 
@@ -225,6 +248,28 @@ def test_mcp_wrapper_int_description() -> None:
     assert wrapper.description == "mytool"
 
 
+async def test_mcp_wrapper_returns_file_backed_result_for_large_text(monkeypatch: Any) -> None:
+    class _FakeTextContent:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class _FakeSession:
+        async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+            del name, arguments
+            return SimpleNamespace(content=[_FakeTextContent("x" * 20000)])
+
+    fake_types = SimpleNamespace(TextContent=_FakeTextContent)
+    monkeypatch.setitem(__import__("sys").modules, "mcp", SimpleNamespace(types=fake_types))
+
+    tool_def = SimpleNamespace(name="big", description="big", inputSchema={"type": "object"})
+    wrapper = MCPToolWrapper(_FakeSession(), "svc", tool_def, slim_schema=True)
+    result = await wrapper.execute()
+
+    assert isinstance(result, ToolTextResult)
+    assert "xxx" in result.excerpt
+    cleanup_result_file(result)
+
+
 def test_register_pending_wrappers_populates_discoverability_metadata() -> None:
     registry = ToolRegistry()
     tool_def = SimpleNamespace(
@@ -255,6 +300,62 @@ def test_register_pending_wrappers_populates_discoverability_metadata() -> None:
     assert "lookup" in meta.aliases
     assert "crm" not in meta.aliases
     assert meta.short_hint == "MCP tool for lookup."
+
+
+@pytest.mark.asyncio
+async def test_mcp_wrapper_converts_internal_cancelled_error_to_text(monkeypatch: Any) -> None:
+    import sys
+    import types
+
+    fake_mcp = types.ModuleType("mcp")
+    fake_mcp.types = SimpleNamespace(TextContent=type("TextContent", (), {}))
+    monkeypatch.setitem(sys.modules, "mcp", fake_mcp)
+
+    async def raise_cancelled(*_args: Any, **_kwargs: Any) -> Any:
+        raise asyncio.CancelledError()
+
+    session = SimpleNamespace(call_tool=raise_cancelled)
+    tool_def = SimpleNamespace(
+        name="demo",
+        description="Demo tool",
+        inputSchema={"type": "object", "properties": {}},
+    )
+    wrapper = MCPToolWrapper(session, "svc", tool_def, timeout=1, slim_schema=True)
+
+    result = await wrapper.execute()
+
+    assert "was cancelled" in result
+
+
+@pytest.mark.asyncio
+async def test_mcp_wrapper_reraises_external_task_cancellation(monkeypatch: Any) -> None:
+    import sys
+    import types
+
+    fake_mcp = types.ModuleType("mcp")
+    fake_mcp.types = SimpleNamespace(TextContent=type("TextContent", (), {}))
+    monkeypatch.setitem(sys.modules, "mcp", fake_mcp)
+
+    started = asyncio.Event()
+
+    async def wait_forever(*_args: Any, **_kwargs: Any) -> Any:
+        started.set()
+        await asyncio.Future()
+
+    session = SimpleNamespace(call_tool=wait_forever)
+    tool_def = SimpleNamespace(
+        name="demo",
+        description="Demo tool",
+        inputSchema={"type": "object", "properties": {}},
+    )
+    wrapper = MCPToolWrapper(session, "svc", tool_def, timeout=5, slim_schema=True)
+
+    task = asyncio.create_task(wrapper.execute())
+    await started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 def test_agentloop_bool_mcp_max_tools_ignored(tmp_path: Path) -> None:

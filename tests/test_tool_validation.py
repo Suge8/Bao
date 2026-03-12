@@ -3,7 +3,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from bao.agent.tool_result import ToolTextResult, cleanup_result_file
 from bao.agent.tools.base import Tool
+from bao.agent.tools.filesystem import ReadFileTool
 from bao.agent.tools.registry import ToolRegistry
 from bao.agent.tools.shell import ExecTool
 
@@ -154,3 +156,169 @@ def test_exec_read_only_blocks_redirect_write() -> None:
     tool = ExecTool(sandbox_mode="read-only")
     result = asyncio.run(tool.execute(command="ls > /tmp/out.txt"))
     assert result == "Error: Command blocked by read-only sandbox"
+
+
+def test_exec_does_not_truncate_large_output(monkeypatch: Any) -> None:
+    payload = "x" * 12050
+
+    class _FakeProcess:
+        returncode = 0
+
+        def __init__(self) -> None:
+            self.stdout = asyncio.StreamReader()
+            self.stderr = asyncio.StreamReader()
+            self.stdout.feed_data(payload.encode("utf-8"))
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+
+        async def wait(self) -> int:
+            return 0
+
+    async def _fake_create_subprocess_shell(*args: Any, **kwargs: Any) -> _FakeProcess:
+        del args, kwargs
+        return _FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", _fake_create_subprocess_shell)
+
+    tool = ExecTool()
+    result = asyncio.run(tool.execute(command="printf x"))
+
+    assert isinstance(result, ToolTextResult)
+    assert result.chars == len(payload)
+    assert result.path.read_text(encoding="utf-8") == payload
+    cleanup_result_file(result)
+
+
+def test_read_file_keeps_small_text_inline(tmp_path: Path) -> None:
+    target = tmp_path / "small.txt"
+    target.write_text("hello", encoding="utf-8")
+
+    tool = ReadFileTool(workspace=tmp_path)
+    result = asyncio.run(tool.execute(path="small.txt"))
+
+    assert result == "hello"
+
+
+def test_read_file_returns_file_backed_result_for_large_text(tmp_path: Path) -> None:
+    payload = "x" * 12000
+    target = tmp_path / "large.txt"
+    target.write_text(payload, encoding="utf-8")
+
+    tool = ReadFileTool(workspace=tmp_path)
+    result = asyncio.run(tool.execute(path="large.txt"))
+
+    assert isinstance(result, ToolTextResult)
+    assert result.path == target
+    assert result.chars == len(payload)
+    assert result.cleanup is False
+
+
+class CastTestTool(Tool):
+    def __init__(self, schema: dict[str, Any]) -> None:
+        self._schema = schema
+
+    @property
+    def name(self) -> str:
+        return "cast_test"
+
+    @property
+    def description(self) -> str:
+        return "cast test"
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return self._schema
+
+    async def execute(self, **kwargs: Any) -> str:
+        return str(kwargs)
+
+
+def test_cast_params_string_scalars_and_nested_values() -> None:
+    tool = CastTestTool(
+        {
+            "type": "object",
+            "properties": {
+                "count": {"type": "integer"},
+                "rate": {"type": "number"},
+                "enabled": {"type": "boolean"},
+                "meta": {
+                    "type": "object",
+                    "properties": {
+                        "port": {"type": "integer"},
+                        "flags": {"type": "array", "items": {"type": "boolean"}},
+                    },
+                },
+            },
+        }
+    )
+
+    result = tool.cast_params(
+        {
+            "count": "42",
+            "rate": "3.14",
+            "enabled": "false",
+            "meta": {"port": "8080", "flags": ["true", "0"]},
+        }
+    )
+
+    assert result["count"] == 42
+    assert result["rate"] == 3.14
+    assert result["enabled"] is False
+    assert result["meta"]["port"] == 8080
+    assert result["meta"]["flags"] == [True, False]
+
+
+def test_cast_params_does_not_apply_unsafe_conversions() -> None:
+    tool = CastTestTool(
+        {
+            "type": "object",
+            "properties": {
+                "count": {"type": "integer"},
+                "items": {"type": "array"},
+                "config": {"type": "object"},
+                "flag": {"type": "boolean"},
+            },
+        }
+    )
+
+    result = tool.cast_params(
+        {
+            "count": True,
+            "items": "hello",
+            "config": "",
+            "flag": "maybe",
+        }
+    )
+
+    assert result["count"] is True
+    assert result["items"] == "hello"
+    assert result["config"] == ""
+    assert result["flag"] == "maybe"
+
+    errors = tool.validate_params(result)
+    joined = "; ".join(errors)
+    assert "count should be integer" in joined
+    assert "items should be array" in joined
+    assert "config should be object" in joined
+    assert "flag should be boolean" in joined
+
+
+async def test_registry_auto_casts_before_validation() -> None:
+    reg = ToolRegistry()
+    reg.register(
+        CastTestTool(
+            {
+                "type": "object",
+                "properties": {
+                    "count": {"type": "integer"},
+                    "enabled": {"type": "boolean"},
+                },
+                "required": ["count", "enabled"],
+            }
+        )
+    )
+
+    result = await reg.execute("cast_test", {"count": "7", "enabled": "true"})
+
+    assert "'count': 7" in result
+    assert "'enabled': True" in result

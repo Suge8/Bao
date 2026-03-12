@@ -1,8 +1,9 @@
 import asyncio
 from contextvars import ContextVar
 
+from bao.agent.tool_result import ToolTextResult, cleanup_result_file
 from bao.agent.tools.coding_agent import CodingAgentDetailsTool, CodingAgentTool
-from bao.agent.tools.coding_agent_base import DetailCache
+from bao.agent.tools.coding_agent_base import BaseCodingDetailsTool, DetailCache
 
 
 def _run(coro):
@@ -94,3 +95,101 @@ def test_coding_agent_details_allows_backend_filter_for_session_lookup() -> None
 
     assert out.startswith("[codex]")
     assert "codex details" in out
+
+
+class _FakeDetailsTool(BaseCodingDetailsTool):
+    @property
+    def name(self) -> str:
+        return "fake_details"
+
+    @property
+    def description(self) -> str:
+        return "fake details"
+
+    @property
+    def _tool_label(self) -> str:
+        return "Fake"
+
+    @property
+    def _meta_prefix(self) -> str:
+        return "FAKE_DETAIL_META"
+
+
+def test_base_coding_details_returns_file_backed_result_for_large_output() -> None:
+    cache = DetailCache()
+    payload = "x" * 20000
+    cache.build_detail_record(
+        request_id="req-big",
+        context_key="telegram:alice",
+        session_id="sess-big",
+        project_path="/tmp/proj",
+        status="success",
+        command_preview="tool run",
+        stdout=payload,
+        stderr="",
+        summary="big output",
+        attempts=1,
+        duration_ms=10,
+        exit_code=0,
+    )
+
+    tool = _FakeDetailsTool(detail_cache=cache)
+    tool.set_context("telegram", "alice")
+    result = _run(tool.execute(request_id="req-big", response_format="text"))
+
+    assert isinstance(result, ToolTextResult)
+    assert "Fake details" in result.excerpt
+    cleanup_result_file(result)
+
+
+def test_base_coding_details_returns_file_backed_json_for_large_output() -> None:
+    cache = DetailCache()
+    payload = "x" * 20000
+    cache.build_detail_record(
+        request_id="req-big-json",
+        context_key="telegram:alice",
+        session_id="sess-big-json",
+        project_path="/tmp/proj",
+        status="success",
+        command_preview="tool run",
+        stdout=payload,
+        stderr="",
+        summary="big output",
+        attempts=1,
+        duration_ms=10,
+        exit_code=0,
+    )
+
+    tool = _FakeDetailsTool(detail_cache=cache)
+    tool.set_context("telegram", "alice")
+    result = _run(tool.execute(request_id="req-big-json", response_format="json"))
+
+    assert isinstance(result, ToolTextResult)
+    assert '"request_id":"req-big-json"' in result.excerpt.replace(" ", "")
+    cleanup_result_file(result)
+
+
+def test_coding_agent_details_fallback_returns_file_backed_result_for_large_output() -> None:
+    parent = _build_parent()
+    big = "x" * 20000
+    parent._detail_caches["codex"].build_detail_record(
+        request_id="req-big",
+        context_key="telegram:alice",
+        session_id="sess-big",
+        project_path="/tmp/proj",
+        status="success",
+        command_preview="tool run",
+        stdout=big,
+        stderr="",
+        summary="big output",
+        attempts=1,
+        duration_ms=10,
+        exit_code=0,
+    )
+
+    tool = CodingAgentDetailsTool(parent)
+    result = _run(tool.execute(session_id="sess-big", agent="codex", max_chars=50000))
+
+    assert isinstance(result, ToolTextResult)
+    assert "[codex]" in result.excerpt
+    cleanup_result_file(result)

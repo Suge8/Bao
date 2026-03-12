@@ -22,7 +22,8 @@ Item {
     property bool editorDirty: false
     property string appendText: ""
     property string promoteCategory: "project"
-    property string searchQuery: ""
+    property string memorySearchQuery: ""
+    property string experienceSearchQuery: ""
     property real revealOpacity: 1.0
     property real revealScale: 1.0
     property real revealShift: 0.0
@@ -40,11 +41,12 @@ Item {
     readonly property var experienceStats: hasMemoryService ? memoryService.experienceStats : ({})
     readonly property var selectedMemoryCategory: hasMemoryService ? memoryService.selectedMemoryCategory : ({})
     readonly property var selectedExperience: hasMemoryService ? memoryService.selectedExperience : ({})
+    readonly property bool canMutate: hasMemoryService && memoryService.ready && !memoryService.blockingBusy
     readonly property var filteredMemoryCategories: {
         if (!hasMemoryService)
             return []
         var items = memoryService.memoryCategories || []
-        var query = normalizeQuery(root.searchQuery)
+        var query = normalizeQuery(root.memorySearchQuery)
         if (!query)
             return items
         return items.filter(function(item) {
@@ -86,6 +88,32 @@ Item {
         return tr("管理 Bao 总结出的经验。", "Manage Bao's extracted experiences.")
     }
 
+    function memoryCategoryTitle(category) {
+        switch (String(category || "")) {
+        case "preference":
+            return tr("偏好记忆", "Preference Memory")
+        case "personal":
+            return tr("个人记忆", "Personal Memory")
+        case "project":
+            return tr("项目记忆", "Project Memory")
+        case "general":
+            return tr("通用记忆", "General Memory")
+        default:
+            return tr("选择一个分类", "Choose a category")
+        }
+    }
+
+    function memoryCategoryMeta(detail) {
+        var updatedLabel = String(detail.updated_label || "")
+        var factCount = Number(detail.fact_count || 0)
+        if (!updatedLabel)
+            return tr("这里适合保存长期有效的信息。", "Use this area for durable information.")
+        return tr(
+            "最近更新 " + updatedLabel + " · " + factCount + " 条事实",
+            "Updated " + updatedLabel + " · " + factCount + " facts"
+        )
+    }
+
     function hasSelectedMemory() {
         return !!String(selectedMemoryCategory.category || "")
     }
@@ -98,7 +126,7 @@ Item {
         if (!hasMemoryService)
             return
         memoryService.reloadExperiences(
-            root.searchQuery,
+            root.experienceSearchQuery,
             "",
             "",
             experienceDeprecatedMode,
@@ -149,7 +177,7 @@ Item {
         experienceDeprecatedMode = "active"
         experienceMinQuality = 0
         experienceSortBy = "updated_desc"
-        root.searchQuery = ""
+        root.experienceSearchQuery = ""
         applyExperienceFilters()
     }
 
@@ -611,13 +639,13 @@ Item {
                     rightPadding: 12
                     background: null
                     color: textPrimary
-                    text: root.searchQuery
+                    text: root.memorySearchQuery
                     placeholderText: root.tr("搜索分类或记忆内容…", "Search categories or memory text…")
                     placeholderTextColor: textPlaceholder
                     selectionColor: textSelectionBg
                     selectedTextColor: textSelectionFg
                     font.pixelSize: typeLabel
-                    onTextChanged: if (root.searchQuery !== text) root.searchQuery = text
+                    onTextChanged: if (root.memorySearchQuery !== text) root.memorySearchQuery = text
                 }
             }
 
@@ -645,12 +673,17 @@ Item {
                 }
             }
 
-            Text {
-                Layout.fillWidth: true
-                text: root.tr("已使用分类 ", "Used categories ") + Number(root.memoryStats.used_categories || 0) + "/" + Number(root.memoryStats.total_categories || 0)
-                color: textSecondary
-                font.pixelSize: typeMeta
-            }
+                Text {
+                    Layout.fillWidth: true
+                    text: root.tr(
+                              "已使用分类 " + Number(root.memoryStats.used_categories || 0) + "/" + Number(root.memoryStats.total_categories || 0)
+                              + " · 事实 " + Number(root.memoryStats.total_facts || 0) + " 条",
+                              "Used categories " + Number(root.memoryStats.used_categories || 0) + "/" + Number(root.memoryStats.total_categories || 0)
+                              + " · " + Number(root.memoryStats.total_facts || 0) + " facts"
+                          )
+                    color: textSecondary
+                    font.pixelSize: typeMeta
+                }
 
             Rectangle {
                 Layout.fillWidth: true
@@ -719,15 +752,15 @@ Item {
                     rightPadding: 12
                     background: null
                     color: textPrimary
-                    text: root.searchQuery
+                    text: root.experienceSearchQuery
                     placeholderText: root.tr("搜索任务、经验、关键词…", "Search tasks, lessons, keywords…")
                     placeholderTextColor: textPlaceholder
                     selectionColor: textSelectionBg
                     selectedTextColor: textSelectionFg
                     font.pixelSize: typeLabel
                     onTextChanged: {
-                        if (root.searchQuery !== text)
-                            root.searchQuery = text
+                        if (root.experienceSearchQuery !== text)
+                            root.experienceSearchQuery = text
                         root.applyExperienceFilters()
                     }
                 }
@@ -900,7 +933,9 @@ Item {
                                 Text {
                                     id: badgeText
                                     anchors.centerIn: parent
-                                    text: modelData.is_empty ? tr("空", "Empty") : tr(String(modelData.line_count || 0) + " 段", String(modelData.line_count || 0) + " lines")
+                                    text: modelData.is_empty
+                                          ? tr("空", "Empty")
+                                          : tr(String(modelData.fact_count || 0) + " 条事实", String(modelData.fact_count || 0) + " facts")
                                     color: textSecondary
                                     font.pixelSize: typeCaption
                                     font.weight: weightDemiBold
@@ -1223,12 +1258,7 @@ Item {
 
                         Text {
                             Layout.fillWidth: true
-                            text: selectedMemoryCategory.category
-                                  ? (selectedMemoryCategory.category === "preference" ? tr("偏好记忆", "Preference Memory")
-                                     : selectedMemoryCategory.category === "personal" ? tr("个人记忆", "Personal Memory")
-                                     : selectedMemoryCategory.category === "project" ? tr("项目记忆", "Project Memory")
-                                     : tr("通用记忆", "General Memory"))
-                                  : tr("选择一个分类", "Choose a category")
+                            text: root.memoryCategoryTitle(selectedMemoryCategory.category)
                             color: textPrimary
                             font.pixelSize: typeTitle - 3
                             font.weight: weightBold
@@ -1237,9 +1267,7 @@ Item {
 
                         Text {
                             Layout.fillWidth: true
-                            text: selectedMemoryCategory.updated_label
-                                  ? tr("最近更新 " + selectedMemoryCategory.updated_label, "Updated " + selectedMemoryCategory.updated_label)
-                                  : tr("这里适合保存长期有效的信息。", "Use this area for durable information.")
+                            text: root.memoryCategoryMeta(selectedMemoryCategory)
                             color: textSecondary
                             font.pixelSize: typeMeta
                             wrapMode: Text.WordWrap
@@ -1328,7 +1356,7 @@ Item {
                         spinnerColor: textPrimary
                         spinnerSecondaryColor: isDark ? "#A0F7EFE7" : "#886B5649"
                         spinnerHaloColor: isDark ? "#24FFFFFF" : "#186B5649"
-                        buttonEnabled: !!selectedMemoryCategory.category
+                        buttonEnabled: root.canMutate && !!selectedMemoryCategory.category
                         minHeight: 36
                         onClicked: memoryService.saveMemoryCategory(selectedMemoryCategory.category, root.editorText)
                     }
@@ -1341,7 +1369,9 @@ Item {
                         PillActionButton {
                             text: tr("加入到当前分类", "Add to this category")
                             iconSource: root.appendIconSource
-                            buttonEnabled: !!selectedMemoryCategory.category && root.appendText.trim().length > 0
+                            buttonEnabled: root.canMutate
+                                           && !!selectedMemoryCategory.category
+                                           && root.appendText.trim().length > 0
                             onClicked: memoryService.appendMemoryCategory(selectedMemoryCategory.category, root.appendText)
                         }
 
@@ -1353,7 +1383,9 @@ Item {
                             hoverFillColor: isDark ? "#2A1614" : "#FFF1EE"
                             outlineColor: statusError
                             textColor: statusError
-                            buttonEnabled: !!selectedMemoryCategory.category && String(selectedMemoryCategory.content || "").trim().length > 0
+                            buttonEnabled: root.canMutate
+                                           && !!selectedMemoryCategory.category
+                                           && String(selectedMemoryCategory.content || "").trim().length > 0
                             onClicked: root.openDestructiveModal("clearMemory", "", selectedMemoryCategory.category)
                         }
                     }
@@ -1613,7 +1645,7 @@ Item {
                         spinnerColor: textPrimary
                         spinnerSecondaryColor: isDark ? "#A0F7EFE7" : "#886B5649"
                         spinnerHaloColor: isDark ? "#24FFFFFF" : "#186B5649"
-                        buttonEnabled: !!selectedExperience.key
+                        buttonEnabled: root.canMutate && !!selectedExperience.key
                         minHeight: 36
                         onClicked: memoryService.promoteExperienceToMemory(selectedExperience.key, root.promoteCategory)
                     }
@@ -1626,7 +1658,7 @@ Item {
                         PillActionButton {
                             text: selectedExperience.deprecated ? tr("恢复启用", "Restore") : tr("停用这条经验", "Deprecate")
                             iconSource: root.deprecateIconSource
-                            buttonEnabled: !!selectedExperience.key
+                            buttonEnabled: root.canMutate && !!selectedExperience.key
                             outlined: true
                             fillColor: "transparent"
                             hoverFillColor: bgCardHover
@@ -1643,7 +1675,7 @@ Item {
                             hoverFillColor: isDark ? "#2A1614" : "#FFF1EE"
                             outlineColor: statusError
                             textColor: statusError
-                            buttonEnabled: !!selectedExperience.key
+                            buttonEnabled: root.canMutate && !!selectedExperience.key
                             onClicked: root.openDestructiveModal("deleteExperience", selectedExperience.key, "")
                         }
                     }

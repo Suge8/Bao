@@ -260,6 +260,73 @@ class TestCronCallbackDefensive:
 
 
 @pytest.mark.asyncio
+async def test_cron_callback_sets_and_resets_cron_context() -> None:
+    from bao.agent.tools.cron import CronTool
+    from bao.cron.types import CronJob, CronPayload
+
+    fake_agent = MagicMock()
+    fake_agent.process_direct = AsyncMock(return_value="ok")
+    fake_cron_tool = MagicMock(spec=CronTool)
+    fake_cron_tool.set_cron_context.return_value = object()
+    fake_agent.tools.get.return_value = fake_cron_tool
+
+    class FakeCron:
+        on_job = None
+
+        def __init__(self, path):
+            pass
+
+    with (
+        patch.object(mod, "__name__", mod.__name__),
+        patch("bao.agent.loop.AgentLoop", return_value=fake_agent),
+        patch("bao.bus.queue.MessageBus", return_value=MagicMock()),
+        patch("bao.channels.manager.ChannelManager", return_value=MagicMock()),
+        patch(
+            "bao.config.loader.get_data_dir",
+            return_value=MagicMock(
+                __truediv__=lambda s, x: MagicMock(__truediv__=lambda s, y: "/tmp/fake")
+            ),
+        ),
+        patch("bao.cron.service.CronService", side_effect=FakeCron),
+        patch("bao.heartbeat.service.HeartbeatService", return_value=MagicMock()),
+        patch("bao.session.manager.SessionManager", return_value=MagicMock()),
+    ):
+        config = MagicMock()
+        config.workspace_path = "/tmp/test"
+        config.agents.defaults.model = "test"
+        config.agents.defaults.temperature = 0.1
+        config.agents.defaults.max_tokens = 100
+        config.agents.defaults.max_tool_iterations = 5
+        config.agents.defaults.memory_window = 10
+        config.agents.defaults.reasoning_effort = None
+        config.agents.defaults.models = []
+        config.tools.web.search = MagicMock()
+        config.tools.exec = MagicMock()
+        config.tools.embedding = MagicMock()
+        config.tools.restrict_to_workspace = False
+        config.tools.mcp_servers = {}
+        config.gateway.heartbeat.interval_s = 60
+        config.gateway.heartbeat.enabled = True
+
+        stack = build_gateway_stack(config, MagicMock())
+
+    callback = stack.cron.on_job
+    assert callback is not None
+
+    job = CronJob(
+        id="cron-1",
+        name="test",
+        payload=CronPayload(message="hello", deliver=False, channel="gateway", to=None),
+    )
+    await callback(job)
+
+    fake_cron_tool.set_cron_context.assert_called_once_with(True)
+    fake_cron_tool.reset_cron_context.assert_called_once_with(
+        fake_cron_tool.set_cron_context.return_value
+    )
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_uses_whatsapp_jid_and_skips_discord_allow_from() -> None:
     fake_bus = MagicMock()
     fake_bus.publish_outbound = AsyncMock()

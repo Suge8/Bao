@@ -7,6 +7,7 @@ import time
 from collections.abc import Sized
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from dataclasses import dataclass
 from datetime import datetime
 from math import exp, log
 from pathlib import Path
@@ -102,6 +103,691 @@ _CATEGORY_WEIGHTS: dict[str, float] = {
 }
 
 
+@dataclass(frozen=True)
+class RecallBundle:
+    long_term_context: str = ""
+    related_memory: tuple[str, ...] = ()
+    related_experience: tuple[str, ...] = ()
+
+
+class _LongTermMemoryDomain:
+    def __init__(self, host: "MemoryStore"):
+        self._host = host
+
+    def read_long_term(self, category: str | None = None) -> str:
+        with self._host._store_lock:
+            try:
+                if category:
+                    return self._host._join_memory_facts(self._host._read_long_term_facts_locked(category))
+                parts = []
+                for cat in MEMORY_CATEGORIES:
+                    content = self._host._join_memory_facts(self._host._read_long_term_facts_locked(cat))
+                    if content:
+                        parts.append(f"[{cat}] {content}")
+                return "\n".join(parts)
+            except Exception:
+                return ""
+
+    def list_long_term_entries(self) -> list[dict[str, str]]:
+        return [
+            {
+                "key": str(item.get("key") or ""),
+                "category": str(item.get("category") or "general"),
+                "content": str(item.get("content") or ""),
+            }
+            for item in self.list_memory_categories()
+            if str(item.get("content") or "").strip()
+        ]
+
+    def list_memory_categories(self) -> list[dict[str, Any]]:
+        with self._host._store_lock:
+            try:
+                rows = self._host._read_long_term_rows_locked()
+            except Exception:
+                rows = []
+
+        by_category: dict[str, list[dict[str, Any]]] = {category: [] for category in MEMORY_CATEGORIES}
+        for row in rows:
+            category = str(row.get("category") or "general")
+            if category in by_category and str(row.get("content", "")).strip():
+                by_category[category].append(dict(row))
+        items: list[dict[str, Any]] = []
+        for category in MEMORY_CATEGORIES:
+            facts = [str(row.get("content", "")).strip() for row in by_category.get(category, [])]
+            content = self._host._join_memory_facts(facts)
+            latest = max((str(row.get("updated_at", "")) for row in by_category.get(category, [])), default="")
+            preview = content.replace("\n", " ")[:160]
+            if len(content.replace("\n", " ")) > 160:
+                preview += "…"
+            items.append(
+                {
+                    "key": f"long_term_{category}",
+                    "category": category,
+                    "content": content,
+                    "preview": preview,
+                    "updated_at": latest,
+                    "char_count": len(content),
+                    "line_count": len(facts),
+                    "fact_count": len(facts),
+                    "is_empty": not bool(content),
+                }
+            )
+        return items
+
+    def get_memory_category(self, category: str) -> dict[str, Any] | None:
+        if category not in MEMORY_CATEGORIES:
+            return None
+        for item in self.list_memory_categories():
+            if item.get("category") == category:
+                return item
+        return None
+
+    def exists_long_term_key(self, key: str) -> bool:
+        if not key:
+            return False
+        if key.startswith("long_term_"):
+            category = key.removeprefix("long_term_")
+            if category in MEMORY_CATEGORIES:
+                return bool(self.read_long_term(category).strip())
+        key_safe = key.replace("'", "''")
+        with self._host._store_lock:
+            try:
+                rows = (
+                    self._host._tbl.search()
+                    .where(f"type = 'long_term' AND key = '{key_safe}'")
+                    .limit(1)
+                    .to_list()
+                )
+                return bool(rows)
+            except Exception:
+                return False
+
+    def delete_long_term_by_key(self, key: str) -> bool:
+        if not key:
+            return False
+        if key.startswith("long_term_"):
+            category = key.removeprefix("long_term_")
+            if category in MEMORY_CATEGORIES:
+                return self.clear_memory_category(category) is not None
+        key_safe = key.replace("'", "''")
+        with self._host._store_lock:
+            try:
+                rows = (
+                    self._host._tbl.search()
+                    .where(f"type = 'long_term' AND key = '{key_safe}'")
+                    .limit(1)
+                    .to_list()
+                )
+                if not rows:
+                    return False
+                self._host._tbl.delete(f"type = 'long_term' AND key = '{key_safe}'")
+                return True
+            except Exception as e:
+                logger.warning("⚠️ 按键删除失败 / delete by key failed: {}", e)
+                return False
+
+    def write_long_term(self, content: str, category: str = "general") -> None:
+        if category not in MEMORY_CATEGORIES:
+            category = "general"
+        facts = self._host._normalize_memory_facts(
+            content,
+            max_chars=MEMORY_CATEGORY_CAPS.get(category, MEMORY_CATEGORY_CAPS["general"]),
+        )
+        with self._host._store_lock:
+            changed = self._host._replace_long_term_facts_locked(category, facts)
+        if changed:
+            self._host._schedule_long_term_embedding()
+
+    def append_memory_category(self, category: str, content: str) -> dict[str, Any] | None:
+        if category not in MEMORY_CATEGORIES:
+            return None
+        self.remember(content, category)
+        return self.get_memory_category(category)
+
+    def clear_memory_category(self, category: str) -> dict[str, Any] | None:
+        if category not in MEMORY_CATEGORIES:
+            return None
+        self.write_long_term("", category)
+        return self.get_memory_category(category)
+
+    def write_categorized_memory(self, updates: dict[str, Any]) -> None:
+        changed_any = False
+        with self._host._store_lock:
+            for cat, content in updates.items():
+                if cat not in MEMORY_CATEGORIES:
+                    continue
+                if content is not None and not isinstance(content, (str, list)):
+                    continue
+                facts = self._host._normalize_memory_facts(
+                    content or "",
+                    max_chars=MEMORY_CATEGORY_CAPS.get(cat, MEMORY_CATEGORY_CAPS["general"]),
+                )
+                if self._host._replace_long_term_facts_locked(cat, facts):
+                    changed_any = True
+        if changed_any:
+            self._host._schedule_long_term_embedding()
+
+    def get_memory_context(self, max_chars: int | None = None) -> str:
+        parts = self._host._collect_long_term_parts()
+        return self._host._format_long_term_parts(parts, max_chars=max_chars)
+
+    def get_relevant_memory_context(self, query: str, max_chars: int | None = None) -> str:
+        if self._host.should_skip_retrieval(query):
+            return ""
+        query_tokens = set(self._host._tokenize(query))
+        if not query_tokens:
+            return ""
+        parts = self._host._collect_long_term_parts(query_tokens=query_tokens)
+        return self._host._format_long_term_parts(parts, max_chars=max_chars)
+
+    def remember(self, content: str, category: str = "general") -> str:
+        if category not in MEMORY_CATEGORIES:
+            category = "general"
+        new_facts = self._host._normalize_memory_facts(
+            content,
+            max_chars=MEMORY_CATEGORY_CAPS.get(category, MEMORY_CATEGORY_CAPS["general"]),
+        )
+        if not new_facts:
+            return f"Remembered in [{category}]: "
+        with self._host._store_lock:
+            current_facts = self._host._read_long_term_facts_locked(category)
+            merged = self._host._normalize_memory_facts(
+                current_facts + new_facts,
+                max_chars=MEMORY_CATEGORY_CAPS.get(category, MEMORY_CATEGORY_CAPS["general"]),
+            )
+            changed = self._host._replace_long_term_facts_locked(category, merged)
+        if changed:
+            self._host._embed_long_term_aggregate()
+        return f"Remembered in [{category}]: {content[:80]}"
+
+    def forget(self, query: str) -> str:
+        removed = 0
+        changed = False
+        with self._host._store_lock:
+            try:
+                rows = self._host._read_long_term_rows_locked()
+                query_lower = query.lower()
+                for category in MEMORY_CATEGORIES:
+                    facts = []
+                    kept_facts = []
+                    for row in rows:
+                        if str(row.get("category") or "general") != category:
+                            continue
+                        fact = str(row.get("content") or "").strip()
+                        if not fact:
+                            continue
+                        facts.append(fact)
+                        if query_lower in fact.lower():
+                            removed += 1
+                            continue
+                        kept_facts.append(fact)
+                    if facts != kept_facts and self._host._replace_long_term_facts_locked(category, kept_facts):
+                        changed = True
+            except Exception as e:
+                logger.warning("⚠️ 遗忘失败 / forget failed: {}", e)
+        if changed:
+            self._host._embed_long_term_aggregate()
+        return f"Removed {removed} memory entries matching '{query[:40]}'."
+
+    def update_memory(self, category: str, content: str) -> str:
+        if category not in MEMORY_CATEGORIES:
+            return f"Invalid category. Use one of: {', '.join(MEMORY_CATEGORIES)}"
+        facts = self._host._normalize_memory_facts(
+            content,
+            max_chars=MEMORY_CATEGORY_CAPS.get(category, MEMORY_CATEGORY_CAPS["general"]),
+        )
+        with self._host._store_lock:
+            changed = self._host._replace_long_term_facts_locked(category, facts)
+        if changed:
+            self._host._embed_long_term_aggregate()
+        return f"Updated [{category}] memory."
+
+
+class _ExperienceMemoryDomain:
+    def __init__(self, host: "MemoryStore"):
+        self._host = host
+
+    def append_experience(
+        self,
+        task: str,
+        outcome: str,
+        lessons: str,
+        quality: int = 3,
+        category: str = "general",
+        keywords: str = "",
+        reasoning_trace: str = "",
+    ) -> None:
+        row_key = ""
+        with self._host._store_lock:
+            ts = datetime.now().isoformat()
+            row_key = f"experience_{ts}"
+            parts = [f"Task: {task}", f"Lessons: {lessons}"]
+            if keywords:
+                parts.append(f"Keywords: {keywords}")
+            if reasoning_trace:
+                parts.append(f"Trace: {reasoning_trace}")
+            content = "\n".join(parts)
+            self._host._tbl.add(
+                [
+                    self._host._make_row(
+                        key=row_key,
+                        content=content,
+                        type_="experience",
+                        category=category,
+                        quality=quality,
+                        outcome=outcome,
+                        updated_at=ts,
+                    )
+                ]
+            )
+        self._host._embed_and_store(key=row_key, content=content, type_="experience")
+
+    def search_experience(
+        self,
+        query: str,
+        limit: int = 3,
+        *,
+        query_vectors: list[list[float]] | None = None,
+    ) -> list[str]:
+        if self._host.should_skip_retrieval(query):
+            return []
+        candidates = self._host._fetch_experience_candidates(
+            query,
+            limit * 5,
+            query_vectors=query_vectors,
+        )
+        now = datetime.now()
+        positive: list[tuple[float, dict[str, Any], str, str, str]] = []
+        warnings: list[tuple[float, dict[str, Any], str, str]] = []
+        for row in candidates:
+            if "quality" not in row and "outcome" not in row and "updated_at" not in row:
+                continue
+            if row.get("deprecated"):
+                continue
+            quality = row.get("quality", 3)
+            days_old = self._host._days_since(row.get("updated_at", ""), now)
+            decay = exp(-days_old / _RETENTION_DAYS.get(quality, 90))
+            conf = self._host._confidence(row)
+            score = quality * decay * conf
+            content = row.get("content") or ""
+            outcome = row.get("outcome", "")
+            if outcome == "failed":
+                warnings.append((score, row, content, row.get("category") or "general"))
+            else:
+                positive.append((score, row, content, row.get("category") or "general", outcome or "success"))
+        positive.sort(key=lambda item: item[0], reverse=True)
+        warnings.sort(key=lambda item: item[0], reverse=True)
+        results: list[str] = []
+        hit_rows: list[dict[str, Any]] = []
+        seen_categories: dict[str, str] = {}
+        for _, row, content, category, outcome_str in positive:
+            if len(results) >= limit - 1:
+                break
+            previous = seen_categories.get(category)
+            if previous and previous != outcome_str:
+                content = f"\u26a1 CONFLICTING experience (category '{category}'):\n{content}"
+            seen_categories.setdefault(category, outcome_str)
+            results.append(content)
+            hit_rows.append(row)
+        if warnings:
+            results.append(f"\u26a0\ufe0f WARNING from past failure:\n{warnings[0][2]}")
+            hit_rows.append(warnings[0][1])
+        final = results[:limit]
+        if hit_rows:
+            self._host._schedule_hit_stats_update(hit_rows)
+        return final
+
+    def list_experience_items(
+        self,
+        query: str = "",
+        *,
+        category: str = "",
+        outcome: str = "",
+        deprecated: bool | None = None,
+        min_quality: int = 0,
+        sort_by: str = "updated_desc",
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        with self._host._store_lock:
+            try:
+                rows = (
+                    self._host._tbl.search()
+                    .where("type = 'experience'")
+                    .limit(max(limit * 2, 200))
+                    .to_list()
+                )
+            except Exception:
+                return []
+
+        items = [self._host._experience_row_to_item(row) for row in rows]
+        if query and not self._host.should_skip_retrieval(query):
+            query_tokens = set(self._host._tokenize(query))
+            if query_tokens:
+                items = [
+                    item
+                    for item in items
+                    if query_tokens
+                    & set(
+                        self._host._tokenize(
+                            " ".join(
+                                [
+                                    str(item.get("task", "")),
+                                    str(item.get("lessons", "")),
+                                    str(item.get("keywords", "")),
+                                    str(item.get("category", "")),
+                                    str(item.get("outcome", "")),
+                                ]
+                            )
+                        )
+                    )
+                ]
+        if category:
+            items = [item for item in items if item.get("category") == category]
+        if outcome:
+            items = [item for item in items if item.get("outcome") == outcome]
+        if deprecated is not None:
+            items = [item for item in items if bool(item.get("deprecated")) is deprecated]
+        if min_quality > 0:
+            items = [item for item in items if int(item.get("quality", 0)) >= min_quality]
+
+        if sort_by == "quality_desc":
+            items.sort(
+                key=lambda item: (
+                    int(item.get("quality", 0)),
+                    int(item.get("uses", 0)),
+                    str(item.get("updated_at", "")),
+                ),
+                reverse=True,
+            )
+        elif sort_by == "uses_desc":
+            items.sort(
+                key=lambda item: (
+                    int(item.get("uses", 0)),
+                    int(item.get("successes", 0)),
+                    str(item.get("updated_at", "")),
+                ),
+                reverse=True,
+            )
+        else:
+            items.sort(key=lambda item: str(item.get("updated_at", "")), reverse=True)
+        return items[:limit]
+
+    def get_experience_item(self, key: str) -> dict[str, Any] | None:
+        if not key:
+            return None
+        key_safe = key.replace("'", "''")
+        with self._host._store_lock:
+            try:
+                rows = (
+                    self._host._tbl.search()
+                    .where(f"type = 'experience' AND key = '{key_safe}'")
+                    .limit(1)
+                    .to_list()
+                )
+            except Exception:
+                return None
+        if not rows:
+            return None
+        return self._host._experience_row_to_item(rows[0])
+
+    def set_experience_deprecated(self, key: str, deprecated: bool) -> bool:
+        item = self.get_experience_item(key)
+        if item is None:
+            return False
+        key_safe = key.replace("'", "''")
+        with self._host._store_lock:
+            try:
+                rows = (
+                    self._host._tbl.search()
+                    .where(f"type = 'experience' AND key = '{key_safe}'")
+                    .limit(1)
+                    .to_list()
+                )
+                if not rows:
+                    return False
+                self._host._update_experience(rows[0], deprecated=deprecated)
+                return True
+            except Exception as e:
+                logger.warning("⚠️ 更新经验停用状态失败 / set deprecated failed: {}", e)
+                return False
+
+    def delete_experience(self, key: str) -> bool:
+        if not key:
+            return False
+        key_safe = key.replace("'", "''")
+        with self._host._store_lock:
+            try:
+                rows = (
+                    self._host._tbl.search()
+                    .where(f"type = 'experience' AND key = '{key_safe}'")
+                    .limit(1)
+                    .to_list()
+                )
+                if not rows:
+                    return False
+                self._host._tbl.delete(f"type = 'experience' AND key = '{key_safe}'")
+                self._host._delete_vector_by_key(key)
+                return True
+            except Exception as e:
+                logger.warning("⚠️ 删除经验失败 / delete experience failed: {}", e)
+                return False
+
+    def promote_experience_to_memory(self, key: str, category: str = "project") -> dict[str, Any] | None:
+        item = self.get_experience_item(key)
+        if item is None or category not in MEMORY_CATEGORIES:
+            return None
+        task = str(item.get("task", "")).strip()
+        lessons = str(item.get("lessons", "")).strip()
+        keywords = str(item.get("keywords", "")).strip()
+        if not (task or lessons):
+            return None
+        line = f"{task} — {lessons}" if task and lessons else (task or lessons)
+        if keywords:
+            line = f"{line} [{keywords}]"
+        self._host._ensure_domains()
+        return self._host._long_term_domain.append_memory_category(category, line)
+
+    def deprecate_similar(self, task_desc: str) -> int:
+        return self._host._mutate_experiences(
+            task_desc,
+            threshold=0.5,
+            mutator=lambda _row: {"deprecated": True},
+            action="🧹 标记过时 / experiences deprecated",
+        )
+
+    def boost_experience(self, task_desc: str, delta: int = 1) -> int:
+        def _mutator(row: dict[str, Any]) -> dict[str, Any] | None:
+            old_quality = row.get("quality", 3)
+            new_quality = max(1, min(5, old_quality + delta))
+            if new_quality == old_quality:
+                return None
+            return {"quality": new_quality}
+
+        return self._host._mutate_experiences(
+            task_desc,
+            threshold=0.4,
+            mutator=_mutator,
+            action=f"🧠 提升经验 / experience boosted ({delta:+d})",
+        )
+
+    def record_reuse(self, task_desc: str, success: bool) -> int:
+        def _mutator(row: dict[str, Any]) -> dict[str, Any] | None:
+            new_uses = row.get("uses", 0) + 1
+            new_successes = row.get("successes", 0) + (1 if success else 0)
+            updates: dict[str, Any] = {"uses": new_uses, "successes": new_successes}
+            if new_uses >= 3:
+                confidence = new_successes / new_uses
+                current_quality = row.get("quality", 3)
+                if confidence >= 0.8:
+                    updates["quality"] = min(5, current_quality + 1)
+                elif confidence < 0.4:
+                    updates["quality"] = max(1, current_quality - 1)
+            return updates
+
+        sign = "+" if success else "-"
+        return self._host._mutate_experiences(
+            task_desc,
+            threshold=0.4,
+            mutator=_mutator,
+            action=f"📝 记录复用 / reuse recorded ({sign})",
+        )
+
+    def cleanup_stale(self, max_deprecated_days: int = 30, max_low_quality_days: int = 90) -> int:
+        with self._host._store_lock:
+            try:
+                rows = self._host._tbl.search().where("type = 'experience'").limit(500).to_list()
+                now = datetime.now()
+                removed = 0
+                for row in rows:
+                    days_old = self._host._days_since(row.get("updated_at", ""), now)
+                    is_deprecated = row.get("deprecated", False)
+                    quality = row.get("quality", 3)
+                    uses = row.get("uses", 0)
+                    hit_count = row.get("hit_count", 0)
+                    has_hit_tracking = bool(row.get("last_hit_at"))
+                    if quality >= 5 and uses >= 3 and not is_deprecated:
+                        continue
+                    should_remove = (
+                        (is_deprecated and days_old > max_deprecated_days)
+                        or (quality <= 1 and days_old > max_low_quality_days)
+                        or (has_hit_tracking and hit_count == 0 and days_old > 60 and quality <= 2)
+                        or (has_hit_tracking and hit_count <= 1 and days_old > 120 and quality <= 3)
+                    )
+                    if should_remove and (key := row.get("key")):
+                        self._host._tbl.delete(f"key = '{key}'")
+                        self._host._delete_vector_by_key(key)
+                        removed += 1
+                if removed:
+                    logger.info("🧹 清理经验 / stale experiences cleaned: {}", removed)
+                return removed
+            except Exception as e:
+                logger.warning("⚠️ 清理经验失败 / cleanup failed: {}", e)
+                return 0
+
+    def get_merge_candidates(self, min_count: int = 5) -> list[list[str]]:
+        with self._host._store_lock:
+            try:
+                rows = self._host._tbl.search().where("type = 'experience'").limit(200).to_list()
+                active = [row for row in rows if not row.get("deprecated")]
+                if len(active) < min_count:
+                    return []
+                groups: dict[str, list[str]] = {}
+                for row in active:
+                    category = row.get("category") or "general"
+                    groups.setdefault(category, []).append(row.get("content") or "")
+                return [entries for entries in groups.values() if len(entries) >= 3]
+            except Exception as e:
+                logger.warning("⚠️ 候选检索失败 / merge candidates failed: {}", e)
+                return []
+
+    def replace_merged(
+        self,
+        old_entries: list[str],
+        merged_content: str,
+        *,
+        category: str = "general",
+        quality: int = 4,
+    ) -> None:
+        merged_key = ""
+        with self._host._store_lock:
+            try:
+                rows = self._host._tbl.search().where("type = 'experience'").limit(200).to_list()
+                content_to_key = {row.get("content"): row.get("key") for row in rows}
+                for entry in old_entries:
+                    if key := content_to_key.get(entry):
+                        self._host._tbl.delete(f"key = '{key}'")
+                        self._host._delete_vector_by_key(key)
+                ts = datetime.now().isoformat()
+                merged_key = f"experience_merged_{ts}"
+                self._host._tbl.add(
+                    [
+                        self._host._make_row(
+                            key=merged_key,
+                            content=merged_content,
+                            type_="experience",
+                            category=category,
+                            quality=quality,
+                            updated_at=ts,
+                        )
+                    ]
+                )
+                logger.info("🔀 合并经验 / experiences merged: {} into 1", len(old_entries))
+            except Exception as e:
+                logger.warning("⚠️ 合并经验失败 / experience merge failed: {}", e)
+                return
+        self._host._embed_and_store(key=merged_key, content=merged_content, type_="experience")
+
+
+class _RecallDomain:
+    def __init__(self, host: "MemoryStore"):
+        self._host = host
+
+    def search_memory(
+        self,
+        query: str,
+        limit: int = 5,
+        *,
+        query_vectors: list[list[float]] | None = None,
+    ) -> list[str]:
+        if self._host.should_skip_retrieval(query):
+            return []
+        fetch = max(limit * 3, 6)
+        vec_enriched: list[dict[str, Any]] = []
+
+        if self._host._embed_fn and self._host._vec_tbl:
+            try:
+                vectors = query_vectors if query_vectors is not None else self._host._compute_query_embeddings(query)
+                vec = vectors[0] if vectors else None
+                if not isinstance(vec, Sized) or len(vec) == 0:
+                    raise ValueError("query embedding returned empty vector")
+                with self._host._store_lock:
+                    if not self._host._vec_tbl:
+                        vec_rows = []
+                    else:
+                        vec_rows = (
+                            self._host._vec_tbl.search(vec)
+                            .where("type NOT IN ('experience', 'long_term')")
+                            .limit(fetch)
+                            .to_list()
+                        )
+                if vec_rows:
+                    vec_enriched = self._host._enrich_for_rerank(vec_rows)
+            except Exception as e:
+                logger.warning("⚠️ 语义检索失败 / semantic search failed: {}", e)
+
+        text_candidates = self._host._fallback_text_candidates(
+            query,
+            limit=fetch,
+            exclude_types=["experience", "long_term"],
+        )
+        candidates = self._host._merge_memory_candidates(vec_enriched, text_candidates)
+        if candidates:
+            reranked = self._host._rerank_candidates(
+                candidates,
+                limit=limit,
+                has_vector_score=bool(vec_enriched),
+            )
+            if reranked:
+                return [row["content"] for row in reranked if row.get("content")]
+        return []
+
+    def recall(
+        self,
+        query: str,
+        *,
+        related_limit: int = 5,
+        experience_limit: int = 3,
+        long_term_chars: int | None = None,
+    ) -> RecallBundle:
+        if self._host.should_skip_retrieval(query):
+            return RecallBundle()
+        return RecallBundle(
+            long_term_context=self._host.get_relevant_memory_context(query, max_chars=long_term_chars),
+            related_memory=tuple(self._host.search_memory(query, limit=related_limit)),
+            related_experience=tuple(self._host.search_experience(query, limit=experience_limit)),
+        )
+
+
 class _GeminiEmbedding:
     """Thin wrapper using google-genai SDK (avoids legacy google-generativeai dependency)."""
 
@@ -143,14 +829,37 @@ class MemoryStore:
         self._embed_retry_backoff_ms = _DEFAULT_EMBED_RETRY_BACKOFF_MS
         self._query_embed_cache: dict[str, tuple[float, list[list[float]]]] = {}
         self._query_embed_cache_lock = threading.Lock()
+        self._migrate_legacy(workspace)
+        self._migrate_long_term_facts()
+        self._init_domains()
         if embedding_config and getattr(embedding_config, "enabled", False):
             self._init_embedding(embedding_config)
-        self._migrate_legacy(workspace)
 
     def close(self) -> None:
         with self._store_lock:
             self._vec_tbl = None
             self._embed_fn = None
+
+    def _init_domains(self) -> None:
+        self._long_term_domain = _LongTermMemoryDomain(self)
+        self._experience_domain = _ExperienceMemoryDomain(self)
+        self._recall_domain = _RecallDomain(self)
+
+    def _ensure_domains(self) -> None:
+        if not hasattr(self, "_long_term_domain"):
+            self._init_domains()
+
+    def _long_term(self) -> _LongTermMemoryDomain:
+        self._ensure_domains()
+        return self._long_term_domain
+
+    def _experience(self) -> _ExperienceMemoryDomain:
+        self._ensure_domains()
+        return self._experience_domain
+
+    def _recall(self) -> _RecallDomain:
+        self._ensure_domains()
+        return self._recall_domain
 
     def _ensure_migrated_table(self):
         """Ensure memory table exists with current schema, migrating if needed."""
@@ -571,26 +1280,89 @@ class MemoryStore:
         return row
 
     @staticmethod
-    def _normalize_memory(content: str, *, max_chars: int) -> str:
+    def _normalize_memory_facts(content: Any, *, max_chars: int) -> list[str]:
         if max_chars <= 0:
-            return ""
-        cleaned_lines: list[str] = []
+            return []
+        if isinstance(content, list):
+            raw_lines = [str(item) for item in content]
+        else:
+            raw_lines = str(content).splitlines()
+
+        facts: list[str] = []
         seen: set[str] = set()
-        for line in str(content).splitlines():
-            stripped = line.strip()
-            if not stripped or stripped in seen:
+        used = 0
+        for raw in raw_lines:
+            fact = raw.strip()
+            if not fact or fact in seen:
                 continue
-            seen.add(stripped)
-            cleaned_lines.append(stripped)
-        normalized = "\n".join(cleaned_lines)
-        if len(normalized) <= max_chars:
-            return normalized
-        if max_chars <= 1:
-            return "…"
-        cut = normalized.rfind("\n", 0, max_chars)
-        if cut > max_chars // 2:
-            return normalized[:cut].rstrip() + "…"
-        return normalized[: max_chars - 1].rstrip() + "…"
+            prefix = 1 if facts else 0
+            remaining = max_chars - used - prefix
+            if remaining <= 0:
+                break
+            if len(fact) > remaining:
+                if remaining <= 1:
+                    break
+                fact = fact[: remaining - 1].rstrip() + "…"
+            if not fact or fact in seen:
+                continue
+            seen.add(fact)
+            facts.append(fact)
+            used += len(fact) + prefix
+        return facts
+
+    @staticmethod
+    def _join_memory_facts(facts: list[str]) -> str:
+        return "\n".join(facts)
+
+    @staticmethod
+    def _is_legacy_long_term_key(key: str, category: str) -> bool:
+        normalized = key.strip()
+        return normalized in {"", "long_term", f"long_term_{category}"}
+
+    @staticmethod
+    def _long_term_fact_key(category: str, updated_at: str, index: int) -> str:
+        stamp = (updated_at or datetime.now().isoformat()).replace(":", "").replace("-", "")
+        stamp = stamp.replace(".", "").replace("+", "").replace("T", "_")[:24]
+        return f"long_term_{category}_{stamp}_{index:04d}"
+
+    def _migrate_long_term_facts(self) -> None:
+        with self._store_lock:
+            try:
+                rows = self._tbl.search().where("type = 'long_term'").limit(200).to_list()
+            except Exception as e:
+                logger.debug("long-term fact migration skipped: {}", e)
+                return
+
+            changed = False
+            for row in rows:
+                category = str(row.get("category") or "general")
+                key = str(row.get("key") or "")
+                if not self._is_legacy_long_term_key(key, category):
+                    continue
+                updated_at = str(row.get("updated_at") or datetime.now().isoformat())
+                facts = self._normalize_memory_facts(
+                    row.get("content", ""),
+                    max_chars=MEMORY_CATEGORY_CAPS.get(category, MEMORY_CATEGORY_CAPS["general"]),
+                )
+                key_safe = key.replace("'", "''")
+                self._tbl.delete(f"type = 'long_term' AND key = '{key_safe}'")
+                changed = True
+                if not facts:
+                    continue
+                self._tbl.add(
+                    [
+                        self._make_row(
+                            key=self._long_term_fact_key(category, updated_at, idx),
+                            content=fact,
+                            type_="long_term",
+                            category=category,
+                            updated_at=updated_at,
+                        )
+                        for idx, fact in enumerate(facts, start=1)
+                    ]
+                )
+            if changed:
+                logger.info("🔀 长期记忆事实化 / migrated long-term memory to fact rows")
 
     def _update_hit_stats(self, rows: list[dict[str, Any]]) -> None:
         """Increment hit_count and update last_hit_at for retrieved rows (best-effort)."""
@@ -748,196 +1520,80 @@ class MemoryStore:
     # ── Long-term memory (categorized) ──
 
     def read_long_term(self, category: str | None = None) -> str:
-        """Read long-term memory. If category given, read that category only."""
-        with self._store_lock:
-            try:
-                rows = self._read_long_term_rows_locked()
-                if not rows:
-                    return ""
-                if category:
-                    for row in rows:
-                        if (row.get("category") or "general") == category:
-                            return row.get("content", "")
-                    return ""
-                parts = []
-                for r in rows:
-                    cat = r.get("category") or "general"
-                    content = r.get("content", "").strip()
-                    if content:
-                        parts.append(f"[{cat}] {content}")
-                return "\n".join(parts)
-            except Exception:
-                return ""
+        return self._long_term().read_long_term(category)
 
     def _read_long_term_rows_locked(self) -> list[dict[str, Any]]:
-        return self._tbl.search().where("type = 'long_term'").limit(20).to_list()
+        rows = self._tbl.search().where("type = 'long_term'").limit(200).to_list()
+        rows.sort(
+            key=lambda row: (
+                str(row.get("category") or "general"),
+                str(row.get("updated_at", "")),
+                str(row.get("key", "")),
+            )
+        )
+        return rows
+
+    def _read_long_term_fact_rows_locked(self, category: str) -> list[dict[str, Any]]:
+        return [
+            row
+            for row in self._read_long_term_rows_locked()
+            if str(row.get("category") or "general") == category and str(row.get("content", "")).strip()
+        ]
+
+    def _read_long_term_facts_locked(self, category: str) -> list[str]:
+        return [str(row.get("content", "")).strip() for row in self._read_long_term_fact_rows_locked(category)]
 
     def list_long_term_entries(self) -> list[dict[str, str]]:
-        with self._store_lock:
-            try:
-                rows = self._tbl.search().where("type = 'long_term'").limit(20).to_list()
-                return [
-                    {
-                        "key": r.get("key", ""),
-                        "category": r.get("category") or "general",
-                        "content": r.get("content", ""),
-                    }
-                    for r in rows
-                    if r.get("content", "").strip()
-                ]
-            except Exception:
-                return []
+        return self._long_term().list_long_term_entries()
 
     def list_memory_categories(self) -> list[dict[str, Any]]:
-        with self._store_lock:
-            try:
-                rows = self._read_long_term_rows_locked()
-            except Exception:
-                rows = []
-
-        by_category = {
-            str(row.get("category") or "general"): dict(row)
-            for row in rows
-            if str(row.get("category") or "general") in MEMORY_CATEGORIES
-        }
-        items: list[dict[str, Any]] = []
-        for category in MEMORY_CATEGORIES:
-            row = by_category.get(category, {})
-            content = str(row.get("content", "")).strip()
-            preview = content.replace("\n", " ")[:160]
-            if len(content.replace("\n", " ")) > 160:
-                preview += "…"
-            items.append(
-                {
-                    "key": str(row.get("key") or f"long_term_{category}"),
-                    "category": category,
-                    "content": content,
-                    "preview": preview,
-                    "updated_at": str(row.get("updated_at", "")),
-                    "char_count": len(content),
-                    "line_count": len([line for line in content.splitlines() if line.strip()]),
-                    "is_empty": not bool(content),
-                }
-            )
-        return items
+        return self._long_term().list_memory_categories()
 
     def get_memory_category(self, category: str) -> dict[str, Any] | None:
-        if category not in MEMORY_CATEGORIES:
-            return None
-        for item in self.list_memory_categories():
-            if item.get("category") == category:
-                return item
-        return None
+        return self._long_term().get_memory_category(category)
 
     def exists_long_term_key(self, key: str) -> bool:
-        if not key:
-            return False
-        key_safe = key.replace("'", "''")
-        with self._store_lock:
-            try:
-                rows = (
-                    self._tbl.search()
-                    .where(f"type = 'long_term' AND key = '{key_safe}'")
-                    .limit(1)
-                    .to_list()
-                )
-                return bool(rows)
-            except Exception:
-                return False
+        return self._long_term().exists_long_term_key(key)
 
     def delete_long_term_by_key(self, key: str) -> bool:
-        if not key:
-            return False
-        key_safe = key.replace("'", "''")
-        with self._store_lock:
-            try:
-                rows = (
-                    self._tbl.search()
-                    .where(f"type = 'long_term' AND key = '{key_safe}'")
-                    .limit(1)
-                    .to_list()
-                )
-                if not rows:
-                    return False
-                self._tbl.delete(f"type = 'long_term' AND key = '{key_safe}'")
-                return True
-            except Exception as e:
-                logger.warning("⚠️ 按键删除失败 / delete by key failed: {}", e)
-                return False
+        deleted = self._long_term().delete_long_term_by_key(key)
+        if deleted:
+            self._schedule_long_term_embedding()
+        return deleted
 
-    def _read_long_term_content_locked(self, category: str) -> str:
-        rows = self._read_long_term_rows_locked()
-        for row in rows:
-            if (row.get("category") or "general") == category:
-                return str(row.get("content", ""))
-        return ""
-
-    def _upsert_long_term_locked(self, category: str, normalized: str) -> bool:
-        current = self._read_long_term_content_locked(category)
-        if current == normalized:
+    def _replace_long_term_facts_locked(self, category: str, facts: list[str]) -> bool:
+        current_facts = self._read_long_term_facts_locked(category)
+        if current_facts == facts:
             return False
 
         self._tbl.delete(f"type = 'long_term' AND category = '{category}'")
-        if normalized:
+        if facts:
+            updated_at = datetime.now().isoformat()
             self._tbl.add(
                 [
                     self._make_row(
-                        key=f"long_term_{category}",
-                        content=normalized,
+                        key=self._long_term_fact_key(category, updated_at, idx),
+                        content=fact,
                         type_="long_term",
                         category=category,
+                        updated_at=updated_at,
                     )
+                    for idx, fact in enumerate(facts, start=1)
                 ]
             )
         return True
 
     def write_long_term(self, content: str, category: str = "general") -> None:
-        """Write long-term memory for a specific category."""
-        if category not in MEMORY_CATEGORIES:
-            category = "general"
-        cap = MEMORY_CATEGORY_CAPS.get(category, MEMORY_CATEGORY_CAPS["general"])
-        normalized = self._normalize_memory(content, max_chars=cap)
-        with self._store_lock:
-            changed = self._upsert_long_term_locked(category, normalized)
-        if changed:
-            self._schedule_long_term_embedding()
+        self._long_term().write_long_term(content, category)
 
     def append_memory_category(self, category: str, content: str) -> dict[str, Any] | None:
-        if category not in MEMORY_CATEGORIES:
-            return None
-        self.remember(content, category)
-        return self.get_memory_category(category)
+        return self._long_term().append_memory_category(category, content)
 
     def clear_memory_category(self, category: str) -> dict[str, Any] | None:
-        if category not in MEMORY_CATEGORIES:
-            return None
-        self.write_long_term("", category)
-        return self.get_memory_category(category)
+        return self._long_term().clear_memory_category(category)
 
     def write_categorized_memory(self, updates: dict[str, Any]) -> None:
-        """Write multiple memory categories at once."""
-        changed_any = False
-        with self._store_lock:
-            for cat, content in updates.items():
-                if cat not in MEMORY_CATEGORIES:
-                    continue
-                cap = MEMORY_CATEGORY_CAPS.get(cat, MEMORY_CATEGORY_CAPS["general"])
-                if content is None:
-                    content_str = ""
-                elif isinstance(content, str):
-                    content_str = content.strip()
-                elif isinstance(content, list):
-                    content_str = "\n".join(
-                        str(x).strip() for x in content if x is not None and str(x).strip()
-                    )
-                else:
-                    continue
-
-                normalized = self._normalize_memory(content_str, max_chars=cap)
-                if self._upsert_long_term_locked(cat, normalized):
-                    changed_any = True
-        if changed_any:
-            self._schedule_long_term_embedding()
+        self._long_term().write_categorized_memory(updates)
 
     def append_history(self, entry: str) -> None:
         cleaned = entry.rstrip()
@@ -969,7 +1625,7 @@ class MemoryStore:
         elif self._vec_tbl:
             try:
                 with self._store_lock:
-                    rows = self._tbl.search().where("type = 'long_term'").limit(20).to_list()
+                    rows = self._tbl.search().where("type = 'long_term'").limit(200).to_list()
                     has_content = any(r.get("content", "").strip() for r in rows) if rows else False
                     if not has_content and self._vec_tbl:
                         self._delete_vector_by_key("long_term_aggregate")
@@ -1065,50 +1721,7 @@ class MemoryStore:
                 return []
 
     def search_memory(self, query: str, limit: int = 5) -> list[str]:
-        if self.should_skip_retrieval(query):
-            return []
-        embed_fn = self._embed_fn
-        fetch = max(limit * 3, 6)
-        vec_enriched: list[dict[str, Any]] = []
-
-        if embed_fn and self._vec_tbl:
-            try:
-                vectors = self._compute_query_embeddings(query)
-                vec = vectors[0] if vectors else None
-                if not isinstance(vec, Sized) or len(vec) == 0:
-                    raise ValueError("query embedding returned empty vector")
-                with self._store_lock:
-                    if not self._vec_tbl:
-                        vec_rows = []
-                    else:
-                        vec_rows = (
-                            self._vec_tbl.search(vec)
-                            .where("type NOT IN ('experience', 'long_term')")
-                            .limit(fetch)
-                            .to_list()
-                        )
-                if vec_rows:
-                    vec_enriched = self._enrich_for_rerank(vec_rows)
-            except Exception as e:
-                logger.warning("⚠️ 语义检索失败 / semantic search failed: {}", e)
-
-        text_candidates = self._fallback_text_candidates(
-            query,
-            limit=fetch,
-            exclude_types=["experience", "long_term"],
-        )
-
-        candidates = self._merge_memory_candidates(vec_enriched, text_candidates)
-        if candidates:
-            reranked = self._rerank_candidates(
-                candidates,
-                limit=limit,
-                has_vector_score=bool(vec_enriched),
-            )
-            if reranked:
-                return [r["content"] for r in reranked if r.get("content")]
-
-        return []
+        return self._recall().search_memory(query, limit=limit)
 
     # ── Experience (columnar) ──
     def append_experience(
@@ -1121,30 +1734,15 @@ class MemoryStore:
         keywords: str = "",
         reasoning_trace: str = "",
     ) -> None:
-        row_key = ""
-        with self._store_lock:
-            ts = datetime.now().isoformat()
-            row_key = f"experience_{ts}"
-            parts = [f"Task: {task}", f"Lessons: {lessons}"]
-            if keywords:
-                parts.append(f"Keywords: {keywords}")
-            if reasoning_trace:
-                parts.append(f"Trace: {reasoning_trace}")
-            content = "\n".join(parts)
-            self._tbl.add(
-                [
-                    self._make_row(
-                        key=row_key,
-                        content=content,
-                        type_="experience",
-                        category=category,
-                        quality=quality,
-                        outcome=outcome,
-                        updated_at=ts,
-                    )
-                ]
-            )
-        self._embed_and_store(key=row_key, content=content, type_="experience")
+        self._experience().append_experience(
+            task,
+            outcome,
+            lessons,
+            quality=quality,
+            category=category,
+            keywords=keywords,
+            reasoning_trace=reasoning_trace,
+        )
 
     def _confidence(self, row: dict[str, Any]) -> float:
         uses = row.get("uses", 0)
@@ -1152,53 +1750,7 @@ class MemoryStore:
         return (successes + 1) / (uses + 2)  # Laplace smoothing
 
     def search_experience(self, query: str, limit: int = 3) -> list[str]:
-        """Search experiences with scoring + conflict detection + hit tracking."""
-        if self.should_skip_retrieval(query):
-            return []
-        candidates = self._fetch_experience_candidates(query, limit * 5)
-        now = datetime.now()
-        positive: list[tuple[float, dict[str, Any], str, str, str]] = []
-        warnings: list[tuple[float, dict[str, Any], str, str]] = []
-        for r in candidates:
-            if "quality" not in r and "outcome" not in r and "updated_at" not in r:
-                continue
-            if r.get("deprecated"):
-                continue
-            quality = r.get("quality", 3)
-            days_old = self._days_since(r.get("updated_at", ""), now)
-            decay = exp(-days_old / _RETENTION_DAYS.get(quality, 90))
-            conf = self._confidence(r)
-            score = quality * decay * conf
-            content = r.get("content") or ""
-            outcome = r.get("outcome", "")
-            if outcome == "failed":
-                warnings.append((score, r, content, r.get("category") or "general"))
-            else:
-                positive.append(
-                    (score, r, content, r.get("category") or "general", outcome or "success")
-                )
-        positive.sort(key=lambda x: x[0], reverse=True)
-        warnings.sort(key=lambda x: x[0], reverse=True)
-        results: list[str] = []
-        hit_rows: list[dict[str, Any]] = []
-        seen_categories: dict[str, str] = {}
-        for _, row, content, cat, outcome_str in positive:
-            if len(results) >= limit - 1:
-                break
-            prev = seen_categories.get(cat)
-            if prev and prev != outcome_str:
-                content = f"\u26a1 CONFLICTING experience (category '{cat}'):\n{content}"
-            seen_categories.setdefault(cat, outcome_str)
-            results.append(content)
-            hit_rows.append(row)
-        if warnings:
-            results.append(f"\u26a0\ufe0f WARNING from past failure:\n{warnings[0][2]}")
-            hit_rows.append(warnings[0][1])
-        final = results[:limit]
-        # Update hit stats outside the main lock (best-effort)
-        if hit_rows:
-            self._schedule_hit_stats_update(hit_rows)
-        return final
+        return self._experience().search_experience(query, limit=limit)
 
     @staticmethod
     def _experience_preview(task: str, lessons: str) -> str:
@@ -1244,151 +1796,41 @@ class MemoryStore:
         sort_by: str = "updated_desc",
         limit: int = 200,
     ) -> list[dict[str, Any]]:
-        with self._store_lock:
-            try:
-                rows = (
-                    self._tbl.search()
-                    .where("type = 'experience'")
-                    .limit(max(limit * 2, 200))
-                    .to_list()
-                )
-            except Exception:
-                return []
-
-        items = [self._experience_row_to_item(row) for row in rows]
-        if query and not self.should_skip_retrieval(query):
-            query_tokens = set(self._tokenize(query))
-            if query_tokens:
-                items = [
-                    item
-                    for item in items
-                    if query_tokens
-                    & set(
-                        self._tokenize(
-                            " ".join(
-                                [
-                                    str(item.get("task", "")),
-                                    str(item.get("lessons", "")),
-                                    str(item.get("keywords", "")),
-                                    str(item.get("category", "")),
-                                    str(item.get("outcome", "")),
-                                ]
-                            )
-                        )
-                    )
-                ]
-        if category:
-            items = [item for item in items if item.get("category") == category]
-        if outcome:
-            items = [item for item in items if item.get("outcome") == outcome]
-        if deprecated is not None:
-            items = [item for item in items if bool(item.get("deprecated")) is deprecated]
-        if min_quality > 0:
-            items = [item for item in items if int(item.get("quality", 0)) >= min_quality]
-
-        if sort_by == "quality_desc":
-            items.sort(
-                key=lambda item: (
-                    int(item.get("quality", 0)),
-                    int(item.get("uses", 0)),
-                    str(item.get("updated_at", "")),
-                ),
-                reverse=True,
-            )
-        elif sort_by == "uses_desc":
-            items.sort(
-                key=lambda item: (
-                    int(item.get("uses", 0)),
-                    int(item.get("successes", 0)),
-                    str(item.get("updated_at", "")),
-                ),
-                reverse=True,
-            )
-        else:
-            items.sort(key=lambda item: str(item.get("updated_at", "")), reverse=True)
-        return items[:limit]
+        return self._experience().list_experience_items(
+            query,
+            category=category,
+            outcome=outcome,
+            deprecated=deprecated,
+            min_quality=min_quality,
+            sort_by=sort_by,
+            limit=limit,
+        )
 
     def get_experience_item(self, key: str) -> dict[str, Any] | None:
-        if not key:
-            return None
-        key_safe = key.replace("'", "''")
-        with self._store_lock:
-            try:
-                rows = (
-                    self._tbl.search()
-                    .where(f"type = 'experience' AND key = '{key_safe}'")
-                    .limit(1)
-                    .to_list()
-                )
-            except Exception:
-                return None
-        if not rows:
-            return None
-        return self._experience_row_to_item(rows[0])
+        return self._experience().get_experience_item(key)
 
     def set_experience_deprecated(self, key: str, deprecated: bool) -> bool:
-        item = self.get_experience_item(key)
-        if item is None:
-            return False
-        key_safe = key.replace("'", "''")
-        with self._store_lock:
-            try:
-                rows = (
-                    self._tbl.search()
-                    .where(f"type = 'experience' AND key = '{key_safe}'")
-                    .limit(1)
-                    .to_list()
-                )
-                if not rows:
-                    return False
-                self._update_experience(rows[0], deprecated=deprecated)
-                return True
-            except Exception as e:
-                logger.warning("⚠️ 更新经验停用状态失败 / set deprecated failed: {}", e)
-                return False
+        return self._experience().set_experience_deprecated(key, deprecated)
 
     def delete_experience(self, key: str) -> bool:
-        if not key:
-            return False
-        key_safe = key.replace("'", "''")
-        with self._store_lock:
-            try:
-                rows = (
-                    self._tbl.search()
-                    .where(f"type = 'experience' AND key = '{key_safe}'")
-                    .limit(1)
-                    .to_list()
-                )
-                if not rows:
-                    return False
-                self._tbl.delete(f"type = 'experience' AND key = '{key_safe}'")
-                self._delete_vector_by_key(key)
-                return True
-            except Exception as e:
-                logger.warning("⚠️ 删除经验失败 / delete experience failed: {}", e)
-                return False
+        return self._experience().delete_experience(key)
 
     def promote_experience_to_memory(
         self, key: str, category: str = "project"
     ) -> dict[str, Any] | None:
-        item = self.get_experience_item(key)
-        if item is None or category not in MEMORY_CATEGORIES:
-            return None
-        task = str(item.get("task", "")).strip()
-        lessons = str(item.get("lessons", "")).strip()
-        keywords = str(item.get("keywords", "")).strip()
-        if not (task or lessons):
-            return None
-        line = f"{task} — {lessons}" if task and lessons else (task or lessons)
-        if keywords:
-            line = f"{line} [{keywords}]"
-        return self.append_memory_category(category, line)
+        return self._experience().promote_experience_to_memory(key, category)
 
-    def _fetch_experience_candidates(self, query: str, fetch: int) -> list[dict[str, Any]]:
+    def _fetch_experience_candidates(
+        self,
+        query: str,
+        fetch: int,
+        *,
+        query_vectors: list[list[float]] | None = None,
+    ) -> list[dict[str, Any]]:
         """Fetch experience candidates via vector or BM25 fallback."""
         if self._embed_fn and self._vec_tbl:
             try:
-                vectors = self._compute_query_embeddings(query)
+                vectors = query_vectors if query_vectors is not None else self._compute_query_embeddings(query)
                 vec = vectors[0] if vectors else None
                 if not isinstance(vec, Sized) or len(vec) == 0:
                     raise ValueError("query embedding returned empty vector")
@@ -1545,100 +1987,22 @@ class MemoryStore:
                 return 0
 
     def deprecate_similar(self, task_desc: str) -> int:
-        return self._mutate_experiences(
-            task_desc,
-            threshold=0.5,
-            mutator=lambda _r: {"deprecated": True},
-            action="🧹 标记过时 / experiences deprecated",
-        )
+        return self._experience().deprecate_similar(task_desc)
 
     def boost_experience(self, task_desc: str, delta: int = 1) -> int:
-        def _mutator(r: dict[str, Any]) -> dict[str, Any] | None:
-            old_q = r.get("quality", 3)
-            new_q = max(1, min(5, old_q + delta))
-            if new_q == old_q:
-                return None
-            return {"quality": new_q}
-
-        return self._mutate_experiences(
-            task_desc,
-            threshold=0.4,
-            mutator=_mutator,
-            action=f"🧠 提升经验 / experience boosted ({delta:+d})",
-        )
+        return self._experience().boost_experience(task_desc, delta=delta)
 
     def record_reuse(self, task_desc: str, success: bool) -> int:
-        def _mutator(r: dict[str, Any]) -> dict[str, Any] | None:
-            new_uses = r.get("uses", 0) + 1
-            new_successes = r.get("successes", 0) + (1 if success else 0)
-            updates: dict[str, Any] = {"uses": new_uses, "successes": new_successes}
-            if new_uses >= 3:
-                conf = new_successes / new_uses
-                cur_q = r.get("quality", 3)
-                if conf >= 0.8:
-                    updates["quality"] = min(5, cur_q + 1)
-                elif conf < 0.4:
-                    updates["quality"] = max(1, cur_q - 1)
-            return updates
-
-        sign = "+" if success else "-"
-        return self._mutate_experiences(
-            task_desc,
-            threshold=0.4,
-            mutator=_mutator,
-            action=f"📝 记录复用 / reuse recorded ({sign})",
-        )
+        return self._experience().record_reuse(task_desc, success)
 
     def cleanup_stale(self, max_deprecated_days: int = 30, max_low_quality_days: int = 90) -> int:
-        with self._store_lock:
-            try:
-                rows = self._tbl.search().where("type = 'experience'").limit(500).to_list()
-                now = datetime.now()
-                removed = 0
-                for r in rows:
-                    days_old = self._days_since(r.get("updated_at", ""), now)
-                    is_dep = r.get("deprecated", False)
-                    quality = r.get("quality", 3)
-                    uses = r.get("uses", 0)
-                    hit_count = r.get("hit_count", 0)
-                    has_hit_tracking = bool(r.get("last_hit_at"))
-                    if quality >= 5 and uses >= 3 and not is_dep:
-                        continue
-                    should_remove = (
-                        (is_dep and days_old > max_deprecated_days)
-                        or (quality <= 1 and days_old > max_low_quality_days)
-                        # New rules only apply to rows that have been through the hit-tracking
-                        # era (last_hit_at non-empty). Pre-migration rows with hit_count=0
-                        # are NOT considered "never retrieved" — they simply predate tracking.
-                        or (has_hit_tracking and hit_count == 0 and days_old > 60 and quality <= 2)
-                        or (has_hit_tracking and hit_count <= 1 and days_old > 120 and quality <= 3)
-                    )
-                    if should_remove and (key := r.get("key")):
-                        self._tbl.delete(f"key = '{key}'")
-                        self._delete_vector_by_key(key)
-                        removed += 1
-                if removed:
-                    logger.info("🧹 清理经验 / stale experiences cleaned: {}", removed)
-                return removed
-            except Exception as e:
-                logger.warning("⚠️ 清理经验失败 / cleanup failed: {}", e)
-                return 0
+        return self._experience().cleanup_stale(
+            max_deprecated_days=max_deprecated_days,
+            max_low_quality_days=max_low_quality_days,
+        )
 
     def get_merge_candidates(self, min_count: int = 5) -> list[list[str]]:
-        with self._store_lock:
-            try:
-                rows = self._tbl.search().where("type = 'experience'").limit(200).to_list()
-                active = [r for r in rows if not r.get("deprecated")]
-                if len(active) < min_count:
-                    return []
-                groups: dict[str, list[str]] = {}
-                for r in active:
-                    cat = r.get("category") or "general"
-                    groups.setdefault(cat, []).append(r.get("content") or "")
-                return [entries for entries in groups.values() if len(entries) >= 3]
-            except Exception as e:
-                logger.warning("⚠️ 候选检索失败 / merge candidates failed: {}", e)
-                return []
+        return self._experience().get_merge_candidates(min_count=min_count)
 
     def replace_merged(
         self,
@@ -1648,34 +2012,12 @@ class MemoryStore:
         category: str = "general",
         quality: int = 4,
     ) -> None:
-        merged_key = ""
-        with self._store_lock:
-            try:
-                rows = self._tbl.search().where("type = 'experience'").limit(200).to_list()
-                content_to_key = {r.get("content"): r.get("key") for r in rows}
-                for entry in old_entries:
-                    if key := content_to_key.get(entry):
-                        self._tbl.delete(f"key = '{key}'")
-                        self._delete_vector_by_key(key)
-                ts = datetime.now().isoformat()
-                merged_key = f"experience_merged_{ts}"
-                self._tbl.add(
-                    [
-                        self._make_row(
-                            key=merged_key,
-                            content=merged_content,
-                            type_="experience",
-                            category=category,
-                            quality=quality,
-                            updated_at=ts,
-                        )
-                    ]
-                )
-                logger.info("🔀 合并经验 / experiences merged: {} into 1", len(old_entries))
-            except Exception as e:
-                logger.warning("⚠️ 合并经验失败 / experience merge failed: {}", e)
-                return
-        self._embed_and_store(key=merged_key, content=merged_content, type_="experience")
+        self._experience().replace_merged(
+            old_entries,
+            merged_content,
+            category=category,
+            quality=quality,
+        )
 
     @staticmethod
     def _tokenize(text: str) -> list[str]:
@@ -1796,13 +2138,15 @@ class MemoryStore:
     ) -> list[tuple[str, str]]:
         with self._store_lock:
             rows = self._read_long_term_rows_locked()
-        content_by_category = {
-            str(row.get("category") or "general"): str(row.get("content", "")).strip()
-            for row in rows
-        }
+        facts_by_category: dict[str, list[str]] = {category: [] for category in MEMORY_CATEGORIES}
+        for row in rows:
+            category = str(row.get("category") or "general")
+            content = str(row.get("content", "")).strip()
+            if category in facts_by_category and content:
+                facts_by_category[category].append(content)
         parts: list[tuple[str, str]] = []
         for cat in MEMORY_CATEGORIES:
-            content = content_by_category.get(cat, "")
+            content = self._join_memory_facts(facts_by_category.get(cat, []))
             if not content:
                 continue
             if query_tokens is not None and not (query_tokens & set(self._tokenize(content))):
@@ -1848,63 +2192,33 @@ class MemoryStore:
         return f"{header}{result}" if budgeted else ""
 
     def get_memory_context(self, max_chars: int | None = None) -> str:
-        parts = self._collect_long_term_parts()
-        return self._format_long_term_parts(parts, max_chars=max_chars)
+        return self._long_term().get_memory_context(max_chars=max_chars)
 
     def get_relevant_memory_context(self, query: str, max_chars: int | None = None) -> str:
-        """Like get_memory_context but filters categories by relevance to query.
-        Categories with no keyword overlap are skipped, saving tokens.
-        Returns empty when the query is too weak or nothing matches.
-        """
-        if self.should_skip_retrieval(query):
-            return ""
-        query_tokens = set(self._tokenize(query))
-        if not query_tokens:
-            return ""
-        parts = self._collect_long_term_parts(query_tokens=query_tokens)
-        return self._format_long_term_parts(parts, max_chars=max_chars)
+        return self._long_term().get_relevant_memory_context(query, max_chars=max_chars)
 
     # ── Explicit memory operations (for tools) ──
 
     def remember(self, content: str, category: str = "general") -> str:
-        """Explicitly store a fact into long-term memory."""
-        if category not in MEMORY_CATEGORIES:
-            category = "general"
-        cap = MEMORY_CATEGORY_CAPS.get(category, MEMORY_CATEGORY_CAPS["general"])
-        with self._store_lock:
-            existing = self._read_long_term_content_locked(category)
-            updated = f"{existing}\n{content}" if existing else content
-            normalized = self._normalize_memory(updated, max_chars=cap)
-            changed = self._upsert_long_term_locked(category, normalized)
-        if changed:
-            self._embed_long_term_aggregate()
-        return f"Remembered in [{category}]: {content[:80]}"
+        return self._long_term().remember(content, category)
 
     def forget(self, query: str) -> str:
-        """Remove memory entries matching query."""
-        removed = 0
-        with self._store_lock:
-            try:
-                rows = self._tbl.search().where("type = 'long_term'").limit(50).to_list()
-                for r in rows:
-                    c = (r.get("content") or "").lower()
-                    if query.lower() in c and (key := r.get("key")):
-                        self._tbl.delete(f"key = '{key}'")
-                        removed += 1
-            except Exception as e:
-                logger.warning("⚠️ 遗忘失败 / forget failed: {}", e)
-        if removed:
-            self._embed_long_term_aggregate()
-        return f"Removed {removed} memory entries matching '{query[:40]}'."
+        return self._long_term().forget(query)
 
     def update_memory(self, category: str, content: str) -> str:
-        """Replace entire content of a memory category."""
-        if category not in MEMORY_CATEGORIES:
-            return f"Invalid category. Use one of: {', '.join(MEMORY_CATEGORIES)}"
-        cap = MEMORY_CATEGORY_CAPS.get(category, MEMORY_CATEGORY_CAPS["general"])
-        normalized = self._normalize_memory(content, max_chars=cap)
-        with self._store_lock:
-            changed = self._upsert_long_term_locked(category, normalized)
-        if changed:
-            self._embed_long_term_aggregate()
-        return f"Updated [{category}] memory."
+        return self._long_term().update_memory(category, content)
+
+    def recall(
+        self,
+        query: str,
+        *,
+        related_limit: int = 5,
+        experience_limit: int = 3,
+        long_term_chars: int | None = None,
+    ) -> RecallBundle:
+        return self._recall().recall(
+            query,
+            related_limit=related_limit,
+            experience_limit=experience_limit,
+            long_term_chars=long_term_chars,
+        )

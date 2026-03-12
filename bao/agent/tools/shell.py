@@ -1,12 +1,21 @@
 """Shell execution tool."""
 
 import asyncio
+import codecs
 import logging
 import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
+from bao.agent.tool_result import (
+    INLINE_TOOL_RESULT_CHARS,
+    ToolResultValue,
+    ToolTextResult,
+    cleanup_result_file,
+    make_file_preview,
+)
 from bao.agent.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -14,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 class ExecTool(Tool):
     """Tool to execute shell commands."""
+
+    _CHUNK_BYTES = 65536
 
     _READ_ONLY_ALLOW_PATTERNS: list[str] = [
         r"^\s*(cat|ls|find|grep|head|tail|wc|file|stat|echo|pwd|which|env|printenv|less|more|tree|du|diff|basename|dirname|realpath)\b",
@@ -94,7 +105,7 @@ class ExecTool(Tool):
             "required": ["command"],
         }
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> ToolResultValue:
         command = kwargs.get("command")
         working_dir = kwargs.get("working_dir")
         if not isinstance(command, str) or not command:
@@ -112,6 +123,11 @@ class ExecTool(Tool):
             env["PATH"] = os.pathsep.join(p for p in parts if p)
 
         process: asyncio.subprocess.Process | None = None
+        stdout_path: Path | None = None
+        stderr_path: Path | None = None
+        combined_result: ToolTextResult | None = None
+        stdout_task: asyncio.Task[int] | None = None
+        stderr_task: asyncio.Task[int] | None = None
         try:
             process = await asyncio.create_subprocess_shell(
                 command,
@@ -120,35 +136,35 @@ class ExecTool(Tool):
                 cwd=cwd,
                 env=env,
             )
+            stdout_path = self._make_temp_path("bao_exec_stdout_")
+            stderr_path = self._make_temp_path("bao_exec_stderr_")
+            stdout_task = asyncio.create_task(self._drain_stream_to_file(process.stdout, stdout_path))
+            stderr_task = asyncio.create_task(self._drain_stream_to_file(process.stderr, stderr_path))
             try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=self.timeout)
+                await asyncio.wait_for(process.wait(), timeout=self.timeout)
+                stdout_chars, stderr_chars = await asyncio.gather(stdout_task, stderr_task)
             except asyncio.TimeoutError:
                 process.kill()
                 try:
                     await asyncio.wait_for(process.wait(), timeout=5.0)
                 except asyncio.TimeoutError:
                     pass
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
                 return f"Error: Command timed out after {self.timeout} seconds"
 
-            output_parts = []
-
-            if stdout:
-                output_parts.append(stdout.decode("utf-8", errors="replace"))
-
-            if stderr:
-                stderr_text = stderr.decode("utf-8", errors="replace")
-                if stderr_text.strip():
-                    output_parts.append(f"STDERR:\n{stderr_text}")
-
-            if process.returncode != 0:
-                output_parts.append(f"\nExit code: {process.returncode}")
-
-            result = "\n".join(output_parts) if output_parts else "(no output)"
-            max_len = 10000
-            if len(result) > max_len:
-                result = result[:max_len] + f"\n... (truncated, {len(result) - max_len} more chars)"
-
-            return result
+            combined_result = await asyncio.to_thread(
+                self._compose_result_file,
+                stdout_path,
+                stderr_path,
+                stdout_chars=stdout_chars,
+                stderr_chars=stderr_chars,
+                return_code=process.returncode or 0,
+            )
+            inline_text = self._read_inline_result(combined_result)
+            if inline_text is not None:
+                combined_result = None
+                return inline_text
+            return combined_result
 
         except asyncio.CancelledError:
             if process and process.returncode is None:
@@ -157,9 +173,15 @@ class ExecTool(Tool):
                     await asyncio.wait_for(process.wait(), timeout=5.0)
                 except asyncio.TimeoutError:
                     pass
+            await self._await_pending_tasks(stdout_task, stderr_task)
             raise
         except Exception as e:
+            await self._await_pending_tasks(stdout_task, stderr_task)
             return f"Error executing command: {str(e)}"
+        finally:
+            if combined_result is None:
+                self._cleanup_temp_path(stdout_path)
+                self._cleanup_temp_path(stderr_path)
 
     def _guard_command(self, command: str, cwd: str) -> str | None:
         """Best-effort safety guard for potentially destructive commands."""
@@ -221,3 +243,98 @@ class ExecTool(Tool):
             seen.add(path)
             deduped.append(path)
         return deduped
+
+    @staticmethod
+    def _make_temp_path(prefix: str) -> Path:
+        fd, raw_path = tempfile.mkstemp(prefix=prefix, suffix=".txt")
+        os.close(fd)
+        return Path(raw_path)
+
+    @staticmethod
+    def _cleanup_temp_path(path: Path | None) -> None:
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    @staticmethod
+    async def _await_pending_tasks(*tasks: asyncio.Task[int] | None) -> None:
+        pending_tasks = [task for task in tasks if task is not None]
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+    @staticmethod
+    def _read_inline_result(result: ToolTextResult) -> str | None:
+        if result.chars > INLINE_TOOL_RESULT_CHARS:
+            return None
+        text = result.path.read_text(encoding="utf-8", errors="replace")
+        cleanup_result_file(result)
+        return text or "(no output)"
+
+    async def _drain_stream_to_file(
+        self,
+        stream: asyncio.StreamReader | None,
+        path: Path,
+    ) -> int:
+        if stream is None:
+            path.write_text("", encoding="utf-8")
+            return 0
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        chars = 0
+        with path.open("w", encoding="utf-8") as handle:
+            while True:
+                chunk = await stream.read(self._CHUNK_BYTES)
+                if not chunk:
+                    break
+                text = decoder.decode(chunk)
+                if not text:
+                    continue
+                handle.write(text)
+                chars += len(text)
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                handle.write(tail)
+                chars += len(tail)
+        return chars
+
+    def _compose_result_file(
+        self,
+        stdout_path: Path,
+        stderr_path: Path,
+        *,
+        stdout_chars: int,
+        stderr_chars: int,
+        return_code: int,
+    ) -> ToolTextResult:
+        result_path = self._make_temp_path("bao_exec_result_")
+        total_chars = 0
+        with result_path.open("w", encoding="utf-8") as out_handle:
+            total_chars += self._copy_text_file(stdout_path, out_handle)
+            if stderr_chars > 0:
+                prefix = "STDERR:\n"
+                out_handle.write(prefix)
+                total_chars += len(prefix)
+                total_chars += self._copy_text_file(stderr_path, out_handle)
+            if return_code != 0:
+                exit_line = f"\nExit code: {return_code}"
+                out_handle.write(exit_line)
+                total_chars += len(exit_line)
+        if total_chars == 0:
+            result_path.write_text("(no output)", encoding="utf-8")
+            total_chars = len("(no output)")
+        excerpt = make_file_preview(result_path, min(2000, total_chars))
+        return ToolTextResult(path=result_path, chars=total_chars, excerpt=excerpt, cleanup=True)
+
+    @staticmethod
+    def _copy_text_file(source_path: Path, out_handle: Any) -> int:
+        chars = 0
+        with source_path.open("r", encoding="utf-8", errors="replace") as in_handle:
+            while True:
+                chunk = in_handle.read(65536)
+                if not chunk:
+                    break
+                out_handle.write(chunk)
+                chars += len(chunk)
+        return chars

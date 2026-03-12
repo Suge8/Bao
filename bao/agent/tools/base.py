@@ -3,6 +3,8 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
+from bao.agent.tool_result import ToolResultValue
+
 
 class Tool(ABC):
     """
@@ -40,7 +42,7 @@ class Tool(ABC):
         pass
 
     @abstractmethod
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> ToolResultValue:
         """
         Execute the tool with given parameters.
 
@@ -48,9 +50,74 @@ class Tool(ABC):
             **kwargs: Tool-specific parameters.
 
         Returns:
-            String result of the tool execution.
+            String result or file-backed text result of the tool execution.
         """
         pass
+
+    def cast_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Apply safe schema-driven casts before validation."""
+        schema = self.parameters or {}
+        if schema.get("type", "object") != "object":
+            return params
+        return self._cast_object(params, schema)
+
+    def _cast_object(self, obj: Any, schema: dict[str, Any]) -> Any:
+        if not isinstance(obj, dict):
+            return obj
+
+        props = schema.get("properties", {})
+        result: dict[str, Any] = {}
+        for key, value in obj.items():
+            prop_schema = props.get(key)
+            result[key] = self._cast_value(value, prop_schema) if prop_schema else value
+        return result
+
+    @staticmethod
+    def _cast_string_scalar(val: str, target_type: str) -> Any:
+        try:
+            if target_type == "integer":
+                return int(val)
+            if target_type == "number":
+                return float(val)
+        except ValueError:
+            return val
+
+        val_lower = val.lower()
+        if target_type == "boolean":
+            if val_lower in ("true", "1", "yes"):
+                return True
+            if val_lower in ("false", "0", "no"):
+                return False
+        return val
+
+    def _cast_value(self, val: Any, schema: dict[str, Any]) -> Any:
+        if not isinstance(schema, dict):
+            return val
+        target_type = schema.get("type")
+
+        if target_type == "boolean" and isinstance(val, bool):
+            return val
+        if target_type == "integer" and isinstance(val, int) and not isinstance(val, bool):
+            return val
+        if target_type in self._TYPE_MAP and target_type not in ("boolean", "integer", "array", "object"):
+            expected = self._TYPE_MAP[target_type]
+            if isinstance(val, expected):
+                return val
+
+        if target_type in ("integer", "number", "boolean") and isinstance(val, str):
+            return self._cast_string_scalar(val, target_type)
+
+        if target_type == "string":
+            return val if val is None else str(val)
+
+        if target_type == "array" and isinstance(val, list):
+            item_schema = schema.get("items")
+            return [self._cast_value(item, item_schema) for item in val] if item_schema else val
+
+        if target_type == "object" and isinstance(val, dict):
+            return self._cast_object(val, schema)
+
+        return val
 
     def validate_params(self, params: dict[str, Any]) -> list[str]:
         """Validate tool parameters against JSON schema. Returns error list (empty if valid)."""
@@ -61,7 +128,13 @@ class Tool(ABC):
 
     def _validate(self, val: Any, schema: dict[str, Any], path: str) -> list[str]:
         t, label = schema.get("type"), path or "parameter"
-        if t in self._TYPE_MAP and not isinstance(val, self._TYPE_MAP[t]):
+        if t == "integer" and (not isinstance(val, int) or isinstance(val, bool)):
+            return [f"{label} should be integer"]
+        if t == "number" and (
+            not isinstance(val, self._TYPE_MAP[t]) or isinstance(val, bool)
+        ):
+            return [f"{label} should be number"]
+        if t in self._TYPE_MAP and t not in ("integer", "number") and not isinstance(val, self._TYPE_MAP[t]):
             return [f"{label} should be {t}"]
 
         errors = []

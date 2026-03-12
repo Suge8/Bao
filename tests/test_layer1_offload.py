@@ -6,6 +6,7 @@ import types
 from pathlib import Path
 from typing import Any
 
+from bao.agent.tool_result import ToolTextResult
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
@@ -179,6 +180,22 @@ def test_auto_mode_offloads_large_output(tmp_path: Path, monkeypatch: Any) -> No
     assert "offloaded" in tool_content or "Full output" in tool_content
 
 
+def test_agent_loop_defaults_to_auto_without_config(tmp_path: Path, monkeypatch: Any) -> None:
+    _install_web_tool_stub(monkeypatch)
+    from bao.agent.loop import AgentLoop
+
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=BigOutputProvider(),
+        workspace=tmp_path,
+        model="big-output-provider",
+        max_iterations=5,
+    )
+
+    assert loop._ctx_mgmt == "auto"
+    assert loop.subagents._ctx_mgmt == "auto"
+
+
 def test_observe_mode_does_not_offload(tmp_path: Path, monkeypatch: Any) -> None:
     _install_web_tool_stub(monkeypatch)
     from bao.agent.loop import AgentLoop
@@ -214,3 +231,48 @@ def test_observe_mode_does_not_offload(tmp_path: Path, monkeypatch: Any) -> None
     tool_content = tool_msgs[0].get("content", "")
     assert len(tool_content) < len(BIG_OUTPUT)
     assert "hard-truncated" in tool_content
+
+
+def test_auto_mode_offloads_file_backed_read_result_without_removing_source(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    _install_web_tool_stub(monkeypatch)
+    from bao.agent.loop import AgentLoop
+
+    provider = BigOutputProvider()
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        model="big-output-provider",
+        max_iterations=5,
+    )
+    loop._ctx_mgmt = "auto"
+    loop._tool_offload_chars = 8000
+    loop._tool_preview_chars = 3000
+
+    source = tmp_path / "huge.txt"
+    source.write_text(BIG_OUTPUT, encoding="utf-8")
+
+    async def fake_execute(name: str, params: dict[str, Any]) -> ToolTextResult:
+        del params
+        assert name == "exec"
+        return ToolTextResult(path=source, chars=len(BIG_OUTPUT), excerpt="preview", cleanup=False)
+
+    loop.tools.execute = fake_execute
+
+    final_content, _, _, _, _ = asyncio.run(
+        loop._run_agent_loop(
+            initial_messages=[
+                {"role": "system", "content": "test"},
+                {"role": "user", "content": "run big tool"},
+            ]
+        )
+    )
+
+    assert final_content == "done"
+    assert source.exists()
+    second_call_msgs = provider.captured_messages[1]
+    tool_msgs = [m for m in second_call_msgs if m.get("role") == "tool"]
+    tool_content = tool_msgs[0].get("content", "")
+    assert "offloaded" in tool_content

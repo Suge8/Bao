@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from bao.agent.tool_result import ToolResultValue, maybe_temp_text_result
 from bao.agent.tools.base import Tool
 from bao.agent.tools.registry import ToolMetadata, ToolRegistry
 
@@ -86,6 +87,19 @@ def _resolve_tool_timeout_seconds(server_cfg: Any) -> int:
     return 30
 
 
+def _resolve_transport_type(server_cfg: Any) -> str | None:
+    raw_type = getattr(server_cfg, "type", None)
+    if isinstance(raw_type, str) and raw_type:
+        return raw_type
+    command = getattr(server_cfg, "command", "")
+    if isinstance(command, str) and command:
+        return "stdio"
+    url = getattr(server_cfg, "url", "")
+    if isinstance(url, str) and url:
+        return "sse" if url.rstrip("/").endswith("/sse") else "streamableHttp"
+    return None
+
+
 def _reserve_wrapper_name(
     *,
     server_name: str,
@@ -114,7 +128,8 @@ async def _close_stack_quietly(stack: AsyncExitStack) -> None:
 
 
 async def _open_server_streams(cfg: Any, server_stack: AsyncExitStack, connect_timeout: int):
-    if cfg.command:
+    transport_type = _resolve_transport_type(cfg)
+    if transport_type == "stdio":
         from mcp import StdioServerParameters
         from mcp.client.stdio import stdio_client
 
@@ -125,7 +140,31 @@ async def _open_server_streams(cfg: Any, server_stack: AsyncExitStack, connect_t
         )
         return read, write
 
-    if cfg.url:
+    if transport_type == "sse":
+        from mcp.client.sse import sse_client
+
+        def httpx_client_factory(
+            headers: dict[str, str] | None = None,
+            timeout: httpx.Timeout | None = None,
+            auth: httpx.Auth | None = None,
+        ) -> httpx.AsyncClient:
+            merged_headers = {**(cfg.headers or {}), **(headers or {})}
+            return httpx.AsyncClient(
+                headers=merged_headers or None,
+                follow_redirects=True,
+                timeout=timeout,
+                auth=auth,
+            )
+
+        read, write = await asyncio.wait_for(
+            server_stack.enter_async_context(
+                sse_client(cfg.url, httpx_client_factory=httpx_client_factory)
+            ),
+            timeout=connect_timeout,
+        )
+        return read, write
+
+    if transport_type == "streamableHttp":
         from mcp.client.streamable_http import streamable_http_client
 
         http_client = await server_stack.enter_async_context(
@@ -284,7 +323,7 @@ class MCPToolWrapper(Tool):
     def parameters(self) -> dict[str, Any]:
         return self._parameters
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> ToolResultValue:
         from mcp import types
 
         try:
@@ -294,13 +333,34 @@ class MCPToolWrapper(Tool):
             )
         except asyncio.TimeoutError:
             return f"Error: MCP tool '{self._original_name}' timed out after {self._timeout}s"
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling() > 0:
+                raise
+            logger.warning(
+                "⚠️ MCP 调用被取消 / tool call cancelled: {}:{}",
+                self._name,
+                self._original_name,
+            )
+            return f"Error: MCP tool '{self._original_name}' was cancelled"
+        except Exception as exc:
+            logger.warning(
+                "⚠️ MCP 调用失败 / tool call failed: {}:{} {}",
+                self._name,
+                self._original_name,
+                exc,
+            )
+            return f"Error: MCP tool '{self._original_name}' failed: {type(exc).__name__}"
         parts = []
         for block in result.content:
             if isinstance(block, types.TextContent):
                 parts.append(block.text)
             else:
                 parts.append(str(block))
-        return "\n".join(parts) or "(no output)"
+        return maybe_temp_text_result(
+            "\n".join(parts) or "(no output)",
+            prefix="bao_mcp_tool_",
+        )
 
 
 def _neutral_metadata_hint(name: str) -> str:
@@ -335,11 +395,20 @@ async def connect_mcp_servers(
         try:
             connect_timeout = _resolve_tool_timeout_seconds(cfg)
             tool_timeout = _resolve_tool_timeout_seconds(cfg)
-            streams = await _open_server_streams(cfg, server_stack, connect_timeout)
-            if streams is None:
+            transport_type = _resolve_transport_type(cfg)
+            if transport_type is None:
                 logger.warning(
                     "⚠️ MCP 配置缺失 / config missing: {} has no command/url, skipping",
                     name,
+                )
+                await _close_stack_quietly(server_stack)
+                continue
+            streams = await _open_server_streams(cfg, server_stack, connect_timeout)
+            if streams is None:
+                logger.warning(
+                    "⚠️ MCP 传输无效 / invalid transport: {} type={}",
+                    name,
+                    transport_type,
                 )
                 await _close_stack_quietly(server_stack)
                 continue
