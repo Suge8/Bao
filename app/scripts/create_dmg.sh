@@ -65,6 +65,14 @@ echo "║  Version: $VERSION ($ARCH)"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 
+# ── Refresh shared brand assets ──
+echo "▸ Refreshing brand assets..."
+uv run --with pillow python "$PROJECT_ROOT/app/scripts/generate_installer_assets.py" \
+    --source "$PROJECT_ROOT/app/resources/logo-circle.png" \
+    --output-dir "$PROJECT_ROOT/app/resources/installer" \
+    --dmg-background "$PROJECT_ROOT/app/resources/dmg-background.png"
+echo ""
+
 # ── Clean ──
 rm -rf "$DMG_TEMP" "$DMG_PATH"
 mkdir -p "$DMG_TEMP"
@@ -79,10 +87,10 @@ create-dmg \
     --volicon "$PROJECT_ROOT/assets/logo.icns" \
     --background "$PROJECT_ROOT/app/resources/dmg-background.png" \
     --window-pos 200 120 \
-    --window-size 660 400 \
-    --icon-size 120 \
-    --icon "$APP_NAME.app" 160 205 \
-    --app-drop-link 500 205 \
+    --window-size 720 420 \
+    --icon-size 124 \
+    --icon "$APP_NAME.app" 166 224 \
+    --app-drop-link 554 224 \
     --hide-extension "$APP_NAME.app" \
     --no-internet-enable \
     "$DMG_PATH" \

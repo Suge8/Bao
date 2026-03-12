@@ -136,6 +136,22 @@ def test_app_readme_documents_single_windows_icon_source() -> None:
     assert "logo-circle.png" in text
 
 
+def test_app_readme_documents_unified_installer_brand_assets() -> None:
+    text = _read("app/README.md")
+
+    assert "generate_installer_assets.py" in text
+    assert "dmg-background.png" in text
+    assert "windowContentInsetTop/Side/Bottom" in text
+
+
+def test_app_agents_documents_shared_installer_brand_source() -> None:
+    text = _read("app/AGENTS.md")
+
+    assert "generate_installer_assets.py" in text
+    assert "dmg-background.png" in text
+    assert "不要再分别维护两套图像或文案事实源" in text
+
+
 def test_package_win_installer_script_resolves_inno_setup_before_compile() -> None:
     text = _read("app/scripts/package_win_installer.bat")
 
@@ -170,6 +186,22 @@ def test_mac_packaging_scripts_prefer_pyinstaller_output_by_default() -> None:
     assert 'APP_PATH="$NUITKA_APP_PATH"' in dmg
     assert 'PYINSTALLER_APP_PATH="$PROJECT_ROOT/dist-pyinstaller/dist/$APP_NAME.app"' in update_zip
     assert 'NUITKA_APP_PATH="$PROJECT_ROOT/dist/$APP_NAME.app"' in update_zip
+
+
+def test_mac_dmg_packaging_refreshes_shared_brand_assets() -> None:
+    dmg = _read("app/scripts/create_dmg.sh")
+
+    assert "generate_installer_assets.py" in dmg
+    assert '--dmg-background "$PROJECT_ROOT/app/resources/dmg-background.png"' in dmg
+    assert 'echo "▸ Refreshing brand assets..."' in dmg
+
+
+def test_installer_asset_generator_is_single_source_for_windows_and_dmg() -> None:
+    text = _read("app/scripts/generate_installer_assets.py")
+
+    assert "def build_dmg_background" in text
+    assert 'default="app/resources/dmg-background.png"' in text
+    assert "Generate unified Windows installer and macOS DMG brand assets" in text
 
 
 def test_windows_installer_prefers_pyinstaller_output_by_default() -> None:

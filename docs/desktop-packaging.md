@@ -2,7 +2,9 @@
 
 ## 概述
 
-Bao Desktop 当前默认发布使用 **PyInstaller onedir** 打包 Python + PySide6 应用，通过 GitHub Actions 自动构建双平台安装包。**Nuitka** 保留为备用方案，用于需要更激进二进制优化时再启用。
+Bao Desktop 是项目的主入口交付形态。大多数用户会直接从 GitHub Release 下载桌面安装包；CLI 的 PyPI 分发只面向终端用户，源码路径面向开发者。本页说明桌面端如何稳定产出这条主分发链路。
+
+当前默认发布使用 **PyInstaller onedir** 打包 Python + PySide6 应用，通过 GitHub Actions 自动构建双平台安装包。**Nuitka** 保留为备用方案，用于需要更激进二进制优化时再启用。
 
 ### 分发策略（Strategy B — 分架构）
 
@@ -72,7 +74,7 @@ Windows 安装器品牌图资源也可由脚本生成：
 uv run --with pillow python app/scripts/generate_installer_assets.py
 ```
 
-产物位于 `app/resources/installer/`，包含 Inno Setup 欢迎图、小图与背景图的 light/dark 两套 PNG。`app/scripts/package_win_installer.bat` 会在调用 Inno Setup 前自动重生成这批资源，避免脚本与静态图漂移。
+产物位于 `app/resources/installer/`，包含 Inno Setup 欢迎图、小图与背景图的 light/dark 两套 PNG；同一次生成也会更新 `app/resources/dmg-background.png`。脚本现在是 Win/mac 安装品牌资源的唯一事实源，统一复用桌面端暖色系 token、圆角和层次节奏，避免 Windows 安装器、macOS DMG 与桌面端首屏各自漂移。`app/scripts/package_win_installer.bat` 和 `app/scripts/create_dmg.sh` 都会在打包前自动重生成这批资源。
 
 运行时窗口图标由 `app/main.py` 按平台解析：Windows 先解析已随桌面端打包的 `app/resources/logo.ico`，只有该资源缺失时才退回 `app/resources/logo-circle.png` 与 `assets/logo.ico|jpg|jpeg|png` 的兼容路径；macOS 与其他平台继续优先使用 `assets/logo.jpg|jpeg|png`。`logo-circle.png` 只保留给应用内 UI，Windows 的窗口/安装器/EXE 图标主路径统一收口到同一个 `.ico` 事实源。
 
@@ -147,7 +149,7 @@ app\scripts\build_win.bat
 app\scripts\package_win_installer.bat --build-root dist\build-win-x64\main.dist
 ```
 
-Windows 默认发布版使用 PyInstaller 的 GUI 模式，安装器 UI 仍由 `app/scripts/bao_installer.iss` 驱动，当前使用 Inno Setup 的 `modern windows11 dynamic` 样式，并接入 `app/resources/installer/` 下的品牌化图像资源。安装器文案支持英文与简体中文，默认按 Windows UI 语言自动匹配（`ShowLanguageDialog=auto` + `LanguageDetectionMethod=uilanguage` + `UsePreviousLanguage=no`），只有未匹配到语言时才显示语言选择对话框，且不会被上一次安装时手动选择的语言覆盖。简体中文 `.isl` 现随仓库一起分发，不再依赖 runner 上的 Inno Setup 安装是否自带该翻译文件。
+Windows 默认发布版使用 PyInstaller 的 GUI 模式，安装器 UI 仍由 `app/scripts/bao_installer.iss` 驱动，当前使用 Inno Setup 的 `modern windows11 dynamic` 样式，并接入 `app/resources/installer/` 下的品牌化图像资源。欢迎页与背景图已经收口到与桌面端一致的暖色品牌系统，安装器文案也收短为“安装完成后在应用内继续引导”这一条主路径，减少图像与正文同时堆信息造成的拥挤感。安装器文案支持英文与简体中文，默认按 Windows UI 语言自动匹配（`ShowLanguageDialog=auto` + `LanguageDetectionMethod=uilanguage` + `UsePreviousLanguage=no`），只有未匹配到语言时才显示语言选择对话框，且不会被上一次安装时手动选择的语言覆盖。简体中文 `.isl` 现随仓库一起分发，不再依赖 runner 上的 Inno Setup 安装是否自带该翻译文件。
 
 默认产物：`dist-pyinstaller\dist\Bao\Bao.exe`、`dist\Bao-x.y.z-windows-x64-setup.exe`
 
