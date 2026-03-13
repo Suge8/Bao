@@ -1,4 +1,12 @@
-import os
+import os, base64, subprocess, tempfile
+
+# Generate small logo base64 for embedding in hero SVG
+_logo_src = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'app', 'resources', 'logo-circle.png')
+_tmp = tempfile.mktemp(suffix='.png')
+subprocess.run(['sips', '-z', '72', '72', _logo_src, '--out', _tmp], capture_output=True)
+with open(_tmp, 'rb') as _f:
+    LOGO_B64 = base64.b64encode(_f.read()).decode()
+os.unlink(_tmp)
 
 themes = {
     "dark": {
@@ -175,7 +183,9 @@ def render_hero(t, lang, theme_name):
         <text x="48" y="38" class="font-sans fw-medium text-muted" font-size="11">{desc}</text>
       </g>"""
 
-    content = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="100%" height="100%">
+    logo_uri = f"data:image/png;base64,{LOGO_B64}"
+
+    content = f"""<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 {w} {h}" width="100%" height="100%">
 {common_defs_template.format(**t, height=h)}
   
   <!-- Subtle Glows -->
@@ -183,23 +193,23 @@ def render_hero(t, lang, theme_name):
   <circle cx="660" cy="260" r="220" fill="url(#glow-grad)" class="animate-pulse" style="animation-delay: 2s;" />
 
   <!-- === LEFT COLUMN: Branding === -->
-  <g transform="translate(48, 72)">
-    <!-- Eyebrow with icon -->
-    <rect width="28" height="28" rx="8" fill="{t['accent_bg']}" />
-    <g transform="translate(2, 2)">{get_icon('zap', color=t['accent'], size=24)}</g>
-    <text x="36" y="19" class="font-sans fw-bold tracking-wide text-accent" font-size="12">{eyebrow}</text>
+  <g transform="translate(48, 56)">
+    <!-- Logo + Eyebrow row -->
+    <image href="{logo_uri}" x="0" y="0" width="56" height="56" />
+    <text x="66" y="30" class="font-sans fw-bold tracking-wide text-accent" font-size="12">{eyebrow}</text>
+    <text x="66" y="48" class="font-sans fw-medium text-muted" font-size="11">Your Personal AI Framework</text>
 
     <!-- Title -->
-    <text y="80" class="font-sans fw-bold tracking-tight text-primary" font-size="78">{title}</text>
+    <text y="120" class="font-sans fw-bold tracking-tight text-primary" font-size="78">{title}</text>
 
     <!-- Subtitle -->
-    <text y="120" class="font-sans fw-bold tracking-tight text-secondary" font-size="20">{sub1}</text>
-    <text y="152" class="font-sans fw-medium text-muted" font-size="14">{sub2}</text>
-    <text y="174" class="font-sans fw-medium text-muted" font-size="14">{sub3}</text>
+    <text y="160" class="font-sans fw-bold tracking-tight text-secondary" font-size="20">{sub1}</text>
+    <text y="192" class="font-sans fw-medium text-muted" font-size="14">{sub2}</text>
+    <text y="214" class="font-sans fw-medium text-muted" font-size="14">{sub3}</text>
 
     <!-- Accent bar -->
-    <rect y="200" width="60" height="4" rx="2" fill="{t['accent']}" />
-    <rect y="200" x="68" width="30" height="4" rx="2" fill="{t['accent']}" opacity="0.4" />
+    <rect y="240" width="60" height="4" rx="2" fill="{t['accent']}" />
+    <rect y="240" x="68" width="30" height="4" rx="2" fill="{t['accent']}" opacity="0.4" />
   </g>
 
   <!-- Connection wire from left to right panel -->
