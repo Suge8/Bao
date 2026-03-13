@@ -84,6 +84,10 @@ icons = {
 def get_icon(name, color="#ffffff", size=24, stroke_width=2):
     return f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="{stroke_width}" stroke-linecap="round" stroke-linejoin="round">{icons.get(name, "")}</svg>'
 
+def esc(s):
+    """Escape text for safe embedding in SVG/XML."""
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 
 common_defs_template = """
   <defs>
@@ -179,8 +183,8 @@ def render_hero(t, lang, theme_name):
         <rect width="{panel_inner_w}" height="{row_height}" rx="12" fill="{t['card_bg']}" stroke="{t['card_border']}" />
         <rect x="10" y="11" width="28" height="28" rx="8" fill="{cbg}" />
         <g transform="translate(14, 15)">{get_icon(icon_name, color=c, size=20)}</g>
-        <text x="48" y="22" class="font-sans fw-bold text-primary" font-size="13">{label}</text>
-        <text x="48" y="38" class="font-sans fw-medium text-muted" font-size="11">{desc}</text>
+        <text x="48" y="22" class="font-sans fw-bold text-primary" font-size="13">{esc(label)}</text>
+        <text x="48" y="38" class="font-sans fw-medium text-muted" font-size="11">{esc(desc)}</text>
       </g>"""
 
     logo_uri = f"data:image/png;base64,{LOGO_B64}"
@@ -385,9 +389,9 @@ def render_arch(t, lang, theme_name):
 {common_defs_template.format(**t, height=h)}
   
   <g transform="translate(60, 50)">
-    <text y="0" class="font-sans fw-bold tracking-wide text-accent" font-size="12">{eyebrow}</text>
-    <text y="32" class="font-sans fw-bold tracking-tight text-primary" font-size="24">{title}</text>
-    <text y="56" class="font-sans fw-medium text-secondary" font-size="14">{sub}</text>
+    <text y="0" class="font-sans fw-bold tracking-wide text-accent" font-size="12">{esc(eyebrow)}</text>
+    <text y="32" class="font-sans fw-bold tracking-tight text-primary" font-size="24">{esc(title)}</text>
+    <text y="56" class="font-sans fw-medium text-secondary" font-size="14">{esc(sub)}</text>
   </g>
 
   <!-- Left: Inputs -->
@@ -397,8 +401,8 @@ def render_arch(t, lang, theme_name):
     <g transform="translate(16, 28)">
         {get_icon('users', color=t['sky'], size=24)}
     </g>
-    <text x="50" y="44" class="font-sans fw-bold text-primary" font-size="14">{i1}</text>
-    <text x="20" y="68" class="font-sans fw-medium text-muted" font-size="11">{d1}</text>
+    <text x="50" y="44" class="font-sans fw-bold text-primary" font-size="14">{esc(i1)}</text>
+    <text x="20" y="68" class="font-sans fw-medium text-muted" font-size="11">{esc(d1)}</text>
     <path d="M200 40 L 260 40" stroke="{t['line']}" stroke-width="2" class="animate-flow" />
     <circle cx="260" cy="40" r="4" fill="{t['accent']}" />
   </g>
@@ -408,8 +412,8 @@ def render_arch(t, lang, theme_name):
     <g transform="translate(16, 28)">
         {get_icon('message-square', color=t['violet'], size=24)}
     </g>
-    <text x="50" y="44" class="font-sans fw-bold text-primary" font-size="14">{i2}</text>
-    <text x="20" y="68" class="font-sans fw-medium text-muted" font-size="11">{d2}</text>
+    <text x="50" y="44" class="font-sans fw-bold text-primary" font-size="14">{esc(i2)}</text>
+    <text x="20" y="68" class="font-sans fw-medium text-muted" font-size="11">{esc(d2)}</text>
     <path d="M200 40 L 260 40" stroke="{t['line']}" stroke-width="2" class="animate-flow" />
     <circle cx="260" cy="40" r="4" fill="{t['accent']}" />
   </g>
@@ -418,35 +422,35 @@ def render_arch(t, lang, theme_name):
   <g transform="translate(280, 130)" filter="url(#shadow-md)">
     <rect width="250" height="280" rx="20" fill="{t['panel_bg']}" stroke="{t['panel_border']}" stroke-width="2" />
     <g transform="translate(112, 12)">{get_icon('cpu', color=t['primary'] if 'primary' in t else t['text_primary'], size=26)}</g>
-    <text x="125" y="58" class="font-sans fw-bold text-primary" font-size="15" text-anchor="middle">{c1}</text>
+    <text x="125" y="58" class="font-sans fw-bold text-primary" font-size="15" text-anchor="middle">{esc(c1)}</text>
     
     <g transform="translate(25, 76)">
       <rect width="200" height="40" rx="8" fill="{t['card_bg']}" stroke="{t['card_border']}" />
       <g transform="translate(12, 10)">
         {get_icon('database', color=t['accent'], size=20)}
       </g>
-      <text x="44" y="25" class="font-sans fw-semibold text-secondary" font-size="13">{c2}</text>
+      <text x="44" y="25" class="font-sans fw-semibold text-secondary" font-size="13">{esc(c2)}</text>
     </g>
     <g transform="translate(25, 126)">
       <rect width="200" height="40" rx="8" fill="{t['card_bg']}" stroke="{t['card_border']}" />
       <g transform="translate(12, 10)">
         {get_icon('brain', color=t['mint'], size=20)}
       </g>
-      <text x="44" y="25" class="font-sans fw-semibold text-secondary" font-size="13">{c3}</text>
+      <text x="44" y="25" class="font-sans fw-semibold text-secondary" font-size="13">{esc(c3)}</text>
     </g>
     <g transform="translate(25, 176)">
       <rect width="200" height="40" rx="8" fill="{t['card_bg']}" stroke="{t['card_border']}" />
       <g transform="translate(12, 10)">
         {get_icon('timer', color=t['rose'], size=20)}
       </g>
-      <text x="44" y="25" class="font-sans fw-semibold text-secondary" font-size="13">{c4}</text>
+      <text x="44" y="25" class="font-sans fw-semibold text-secondary" font-size="13">{esc(c4)}</text>
     </g>
     <g transform="translate(25, 226)">
       <rect width="200" height="40" rx="8" fill="{t['card_bg']}" stroke="{t['card_border']}" />
       <g transform="translate(12, 10)">
         {get_icon('git-branch', color=t['sky'], size=20)}
       </g>
-      <text x="44" y="25" class="font-sans fw-semibold text-secondary" font-size="13">{c5}</text>
+      <text x="44" y="25" class="font-sans fw-semibold text-secondary" font-size="13">{esc(c5)}</text>
     </g>
   </g>
 
@@ -459,7 +463,7 @@ def render_arch(t, lang, theme_name):
     <g transform="translate(16, 28)">
         {get_icon('box', color=t['rose'], size=24)}
     </g>
-    <text x="50" y="44" class="font-sans fw-bold text-primary" font-size="14">{o1}</text>
+    <text x="50" y="44" class="font-sans fw-bold text-primary" font-size="14">{esc(o1)}</text>
     <text x="20" y="68" class="font-sans fw-medium text-muted" font-size="11">Tools, Files, Cloud</text>
   </g>
   <g transform="translate(560, 260)">
@@ -470,8 +474,8 @@ def render_arch(t, lang, theme_name):
     <g transform="translate(16, 28)">
         {get_icon('monitor', color=t['accent'], size=24)}
     </g>
-    <text x="50" y="44" class="font-sans fw-bold text-primary" font-size="14">{o2}</text>
-    <text x="20" y="68" class="font-sans fw-medium text-muted" font-size="11">Screen & Controls</text>
+    <text x="50" y="44" class="font-sans fw-bold text-primary" font-size="14">{esc(o2)}</text>
+    <text x="20" y="68" class="font-sans fw-medium text-muted" font-size="11">Screen &amp; Controls</text>
   </g>
   
   <rect x="50" y="450" width="700" height="40" rx="8" fill="{t['accent_bg']}" />

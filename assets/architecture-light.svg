@@ -132,7 +132,7 @@
         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#d97706" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
     </g>
     <text x="50" y="44" class="font-sans fw-bold text-primary" font-size="14">桌面端自动化执行</text>
-    <text x="20" y="68" class="font-sans fw-medium text-muted" font-size="11">Screen & Controls</text>
+    <text x="20" y="68" class="font-sans fw-medium text-muted" font-size="11">Screen &amp; Controls</text>
   </g>
   
   <rect x="50" y="450" width="700" height="40" rx="8" fill="#fef3c7" />
