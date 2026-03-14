@@ -1486,6 +1486,16 @@ Rectangle {
                                         {"label": "high", "value": "high"}
                                     ]
                                 }
+                                SettingsSelect {
+                                    label: tr("回复加速模式", "Reply Speed Mode")
+                                    dotpath: "agents.defaults.serviceTier"
+                                    description: tr("仅对支持的 OpenAI / Codex 服务生效。极速优先会尽量更快回复；省钱优先更便宜，但排队时间可能更长。", "Only applies to supported OpenAI / Codex services. Speed Priority aims for faster replies; Cost Saver is cheaper, but queue time may be longer.")
+                                    options: [
+                                        {"label": tr("默认", "Default"), "value": null},
+                                        {"label": tr("极速优先", "Speed Priority"), "value": "priority"},
+                                        {"label": tr("省钱优先", "Cost Saver"), "value": "flex"}
+                                    ]
+                                }
                                 SettingsField { label: tr("工具结果预览长度", "Tool Preview Length"); dotpath: "agents.defaults.toolOutputPreviewChars"; placeholder: "3000"; inputType: "number"; description: tr("工具结果太长时，消息里先显示多少预览", "How much preview to keep in the message when tool output is long") }
                                 SettingsField { label: tr("工具结果外置阈值", "Tool Offload Threshold"); dotpath: "agents.defaults.toolOutputOffloadChars"; placeholder: "8000"; inputType: "number"; description: tr("超过这个长度就自动存成文件，不全塞进对话", "Tool output longer than this is moved to a file instead of staying fully in chat") }
                                 SettingsField { label: tr("开始压缩上下文的阈值", "Context Trim Threshold"); dotpath: "agents.defaults.contextCompactBytesEst"; placeholder: "240000"; inputType: "number"; description: tr("对话太长时，达到这个体量就开始压缩", "When the conversation grows past this size, Bao starts compacting it") }
