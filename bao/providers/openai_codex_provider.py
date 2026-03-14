@@ -11,6 +11,10 @@ import httpx
 from oauth_cli_kit import get_token as get_codex_token
 
 from bao.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from bao.providers.openai_provider import (
+    _normalize_openai_reasoning_effort,
+    _normalize_service_tier,
+)
 from bao.providers.responses_compat import (
     append_responses_tool_call_arguments,
     build_responses_tool_call_request,
@@ -49,12 +53,10 @@ class OpenAICodexProvider(LLMProvider):
     ) -> LLMResponse:
         del max_tokens, temperature
         model = model or self.default_model
-        reasoning_effort = kwargs.get("reasoning_effort")
-        if not isinstance(reasoning_effort, str):
-            reasoning_effort = None
-        else:
-            effort = reasoning_effort.strip().lower()
-            reasoning_effort = effort if effort in {"low", "medium", "high"} else None
+        reasoning_effort = _normalize_openai_reasoning_effort(
+            kwargs.get("reasoning_effort"), allow_off=True
+        )
+        service_tier = _normalize_service_tier(kwargs.get("service_tier"))
         system_prompt, input_items = convert_messages_to_responses(messages)
 
         token = await asyncio.to_thread(get_codex_token)
@@ -78,6 +80,8 @@ class OpenAICodexProvider(LLMProvider):
         }
         if reasoning_effort:
             body["reasoning"] = {"effort": reasoning_effort}
+        if service_tier:
+            body["service_tier"] = service_tier
 
         if tools:
             body["tools"] = convert_tools_to_responses(tools)

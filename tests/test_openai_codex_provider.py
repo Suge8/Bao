@@ -82,6 +82,62 @@ def test_codex_provider_normalizes_long_call_id_in_replayed_history(monkeypatch)
     assert len(input_items[0]["call_id"]) <= 64
 
 
+def test_codex_provider_forwards_service_tier(monkeypatch) -> None:
+    provider = OpenAICodexProvider(default_model="openai-codex/gpt-5.1-codex")
+    captured_body: dict[str, Any] = {}
+
+    async def _fake_request_codex(
+        url: str,
+        headers: dict[str, str],
+        body: dict[str, Any],
+        verify: bool,
+        on_progress=None,
+    ) -> tuple[str, list[Any], str]:
+        del url, headers, verify, on_progress
+        captured_body.update(body)
+        return "ok", [], "stop"
+
+    monkeypatch.setattr(
+        "bao.providers.openai_codex_provider.get_codex_token",
+        lambda: SimpleNamespace(account_id="acct_1", access="token"),
+    )
+    monkeypatch.setattr("bao.providers.openai_codex_provider._request_codex", _fake_request_codex)
+
+    result = asyncio.run(
+        provider.chat(messages=[{"role": "user", "content": "hi"}], service_tier="priority")
+    )
+
+    assert result.finish_reason == "stop"
+    assert captured_body["service_tier"] == "priority"
+
+
+def test_codex_provider_maps_reasoning_off_to_none(monkeypatch) -> None:
+    provider = OpenAICodexProvider(default_model="openai-codex/gpt-5.1-codex")
+    captured_body: dict[str, Any] = {}
+
+    async def _fake_request_codex(
+        url: str,
+        headers: dict[str, str],
+        body: dict[str, Any],
+        verify: bool,
+        on_progress=None,
+    ) -> tuple[str, list[Any], str]:
+        del url, headers, verify, on_progress
+        captured_body.update(body)
+        return "ok", [], "stop"
+
+    monkeypatch.setattr(
+        "bao.providers.openai_codex_provider.get_codex_token",
+        lambda: SimpleNamespace(account_id="acct_1", access="token"),
+    )
+    monkeypatch.setattr("bao.providers.openai_codex_provider._request_codex", _fake_request_codex)
+
+    result = asyncio.run(
+        provider.chat(messages=[{"role": "user", "content": "hi"}], reasoning_effort="off")
+    )
+
+    assert result.finish_reason == "stop"
+    assert captured_body["reasoning"] == {"effort": "none"}
 def test_codex_consume_sse_normalizes_internal_tool_call_id(monkeypatch) -> None:
     raw_call_id = "call_" + ("y" * 90)
 

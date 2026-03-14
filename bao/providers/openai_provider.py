@@ -41,6 +41,24 @@ _BASE_DELAY = DEFAULT_BASE_DELAY
 _CJK_CHAR_RE = re.compile(r"[\u3400-\u9FFF]")
 
 
+def _normalize_openai_reasoning_effort(value: Any, *, allow_off: bool) -> str | None:
+    if not isinstance(value, str):
+        return None
+    effort = value.strip().lower()
+    if effort in {"low", "medium", "high"}:
+        return effort
+    if allow_off and effort == "off":
+        return "none"
+    return None
+
+
+def _normalize_service_tier(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    service_tier = value.strip().lower()
+    return service_tier or None
+
+
 def _system_prompt_seems_ignored(system_prompt: str, content: str | None) -> bool:
     if not system_prompt:
         return False
@@ -397,14 +415,12 @@ class OpenAICompatibleProvider(LLMProvider):
 
         max_tokens = max(1, max_tokens)
         source = str(extra.get("source", "main"))
-        reasoning_effort = extra.get("reasoning_effort")
-        if not isinstance(reasoning_effort, str):
-            reasoning_effort = None
-        if reasoning_effort is not None:
-            effort = reasoning_effort.strip().lower()
-            reasoning_effort = effort if effort in {"low", "medium", "high"} else None
+        reasoning_effort = _normalize_openai_reasoning_effort(
+            extra.get("reasoning_effort"), allow_off=True
+        )
         if reasoning_effort is not None and not self._supports_reasoning_effort(resolved_model):
             reasoning_effort = None
+        service_tier = _normalize_service_tier(extra.get("service_tier"))
         mode = self._resolve_effective_mode()
 
         if mode == "responses":
@@ -417,6 +433,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 on_progress,
                 source,
                 reasoning_effort,
+                service_tier,
             )
         if mode == "completions":
             return await self._chat_completions(
@@ -428,6 +445,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 on_progress,
                 source,
                 reasoning_effort,
+                service_tier,
             )
 
         return await self._chat_with_probe(
@@ -439,6 +457,7 @@ class OpenAICompatibleProvider(LLMProvider):
             on_progress,
             source,
             reasoning_effort,
+            service_tier,
         )
 
     async def _chat_completions(
@@ -451,6 +470,7 @@ class OpenAICompatibleProvider(LLMProvider):
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         source: str = "main",
         reasoning_effort: str | None = None,
+        service_tier: str | None = None,
     ) -> LLMResponse:
         del source
         params: dict[str, Any] = {
@@ -465,6 +485,8 @@ class OpenAICompatibleProvider(LLMProvider):
             params["tool_choice"] = "auto"
         if reasoning_effort:
             params["reasoning_effort"] = reasoning_effort
+        if service_tier:
+            params["service_tier"] = service_tier
 
         content = ""
         retry_count = 0
@@ -584,6 +606,7 @@ class OpenAICompatibleProvider(LLMProvider):
         max_tokens: int,
         temperature: float,
         reasoning_effort: str | None,
+        service_tier: str | None,
     ) -> dict[str, Any]:
         system_prompt, input_items = convert_messages_to_responses(messages)
         body: dict[str, Any] = {
@@ -600,6 +623,8 @@ class OpenAICompatibleProvider(LLMProvider):
             body["tool_choice"] = "auto"
         if reasoning_effort:
             body["reasoning"] = {"effort": reasoning_effort}
+        if service_tier:
+            body["service_tier"] = service_tier
         return body
 
     def _build_responses_headers(self) -> dict[str, str]:
@@ -619,6 +644,7 @@ class OpenAICompatibleProvider(LLMProvider):
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         source: str = "main",
         reasoning_effort: str | None = None,
+        service_tier: str | None = None,
     ) -> LLMResponse:
         allow_fallback = True
         system_prompt, _ = convert_messages_to_responses(messages)
@@ -629,6 +655,7 @@ class OpenAICompatibleProvider(LLMProvider):
             max_tokens,
             temperature,
             reasoning_effort,
+            service_tier,
         )
         body["stream"] = True
         url = f"{self._effective_base.rstrip('/')}/responses"
@@ -670,6 +697,7 @@ class OpenAICompatibleProvider(LLMProvider):
                                     on_progress,
                                     source,
                                     reasoning_effort,
+                                    service_tier,
                                 )
                             return result
 
@@ -690,6 +718,7 @@ class OpenAICompatibleProvider(LLMProvider):
                                 on_progress,
                                 source,
                                 reasoning_effort,
+                                service_tier,
                             )
                         raise status_err
             except asyncio.CancelledError:
@@ -723,6 +752,7 @@ class OpenAICompatibleProvider(LLMProvider):
                     on_progress,
                     source,
                     reasoning_effort,
+                    service_tier,
                 )
             if retry_count > 0:
                 logger.error(
@@ -745,6 +775,7 @@ class OpenAICompatibleProvider(LLMProvider):
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         source: str = "main",
         reasoning_effort: str | None = None,
+        service_tier: str | None = None,
     ) -> LLMResponse:
         system_prompt, _ = convert_messages_to_responses(messages)
         body = self._build_responses_body(
@@ -754,6 +785,7 @@ class OpenAICompatibleProvider(LLMProvider):
             max_tokens,
             temperature,
             reasoning_effort,
+            service_tier,
         )
         url = f"{self._effective_base.rstrip('/')}/responses"
         headers = self._build_responses_headers()
@@ -778,6 +810,7 @@ class OpenAICompatibleProvider(LLMProvider):
                     on_progress,
                     source,
                     reasoning_effort,
+                    service_tier,
                 )
 
             if resp.status_code == 200:
@@ -793,6 +826,7 @@ class OpenAICompatibleProvider(LLMProvider):
                         on_progress,
                         source,
                         reasoning_effort,
+                        service_tier,
                     )
                 set_cached_mode(self._effective_base, "responses")
                 logger.info("🤖 响应已启用 / detected: [{}] Responses API cached", source)
@@ -814,6 +848,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 on_progress,
                 source,
                 reasoning_effort,
+                service_tier,
             )
 
         except asyncio.CancelledError:
@@ -835,6 +870,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 on_progress,
                 source,
                 reasoning_effort,
+                service_tier,
             )
 
     def _parse_completions_response(self, response: Any) -> LLMResponse:

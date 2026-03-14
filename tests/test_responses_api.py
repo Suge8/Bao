@@ -259,6 +259,162 @@ def test_openai_provider_stream_normalizes_internal_tool_call_id(monkeypatch) ->
     assert len(call_id) <= 64
 
 
+def test_openai_provider_build_responses_body_forwards_service_tier() -> None:
+    provider = OpenAICompatibleProvider(api_key="k", api_base="https://example.com/v1")
+
+    body = provider._build_responses_body(
+        "gpt-5.2",
+        [{"role": "user", "content": "hi"}],
+        None,
+        256,
+        0.1,
+        "low",
+        "priority",
+    )
+
+    assert body["reasoning"] == {"effort": "low"}
+    assert body["service_tier"] == "priority"
+
+
+def test_openai_provider_build_responses_body_maps_reasoning_off_to_none() -> None:
+    provider = OpenAICompatibleProvider(api_key="k", api_base="https://example.com/v1")
+
+    body = provider._build_responses_body(
+        "gpt-5.2",
+        [{"role": "user", "content": "hi"}],
+        None,
+        256,
+        0.1,
+        "none",
+        None,
+    )
+
+    assert body["reasoning"] == {"effort": "none"}
+
+
+def test_openai_provider_chat_completions_forwards_service_tier(monkeypatch) -> None:
+    provider = OpenAICompatibleProvider(api_key="k", api_base="https://example.com/v1")
+    captured: dict[str, object] = {}
+
+    class _Stream:
+        def __aiter__(self):
+            async def _gen():
+                yield type(
+                    "Chunk",
+                    (),
+                    {
+                        "choices": [
+                            type(
+                                "Choice",
+                                (),
+                                {
+                                    "delta": type(
+                                        "Delta",
+                                        (),
+                                        {
+                                            "content": None,
+                                            "reasoning_content": None,
+                                            "tool_calls": None,
+                                        },
+                                    )(),
+                                    "finish_reason": "stop",
+                                },
+                            )()
+                        ],
+                        "usage": None,
+                    },
+                )()
+
+            return _gen()
+
+    class _Completions:
+        async def create(self, **kwargs):
+            captured.update(kwargs)
+            return _Stream()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    monkeypatch.setattr(provider, "_get_client", lambda: _Client())
+
+    result = asyncio.run(
+        provider._chat_completions(
+            "gpt-5.2",
+            [{"role": "user", "content": "hi"}],
+            None,
+            256,
+            0.1,
+            service_tier="priority",
+        )
+    )
+
+    assert result.finish_reason == "stop"
+    assert captured["service_tier"] == "priority"
+
+
+def test_openai_provider_chat_completions_maps_reasoning_off_to_none(monkeypatch) -> None:
+    provider = OpenAICompatibleProvider(api_key="k", api_base="https://example.com/v1")
+    captured: dict[str, object] = {}
+
+    class _Stream:
+        def __aiter__(self):
+            async def _gen():
+                yield type(
+                    "Chunk",
+                    (),
+                    {
+                        "choices": [
+                            type(
+                                "Choice",
+                                (),
+                                {
+                                    "delta": type(
+                                        "Delta",
+                                        (),
+                                        {
+                                            "content": None,
+                                            "reasoning_content": None,
+                                            "tool_calls": None,
+                                        },
+                                    )(),
+                                    "finish_reason": "stop",
+                                },
+                            )()
+                        ],
+                        "usage": None,
+                    },
+                )()
+
+            return _gen()
+
+    class _Completions:
+        async def create(self, **kwargs):
+            captured.update(kwargs)
+            return _Stream()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    monkeypatch.setattr(provider, "_get_client", lambda: _Client())
+
+    result = asyncio.run(
+        provider.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-5.2",
+            reasoning_effort="off",
+        )
+    )
+
+    assert result.finish_reason == "stop"
+    assert captured["reasoning_effort"] == "none"
+
+
 def test_api_mode_cache(tmp_path):
     import bao.providers.api_mode_cache as cache_mod
 
