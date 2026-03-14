@@ -57,7 +57,7 @@ def test_build_mac_pyinstaller_script_includes_desktop_resources() -> None:
     assert '--add-data "$PROJECT_ROOT/assets:assets"' in text
     assert '--add-data "$PROJECT_ROOT/bao/skills:bao/skills"' in text
     assert '--add-data "$PROJECT_ROOT/bao/templates/workspace:bao/templates/workspace"' in text
-    assert "uv run python app/scripts/update_agent_browser_runtime.py" not in text
+    assert "uv run python app/scripts/update_agent_browser_runtime.py" in text
     assert 'app/scripts/sync_browser_runtime.py --source "$BAO_BROWSER_RUNTIME_SOURCE_DIR"' in text
     assert "uv run python app/scripts/verify_browser_runtime.py --require-ready" in text
     assert "--collect-submodules bao.channels" in text
@@ -106,7 +106,7 @@ def test_build_win_pyinstaller_script_includes_desktop_resources() -> None:
     assert (
         '--add-data "%PROJECT_ROOT%\\bao\\templates\\workspace;bao\\templates\\workspace"' in text
     )
-    assert "app\\scripts\\update_agent_browser_runtime.py" not in text
+    assert "app\\scripts\\update_agent_browser_runtime.py" in text
     assert 'app\\scripts\\sync_browser_runtime.py --source "%BAO_BROWSER_RUNTIME_SOURCE_DIR%"' in text
     assert "uv run python app\\scripts\\verify_browser_runtime.py --require-ready" in text
     assert "--collect-submodules bao.channels" in text
