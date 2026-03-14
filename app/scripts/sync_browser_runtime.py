@@ -17,17 +17,23 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Source directory containing runtime.json, agent-browser home, and bundled browser files.",
     )
+    parser.add_argument(
+        "--destination",
+        default=str(DESTINATION_ROOT),
+        help="Destination runtime directory. Default: app/resources/runtime/browser",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     source_root = Path(args.source).expanduser().resolve(strict=False)
+    destination_root = Path(args.destination).expanduser().resolve(strict=False)
     if not source_root.is_dir():
         raise SystemExit(f"Source runtime directory not found: {source_root}")
 
-    DESTINATION_ROOT.mkdir(parents=True, exist_ok=True)
-    for child in DESTINATION_ROOT.iterdir():
+    destination_root.mkdir(parents=True, exist_ok=True)
+    for child in destination_root.iterdir():
         if child.name == "README.md":
             continue
         if child.is_dir():
@@ -36,13 +42,13 @@ def main() -> int:
             child.unlink()
 
     for child in source_root.iterdir():
-        target = DESTINATION_ROOT / child.name
+        target = destination_root / child.name
         if child.is_dir():
             shutil.copytree(child, target)
         else:
             shutil.copy2(child, target)
 
-    print(f"[ok] Synced managed browser runtime into {DESTINATION_ROOT}")
+    print(f"[ok] Synced managed browser runtime into {destination_root}")
     return 0
 
 

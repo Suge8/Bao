@@ -63,7 +63,10 @@ BUILD_ROOT="$PROJECT_ROOT/dist-pyinstaller"
 DIST_DIR="$BUILD_ROOT/dist"
 WORK_DIR="$BUILD_ROOT/build-mac-$ARCH"
 SPEC_DIR="$BUILD_ROOT/spec-mac-$ARCH"
+STAGED_RESOURCES_DIR="$BUILD_ROOT/resources-mac-$ARCH"
 OUTPUT_APP="$DIST_DIR/$APP_NAME.app"
+RUNTIME_SOURCE_DIR="$PROJECT_ROOT/app/resources/runtime/browser"
+EMBEDDED_RUNTIME_ROOT="$OUTPUT_APP/Contents/Resources/app/resources/runtime/browser"
 
 echo "╔══════════════════════════════════════════╗"
 echo "║  Bao Desktop — macOS PyInstaller Build  ║"
@@ -94,8 +97,11 @@ echo "▸ Verifying managed browser runtime ..."
 uv run python app/scripts/verify_browser_runtime.py --require-ready
 
 echo "▸ Cleaning previous PyInstaller build..."
-rm -rf "$WORK_DIR" "$SPEC_DIR" "$OUTPUT_APP"
-mkdir -p "$DIST_DIR" "$WORK_DIR" "$SPEC_DIR"
+rm -rf "$WORK_DIR" "$SPEC_DIR" "$STAGED_RESOURCES_DIR" "$OUTPUT_APP"
+mkdir -p "$DIST_DIR" "$WORK_DIR" "$SPEC_DIR" "$STAGED_RESOURCES_DIR"
+
+echo "▸ Staging desktop resources..."
+uv run python app/scripts/stage_desktop_resources.py --destination "$STAGED_RESOURCES_DIR"
 
 START_TS=$(python3 -c 'import time; print(int(time.time()))')
 
@@ -114,7 +120,7 @@ uv run pyinstaller \
     --osx-bundle-identifier "$BUNDLE_IDENTIFIER" \
     --icon "$PROJECT_ROOT/assets/logo.icns" \
     --add-data "$PROJECT_ROOT/app/qml:app/qml" \
-    --add-data "$PROJECT_ROOT/app/resources:app/resources" \
+    --add-data "$STAGED_RESOURCES_DIR:app/resources" \
     --add-data "$PROJECT_ROOT/assets:assets" \
     --add-data "$PROJECT_ROOT/bao/skills:bao/skills" \
     --add-data "$PROJECT_ROOT/bao/templates/workspace:bao/templates/workspace" \
@@ -141,6 +147,12 @@ if [[ ! -d "$OUTPUT_APP" ]]; then
     echo "❌ Build failed: $OUTPUT_APP not found"
     exit 1
 fi
+
+echo "▸ Embedding managed browser runtime into app bundle..."
+uv run python app/scripts/sync_browser_runtime.py --source "$RUNTIME_SOURCE_DIR" --destination "$EMBEDDED_RUNTIME_ROOT"
+
+echo "▸ Verifying embedded managed browser runtime ..."
+uv run python app/scripts/verify_browser_runtime.py --runtime-root "$EMBEDDED_RUNTIME_ROOT" --require-ready
 
 INFO_PLIST="$OUTPUT_APP/Contents/Info.plist"
 if [[ -f "$INFO_PLIST" ]]; then

@@ -11,6 +11,9 @@ set "BUILD_ROOT=%PROJECT_ROOT%\dist-pyinstaller"
 set "DIST_DIR=%BUILD_ROOT%\dist"
 set "WORK_DIR=%BUILD_ROOT%\build-win-x64"
 set "SPEC_DIR=%BUILD_ROOT%\spec-win-x64"
+set "STAGED_RESOURCES_DIR=%BUILD_ROOT%\resources-win-x64"
+set "RUNTIME_SOURCE_DIR=%PROJECT_ROOT%\app\resources\runtime\browser"
+set "EMBEDDED_RUNTIME_ROOT=%DIST_DIR%\%APP_NAME%\app\resources\runtime\browser"
 
 echo ========================================
 echo   Bao Desktop ^- Windows PyInstaller Build
@@ -50,10 +53,20 @@ if errorlevel 1 (
 
 if exist "%WORK_DIR%" rmdir /s /q "%WORK_DIR%"
 if exist "%SPEC_DIR%" rmdir /s /q "%SPEC_DIR%"
+if exist "%STAGED_RESOURCES_DIR%" rmdir /s /q "%STAGED_RESOURCES_DIR%"
 if exist "%DIST_DIR%\%APP_NAME%" rmdir /s /q "%DIST_DIR%\%APP_NAME%"
 if not exist "%DIST_DIR%" mkdir "%DIST_DIR%"
 if not exist "%WORK_DIR%" mkdir "%WORK_DIR%"
 if not exist "%SPEC_DIR%" mkdir "%SPEC_DIR%"
+if not exist "%STAGED_RESOURCES_DIR%" mkdir "%STAGED_RESOURCES_DIR%"
+
+echo [INFO] Staging desktop resources ...
+uv run python app\scripts\stage_desktop_resources.py --destination "%STAGED_RESOURCES_DIR%"
+if errorlevel 1 (
+    echo [ERROR] Failed to stage desktop resources.
+    popd
+    exit /b 1
+)
 
 uv run pyinstaller ^
     --noconfirm ^
@@ -65,7 +78,7 @@ uv run pyinstaller ^
     --specpath "%SPEC_DIR%" ^
     --icon "%PROJECT_ROOT%\app\resources\logo.ico" ^
     --add-data "%PROJECT_ROOT%\app\qml;app\qml" ^
-    --add-data "%PROJECT_ROOT%\app\resources;app\resources" ^
+    --add-data "%STAGED_RESOURCES_DIR%;app\resources" ^
     --add-data "%PROJECT_ROOT%\assets;assets" ^
     --add-data "%PROJECT_ROOT%\bao\skills;bao\skills" ^
     --add-data "%PROJECT_ROOT%\bao\templates\workspace;bao\templates\workspace" ^
@@ -96,6 +109,22 @@ if errorlevel 1 (
 
 if not exist "%DIST_DIR%\%APP_NAME%\%APP_NAME%.exe" (
     echo [ERROR] Build output missing: %DIST_DIR%\%APP_NAME%\%APP_NAME%.exe
+    popd
+    exit /b 1
+)
+
+echo [INFO] Embedding managed browser runtime into build output ...
+uv run python app\scripts\sync_browser_runtime.py --source "%RUNTIME_SOURCE_DIR%" --destination "%EMBEDDED_RUNTIME_ROOT%"
+if errorlevel 1 (
+    echo [ERROR] Failed to embed managed browser runtime.
+    popd
+    exit /b 1
+)
+
+echo [INFO] Verifying embedded managed browser runtime ...
+uv run python app\scripts\verify_browser_runtime.py --runtime-root "%EMBEDDED_RUNTIME_ROOT%" --require-ready
+if errorlevel 1 (
+    echo [ERROR] Embedded managed browser runtime verification failed.
     popd
     exit /b 1
 )
