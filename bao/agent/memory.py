@@ -7,7 +7,7 @@ import time
 from collections.abc import Sized
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from math import exp, log
 from pathlib import Path
@@ -50,7 +50,7 @@ _RETENTION_DAYS = {5: 365, 4: 180, 3: 90, 2: 30, 1: 14}
 # Long-term memory categories
 MEMORY_CATEGORIES = ("preference", "personal", "project", "general")
 
-MEMORY_CATEGORY_CAPS = {
+_DEFAULT_MEMORY_CATEGORY_CAPS = {
     "preference": 400,
     "personal": 300,
     "project": 500,
@@ -101,11 +101,111 @@ _CATEGORY_WEIGHTS: dict[str, float] = {
 }
 
 
+def _coerce_positive_int(value: Any, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return max(1, value)
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw.isdigit():
+            return max(1, int(raw))
+    return default
+
+
+def _coerce_nonempty_str(value: Any, default: str) -> str:
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw:
+            return raw
+    return default
+
+
+@dataclass(frozen=True)
+class MemoryPolicy:
+    recent_window: int = 100
+    learning_mode: str = "utility"
+    related_memory_limit: int = 5
+    related_experience_limit: int = 3
+    related_memory_chars: int = 2000
+    related_experience_chars: int = 1500
+    long_term_chars: int = 1500
+    category_caps: dict[str, int] = field(
+        default_factory=lambda: dict(_DEFAULT_MEMORY_CATEGORY_CAPS)
+    )
+
+    @classmethod
+    def from_agent_defaults(cls, defaults: Any | None) -> "MemoryPolicy":
+        policy = cls()
+        if defaults is None:
+            return policy
+        memory_settings = getattr(defaults, "memory", None)
+        return cls(
+            recent_window=_coerce_positive_int(
+                getattr(memory_settings, "recent_window", None),
+                _coerce_positive_int(getattr(defaults, "memory_window", None), policy.recent_window),
+            ),
+            learning_mode=_coerce_nonempty_str(
+                getattr(memory_settings, "learning_mode", None),
+                _coerce_nonempty_str(getattr(defaults, "experience_model", None), policy.learning_mode),
+            ),
+            related_memory_limit=policy.related_memory_limit,
+            related_experience_limit=policy.related_experience_limit,
+            related_memory_chars=policy.related_memory_chars,
+            related_experience_chars=policy.related_experience_chars,
+            long_term_chars=policy.long_term_chars,
+            category_caps=dict(policy.category_caps),
+        )
+
+    def with_recent_window(self, value: Any) -> "MemoryPolicy":
+        return replace(self, recent_window=_coerce_positive_int(value, self.recent_window))
+
+    def with_learning_mode(self, value: Any) -> "MemoryPolicy":
+        return replace(self, learning_mode=_coerce_nonempty_str(value, self.learning_mode))
+
+    def category_cap(self, category: str) -> int:
+        return int(self.category_caps.get(category, self.category_caps["general"]))
+
+
+DEFAULT_MEMORY_POLICY = MemoryPolicy()
+MEMORY_CATEGORY_CAPS = dict(DEFAULT_MEMORY_POLICY.category_caps)
+
+
 @dataclass(frozen=True)
 class RecallBundle:
     long_term_context: str = ""
     related_memory: tuple[str, ...] = ()
     related_experience: tuple[str, ...] = ()
+
+
+def summarize_recall_bundle(bundle: RecallBundle) -> dict[str, Any]:
+    categories: list[str] = []
+    for line in str(bundle.long_term_context or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("[") or "]" not in stripped:
+            continue
+        category = stripped[1:].split("]", 1)[0].strip()
+        if category in MEMORY_CATEGORIES and category not in categories:
+            categories.append(category)
+    related_memory_count = len(bundle.related_memory)
+    experience_count = len(bundle.related_experience)
+    if not categories and related_memory_count <= 0 and experience_count <= 0:
+        return {}
+    return {
+        "longTermCategories": categories,
+        "relatedMemoryCount": related_memory_count,
+        "experienceCount": experience_count,
+    }
+
+
+@dataclass(frozen=True)
+class MemoryChangeEvent:
+    storage_root: str
+    scope: str
+    operation: str
+    category: str = ""
+    key: str = ""
+    updated_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -114,6 +214,17 @@ class _RecallQueryContext:
     query_terms: tuple[str, ...]
     query_term_set: frozenset[str]
     query_vectors: list[list[float]] | None = None
+
+
+_CHANGE_LISTENER_LOCK = threading.RLock()
+_CHANGE_LISTENERS: dict[str, list[Callable[[MemoryChangeEvent], None]]] = {}
+
+
+def _normalized_storage_root(workspace: Path) -> str:
+    try:
+        return str(workspace.expanduser().resolve())
+    except OSError:
+        return str(workspace.expanduser())
 
 
 class _LongTermMemoryDomain:
@@ -159,9 +270,13 @@ class _LongTermMemoryDomain:
                 by_category[category].append(dict(row))
         items: list[dict[str, Any]] = []
         for category in MEMORY_CATEGORIES:
-            facts = [str(row.get("content", "")).strip() for row in by_category.get(category, [])]
+            fact_rows = sorted(
+                by_category.get(category, []),
+                key=lambda row: str(row.get("key") or ""),
+            )
+            facts = [str(row.get("content", "")).strip() for row in fact_rows]
             content = self._host._join_memory_facts(facts)
-            latest = max((str(row.get("updated_at", "")) for row in by_category.get(category, [])), default="")
+            latest = max((str(row.get("updated_at", "")) for row in fact_rows), default="")
             preview = content.replace("\n", " ")[:160]
             if len(content.replace("\n", " ")) > 160:
                 preview += "…"
@@ -175,6 +290,17 @@ class _LongTermMemoryDomain:
                     "char_count": len(content),
                     "line_count": len(facts),
                     "fact_count": len(facts),
+                    "facts": [
+                        {
+                            "key": str(row.get("key") or ""),
+                            "content": str(row.get("content") or "").strip(),
+                            "updated_at": str(row.get("updated_at") or ""),
+                            "hit_count": int(row.get("hit_count", 0) or 0),
+                            "last_hit_at": str(row.get("last_hit_at") or ""),
+                        }
+                        for row in fact_rows
+                        if str(row.get("content", "")).strip()
+                    ],
                     "is_empty": not bool(content),
                 }
             )
@@ -187,6 +313,95 @@ class _LongTermMemoryDomain:
             if item.get("category") == category:
                 return item
         return None
+
+    def list_memory_facts(self, category: str) -> list[dict[str, Any]]:
+        if category not in MEMORY_CATEGORIES:
+            return []
+        detail = self.get_memory_category(category)
+        facts = detail.get("facts") if isinstance(detail, dict) else None
+        return [dict(item) for item in facts] if isinstance(facts, list) else []
+
+    def upsert_memory_fact(
+        self,
+        category: str,
+        content: str,
+        *,
+        key: str = "",
+    ) -> dict[str, Any] | None:
+        if category not in MEMORY_CATEGORIES:
+            return None
+        new_facts = self._host._normalize_memory_facts(
+            content,
+            max_chars=self._host._memory_cap(category),
+        )
+        if not new_facts:
+            return self.get_memory_category(category)
+        replacement = new_facts[0]
+        with self._host._store_lock:
+            fact_rows = [dict(row) for row in self._host._read_long_term_fact_rows_locked(category)]
+            updated_at = datetime.now().isoformat()
+            next_rows = [dict(row) for row in fact_rows]
+            if key:
+                for index, row in enumerate(next_rows):
+                    if str(row.get("key") or "") != key:
+                        continue
+                    next_rows[index] = self._host._make_row(
+                        key=key,
+                        content=replacement,
+                        type_="long_term",
+                        category=category,
+                        updated_at=updated_at,
+                        last_hit_at=str(row.get("last_hit_at") or ""),
+                        hit_count=int(row.get("hit_count", 0) or 0),
+                    )
+                    break
+                else:
+                    return self.get_memory_category(category)
+            else:
+                next_rows.append(
+                    self._host._make_row(
+                        key=self._host._long_term_fact_key(category, updated_at, len(next_rows) + 1),
+                        content=replacement,
+                        type_="long_term",
+                        category=category,
+                        updated_at=updated_at,
+                    )
+                )
+            normalized_rows = self._host._normalize_long_term_fact_rows(
+                next_rows,
+                max_chars=self._host._memory_cap(category),
+            )
+            changed = self._host._write_long_term_fact_rows_locked(category, normalized_rows)
+        if changed:
+            self._host._embed_long_term_aggregate()
+            self._host._emit_change(
+                scope="long_term",
+                operation="update_fact" if key else "append_fact",
+                category=category,
+                key=key,
+            )
+        return self.get_memory_category(category)
+
+    def delete_memory_fact(self, category: str, key: str) -> dict[str, Any] | None:
+        if category not in MEMORY_CATEGORIES or not key:
+            return None
+        with self._host._store_lock:
+            fact_rows = [dict(row) for row in self._host._read_long_term_fact_rows_locked(category)]
+            kept_rows = [row for row in fact_rows if str(row.get("key") or "") != key]
+            normalized_rows = self._host._normalize_long_term_fact_rows(
+                kept_rows,
+                max_chars=self._host._memory_cap(category),
+            )
+            changed = self._host._write_long_term_fact_rows_locked(category, normalized_rows)
+        if changed:
+            self._host._embed_long_term_aggregate()
+            self._host._emit_change(
+                scope="long_term",
+                operation="delete_fact",
+                category=category,
+                key=key,
+            )
+        return self.get_memory_category(category)
 
     def exists_long_term_key(self, key: str) -> bool:
         if not key:
@@ -238,12 +453,13 @@ class _LongTermMemoryDomain:
             category = "general"
         facts = self._host._normalize_memory_facts(
             content,
-            max_chars=MEMORY_CATEGORY_CAPS.get(category, MEMORY_CATEGORY_CAPS["general"]),
+            max_chars=self._host._memory_cap(category),
         )
         with self._host._store_lock:
             changed = self._host._replace_long_term_facts_locked(category, facts)
         if changed:
             self._host._schedule_long_term_embedding()
+            self._host._emit_change(scope="long_term", operation="replace_category", category=category)
 
     def append_memory_category(self, category: str, content: str) -> dict[str, Any] | None:
         if category not in MEMORY_CATEGORIES:
@@ -267,12 +483,13 @@ class _LongTermMemoryDomain:
                     continue
                 facts = self._host._normalize_memory_facts(
                     content or "",
-                    max_chars=MEMORY_CATEGORY_CAPS.get(cat, MEMORY_CATEGORY_CAPS["general"]),
+                    max_chars=self._host._memory_cap(cat),
                 )
                 if self._host._replace_long_term_facts_locked(cat, facts):
                     changed_any = True
         if changed_any:
             self._host._schedule_long_term_embedding()
+            self._host._emit_change(scope="long_term", operation="replace_categories", category="all")
 
     def get_memory_context(self, max_chars: int | None = None) -> str:
         parts = self._host._collect_long_term_parts()
@@ -301,7 +518,7 @@ class _LongTermMemoryDomain:
             category = "general"
         new_facts = self._host._normalize_memory_facts(
             content,
-            max_chars=MEMORY_CATEGORY_CAPS.get(category, MEMORY_CATEGORY_CAPS["general"]),
+            max_chars=self._host._memory_cap(category),
         )
         if not new_facts:
             return f"Remembered in [{category}]: "
@@ -309,11 +526,12 @@ class _LongTermMemoryDomain:
             current_facts = self._host._read_long_term_facts_locked(category)
             merged = self._host._normalize_memory_facts(
                 current_facts + new_facts,
-                max_chars=MEMORY_CATEGORY_CAPS.get(category, MEMORY_CATEGORY_CAPS["general"]),
+                max_chars=self._host._memory_cap(category),
             )
             changed = self._host._replace_long_term_facts_locked(category, merged)
         if changed:
             self._host._embed_long_term_aggregate()
+            self._host._emit_change(scope="long_term", operation="append_fact", category=category)
         return f"Remembered in [{category}]: {content[:80]}"
 
     def forget(self, query: str) -> str:
@@ -343,6 +561,7 @@ class _LongTermMemoryDomain:
                 logger.warning("⚠️ 遗忘失败 / forget failed: {}", e)
         if changed:
             self._host._embed_long_term_aggregate()
+            self._host._emit_change(scope="long_term", operation="forget", category="all")
         return f"Removed {removed} memory entries matching '{query[:40]}'."
 
     def update_memory(self, category: str, content: str) -> str:
@@ -350,12 +569,13 @@ class _LongTermMemoryDomain:
             return f"Invalid category. Use one of: {', '.join(MEMORY_CATEGORIES)}"
         facts = self._host._normalize_memory_facts(
             content,
-            max_chars=MEMORY_CATEGORY_CAPS.get(category, MEMORY_CATEGORY_CAPS["general"]),
+            max_chars=self._host._memory_cap(category),
         )
         with self._host._store_lock:
             changed = self._host._replace_long_term_facts_locked(category, facts)
         if changed:
             self._host._embed_long_term_aggregate()
+            self._host._emit_change(scope="long_term", operation="update_category", category=category)
         return f"Updated [{category}] memory."
 
 
@@ -398,6 +618,7 @@ class _ExperienceMemoryDomain:
             )
             self._host._invalidate_retrieval_index()
         self._host._embed_and_store(key=row_key, content=content, type_="experience")
+        self._host._emit_change(scope="experience", operation="append", category=category, key=row_key)
 
     def search_experience(
         self,
@@ -563,6 +784,12 @@ class _ExperienceMemoryDomain:
                 if not rows:
                     return False
                 self._host._update_experience(rows[0], deprecated=deprecated)
+                self._host._emit_change(
+                    scope="experience",
+                    operation="deprecate" if deprecated else "restore",
+                    category=str(rows[0].get("category") or ""),
+                    key=key,
+                )
                 return True
             except Exception as e:
                 logger.warning("⚠️ 更新经验停用状态失败 / set deprecated failed: {}", e)
@@ -585,6 +812,7 @@ class _ExperienceMemoryDomain:
                 self._host._tbl.delete(f"type = 'experience' AND key = '{key_safe}'")
                 self._host._invalidate_retrieval_index()
                 self._host._delete_vector_by_key(key)
+                self._host._emit_change(scope="experience", operation="delete", key=key)
                 return True
             except Exception as e:
                 logger.warning("⚠️ 删除经验失败 / delete experience failed: {}", e)
@@ -603,7 +831,14 @@ class _ExperienceMemoryDomain:
         if keywords:
             line = f"{line} [{keywords}]"
         self._host._ensure_domains()
-        return self._host._long_term_domain.append_memory_category(category, line)
+        detail = self._host._long_term_domain.append_memory_category(category, line)
+        self._host._emit_change(
+            scope="experience",
+            operation="promote",
+            category=category,
+            key=key,
+        )
+        return detail
 
     def deprecate_similar(self, task_desc: str) -> int:
         return self._host._mutate_experiences(
@@ -863,8 +1098,15 @@ class MemoryStore:
     _EMBED_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="Bao-embed")
     _MEMORY_BG_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="Bao-memory-bg")
 
-    def __init__(self, workspace: Path, embedding_config: Any | None = None):
+    def __init__(
+        self,
+        workspace: Path,
+        embedding_config: Any | None = None,
+        memory_policy: MemoryPolicy | None = None,
+    ):
         self._store_lock = threading.RLock()
+        self._memory_policy = memory_policy or DEFAULT_MEMORY_POLICY
+        self._storage_root = _normalized_storage_root(workspace)
         self._db: Any = get_db(workspace)
         self._tbl: Any = self._ensure_migrated_table()
         self._embed_fn = None
@@ -889,10 +1131,65 @@ class MemoryStore:
             self._embed_fn = None
             self._invalidate_retrieval_index()
 
+    def add_change_listener(self, listener: Callable[[MemoryChangeEvent], None]) -> None:
+        storage_root = str(getattr(self, "_storage_root", "") or "")
+        if not storage_root:
+            return
+        with _CHANGE_LISTENER_LOCK:
+            listeners = _CHANGE_LISTENERS.setdefault(storage_root, [])
+            if listener not in listeners:
+                listeners.append(listener)
+
+    def remove_change_listener(self, listener: Callable[[MemoryChangeEvent], None]) -> None:
+        storage_root = str(getattr(self, "_storage_root", "") or "")
+        if not storage_root:
+            return
+        with _CHANGE_LISTENER_LOCK:
+            listeners = _CHANGE_LISTENERS.get(storage_root)
+            if not listeners:
+                return
+            if listener in listeners:
+                listeners.remove(listener)
+            if not listeners:
+                _CHANGE_LISTENERS.pop(storage_root, None)
+
+    def _emit_change(
+        self,
+        *,
+        scope: str,
+        operation: str,
+        category: str = "",
+        key: str = "",
+    ) -> None:
+        storage_root = str(getattr(self, "_storage_root", "") or "")
+        if not storage_root:
+            return
+        event = MemoryChangeEvent(
+            storage_root=storage_root,
+            scope=scope,
+            operation=operation,
+            category=category,
+            key=key,
+            updated_at=datetime.now().isoformat(),
+        )
+        with _CHANGE_LISTENER_LOCK:
+            listeners = tuple(_CHANGE_LISTENERS.get(storage_root, ()))
+        for listener in listeners:
+            try:
+                listener(event)
+            except Exception as e:
+                logger.debug("memory change listener skipped: {}", e)
+
     def _init_domains(self) -> None:
         self._long_term_domain = _LongTermMemoryDomain(self)
         self._experience_domain = _ExperienceMemoryDomain(self)
         self._recall_domain = _RecallDomain(self)
+
+    def _memory_cap(self, category: str) -> int:
+        policy = getattr(self, "_memory_policy", DEFAULT_MEMORY_POLICY)
+        if isinstance(policy, MemoryPolicy):
+            return policy.category_cap(category)
+        return DEFAULT_MEMORY_POLICY.category_cap(category)
 
     def _ensure_domains(self) -> None:
         if not hasattr(self, "_long_term_domain"):
@@ -1674,7 +1971,7 @@ class MemoryStore:
                 updated_at = str(row.get("updated_at") or datetime.now().isoformat())
                 facts = self._normalize_memory_facts(
                     row.get("content", ""),
-                    max_chars=MEMORY_CATEGORY_CAPS.get(category, MEMORY_CATEGORY_CAPS["general"]),
+                    max_chars=self._memory_cap(category),
                 )
                 key_safe = key.replace("'", "''")
                 self._tbl.delete(f"type = 'long_term' AND key = '{key_safe}'")
@@ -1895,6 +2192,21 @@ class MemoryStore:
     def get_memory_category(self, category: str) -> dict[str, Any] | None:
         return self._long_term().get_memory_category(category)
 
+    def list_memory_facts(self, category: str) -> list[dict[str, Any]]:
+        return self._long_term().list_memory_facts(category)
+
+    def upsert_memory_fact(
+        self,
+        category: str,
+        content: str,
+        *,
+        key: str = "",
+    ) -> dict[str, Any] | None:
+        return self._long_term().upsert_memory_fact(category, content, key=key)
+
+    def delete_memory_fact(self, category: str, key: str) -> dict[str, Any] | None:
+        return self._long_term().delete_memory_fact(category, key)
+
     def exists_long_term_key(self, key: str) -> bool:
         return self._long_term().exists_long_term_key(key)
 
@@ -1902,6 +2214,7 @@ class MemoryStore:
         deleted = self._long_term().delete_long_term_by_key(key)
         if deleted:
             self._schedule_long_term_embedding()
+            self._emit_change(scope="long_term", operation="delete_entry", key=key)
         return deleted
 
     def _replace_long_term_facts_locked(self, category: str, facts: list[str]) -> bool:
@@ -1924,6 +2237,49 @@ class MemoryStore:
                     for idx, fact in enumerate(facts, start=1)
                 ]
             )
+        self._invalidate_retrieval_index()
+        return True
+
+    def _normalize_long_term_fact_rows(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        max_chars: int,
+    ) -> list[dict[str, Any]]:
+        if max_chars <= 0:
+            return []
+        normalized_rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        used = 0
+        for row in rows:
+            fact = str(row.get("content", "")).strip()
+            if not fact or fact in seen:
+                continue
+            prefix = 1 if normalized_rows else 0
+            remaining = max_chars - used - prefix
+            if remaining <= 0:
+                break
+            if len(fact) > remaining:
+                if remaining <= 1:
+                    break
+                fact = fact[: remaining - 1].rstrip() + "…"
+            if not fact or fact in seen:
+                continue
+            next_row = dict(row)
+            next_row["content"] = fact
+            normalized_rows.append(next_row)
+            seen.add(fact)
+            used += len(fact) + prefix
+        return normalized_rows
+
+    def _write_long_term_fact_rows_locked(self, category: str, rows: list[dict[str, Any]]) -> bool:
+        current_rows = self._read_long_term_fact_rows_locked(category)
+        normalized_rows = [dict(row) for row in rows if str(row.get("content", "")).strip()]
+        if current_rows == normalized_rows:
+            return False
+        self._tbl.delete(f"type = 'long_term' AND category = '{category}'")
+        if normalized_rows:
+            self._tbl.add(normalized_rows)
         self._invalidate_retrieval_index()
         return True
 

@@ -1,6 +1,7 @@
 ---
 name: cron
 description: Use to schedule reminders, recurring tasks, or one-time jobs.
+metadata: {"bao":{"icon":"calendar","display":{"name":"Scheduled Tasks","nameZh":"定时任务","descriptionZh":"创建提醒、周期任务和一次性任务。"},"category":"automation","capabilityRefs":["cron"],"activationRefs":["cron"],"examplePrompts":["每天早上 8 点提醒我看待办","每小时检查一次 GitHub stars"]}}
 ---
 
 # Cron

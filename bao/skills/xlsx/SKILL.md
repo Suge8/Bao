@@ -2,6 +2,7 @@
 name: xlsx
 description: Use for spreadsheets, Excel, CSV/TSV cleanup, tables, or .xlsx files.
 license: Proprietary. LICENSE.txt has complete terms
+metadata: {"bao":{"icon":"database","display":{"name":"Spreadsheets","nameZh":"表格","descriptionZh":"处理 Excel、CSV、TSV 和结构化表格数据。"},"category":"documents","capabilityRefs":["filesystem"],"activationRefs":["filesystem"],"examplePrompts":["帮我清洗这个 CSV 并导出 xlsx","给这份报表补一列汇总公式"]}}
 ---
 
 # Requirements for Outputs

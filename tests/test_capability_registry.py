@@ -30,6 +30,15 @@ def test_capability_registry_snapshot_filters_and_preserves_selection() -> None:
         catalog=catalog,
         config_data=config_data,
         probe_results=probes,
+        diagnostics_snapshot={
+            "tool_observability": {
+                "tool_exposure": {
+                    "enabled_bundles": ["core", "web", "desktop", "code"],
+                    "selected_bundles": ["core"],
+                    "ordered_tool_names": ["get_file"],
+                }
+            }
+        },
         query="figma",
         source_filter="mcp",
         selected_id="mcp:figma",
@@ -39,6 +48,13 @@ def test_capability_registry_snapshot_filters_and_preserves_selection() -> None:
     assert snapshot.selected_id == "mcp:figma"
     assert snapshot.selected_item["id"] == "mcp:figma"
     assert snapshot.overview["mcpServerCount"] == 2
+    assert snapshot.overview["summaryMetrics"]
+    assert snapshot.selected_item["exposureState"] == "exposed_last_run"
+    assert snapshot.selected_item["displayStatusLabel"] == {"zh": "已连接", "en": "Connected"}
+    assert snapshot.selected_item["includesSummaryDisplay"] == {
+        "zh": "最近一次探测发现 1 个运行时工具。",
+        "en": "The latest probe found 1 runtime tools.",
+    }
 
 
 def test_capability_registry_snapshot_falls_back_to_first_item_when_selection_missing() -> None:
@@ -56,6 +72,8 @@ def test_capability_registry_snapshot_falls_back_to_first_item_when_selection_mi
     assert snapshot.items
     assert snapshot.selected_id == snapshot.items[0]["id"]
     assert snapshot.selected_item["id"] == snapshot.items[0]["id"]
+    assert snapshot.overview["availableCount"] >= 1
+    assert snapshot.overview["exposureBundleOptions"][0]["key"] == "core"
 
 
 def test_build_available_tool_lines_uses_registry_metadata_and_overflow() -> None:

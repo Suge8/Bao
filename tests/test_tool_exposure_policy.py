@@ -101,7 +101,7 @@ def test_auto_web_signal_includes_web_tools(tmp_path: Path) -> None:
     # web_search only registered when search API key is configured
     if "web_search" in loop.tools.tool_names:
         assert "web_search" in selected
-    assert "message" in selected  # rescue
+    assert "notify" in selected  # rescue
 
 
 def test_auto_web_signal_understands_natural_chinese_search_phrase(tmp_path: Path) -> None:
@@ -143,7 +143,7 @@ def test_auto_code_only_bundle_excludes_web(tmp_path: Path) -> None:
         _msgs("请搜索 https://example.com 并修复 python 文件")
     )
     assert selected is not None
-    assert "message" in selected
+    assert "notify" in selected
     assert "read_file" in selected
     assert "web_fetch" not in selected
 
@@ -257,7 +257,7 @@ def test_score_tool_web_signal_boosts_web_tools(tmp_path: Path) -> None:
     user_text = "search https://example.com"
     tokens = loop._route_tokens(user_text)
     web_score = loop._score_tool_for_routing("web_fetch", user_text, tokens)
-    core_score = loop._score_tool_for_routing("message", user_text, tokens)
+    core_score = loop._score_tool_for_routing("notify", user_text, tokens)
     assert web_score > core_score
 
 
@@ -268,7 +268,7 @@ def test_browser_signal_boosts_agent_browser_when_available(tmp_path: Path) -> N
     user_text = "请用浏览器打开这个网站并点击登录"
     tokens = loop._route_tokens(user_text)
     browser_score = loop._score_tool_for_routing("agent_browser", user_text, tokens)
-    core_score = loop._score_tool_for_routing("message", user_text, tokens)
+    core_score = loop._score_tool_for_routing("notify", user_text, tokens)
     assert browser_score > core_score
 
 
@@ -294,9 +294,9 @@ def test_score_tool_uses_registry_metadata_for_dynamic_tool(tmp_path: Path) -> N
     user_text = loop._build_tool_route_text(_msgs("查一下今天的 weather forecast"))
     tokens = loop._route_tokens(user_text)
     dynamic_score = loop._score_tool_for_routing("acme_lookup", user_text, tokens)
-    message_score = loop._score_tool_for_routing("message", user_text, tokens)
+    notify_score = loop._score_tool_for_routing("notify", user_text, tokens)
     selected = loop._select_tool_names_for_turn(_msgs("查一下今天的 weather forecast"))
-    assert dynamic_score > message_score
+    assert dynamic_score > notify_score
     assert selected is not None
     assert "acme_lookup" in selected
 

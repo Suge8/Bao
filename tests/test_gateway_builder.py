@@ -85,7 +85,7 @@ def test_build_gateway_stack_does_not_repair_external_family_active_from_desktop
 
     with (
         patch.object(mod, "__name__", mod.__name__),
-        patch("bao.agent.loop.AgentLoop", return_value=fake_agent),
+        patch("bao.agent.loop.AgentLoop", return_value=fake_agent) as agent_loop_cls,
         patch("bao.bus.queue.MessageBus", return_value=fake_bus),
         patch("bao.channels.manager.ChannelManager", return_value=fake_channels),
         patch(
@@ -116,6 +116,8 @@ def test_build_gateway_stack_does_not_repair_external_family_active_from_desktop
 
         build_gateway_stack(config, MagicMock(), fake_session_manager)
 
+    _, agent_kwargs = agent_loop_cls.call_args
+    assert agent_kwargs["memory_policy"].recent_window == 10
     fake_session_manager.repair_family_active_from_desktop.assert_not_called()
 
 
@@ -138,7 +140,7 @@ def test_build_gateway_stack_forwards_channel_error_callback() -> None:
 
     with (
         patch.object(mod, "__name__", mod.__name__),
-        patch("bao.agent.loop.AgentLoop", return_value=fake_agent),
+        patch("bao.agent.loop.AgentLoop", return_value=fake_agent) as agent_loop_cls,
         patch("bao.bus.queue.MessageBus", return_value=fake_bus),
         patch(
             "bao.channels.manager.ChannelManager", return_value=fake_channels
@@ -175,6 +177,8 @@ def test_build_gateway_stack_forwards_channel_error_callback() -> None:
     assert stack.channels is fake_channels
     _, kwargs = channel_manager_cls.call_args
     assert kwargs["on_channel_error"] is fake_on_channel_error
+    _, agent_kwargs = agent_loop_cls.call_args
+    assert agent_kwargs["memory_policy"].recent_window == 10
 
 
 class TestCronCallbackDefensive:
@@ -1251,6 +1255,76 @@ async def test_startup_greeting_desktop_not_blocked_by_external_publish() -> Non
         )
     )
     assert fake_bus.publish_outbound.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_greeting_emits_planned_channels_to_activity_callback() -> None:
+    fake_bus = MagicMock()
+    fake_bus.publish_outbound = AsyncMock()
+
+    fake_agent = MagicMock()
+    fake_agent.model = "right-gpt/gpt-5.3-codex"
+    fake_agent.provider = MagicMock()
+    fake_agent.provider.chat = AsyncMock(return_value=MagicMock(content="unused"))
+    fake_agent.process_direct = AsyncMock(return_value="fallback")
+
+    on_desktop = AsyncMock()
+    on_activity = AsyncMock()
+
+    config = MagicMock()
+    config.workspace_path = "/tmp/test"
+
+    channels = MagicMock()
+    channels.telegram.enabled = False
+    channels.telegram.allow_from = []
+    channels.feishu.enabled = False
+    channels.feishu.allow_from = []
+    channels.dingtalk.enabled = False
+    channels.dingtalk.allow_from = []
+    channels.imessage.enabled = True
+    channels.imessage.allow_from = ["13800138000"]
+    channels.qq.enabled = False
+    channels.qq.allow_from = []
+    channels.email.enabled = False
+    channels.email.allow_from = []
+    channels.whatsapp.enabled = False
+    channels.whatsapp.allow_from = []
+    config.channels = channels
+
+    async def _fake_generate(
+        _agent,
+        _logger,
+        *,
+        system_prompt: str,
+        prompt: str,
+        channel: str,
+        chat_id: str,
+    ) -> str:
+        assert system_prompt
+        assert prompt
+        assert chat_id
+        return "desktop-hi" if channel == "desktop" else "imessage-hi"
+
+    with (
+        patch("bao.gateway.builder.asyncio.sleep", new=AsyncMock()),
+        patch("bao.config.onboarding.detect_onboarding_stage", return_value="ready"),
+        patch("bao.gateway.builder._generate_startup_greeting", new=_fake_generate),
+    ):
+        await send_startup_greeting(
+            fake_agent,
+            fake_bus,
+            config,
+            on_desktop_startup_message=on_desktop,
+            on_startup_activity=on_activity,
+        )
+
+    assert any(
+        call.args
+        and call.args[0].get("status") == "running"
+        and call.args[0].get("channelKeys") == ["desktop", "imessage"]
+        and call.args[0].get("sessionKeys") == ["desktop:local", "imessage:13800138000"]
+        for call in on_activity.await_args_list
+    )
 
 
 @pytest.mark.asyncio

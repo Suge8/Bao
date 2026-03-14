@@ -3,16 +3,17 @@
 Each migration function transforms config data from version N to N+1.
 Functions are pure data transforms — no file IO, no network calls.
 
-Current version: 3
+Current version: 4
   v0 (implicit) → v1: legacy provider keys + tools field renames
   v1 → v2: (reserved for future migrations)
   v2 → v3: add tools.toolExposure defaults
+  v3 → v4: move memoryWindow / experienceModel under agents.defaults.memory
 """
 
 from collections.abc import Callable
 from typing import Any
 
-CURRENT_VERSION = 3
+CURRENT_VERSION = 4
 
 
 def _migrate_v0_to_v1(data: dict[str, Any]) -> dict[str, Any]:
@@ -77,11 +78,32 @@ def _migrate_v2_to_v3(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+def _migrate_v3_to_v4(data: dict[str, Any]) -> dict[str, Any]:
+    agents = data.get("agents")
+    if not isinstance(agents, dict):
+        return data
+    defaults = agents.get("defaults")
+    if not isinstance(defaults, dict):
+        return data
+    memory = defaults.get("memory")
+    if not isinstance(memory, dict):
+        memory = {}
+        defaults["memory"] = memory
+    if "recentWindow" not in memory and "memoryWindow" in defaults:
+        memory["recentWindow"] = defaults.get("memoryWindow")
+    if "learningMode" not in memory and "experienceModel" in defaults:
+        memory["learningMode"] = defaults.get("experienceModel")
+    defaults.pop("memoryWindow", None)
+    defaults.pop("experienceModel", None)
+    return data
+
+
 # Ordered migration chain: (from_version, to_version, function)
 _MIGRATIONS: list[tuple[int, int, Callable[[dict[str, Any]], dict[str, Any]]]] = [
     (0, 1, _migrate_v0_to_v1),
     (1, 2, _migrate_v1_to_v2),
     (2, 3, _migrate_v2_to_v3),
+    (3, 4, _migrate_v3_to_v4),
 ]
 
 

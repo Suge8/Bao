@@ -42,6 +42,7 @@ class ArtifactStore:
         "tool_output": "outputs",
         "evicted_messages": "evicted",
         "trajectory": "trajectory",
+        "reply_media": "reply_media",
     }
     _SENSITIVE_PATTERNS: tuple[str, ...] = (
         r"-----BEGIN",
@@ -103,6 +104,26 @@ class ArtifactStore:
         target_dir = self._kind_dir(kind)
         target_dir.mkdir(parents=True, exist_ok=True)
         file_path = target_dir / f"{safe_hint}_{self._short_uuid()}.txt"
+        if move_source:
+            shutil.move(str(source_path), file_path)
+        else:
+            shutil.copyfile(source_path, file_path)
+        return ArtifactRef(path=file_path, kind=kind, size=size, redacted=False)
+
+    def write_binary_file(
+        self,
+        kind: str,
+        name_hint: str,
+        source_path: Path,
+        *,
+        size: int,
+        move_source: bool = True,
+    ) -> ArtifactRef:
+        safe_hint = safe_filename(name_hint) or "artifact"
+        suffix = source_path.suffix or ""
+        target_dir = self._kind_dir(kind)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        file_path = target_dir / f"{safe_hint}_{self._short_uuid()}{suffix}"
         if move_source:
             shutil.move(str(source_path), file_path)
         else:

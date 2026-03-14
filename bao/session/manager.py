@@ -180,6 +180,7 @@ class Session:
                 "status",
                 "format",
                 "entrance_style",
+                "attachments",
             ):
                 if k in m:
                     entry[k] = m[k]
@@ -214,6 +215,8 @@ class Session:
                 "status",
                 "format",
                 "entrance_style",
+                "attachments",
+                "references",
             ):
                 if k in m:
                     entry[k] = m[k]

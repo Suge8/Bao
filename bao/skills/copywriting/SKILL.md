@@ -1,6 +1,7 @@
 ---
 name: copywriting
 description: Use for marketing copy, headlines, CTAs, and page rewrites.
+metadata: {"bao":{"icon":"message","display":{"name":"Copywriting","nameZh":"营销文案","descriptionZh":"撰写标题、CTA 和营销页面文案。"},"category":"writing","examplePrompts":["重写这个 landing page 的 headline","给这个功能页写一版 CTA"]}}
 ---
 
 # Copywriting

@@ -58,3 +58,21 @@ def test_session_get_history_skips_visible_assistant_progress_turns() -> None:
         "我先查一下。",
         "结果如下",
     ]
+
+
+def test_session_display_history_preserves_references_but_prompt_history_drops_them() -> None:
+    from bao.session.manager import Session
+
+    s = Session("k")
+    s.add_message("user", "hi")
+    s.add_message(
+        "assistant",
+        "结果如下",
+        references={"longTermCategories": ["project"], "relatedMemoryCount": 1},
+    )
+
+    history = s.get_history()
+    display = s.get_display_history()
+
+    assert "references" not in history[1]
+    assert display[1]["references"]["longTermCategories"] == ["project"]

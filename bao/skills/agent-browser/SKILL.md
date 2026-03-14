@@ -1,7 +1,7 @@
 ---
 name: agent-browser
 description: Use for browser automation, screenshots, form filling, web testing, or scraping.
-metadata: {"bao":{"emoji":"🌐"}}
+metadata: {"bao":{"emoji":"🌐","icon":"browser","display":{"name":"Browser Automation","nameZh":"浏览器自动化","descriptionZh":"自动打开网页、截图、填写表单并执行浏览器测试。"},"category":"automation","capabilityRefs":["web"],"activationRefs":["agent_browser"],"examplePrompts":["打开这个页面并截图","帮我自动填写这个表单"]}}
 allowed-tools: Bash(agent-browser:*)
 ---
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import codecs
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -20,7 +20,21 @@ class ToolTextResult:
     cleanup: bool = False
 
 
-ToolResultValue = str | ToolTextResult
+@dataclass(slots=True)
+class ReplyAttachment:
+    path: Path
+    cleanup: bool = False
+    name: str = ""
+    mime_type: str = ""
+
+
+@dataclass(slots=True)
+class ReplyContributionResult:
+    prompt_text: str = ""
+    attachments: list[ReplyAttachment] = field(default_factory=list)
+
+
+ToolResultValue = str | ToolTextResult | ReplyContributionResult
 ToolExecutionStatus = Literal["ok", "error", "interrupted"]
 
 
@@ -70,6 +84,8 @@ def tool_result_payload(result: ToolExecutionOutput | object) -> ToolResultValue
         if result.value is not None:
             return result.value
         return result.message
+    if isinstance(result, ReplyContributionResult):
+        return result
     if isinstance(result, ToolTextResult):
         return result
     if isinstance(result, str):
@@ -79,9 +95,24 @@ def tool_result_payload(result: ToolExecutionOutput | object) -> ToolResultValue
 
 def tool_result_excerpt(result: ToolExecutionOutput | object) -> str:
     payload = tool_result_payload(result)
+    if isinstance(payload, ReplyContributionResult):
+        if payload.prompt_text.strip():
+            return payload.prompt_text
+        count = len(payload.attachments)
+        if count <= 0:
+            return ""
+        noun = "attachment" if count == 1 else "attachments"
+        return f"Prepared {count} {noun} for the final reply."
     if isinstance(payload, ToolTextResult):
         return payload.excerpt
     return payload
+
+
+def tool_reply_contribution(result: ToolExecutionOutput | object) -> ReplyContributionResult | None:
+    payload = tool_result_payload(result)
+    if isinstance(payload, ReplyContributionResult):
+        return payload
+    return None
 
 
 def read_head_chars(path: Path, max_chars: int) -> str:

@@ -153,7 +153,11 @@ def test_tools_workspace_consumes_catalog_display_fields() -> None:
     assert "return localizedText(item.displaySummary, item.summary || \"\")" in text
     assert "return localizedText(item.displayDetail, item.detail || item.summary || \"\")" in text
     assert "return localizedText(item.statusDetailDisplay, item.statusDetail || \"\")" in text
-    assert "return String(item.iconSource || \"../resources/icons/sidebar-tools.svg\")" in text
+    assert "return String(item.iconSource || labIcon(\"toolbox\"))" in text
+    assert "summaryMetrics" in text
+    assert "exposureBundleOptions" in text
+    assert "runtimeStateDisplay" in text
+    assert "overview.observability" in text
     assert 'case "builtin:' not in text
 
 

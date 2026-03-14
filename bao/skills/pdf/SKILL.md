@@ -2,6 +2,7 @@
 name: pdf
 description: Use for PDFs, scans, OCR, forms, extraction, merge, or split tasks.
 license: Proprietary. LICENSE.txt has complete terms
+metadata: {"bao":{"icon":"book","display":{"name":"PDF Workflow","nameZh":"PDF 工作流","descriptionZh":"处理 PDF、扫描件、OCR、合并和拆分。"},"category":"documents","capabilityRefs":["filesystem"],"activationRefs":["filesystem"],"examplePrompts":["把这两个 PDF 合并成一个文件","从扫描版 PDF 提取文字"]}}
 ---
 
 # PDF Processing Guide

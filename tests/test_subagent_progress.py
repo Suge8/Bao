@@ -1669,6 +1669,84 @@ async def test_process_control_event_uses_structured_path_without_system_message
 
 
 @pytest.mark.asyncio
+async def test_process_control_event_persists_reply_attachments_with_single_schema(tmp_path):
+    from bao.agent.loop import AgentLoop
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        model="test-model",
+    )
+    session_key = "desktop:local"
+    attachment_path = tmp_path / "artifacts" / "reply.png"
+    attachment_path.parent.mkdir()
+    attachment_path.write_bytes(b"png")
+
+    async def _fake_run_agent_loop(initial_messages, **kwargs):
+        del initial_messages, kwargs
+        return (
+            "",
+            [],
+            [],
+            0,
+            [],
+            False,
+            False,
+            [],
+            [
+                {
+                    "fileName": "friendly.png",
+                    "filePath": str(attachment_path),
+                    "path": "artifacts/reply.png",
+                    "mimeType": "image/png",
+                    "sizeBytes": 3,
+                    "isImage": True,
+                    "extensionLabel": "PNG",
+                }
+            ],
+        )
+
+    loop._run_agent_loop = _fake_run_agent_loop
+
+    result = await loop._process_control_event(
+        ControlEvent(
+            kind="subagent_result",
+            session_key=session_key,
+            origin_channel="desktop",
+            origin_chat_id="local",
+            source="subagent",
+            payload={
+                "type": "subagent_result",
+                "task_id": "task-1",
+                "label": "render",
+                "task": "prepare attachment",
+                "status": "ok",
+                "result": "done",
+            },
+        )
+    )
+
+    assert result is not None
+    assert result.content == "后台附件已准备好。"
+    assert result.media == [str(attachment_path)]
+
+    session = loop.sessions.get_or_create(session_key)
+    assert session.messages[-1]["attachments"] == [
+        {
+            "fileName": "friendly.png",
+            "path": "artifacts/reply.png",
+            "mimeType": "image/png",
+            "size": 3,
+            "isImage": True,
+            "extensionLabel": "PNG",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_announce_result_publishes_structured_control_event(manager):
     manager.bus.publish_control = AsyncMock()
 

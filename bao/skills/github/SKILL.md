@@ -1,7 +1,7 @@
 ---
 name: github
 description: Use for GitHub issues, PRs, Actions, releases, or repo queries.
-metadata: {"bao":{"emoji":"🐙","requires":{"bins":["gh"]},"install":[{"id":"brew","kind":"brew","formula":"gh","bins":["gh"],"label":"Install GitHub CLI (brew)"},{"id":"apt","kind":"apt","package":"gh","bins":["gh"],"label":"Install GitHub CLI (apt)"}]}}
+metadata: {"bao":{"emoji":"🐙","icon":"activity","display":{"name":"GitHub","nameZh":"GitHub","descriptionZh":"查看 issue、PR、Actions、发布和仓库信息。"},"category":"development","capabilityRefs":["exec"],"activationRefs":["exec"],"requires":{"bins":["gh"]},"install":[{"id":"brew","kind":"brew","formula":"gh","bins":["gh"],"label":"Install GitHub CLI (brew)"},{"id":"apt","kind":"apt","package":"gh","bins":["gh"],"label":"Install GitHub CLI (apt)"}],"examplePrompts":["帮我看这个 PR 的 CI 为什么挂了","列出这个仓库最近的 release"]}}
 ---
 
 # GitHub Skill

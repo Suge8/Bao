@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any, cast
 
 from bao.agent.loop import AgentLoop
-from bao.agent.tools.message import MessageTool
 from bao.bus.events import InboundMessage
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider, LLMResponse, ToolCallRequest
@@ -535,7 +534,7 @@ def test_run_agent_loop_force_final_never_executes_tool_calls(tmp_path: Path) ->
     assert provider.tools_payloads[0] == []
 
 
-def test_process_message_suppression_emits_progress_clear(tmp_path: Path) -> None:
+def test_process_message_progress_keeps_final_outbound(tmp_path: Path) -> None:
     (tmp_path / "INSTRUCTIONS.md").write_text("ready", encoding="utf-8")
     (tmp_path / "PERSONA.md").write_text("ready", encoding="utf-8")
 
@@ -555,10 +554,7 @@ def test_process_message_suppression_emits_progress_clear(tmp_path: Path) -> Non
             await cast(Any, on_progress)(
                 '运行这条命令静音：\nosascript -e "set volume output muted true"'
             )
-        tool = loop.tools.get("message")
-        if isinstance(tool, MessageTool):
-            tool._sent_in_turn = True
-        return "最终结果", [], [], 0, [], False, False, []
+        return "最终结果", [], [], 0, [], False, False, [], []
 
     setattr(loop, "_run_agent_loop", _fake_run_agent_loop)
 
@@ -570,11 +566,8 @@ def test_process_message_suppression_emits_progress_clear(tmp_path: Path) -> Non
     )
 
     out = asyncio.run(loop._process_message(msg))
-    assert out is None
+    assert out is not None
+    assert out.content == "最终结果"
 
     first = asyncio.run(asyncio.wait_for(bus.consume_outbound(), timeout=1.0))
-    second = asyncio.run(asyncio.wait_for(bus.consume_outbound(), timeout=1.0))
     assert first.metadata.get("_progress") is True
-    assert second.metadata.get("_progress") is True
-    assert second.metadata.get("_progress_clear") is True
-    assert second.content == ""

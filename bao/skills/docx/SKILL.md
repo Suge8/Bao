@@ -2,6 +2,7 @@
 name: docx
 description: Use for Word docs, reports, memos, letters, contracts, or .docx files.
 license: Proprietary. LICENSE.txt has complete terms
+metadata: {"bao":{"icon":"book","display":{"name":"Word Documents","nameZh":"Word 文档","descriptionZh":"创建、编辑和整理 Word 报告、备忘录和合同。"},"category":"documents","capabilityRefs":["filesystem"],"activationRefs":["filesystem"],"examplePrompts":["把这份提纲整理成正式 Word 报告","生成一份带目录的会议纪要 docx"]}}
 ---
 
 # DOCX creation, editing, and analysis

@@ -2,6 +2,7 @@
 name: memory
 description: Use for memory recall, consolidation, preferences, or project context.
 always: true
+metadata: {"bao":{"icon":"brain","display":{"name":"Memory","nameZh":"记忆","descriptionZh":"管理长期记忆、偏好和项目上下文。"},"category":"knowledge","capabilityRefs":["memory"],"activationRefs":["memory"],"examplePrompts":["记住我偏好简洁回复","把这个项目约束写进长期记忆"]}}
 ---
 
 # Memory

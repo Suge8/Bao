@@ -1,6 +1,7 @@
 ---
 name: skill-creator
 description: Use to create, update, package, or structure a skill and its assets.
+metadata: {"bao":{"icon":"toolbox","display":{"name":"Skill Creator","nameZh":"技能创建器","descriptionZh":"创建、更新和整理技能及其资源文件。"},"category":"authoring","capabilityRefs":["filesystem"],"activationRefs":["filesystem"],"examplePrompts":["帮我新建一个技能骨架","把这个技能目录整理成标准结构"]}}
 ---
 
 # Skill Creator

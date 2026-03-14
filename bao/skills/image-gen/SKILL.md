@@ -1,7 +1,7 @@
 ---
 name: image-gen
 description: Use to draw, generate, design, or create images, art, or illustrations.
-metadata: {"bao":{"emoji":"🎨"}}
+metadata: {"bao":{"emoji":"🎨","icon":"spark","display":{"name":"Image Generation","nameZh":"图像生成","descriptionZh":"根据提示词生成插画、海报和视觉素材。"},"category":"creative","capabilityRefs":["image_generation"],"activationRefs":["image_generation"],"examplePrompts":["帮我生成一张产品海报","画一张极简风格的插画"]}}
 ---
 
 # Image Generation
@@ -12,8 +12,8 @@ metadata: {"bao":{"emoji":"🎨"}}
 
 ## Workflow
 1. Call `generate_image(prompt="detailed English description")`
-2. Tool returns a local file path
-3. Send to user: `message(content="brief description", media=["the_returned_path"])`
+2. Tool returns an image contribution that Bao attaches to the final reply automatically
+3. Reply normally with a brief description; do not call a separate send tool for the current session
 
 ## Prompt Tips
 - Write prompts in English for best quality

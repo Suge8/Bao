@@ -2,6 +2,7 @@
 name: pptx
 description: Use for slides, decks, presentations, pitch decks, or .pptx files.
 license: Proprietary. LICENSE.txt has complete terms
+metadata: {"bao":{"icon":"book","display":{"name":"Presentations","nameZh":"演示文稿","descriptionZh":"创建、修改和整理演示文稿与路演 deck。"},"category":"documents","capabilityRefs":["filesystem"],"activationRefs":["filesystem"],"examplePrompts":["帮我做一份融资路演 deck","把这份文案整理成 10 页演示"]}}
 ---
 
 # PPTX Skill
