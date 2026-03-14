@@ -34,6 +34,8 @@ class _FinalOnlyProvider(LLMProvider):
 def _build_store() -> MemoryStore:
     store = MemoryStore.__new__(MemoryStore)
     store._store_lock = threading.RLock()
+    store._embed_fn = None
+    store._vec_tbl = None
     return store
 
 
@@ -62,12 +64,24 @@ class _CountingSearch:
 
 class _CountingTable:
     def __init__(self, rows: list[dict[str, object]]) -> None:
-        self.rows = rows
+        self.rows = [dict(row) for row in rows]
         self.search_calls = 0
 
     def search(self, *_args, **_kwargs):
         self.search_calls += 1
         return _CountingSearch(self)
+
+    def add(self, rows: list[dict[str, object]]) -> None:
+        for row in rows:
+            self.rows.append(dict(row))
+
+    def delete(self, where: str) -> None:
+        if where == "type = 'long_term' AND category = 'project'":
+            self.rows = [
+                row
+                for row in self.rows
+                if not (row.get("type") == "long_term" and row.get("category") == "project")
+            ]
 
 
 def test_should_skip_retrieval_for_low_information_query() -> None:
@@ -120,6 +134,24 @@ def test_get_relevant_memory_context_reads_long_term_rows_once() -> None:
     assert "项目里有缓存策略" in text
     assert "偏好简洁回复" not in text
     assert store._tbl.search_calls == 1
+
+
+def test_long_term_write_invalidates_retrieval_index() -> None:
+    store = _build_store()
+    store._tbl = _CountingTable(
+        [
+            {"type": "long_term", "category": "project", "content": "旧的缓存策略"},
+            {"type": "long_term", "category": "general", "content": "偏好简洁回复"},
+        ]
+    )
+
+    first = store.get_relevant_memory_context("缓存策略", max_chars=200)
+    store.write_long_term("新的缓存策略", "project")
+    second = store.get_relevant_memory_context("新的缓存策略", max_chars=200)
+
+    assert "旧的缓存策略" in first
+    assert "新的缓存策略" in second
+    assert store._tbl.search_calls == 3
 
 
 def test_process_message_skips_memory_search_for_low_information_turn(tmp_path: Path) -> None:

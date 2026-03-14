@@ -2,6 +2,9 @@ import threading
 import time
 from typing import cast
 
+import pytest
+
+import bao.agent.memory as memory_module
 from bao.agent.memory import MemoryStore
 
 
@@ -22,6 +25,9 @@ def _matches_where(row: dict[str, object], where: str | None) -> bool:
     if where.startswith("key = '") and where.endswith("'"):
         key = where[len("key = '") : -1]
         return row.get("key") == key
+    if where.startswith("content = '") and where.endswith("'"):
+        content = where[len("content = '") : -1]
+        return row.get("content") == content
     if where == "type NOT IN ('experience', 'long_term')":
         return row.get("type") not in {"experience", "long_term"}
     return True
@@ -51,15 +57,21 @@ class _FakeSearch:
 class _FakeTable:
     def __init__(self, rows: list[dict[str, object]] | None = None):
         self.rows = [dict(r) for r in (rows or [])]
+        self.search_calls = 0
+        self.add_calls: list[list[dict[str, object]]] = []
+        self.delete_calls: list[str] = []
 
     def search(self, *_args, **_kwargs):
+        self.search_calls += 1
         return _FakeSearch(self.rows)
 
     def add(self, rows: list[dict[str, object]]):
+        self.add_calls.append([dict(row) for row in rows])
         for row in rows:
             self.rows.append(dict(row))
 
     def delete(self, where: str):
+        self.delete_calls.append(where)
         self.rows = [r for r in self.rows if not _matches_where(r, where)]
 
 
@@ -106,6 +118,59 @@ class _QueryEmbed:
         return [[0.4, 0.6]]
 
 
+class _CountingQueryEmbed:
+    def __init__(self):
+        self.calls = 0
+
+    def compute_query_embeddings(self, _query: str):
+        self.calls += 1
+        return [[0.4, 0.6]]
+
+
+class _DeferredFuture:
+    def __init__(self, fn, args, kwargs):
+        self._fn = fn
+        self._args = args
+        self._kwargs = kwargs
+        self._callbacks = []
+        self._ran = False
+        self._result = None
+        self._exc: Exception | None = None
+
+    def add_done_callback(self, callback):
+        self._callbacks.append(callback)
+
+    def run(self):
+        if self._ran:
+            return
+        self._ran = True
+        try:
+            self._result = self._fn(*self._args, **self._kwargs)
+        except Exception as exc:  # pragma: no cover - helper path
+            self._exc = exc
+        for callback in self._callbacks:
+            callback(self)
+
+    def result(self):
+        if self._exc is not None:
+            raise self._exc
+        return self._result
+
+
+class _DeferredExecutor:
+    def __init__(self):
+        self.futures: list[_DeferredFuture] = []
+
+    def submit(self, fn, *args, **kwargs):
+        future = _DeferredFuture(fn, args, kwargs)
+        self.futures.append(future)
+        return future
+
+    def run_all(self):
+        for future in list(self.futures):
+            future.run()
+
+
 
 def _build_store() -> MemoryStore:
     store = MemoryStore.__new__(MemoryStore)
@@ -135,6 +200,28 @@ def test_enrich_for_rerank_filters_stale_vector_rows():
     assert len(enriched) == 1
     assert enriched[0]["key"] == "k1"
     assert "_distance" in enriched[0]
+    assert fake_tbl.search_calls == 2
+
+
+def test_enrich_for_rerank_falls_back_for_rows_outside_index_limit(monkeypatch):
+    monkeypatch.setattr(memory_module, "_BACKFILL_SCAN_LIMIT", 1)
+    store = _build_store()
+    fake_tbl = _FakeTable(
+        [
+            {"key": "k1", "content": "alpha", "type": "history", "quality": 3},
+            {"key": "k2", "content": "beta", "type": "history", "quality": 5},
+        ]
+    )
+    setattr(store, "_tbl", fake_tbl)
+
+    enriched = store._enrich_for_rerank(
+        [{"key": "k2", "content": "beta", "type": "history", "_distance": 0.1}]
+    )
+
+    assert len(enriched) == 1
+    assert enriched[0]["key"] == "k2"
+    assert enriched[0]["quality"] == 5
+    assert fake_tbl.search_calls == 2
 
 
 def test_backfill_embeddings_adds_missing_and_keeps_unmanaged_stale_keys():
@@ -189,15 +276,15 @@ def test_backfill_embeddings_refreshes_changed_content_for_same_key():
     assert refreshed[0]["content"] == "beta-new"
 
 
-def test_query_embedding_retries_on_retryable_error():
+def test_query_embedding_fails_fast_on_retryable_error():
     store = _build_store()
     embed = _FlakyEmbed()
     setattr(store, "_embed_fn", cast(object, embed))
 
-    result = store._compute_query_embeddings("find this")
+    with pytest.raises(TimeoutError):
+        store._compute_query_embeddings("find this")
 
-    assert result == [[0.9, 0.1]]
-    assert embed.query_calls == 2
+    assert embed.query_calls == 1
 
 
 def test_run_with_timeout_uses_executor_timeout_path():
@@ -212,7 +299,7 @@ def test_run_with_timeout_uses_executor_timeout_path():
         assert False
     except TimeoutError as exc:
         assert "timed out" in str(exc)
-        assert MemoryStore._is_retryable_embedding_error(exc)
+        assert MemoryStore._is_transient_embedding_error(exc)
     assert time.time() - started < 0.05
 
 
@@ -311,6 +398,92 @@ def test_enrich_vector_results_uses_key_lookup_beyond_500_rows():
     assert enriched[0]["key"] == "e1250"
 
 
+def test_enrich_vector_results_uses_single_index_scan():
+    store = _build_store()
+    fake_tbl = _FakeTable(
+        [
+            {
+                "key": "e1",
+                "content": "Task: task-1\nLessons: l1",
+                "type": "experience",
+                "quality": 3,
+                "uses": 0,
+                "successes": 0,
+                "outcome": "success",
+                "deprecated": False,
+                "updated_at": "",
+                "category": "general",
+            },
+            {
+                "key": "e2",
+                "content": "Task: task-2\nLessons: l2",
+                "type": "experience",
+                "quality": 3,
+                "uses": 0,
+                "successes": 0,
+                "outcome": "success",
+                "deprecated": False,
+                "updated_at": "",
+                "category": "general",
+            },
+        ]
+    )
+    setattr(store, "_tbl", fake_tbl)
+
+    enriched = store._enrich_vector_results(
+        [
+            {"key": "e1", "content": "stale-1", "type": "experience", "_distance": 0.1},
+            {"key": "e2", "content": "stale-2", "type": "experience", "_distance": 0.2},
+        ]
+    )
+
+    assert [row["key"] for row in enriched] == ["e1", "e2"]
+    assert fake_tbl.search_calls == 1
+
+
+def test_enrich_vector_results_falls_back_for_rows_outside_index_limit(monkeypatch):
+    monkeypatch.setattr(memory_module, "_BACKFILL_SCAN_LIMIT", 1)
+    store = _build_store()
+    fake_tbl = _FakeTable(
+        [
+            {
+                "key": "e1",
+                "content": "Task: task-1\nLessons: l1",
+                "type": "experience",
+                "quality": 3,
+                "uses": 0,
+                "successes": 0,
+                "outcome": "success",
+                "deprecated": False,
+                "updated_at": "",
+                "category": "general",
+            },
+            {
+                "key": "e2",
+                "content": "Task: task-2\nLessons: l2",
+                "type": "experience",
+                "quality": 4,
+                "uses": 1,
+                "successes": 1,
+                "outcome": "success",
+                "deprecated": False,
+                "updated_at": "",
+                "category": "project",
+            },
+        ]
+    )
+    setattr(store, "_tbl", fake_tbl)
+
+    enriched = store._enrich_vector_results(
+        [{"key": "e2", "content": "stale-2", "type": "experience", "_distance": 0.2}]
+    )
+
+    assert len(enriched) == 1
+    assert enriched[0]["key"] == "e2"
+    assert enriched[0]["category"] == "project"
+    assert fake_tbl.search_calls == 2
+
+
 def test_search_memory_merges_vector_and_text_candidates():
     store = _build_store()
     setattr(store, "_embed_fn", cast(object, _QueryEmbed()))
@@ -366,6 +539,181 @@ def test_search_memory_merges_vector_and_text_candidates():
 
     assert "vector memory content" in results
     assert "special token memory" in results
+
+
+def test_recall_reuses_query_context_for_memory_and_experience():
+    store = _build_store()
+    embed = _CountingQueryEmbed()
+    setattr(store, "_embed_fn", cast(object, embed))
+    setattr(
+        store,
+        "_tbl",
+        _FakeTable(
+            [
+                {
+                    "key": "k_vec",
+                    "content": "special token memory",
+                    "type": "history",
+                    "category": "general",
+                    "quality": 3,
+                    "uses": 0,
+                    "successes": 0,
+                    "updated_at": "",
+                    "deprecated": False,
+                },
+                {
+                    "key": "e_vec",
+                    "content": "Task: special token task\nLessons: remembered lesson",
+                    "type": "experience",
+                    "category": "project",
+                    "quality": 4,
+                    "uses": 1,
+                    "successes": 1,
+                    "outcome": "success",
+                    "updated_at": "",
+                    "deprecated": False,
+                },
+            ]
+        ),
+    )
+    setattr(
+        store,
+        "_vec_tbl",
+        cast(
+            object,
+            _FakeTable(
+                [
+                    {
+                        "key": "k_vec",
+                        "content": "special token memory",
+                        "type": "history",
+                        "_distance": 0.05,
+                    },
+                    {
+                        "key": "e_vec",
+                        "content": "Task: special token task\nLessons: remembered lesson",
+                        "type": "experience",
+                        "_distance": 0.08,
+                    },
+                ]
+            ),
+        ),
+    )
+
+    bundle = store.recall("special token", related_limit=1, experience_limit=2)
+
+    assert embed.calls == 1
+    assert bundle.related_memory == ("special token memory",)
+    assert len(bundle.related_experience) == 1
+
+
+def test_schedule_hit_stats_update_coalesces_same_key_before_flush(monkeypatch):
+    store = _build_store()
+    fake_tbl = _FakeTable(
+        [
+            {
+                "key": "k1",
+                "content": "alpha",
+                "type": "history",
+                "updated_at": "2026-03-14T00:00:00",
+                "hit_count": 1,
+                "last_hit_at": "",
+            },
+            {
+                "key": "k2",
+                "content": "beta",
+                "type": "history",
+                "updated_at": "2026-03-14T00:00:00",
+                "hit_count": 0,
+                "last_hit_at": "",
+            },
+        ]
+    )
+    executor = _DeferredExecutor()
+    monkeypatch.setattr(MemoryStore, "_MEMORY_BG_EXECUTOR", executor)
+    setattr(store, "_tbl", fake_tbl)
+
+    store._schedule_hit_stats_update(
+        [
+            {"key": "k1", "content": "alpha", "type": "history", "hit_count": 1},
+            {"key": "k1", "content": "alpha", "type": "history", "hit_count": 1},
+        ]
+    )
+    store._schedule_hit_stats_update(
+        [
+            {"key": "k2", "content": "beta", "type": "history", "hit_count": 0},
+            {"key": "k1", "content": "alpha", "type": "history", "hit_count": 1},
+        ]
+    )
+
+    assert len(executor.futures) == 1
+    assert store._pending_hit_updates["k1"]["_hit_delta"] == 3
+    assert store._pending_hit_updates["k2"]["_hit_delta"] == 1
+
+    executor.run_all()
+
+    rows_by_key = {str(row["key"]): row for row in fake_tbl.rows}
+    assert rows_by_key["k1"]["hit_count"] == 4
+    assert rows_by_key["k2"]["hit_count"] == 1
+    assert fake_tbl.delete_calls.count("key = 'k1'") == 1
+    assert fake_tbl.delete_calls.count("key = 'k2'") == 1
+
+
+def test_update_hit_stats_falls_back_for_rows_outside_index_limit(monkeypatch):
+    monkeypatch.setattr(memory_module, "_BACKFILL_SCAN_LIMIT", 1)
+    store = _build_store()
+    fake_tbl = _FakeTable(
+        [
+            {
+                "key": "k1",
+                "content": "alpha",
+                "type": "history",
+                "updated_at": "2026-03-14T00:00:00",
+                "hit_count": 1,
+                "last_hit_at": "",
+            },
+            {
+                "key": "k2",
+                "content": "beta",
+                "type": "history",
+                "updated_at": "2026-03-14T00:00:00",
+                "hit_count": 2,
+                "last_hit_at": "",
+            },
+        ]
+    )
+    setattr(store, "_tbl", fake_tbl)
+
+    store._update_hit_stats([{"key": "k2", "_hit_delta": 3}])
+
+    rows_by_key = {str(row["key"]): row for row in fake_tbl.rows}
+    assert rows_by_key["k2"]["hit_count"] == 5
+    assert fake_tbl.delete_calls.count("key = 'k2'") == 1
+
+
+def test_update_hit_stats_patches_cached_retrieval_index_without_rebuild():
+    store = _build_store()
+    fake_tbl = _FakeTable(
+        [
+            {
+                "key": "k1",
+                "content": "alpha",
+                "type": "history",
+                "updated_at": "2026-03-14T00:00:00",
+                "hit_count": 1,
+                "last_hit_at": "",
+            }
+        ]
+    )
+    setattr(store, "_tbl", fake_tbl)
+
+    first_index = store._get_retrieval_index()
+    store._update_hit_stats([{"key": "k1", "_hit_delta": 2}])
+    second_index = store._get_retrieval_index()
+
+    assert second_index is first_index
+    assert second_index["row_by_key"]["k1"]["hit_count"] == 3
+    assert fake_tbl.search_calls == 1
 
 
 

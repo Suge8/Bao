@@ -39,8 +39,6 @@ _ENV_KEY = "BAO_EMBEDDING_API_KEY"
 _ENV_BASE = "BAO_EMBEDDING_BASE_URL"
 
 _DEFAULT_EMBED_TIMEOUT_S = 15
-_DEFAULT_EMBED_RETRY_ATTEMPTS = 2
-_DEFAULT_EMBED_RETRY_BACKOFF_MS = 200
 _QUERY_EMBED_CACHE_TTL_S = 120.0
 _QUERY_EMBED_CACHE_MAX = 256
 _BACKFILL_SCAN_LIMIT = 20000
@@ -108,6 +106,14 @@ class RecallBundle:
     long_term_context: str = ""
     related_memory: tuple[str, ...] = ()
     related_experience: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _RecallQueryContext:
+    query: str
+    query_terms: tuple[str, ...]
+    query_term_set: frozenset[str]
+    query_vectors: list[list[float]] | None = None
 
 
 class _LongTermMemoryDomain:
@@ -221,6 +227,7 @@ class _LongTermMemoryDomain:
                 if not rows:
                     return False
                 self._host._tbl.delete(f"type = 'long_term' AND key = '{key_safe}'")
+                self._host._invalidate_retrieval_index()
                 return True
             except Exception as e:
                 logger.warning("⚠️ 按键删除失败 / delete by key failed: {}", e)
@@ -271,13 +278,22 @@ class _LongTermMemoryDomain:
         parts = self._host._collect_long_term_parts()
         return self._host._format_long_term_parts(parts, max_chars=max_chars)
 
-    def get_relevant_memory_context(self, query: str, max_chars: int | None = None) -> str:
-        if self._host.should_skip_retrieval(query):
+    def get_relevant_memory_context(
+        self,
+        query: str,
+        max_chars: int | None = None,
+        *,
+        query_context: _RecallQueryContext | None = None,
+    ) -> str:
+        query_ctx = query_context or self._host._build_recall_query_context(
+            query,
+            include_vectors=False,
+        )
+        if query_ctx is None:
             return ""
-        query_tokens = set(self._host._tokenize(query))
-        if not query_tokens:
+        if not query_ctx.query_term_set:
             return ""
-        parts = self._host._collect_long_term_parts(query_tokens=query_tokens)
+        parts = self._host._collect_long_term_parts(query_tokens=query_ctx.query_term_set)
         return self._host._format_long_term_parts(parts, max_chars=max_chars)
 
     def remember(self, content: str, category: str = "general") -> str:
@@ -380,6 +396,7 @@ class _ExperienceMemoryDomain:
                     )
                 ]
             )
+            self._host._invalidate_retrieval_index()
         self._host._embed_and_store(key=row_key, content=content, type_="experience")
 
     def search_experience(
@@ -387,15 +404,15 @@ class _ExperienceMemoryDomain:
         query: str,
         limit: int = 3,
         *,
-        query_vectors: list[list[float]] | None = None,
+        query_context: _RecallQueryContext | None = None,
     ) -> list[str]:
-        if self._host.should_skip_retrieval(query):
-            return []
-        candidates = self._host._fetch_experience_candidates(
+        query_ctx = query_context or self._host._build_recall_query_context(
             query,
-            limit * 5,
-            query_vectors=query_vectors,
+            include_vectors=True,
         )
+        if query_ctx is None:
+            return []
+        candidates = self._host._fetch_experience_candidates(query_ctx, limit * 5)
         now = datetime.now()
         positive: list[tuple[float, dict[str, Any], str, str, str]] = []
         warnings: list[tuple[float, dict[str, Any], str, str]] = []
@@ -566,6 +583,7 @@ class _ExperienceMemoryDomain:
                 if not rows:
                     return False
                 self._host._tbl.delete(f"type = 'experience' AND key = '{key_safe}'")
+                self._host._invalidate_retrieval_index()
                 self._host._delete_vector_by_key(key)
                 return True
             except Exception as e:
@@ -658,6 +676,8 @@ class _ExperienceMemoryDomain:
                         self._host._delete_vector_by_key(key)
                         removed += 1
                 if removed:
+                    self._host._invalidate_retrieval_index()
+                if removed:
                     logger.info("🧹 清理经验 / stale experiences cleaned: {}", removed)
                 return removed
             except Exception as e:
@@ -711,6 +731,7 @@ class _ExperienceMemoryDomain:
                         )
                     ]
                 )
+                self._host._invalidate_retrieval_index()
                 logger.info("🔀 合并经验 / experiences merged: {} into 1", len(old_entries))
             except Exception as e:
                 logger.warning("⚠️ 合并经验失败 / experience merge failed: {}", e)
@@ -727,38 +748,40 @@ class _RecallDomain:
         query: str,
         limit: int = 5,
         *,
-        query_vectors: list[list[float]] | None = None,
+        query_context: _RecallQueryContext | None = None,
     ) -> list[str]:
-        if self._host.should_skip_retrieval(query):
+        query_ctx = query_context or self._host._build_recall_query_context(
+            query,
+            include_vectors=True,
+        )
+        if query_ctx is None:
             return []
         fetch = max(limit * 3, 6)
         vec_enriched: list[dict[str, Any]] = []
-
-        if self._host._embed_fn and self._host._vec_tbl:
+        if self._host._embed_fn and self._host._vec_tbl and query_ctx.query_vectors:
             try:
-                vectors = query_vectors if query_vectors is not None else self._host._compute_query_embeddings(query)
-                vec = vectors[0] if vectors else None
-                if not isinstance(vec, Sized) or len(vec) == 0:
-                    raise ValueError("query embedding returned empty vector")
-                with self._host._store_lock:
-                    if not self._host._vec_tbl:
-                        vec_rows = []
-                    else:
-                        vec_rows = (
-                            self._host._vec_tbl.search(vec)
-                            .where("type NOT IN ('experience', 'long_term')")
-                            .limit(fetch)
-                            .to_list()
-                        )
-                if vec_rows:
-                    vec_enriched = self._host._enrich_for_rerank(vec_rows)
+                vec = query_ctx.query_vectors[0] if query_ctx.query_vectors else None
+                if isinstance(vec, Sized) and len(vec) > 0:
+                    with self._host._store_lock:
+                        if not self._host._vec_tbl:
+                            vec_rows = []
+                        else:
+                            vec_rows = (
+                                self._host._vec_tbl.search(vec)
+                                .where("type NOT IN ('experience', 'long_term')")
+                                .limit(fetch)
+                                .to_list()
+                            )
+                    if vec_rows:
+                        vec_enriched = self._host._enrich_for_rerank(vec_rows)
             except Exception as e:
                 logger.warning("⚠️ 语义检索失败 / semantic search failed: {}", e)
 
         text_candidates = self._host._fallback_text_candidates(
-            query,
+            query_ctx.query,
             limit=fetch,
             exclude_types=["experience", "long_term"],
+            query_terms=query_ctx.query_terms,
         )
         candidates = self._host._merge_memory_candidates(vec_enriched, text_candidates)
         if candidates:
@@ -778,13 +801,35 @@ class _RecallDomain:
         related_limit: int = 5,
         experience_limit: int = 3,
         long_term_chars: int | None = None,
+        include_long_term: bool = True,
     ) -> RecallBundle:
-        if self._host.should_skip_retrieval(query):
+        query_ctx = self._host._build_recall_query_context(query, include_vectors=True)
+        if query_ctx is None:
             return RecallBundle()
         return RecallBundle(
-            long_term_context=self._host.get_relevant_memory_context(query, max_chars=long_term_chars),
-            related_memory=tuple(self._host.search_memory(query, limit=related_limit)),
-            related_experience=tuple(self._host.search_experience(query, limit=experience_limit)),
+            long_term_context=(
+                self._host.get_relevant_memory_context(
+                    query,
+                    max_chars=long_term_chars,
+                    query_context=query_ctx,
+                )
+                if include_long_term
+                else ""
+            ),
+            related_memory=tuple(
+                self._host.search_memory(
+                    query,
+                    limit=related_limit,
+                    query_context=query_ctx,
+                )
+            ),
+            related_experience=tuple(
+                self._host.search_experience(
+                    query,
+                    limit=experience_limit,
+                    query_context=query_ctx,
+                )
+            ),
         )
 
 
@@ -825,10 +870,13 @@ class MemoryStore:
         self._embed_fn = None
         self._vec_tbl: Any | None = None
         self._embed_timeout_s = _DEFAULT_EMBED_TIMEOUT_S
-        self._embed_retry_attempts = _DEFAULT_EMBED_RETRY_ATTEMPTS
-        self._embed_retry_backoff_ms = _DEFAULT_EMBED_RETRY_BACKOFF_MS
         self._query_embed_cache: dict[str, tuple[float, list[list[float]]]] = {}
         self._query_embed_cache_lock = threading.Lock()
+        self._retrieval_revision = 0
+        self._retrieval_index: dict[str, Any] | None = None
+        self._pending_hit_updates: dict[str, dict[str, Any]] = {}
+        self._hit_stats_lock = threading.Lock()
+        self._hit_flush_inflight = False
         self._migrate_legacy(workspace)
         self._migrate_long_term_facts()
         self._init_domains()
@@ -839,6 +887,7 @@ class MemoryStore:
         with self._store_lock:
             self._vec_tbl = None
             self._embed_fn = None
+            self._invalidate_retrieval_index()
 
     def _init_domains(self) -> None:
         self._long_term_domain = _LongTermMemoryDomain(self)
@@ -954,6 +1003,7 @@ class MemoryStore:
                 self._db.drop_table("memory_vectors")
             except Exception:
                 pass
+            self._invalidate_retrieval_index()
             logger.info("🔀 迁移结构 / schema migrated: {} rows", migrated_count)
             return tbl
         except Exception as e:
@@ -996,6 +1046,7 @@ class MemoryStore:
             self._db.drop_table("memory")
             tbl = self._db.create_table("memory", data=staged_rows)
             self._db.drop_table("memory_backfill")
+            self._invalidate_retrieval_index()
             logger.info("🔀 补齐新列 / backfilled new columns: {} rows", patched_count)
             return tbl
         except Exception as e:
@@ -1006,12 +1057,6 @@ class MemoryStore:
         try:
             self._embed_timeout_s = max(
                 1, int(getattr(cfg, "timeout_seconds", _DEFAULT_EMBED_TIMEOUT_S))
-            )
-            self._embed_retry_attempts = max(
-                1, int(getattr(cfg, "retry_attempts", _DEFAULT_EMBED_RETRY_ATTEMPTS))
-            )
-            self._embed_retry_backoff_ms = max(
-                0, int(getattr(cfg, "retry_backoff_ms", _DEFAULT_EMBED_RETRY_BACKOFF_MS))
             )
             api_key = cfg.api_key.get_secret_value()
             model_lower = cfg.model.lower()
@@ -1055,7 +1100,7 @@ class MemoryStore:
             raise TimeoutError(f"Embedding request timed out after {timeout_s}s") from exc
 
     @staticmethod
-    def _is_retryable_embedding_error(exc: Exception) -> bool:
+    def _is_transient_embedding_error(exc: Exception) -> bool:
         if isinstance(exc, TimeoutError | FuturesTimeoutError):
             return True
         msg = str(exc).lower()
@@ -1072,30 +1117,20 @@ class MemoryStore:
         )
         return any(marker in msg for marker in retry_markers)
 
-    def _call_embedding_with_retry(self, fn: Callable[[], Any], *, op: str) -> Any:
-        attempts = self._embed_retry_attempts
-        last_exc: Exception | None = None
-        for idx in range(attempts):
-            try:
-                return self._run_with_timeout(self._embed_timeout_s, fn)
-            except Exception as exc:
-                last_exc = exc
-                is_last = idx >= attempts - 1
-                if is_last or not self._is_retryable_embedding_error(exc):
-                    raise
-                sleep_s = (self._embed_retry_backoff_ms / 1000.0) * (2**idx)
-                if sleep_s > 0:
-                    logger.debug("Embedding {} retry {}/{} after {}", op, idx + 1, attempts, exc)
-                    time.sleep(sleep_s)
-        if last_exc is not None:
-            raise last_exc
+    def _call_embedding(self, fn: Callable[[], Any], *, op: str) -> Any:
+        try:
+            return self._run_with_timeout(self._embed_timeout_s, fn)
+        except Exception as exc:
+            if self._is_transient_embedding_error(exc):
+                logger.debug("Embedding {} failed without hidden retry: {}", op, exc)
+            raise
 
     def _compute_source_embeddings(self, texts: list[str]) -> list[list[float]]:
         embed_fn = self._embed_fn
         if not embed_fn:
             return []
         assert embed_fn is not None
-        return self._call_embedding_with_retry(
+        return self._call_embedding(
             lambda: embed_fn.compute_source_embeddings(texts),
             op="source",
         )
@@ -1105,6 +1140,252 @@ class MemoryStore:
             self._query_embed_cache = {}
         if not hasattr(self, "_query_embed_cache_lock"):
             self._query_embed_cache_lock = threading.Lock()
+
+    def _ensure_retrieval_state(self) -> None:
+        if not hasattr(self, "_retrieval_revision"):
+            self._retrieval_revision = 0
+        if not hasattr(self, "_retrieval_index"):
+            self._retrieval_index = None
+
+    def _ensure_hit_stats_state(self) -> None:
+        if not hasattr(self, "_pending_hit_updates"):
+            self._pending_hit_updates = {}
+        if not hasattr(self, "_hit_stats_lock"):
+            self._hit_stats_lock = threading.Lock()
+        if not hasattr(self, "_hit_flush_inflight"):
+            self._hit_flush_inflight = False
+
+    def _invalidate_retrieval_index(self) -> None:
+        self._ensure_retrieval_state()
+        self._retrieval_revision += 1
+        self._retrieval_index = None
+
+    def _get_retrieval_index(self) -> dict[str, Any]:
+        self._ensure_retrieval_state()
+        with self._store_lock:
+            cached = self._retrieval_index
+            if isinstance(cached, dict) and cached.get("revision") == self._retrieval_revision:
+                return cached
+
+            rows = self._tbl.search().where("type != '_init_'").limit(_BACKFILL_SCAN_LIMIT).to_list()
+            row_by_key: dict[str, dict[str, Any]] = {}
+            row_by_content_type: dict[tuple[str, str], dict[str, Any]] = {}
+            row_tokens_by_key: dict[str, tuple[str, ...]] = {}
+            row_tokens_by_content_type: dict[tuple[str, str], tuple[str, ...]] = {}
+            experience_by_content: dict[str, dict[str, Any]] = {}
+            experience_tokens_by_key: dict[str, tuple[str, ...]] = {}
+            long_term_rows_by_category: dict[str, list[tuple[str, str, str]]] = {
+                category: [] for category in MEMORY_CATEGORIES
+            }
+            long_term_tokens_by_category: dict[str, set[str]] = {
+                category: set() for category in MEMORY_CATEGORIES
+            }
+            all_rows: list[dict[str, Any]] = []
+            memory_rows: list[dict[str, Any]] = []
+            experience_rows: list[dict[str, Any]] = []
+
+            for raw in rows:
+                row = dict(raw)
+                type_ = str(row.get("type") or "")
+                if not type_ or type_ == "_init_":
+                    continue
+                key = str(row.get("key") or "")
+                content = str(row.get("content") or "")
+                tokens = tuple(self._tokenize(content)) if content else ()
+
+                all_rows.append(row)
+                if key:
+                    row_by_key[key] = row
+                    if tokens:
+                        row_tokens_by_key[key] = tokens
+                if content:
+                    content_type = (content, type_)
+                    row_by_content_type[content_type] = row
+                    if tokens:
+                        row_tokens_by_content_type[content_type] = tokens
+
+                if type_ == "experience":
+                    experience_rows.append(row)
+                    if content:
+                        experience_by_content[content] = row
+                    if key and tokens:
+                        experience_tokens_by_key[key] = tokens
+                    continue
+
+                if type_ == "long_term":
+                    category = str(row.get("category") or "general")
+                    text = content.strip()
+                    if category in long_term_rows_by_category and text:
+                        long_term_rows_by_category[category].append(
+                            (str(row.get("updated_at", "")), key, text)
+                        )
+                        if tokens:
+                            long_term_tokens_by_category[category].update(tokens)
+                    continue
+
+                memory_rows.append(row)
+
+            long_term_parts = [
+                (
+                    category,
+                    self._join_memory_facts(
+                        [
+                            text
+                            for _, _, text in sorted(
+                                long_term_rows_by_category[category],
+                                key=lambda item: (item[0], item[1]),
+                            )
+                        ]
+                    ),
+                )
+                for category in MEMORY_CATEGORIES
+                if long_term_rows_by_category[category]
+            ]
+            index = {
+                "revision": self._retrieval_revision,
+                "all_rows": all_rows,
+                "memory_rows": memory_rows,
+                "experience_rows": experience_rows,
+                "row_by_key": row_by_key,
+                "row_by_content_type": row_by_content_type,
+                "row_tokens_by_key": row_tokens_by_key,
+                "row_tokens_by_content_type": row_tokens_by_content_type,
+                "experience_by_content": experience_by_content,
+                "experience_tokens_by_key": experience_tokens_by_key,
+                "long_term_parts": long_term_parts,
+                "long_term_tokens_by_category": long_term_tokens_by_category,
+            }
+            self._retrieval_index = index
+            return index
+
+    @staticmethod
+    def _escape_where_value(value: str) -> str:
+        return value.replace("'", "''")
+
+    def _lookup_rows_by_keys(
+        self,
+        keys: list[str],
+        *,
+        type_filter: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        found: dict[str, dict[str, Any]] = {}
+        for key in dict.fromkeys(str(key or "") for key in keys):
+            if not key:
+                continue
+            key_safe = self._escape_where_value(key)
+            where = f"key = '{key_safe}'"
+            if type_filter:
+                where = f"type = '{type_filter}' AND {where}"
+            rows = self._tbl.search().where(where).limit(1).to_list()
+            if rows:
+                found[key] = dict(rows[0])
+        return found
+
+    def _lookup_row_by_content_type(
+        self,
+        content: str,
+        type_: str,
+    ) -> dict[str, Any] | None:
+        text = str(content or "")
+        kind = str(type_ or "")
+        if not text or not kind:
+            return None
+        text_safe = self._escape_where_value(text)
+        type_safe = self._escape_where_value(kind)
+        rows = (
+            self._tbl.search()
+            .where(f"type = '{type_safe}' AND content = '{text_safe}'")
+            .limit(1)
+            .to_list()
+        )
+        return dict(rows[0]) if rows else None
+
+    def _resolve_index_rows(
+        self,
+        index: dict[str, Any],
+        *,
+        vec_rows: list[dict[str, Any]],
+        content_map_key: str,
+        type_filter: str | None = None,
+    ) -> tuple[dict[str, dict[str, Any]], dict[Any, dict[str, Any]]]:
+        key_map = dict(index["row_by_key"])
+        content_map = dict(index[content_map_key])
+        missing_keys = [
+            key
+            for key in (str(vr.get("key", "") or "") for vr in vec_rows)
+            if key and key not in key_map
+        ]
+        if missing_keys:
+            key_map.update(self._lookup_rows_by_keys(missing_keys, type_filter=type_filter))
+        return key_map, content_map
+
+    def _patch_cached_retrieval_row(self, row: dict[str, Any]) -> None:
+        self._ensure_retrieval_state()
+        cached = self._retrieval_index
+        if not isinstance(cached, dict) or cached.get("revision") != self._retrieval_revision:
+            return
+
+        key = str(row.get("key") or "")
+        if not key:
+            return
+        existing = cached["row_by_key"].get(key)
+        if existing is None:
+            return
+
+        row_copy = dict(row)
+        type_ = str(row_copy.get("type") or "")
+        content = str(row_copy.get("content") or "")
+        cached["row_by_key"][key] = row_copy
+        if content:
+            cached["row_by_content_type"][(content, type_)] = row_copy
+            if type_ == "experience":
+                cached["experience_by_content"][content] = row_copy
+
+        for bucket_name in ("all_rows", "experience_rows", "memory_rows"):
+            bucket = cached[bucket_name]
+            for idx, item in enumerate(bucket):
+                if str(item.get("key") or "") == key:
+                    bucket[idx] = row_copy
+                    break
+
+    def _retrieval_rows(
+        self,
+        index: dict[str, Any],
+        *,
+        type_filter: str | None = None,
+        exclude_types: list[str] | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        if type_filter == "experience":
+            rows = index["experience_rows"]
+        elif type_filter is not None:
+            rows = [row for row in index["all_rows"] if str(row.get("type") or "") == type_filter]
+        elif exclude_types:
+            excluded = set(exclude_types)
+            if excluded == {"experience", "long_term"}:
+                rows = index["memory_rows"]
+            else:
+                rows = [
+                    row for row in index["all_rows"] if str(row.get("type") or "") not in excluded
+                ]
+        else:
+            rows = index["all_rows"]
+        return rows[:limit]
+
+    def _row_tokens_from_index(
+        self,
+        row: dict[str, Any],
+        index: dict[str, Any],
+    ) -> tuple[str, ...]:
+        key = str(row.get("key") or "")
+        if key and key in index["row_tokens_by_key"]:
+            return index["row_tokens_by_key"][key]
+        content = str(row.get("content") or "")
+        type_ = str(row.get("type") or "")
+        content_type = (content, type_)
+        if content and content_type in index["row_tokens_by_content_type"]:
+            return index["row_tokens_by_content_type"][content_type]
+        return tuple(self._tokenize(content))
 
     def _compute_query_embeddings(self, query: str) -> list[list[float]]:
         embed_fn = self._embed_fn
@@ -1120,7 +1401,7 @@ class MemoryStore:
             if cached:
                 self._query_embed_cache.pop(query, None)
 
-        vectors = self._call_embedding_with_retry(
+        vectors = self._call_embedding(
             lambda: embed_fn.compute_query_embeddings(query),
             op="query",
         )
@@ -1130,6 +1411,29 @@ class MemoryStore:
                 self._query_embed_cache.pop(next(iter(self._query_embed_cache)))
         return vectors
 
+    def _build_recall_query_context(
+        self,
+        query: str,
+        *,
+        include_vectors: bool,
+    ) -> _RecallQueryContext | None:
+        if self.should_skip_retrieval(query):
+            return None
+        query_terms = tuple(self._tokenize(query))
+        query_vectors: list[list[float]] | None = None
+        if include_vectors and self._embed_fn and self._vec_tbl:
+            try:
+                query_vectors = self._compute_query_embeddings(query)
+            except Exception as e:
+                logger.warning("⚠️ 查询向量失败 / query embedding failed: {}", e)
+                query_vectors = []
+        return _RecallQueryContext(
+            query=query,
+            query_terms=query_terms,
+            query_term_set=frozenset(query_terms),
+            query_vectors=query_vectors,
+        )
+
     @staticmethod
     def _log_background_exception(fut: Any) -> None:
         try:
@@ -1138,11 +1442,39 @@ class MemoryStore:
             logger.debug("memory background task skipped: {}", e)
 
     def _schedule_hit_stats_update(self, rows: list[dict[str, Any]]) -> None:
-        snapshot = [dict(r) for r in rows if r.get("key")]
-        if not snapshot:
+        self._ensure_hit_stats_state()
+        should_submit = False
+        with self._hit_stats_lock:
+            for row in rows:
+                key = str(row.get("key") or "")
+                if not key:
+                    continue
+                pending = self._pending_hit_updates.get(key)
+                hit_delta = int((pending or {}).get("_hit_delta", 0) or 0) + 1
+                merged = dict(pending or {})
+                merged.update(dict(row))
+                merged["key"] = key
+                merged["_hit_delta"] = hit_delta
+                self._pending_hit_updates[key] = merged
+            if not self._pending_hit_updates or self._hit_flush_inflight:
+                return
+            self._hit_flush_inflight = True
+            should_submit = True
+        if not should_submit:
             return
-        fut = self._MEMORY_BG_EXECUTOR.submit(self._update_hit_stats, snapshot)
+        fut = self._MEMORY_BG_EXECUTOR.submit(self._flush_pending_hit_stats)
         fut.add_done_callback(self._log_background_exception)
+
+    def _flush_pending_hit_stats(self) -> None:
+        self._ensure_hit_stats_state()
+        while True:
+            with self._hit_stats_lock:
+                if not self._pending_hit_updates:
+                    self._hit_flush_inflight = False
+                    return
+                batch = list(self._pending_hit_updates.values())
+                self._pending_hit_updates = {}
+            self._update_hit_stats(batch)
 
     def _vector_table_needs_rebuild(self, *, expected_dim: int) -> bool:
         if not self._vec_tbl:
@@ -1362,66 +1694,87 @@ class MemoryStore:
                     ]
                 )
             if changed:
+                self._invalidate_retrieval_index()
                 logger.info("🔀 长期记忆事实化 / migrated long-term memory to fact rows")
 
     def _update_hit_stats(self, rows: list[dict[str, Any]]) -> None:
         """Increment hit_count and update last_hit_at for retrieved rows (best-effort)."""
+        if not rows:
+            return
         now = datetime.now().isoformat()
         with self._store_lock:
-            for r in rows:
-                key = r.get("key")
-                if not key:
-                    continue
-                try:
+            try:
+                row_by_key = dict(self._get_retrieval_index()["row_by_key"])
+                missing_keys = [
+                    key
+                    for key in (str(r.get("key") or "") for r in rows)
+                    if key and key not in row_by_key
+                ]
+                if missing_keys:
+                    row_by_key.update(self._lookup_rows_by_keys(missing_keys))
+                updated_count = 0
+                for r in rows:
+                    key = str(r.get("key") or "")
+                    hit_delta = int(r.get("_hit_delta", 1) or 1)
+                    if not key or hit_delta <= 0:
+                        continue
+                    current = row_by_key.get(key)
+                    if not current:
+                        continue
                     key_safe = key.replace("'", "''")
-                    # Snapshot before delete so we can restore on add failure
-                    self._tbl.delete(f"key = '{key_safe}'")
-                    row = self._make_row(
-                        key=key,
-                        content=r.get("content", ""),
-                        type_=r.get("type", ""),
-                        category=r.get("category", ""),
-                        quality=r.get("quality", 0),
-                        uses=r.get("uses", 0),
-                        successes=r.get("successes", 0),
-                        outcome=r.get("outcome", ""),
-                        deprecated=r.get("deprecated", False),
-                        updated_at=r.get("updated_at", now),
-                        last_hit_at=now,
-                        hit_count=r.get("hit_count", 0) + 1,
-                    )
                     try:
-                        self._tbl.add([row])
-                    except Exception:
-                        # add failed after delete — restore original row to prevent data loss
+                        self._tbl.delete(f"key = '{key_safe}'")
+                        row = self._make_row(
+                            key=key,
+                            content=current.get("content", ""),
+                            type_=current.get("type", ""),
+                            category=current.get("category", ""),
+                            quality=current.get("quality", 0),
+                            uses=current.get("uses", 0),
+                            successes=current.get("successes", 0),
+                            outcome=current.get("outcome", ""),
+                            deprecated=current.get("deprecated", False),
+                            updated_at=current.get("updated_at", now),
+                            last_hit_at=now,
+                            hit_count=int(current.get("hit_count", 0) or 0) + hit_delta,
+                        )
                         try:
-                            self._tbl.add(
-                                [
-                                    self._make_row(
-                                        key=key,
-                                        content=r.get("content", ""),
-                                        type_=r.get("type", ""),
-                                        **{
-                                            k: r.get(k, v)
-                                            for k, v in {
-                                                "category": "",
-                                                "quality": 0,
-                                                "uses": 0,
-                                                "successes": 0,
-                                                "outcome": "",
-                                                "deprecated": False,
-                                                "updated_at": "",
-                                                "last_hit_at": "",
-                                                "hit_count": 0,
-                                            }.items()
-                                        },
-                                    )
-                                ]
-                            )
+                            self._tbl.add([row])
+                            self._patch_cached_retrieval_row(row)
+                            updated_count += 1
                         except Exception:
-                            logger.warning("⚠️ hit_stats: failed to restore row key={}", key)
-                except Exception as e:
-                    logger.debug("hit_stats update skipped for key={}: {}", key, e)
+                            try:
+                                self._tbl.add(
+                                    [
+                                        self._make_row(
+                                            key=key,
+                                            content=current.get("content", ""),
+                                            type_=current.get("type", ""),
+                                            **{
+                                                k: current.get(k, v)
+                                                for k, v in {
+                                                    "category": "",
+                                                    "quality": 0,
+                                                    "uses": 0,
+                                                    "successes": 0,
+                                                    "outcome": "",
+                                                    "deprecated": False,
+                                                    "updated_at": "",
+                                                    "last_hit_at": "",
+                                                    "hit_count": 0,
+                                                }.items()
+                                            },
+                                        )
+                                    ]
+                                )
+                            except Exception:
+                                logger.warning("⚠️ hit_stats: failed to restore row key={}", key)
+                    except Exception as e:
+                        logger.debug("hit_stats update skipped for key={}: {}", key, e)
+                if updated_count:
+                    logger.debug("memory hit stats updated for {} rows", updated_count)
+            except Exception as e:
+                logger.debug("hit_stats batch update skipped: {}", e)
 
     def _rerank_candidates(
         self,
@@ -1482,32 +1835,22 @@ class MemoryStore:
     def _enrich_for_rerank(self, vec_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Cross-reference vector results with main table to get columnar metadata for rerank."""
         try:
-            keys = [str(vr.get("key", "")) for vr in vec_rows if vr.get("key")]
-            with self._store_lock:
-                key_map: dict[str, dict[str, Any]] = {}
-                for key in keys:
-                    key_safe = key.replace("'", "''")
-                    rows = self._tbl.search().where(f"key = '{key_safe}'").limit(1).to_list()
-                    if rows:
-                        key_map[key] = rows[0]
-                needs_fallback = any(not vr.get("key") for vr in vec_rows)
-                main_rows = (
-                    self._tbl.search().where("type != '_init_'").limit(500).to_list()
-                    if needs_fallback
-                    else []
-                )
-            content_map: dict[tuple[str, str], dict[str, Any]] = {}
-            for r in main_rows:
-                c = r.get("content", "")
-                t = r.get("type", "")
-                if c:
-                    content_map[(c, t)] = r
+            index = self._get_retrieval_index()
+            key_map, content_map = self._resolve_index_rows(
+                index,
+                vec_rows=vec_rows,
+                content_map_key="row_by_content_type",
+            )
             enriched = []
             for vr in vec_rows:
-                key = vr.get("key", "")
-                vc = vr.get("content", "")
-                vt = vr.get("type", "")
+                key = str(vr.get("key", "") or "")
+                vc = str(vr.get("content", "") or "")
+                vt = str(vr.get("type", "") or "")
                 matched = key_map.get(key) if key else content_map.get((vc, vt))
+                if matched is None and not key:
+                    matched = self._lookup_row_by_content_type(vc, vt)
+                    if matched is not None:
+                        content_map[(vc, vt)] = matched
                 if matched:
                     merged = dict(matched)
                     if "_distance" in vr:
@@ -1581,6 +1924,7 @@ class MemoryStore:
                     for idx, fact in enumerate(facts, start=1)
                 ]
             )
+        self._invalidate_retrieval_index()
         return True
 
     def write_long_term(self, content: str, category: str = "general") -> None:
@@ -1611,6 +1955,7 @@ class MemoryStore:
                     )
                 ]
             )
+            self._invalidate_retrieval_index()
         self._embed_and_store(key=row_key, content=cleaned, type_="history")
 
     def _embed_long_term_aggregate(self) -> None:
@@ -1691,37 +2036,49 @@ class MemoryStore:
         type_filter: str | None = None,
         limit: int = 5,
         exclude_types: list[str] | None = None,
+        query_terms: tuple[str, ...] | None = None,
     ) -> list[dict[str, Any]]:
-        with self._store_lock:
-            try:
-                if type_filter:
-                    where = f"type = '{type_filter}'"
-                elif exclude_types:
-                    quoted = ", ".join(f"'{t}'" for t in exclude_types)
-                    where = f"type NOT IN ({quoted})"
-                else:
-                    where = "type != '_init_'"
-                if not (rows := self._tbl.search().where(where).limit(100).to_list()):
-                    return []
-
-                ranked = self._bm25_rank(query, rows)
-                if ranked:
-                    out: list[dict[str, Any]] = []
-                    for score, row in ranked[:limit]:
-                        if not row.get("content"):
-                            continue
-                        item = dict(row)
-                        item["_text_score"] = score
-                        out.append(item)
-                    return out
-
-                return [dict(r) for r in rows[:limit] if r.get("content")]
-            except Exception as e:
-                logger.warning("⚠️ 文本回退失败 / text fallback failed: {}", e)
+        try:
+            index = self._get_retrieval_index()
+            rows = self._retrieval_rows(
+                index,
+                type_filter=type_filter,
+                exclude_types=exclude_types,
+                limit=100,
+            )
+            if not rows:
                 return []
 
-    def search_memory(self, query: str, limit: int = 5) -> list[str]:
-        return self._recall().search_memory(query, limit=limit)
+            ranked_terms = list(query_terms) if query_terms is not None else self._tokenize(query)
+            ranked = self._bm25_rank(
+                query,
+                rows,
+                query_terms=ranked_terms,
+                doc_tokens=[self._row_tokens_from_index(row, index) for row in rows],
+            )
+            if ranked:
+                out: list[dict[str, Any]] = []
+                for score, row in ranked[:limit]:
+                    if not row.get("content"):
+                        continue
+                    item = dict(row)
+                    item["_text_score"] = score
+                    out.append(item)
+                return out
+
+            return [dict(r) for r in rows[:limit] if r.get("content")]
+        except Exception as e:
+            logger.warning("⚠️ 文本回退失败 / text fallback failed: {}", e)
+            return []
+
+    def search_memory(
+        self,
+        query: str,
+        limit: int = 5,
+        *,
+        query_context: _RecallQueryContext | None = None,
+    ) -> list[str]:
+        return self._recall().search_memory(query, limit=limit, query_context=query_context)
 
     # ── Experience (columnar) ──
     def append_experience(
@@ -1749,8 +2106,18 @@ class MemoryStore:
         successes = row.get("successes", 0)
         return (successes + 1) / (uses + 2)  # Laplace smoothing
 
-    def search_experience(self, query: str, limit: int = 3) -> list[str]:
-        return self._experience().search_experience(query, limit=limit)
+    def search_experience(
+        self,
+        query: str,
+        limit: int = 3,
+        *,
+        query_context: _RecallQueryContext | None = None,
+    ) -> list[str]:
+        return self._experience().search_experience(
+            query,
+            limit=limit,
+            query_context=query_context,
+        )
 
     @staticmethod
     def _experience_preview(task: str, lessons: str) -> str:
@@ -1822,16 +2189,13 @@ class MemoryStore:
 
     def _fetch_experience_candidates(
         self,
-        query: str,
+        query_context: _RecallQueryContext,
         fetch: int,
-        *,
-        query_vectors: list[list[float]] | None = None,
     ) -> list[dict[str, Any]]:
         """Fetch experience candidates via vector or BM25 fallback."""
-        if self._embed_fn and self._vec_tbl:
+        if self._embed_fn and self._vec_tbl and query_context.query_vectors:
             try:
-                vectors = query_vectors if query_vectors is not None else self._compute_query_embeddings(query)
-                vec = vectors[0] if vectors else None
+                vec = query_context.query_vectors[0] if query_context.query_vectors else None
                 if not isinstance(vec, Sized) or len(vec) == 0:
                     raise ValueError("query embedding returned empty vector")
                 with self._store_lock:
@@ -1847,10 +2211,12 @@ class MemoryStore:
             except Exception as e:
                 logger.warning("⚠️ 经验检索失败 / experience search failed: {}", e)
         try:
-            with self._store_lock:
-                rows = self._tbl.search().where("type = 'experience'").limit(100).to_list()
-            ranked = self._bm25_rank(query, rows)
-            return [r for _, r in ranked] if ranked else rows
+            return self._fallback_text_candidates(
+                query_context.query,
+                type_filter="experience",
+                limit=fetch,
+                query_terms=query_context.query_terms,
+            )
         except Exception as e:
             logger.warning("⚠️ 回退检索失败 / fallback search failed: {}", e)
             return []
@@ -1858,37 +2224,27 @@ class MemoryStore:
     def _enrich_vector_results(self, vec_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Cross-reference vector results with main table to get columnar metadata."""
         try:
-            keys = [str(vr.get("key", "")) for vr in vec_rows if vr.get("key")]
-            key_map: dict[str, dict[str, Any]] = {}
-            with self._store_lock:
-                for key in keys:
-                    key_safe = key.replace("'", "''")
-                    rows = (
-                        self._tbl.search()
-                        .where(f"type = 'experience' AND key = '{key_safe}'")
-                        .limit(1)
-                        .to_list()
-                    )
-                    if rows:
-                        key_map[key] = rows[0]
-                needs_fallback = any(not vr.get("key") for vr in vec_rows)
-                main_rows = (
-                    self._tbl.search().where("type = 'experience'").limit(500).to_list()
-                    if needs_fallback
-                    else []
-                )
-            content_map: dict[str, dict[str, Any]] = {}
-            for r in main_rows:
-                c = r.get("content", "")
-                if c:
-                    content_map[c] = r
+            index = self._get_retrieval_index()
+            key_map, content_map = self._resolve_index_rows(
+                index,
+                vec_rows=vec_rows,
+                content_map_key="experience_by_content",
+                type_filter="experience",
+            )
             enriched = []
             for vr in vec_rows:
-                key = vr.get("key", "")
-                vc = vr.get("content", "")
+                key = str(vr.get("key", "") or "")
+                vc = str(vr.get("content", "") or "")
                 matched = key_map.get(key) if key else content_map.get(vc)
+                if matched is None and not key:
+                    matched = self._lookup_row_by_content_type(vc, "experience")
+                    if matched is not None:
+                        content_map[vc] = matched
                 if matched:
-                    enriched.append(matched)
+                    merged = dict(matched)
+                    if "_distance" in vr:
+                        merged["_distance"] = vr["_distance"]
+                    enriched.append(merged)
             return enriched
         except Exception:
             return []
@@ -1947,6 +2303,7 @@ class MemoryStore:
             )
             row.update(updates)
             self._tbl.add([row])
+            self._invalidate_retrieval_index()
 
     def _match_experience_rows(self, task_desc: str, threshold: float) -> list[dict[str, Any]]:
         """Find experience rows matching task description by keyword overlap."""
@@ -2084,13 +2441,23 @@ class MemoryStore:
 
     @staticmethod
     def _bm25_rank(
-        query: str, docs: list[dict[str, Any]], *, k1: float = 1.2, b: float = 0.75
+        query: str,
+        docs: list[dict[str, Any]],
+        *,
+        k1: float = 1.2,
+        b: float = 0.75,
+        query_terms: list[str] | None = None,
+        doc_tokens: list[list[str] | tuple[str, ...]] | None = None,
     ) -> list[tuple[float, dict[str, Any]]]:
         """Rank documents by BM25 score. Returns (score, row) pairs sorted desc."""
-        query_terms = MemoryStore._tokenize(query)
+        query_terms = query_terms if query_terms is not None else MemoryStore._tokenize(query)
         if not query_terms or not docs:
             return []
-        doc_tokens = [MemoryStore._tokenize(d.get("content") or "") for d in docs]
+        doc_tokens = (
+            doc_tokens
+            if doc_tokens is not None
+            else [MemoryStore._tokenize(d.get("content") or "") for d in docs]
+        )
         total_len = sum(len(t) for t in doc_tokens)
         avgdl = total_len / len(doc_tokens) if doc_tokens else 1.0
         n_docs = len(docs)
@@ -2136,23 +2503,16 @@ class MemoryStore:
     def _collect_long_term_parts(
         self, *, query_tokens: set[str] | None = None
     ) -> list[tuple[str, str]]:
-        with self._store_lock:
-            rows = self._read_long_term_rows_locked()
-        facts_by_category: dict[str, list[str]] = {category: [] for category in MEMORY_CATEGORIES}
-        for row in rows:
-            category = str(row.get("category") or "general")
-            content = str(row.get("content", "")).strip()
-            if category in facts_by_category and content:
-                facts_by_category[category].append(content)
-        parts: list[tuple[str, str]] = []
-        for cat in MEMORY_CATEGORIES:
-            content = self._join_memory_facts(facts_by_category.get(cat, []))
-            if not content:
-                continue
-            if query_tokens is not None and not (query_tokens & set(self._tokenize(content))):
-                continue
-            parts.append((cat, content))
-        return parts
+        index = self._get_retrieval_index()
+        parts = list(index["long_term_parts"])
+        if query_tokens is None:
+            return parts
+        tokens_by_category = index["long_term_tokens_by_category"]
+        return [
+            (category, content)
+            for category, content in parts
+            if query_tokens & tokens_by_category.get(category, set())
+        ]
 
     @staticmethod
     def _format_long_term_parts(parts: list[tuple[str, str]], max_chars: int | None = None) -> str:
@@ -2194,8 +2554,18 @@ class MemoryStore:
     def get_memory_context(self, max_chars: int | None = None) -> str:
         return self._long_term().get_memory_context(max_chars=max_chars)
 
-    def get_relevant_memory_context(self, query: str, max_chars: int | None = None) -> str:
-        return self._long_term().get_relevant_memory_context(query, max_chars=max_chars)
+    def get_relevant_memory_context(
+        self,
+        query: str,
+        max_chars: int | None = None,
+        *,
+        query_context: _RecallQueryContext | None = None,
+    ) -> str:
+        return self._long_term().get_relevant_memory_context(
+            query,
+            max_chars=max_chars,
+            query_context=query_context,
+        )
 
     # ── Explicit memory operations (for tools) ──
 
@@ -2215,10 +2585,12 @@ class MemoryStore:
         related_limit: int = 5,
         experience_limit: int = 3,
         long_term_chars: int | None = None,
+        include_long_term: bool = True,
     ) -> RecallBundle:
         return self._recall().recall(
             query,
             related_limit=related_limit,
             experience_limit=experience_limit,
             long_term_chars=long_term_chars,
+            include_long_term=include_long_term,
         )
