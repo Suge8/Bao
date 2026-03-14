@@ -6,7 +6,7 @@ Bao Desktop 是项目的主入口交付形态。大多数用户会直接从 GitH
 
 当前默认发布使用 **PyInstaller onedir** 打包 Python + PySide6 应用，通过 GitHub Actions 自动构建双平台安装包。**Nuitka** 保留为备用方案，用于需要更激进二进制优化时再启用。
 
-浏览器自动化发行也已收口为单一路径：桌面版只使用 `app/resources/runtime/browser/` 下的托管 runtime，不再依赖用户本机 PATH、Playwright 或另一套浏览器桥接。源码仓库只保留 manifest、README 和更新脚本，不直接提交生成后的 browser bundle / `agent-browser` home；开发期刷新官方最新版时，直接运行 `app/scripts/update_agent_browser_runtime.py`，它会在本地资源目录里刷新当前宿主平台的 browser bundle，并同步 vendored `agent-browser` home（含 daemon 资产）与平台二进制。若你有一份预制 runtime，也可以用 `app/scripts/sync_browser_runtime.py --source <dir>` 同步进资源目录。构建前统一由 `app/scripts/verify_browser_runtime.py --require-ready` 做真实 smoke 硬校验；正式 Desktop Release / CI Lite workflow 也会在各平台 runner 上先 provision Node 20、刷新 runtime，再以 ready 硬门禁继续打包。最终 Release 产物仍内置这套 runtime，终端用户安装后无需再额外下载浏览器自动化依赖。
+浏览器自动化发行也已收口为单一路径：桌面版只使用 `app/resources/runtime/browser/` 下的托管 runtime，不再依赖用户本机 PATH、Playwright 或另一套浏览器桥接。源码仓库只保留 manifest、README 和更新脚本，不直接提交生成后的 browser bundle / `agent-browser` home；开发期刷新官方最新版时，直接运行 `app/scripts/update_agent_browser_runtime.py`，它会在本地资源目录里刷新当前宿主平台的 browser bundle，并同步 vendored `agent-browser` home（含 daemon 资产）与平台二进制。若你有一份预制 runtime，也可以用 `app/scripts/sync_browser_runtime.py --source <dir>` 同步进资源目录。构建前统一由 `app/scripts/verify_browser_runtime.py --require-ready` 做结构 ready 硬校验；若需要真实浏览器拉起验证，再显式加 `--smoke`。PyInstaller 主链会先 stage 通用 `app/resources`，构建完成后再把托管 browser runtime 注入最终产物，避免把嵌套浏览器 bundle 直接交给 PyInstaller 解析。最终 Release 产物仍内置这套 runtime，终端用户安装后无需再额外下载浏览器自动化依赖。
 
 ### 分发策略（Strategy B — 分架构）
 
@@ -189,7 +189,7 @@ git push origin v0.1.4
 
 `.github/workflows/desktop-release.yml` 会在 macOS 14 (arm64)、macOS 15 Intel (x86_64)、GitHub-hosted Windows runner 上分别构建，并在成功后直接创建正式 Release 附带所有安装包；其中 macOS 额外产出 `*-update.zip` 供桌面端应用内更新使用。也支持手动触发 `workflow_dispatch`，并要求显式传入现有 tag（如 `v0.3.11`）用于“同版本重建”。手动重建时，workflow 会把**目标 release tag** 与**当前所选分支源码**分离：release 仍指向你填写的旧 tag，但构建使用的是你手动触发时选择的分支快照，因此修复过的 workflow / 打包脚本可以直接用于重建，不需要重新推 tag；前提是该分支里的版本号仍与目标 tag 一致。为避免单一矩阵失败直接中断其他构建，release workflow 显式设置了 `strategy.fail-fast: false`，并加入了 uv 缓存与 artifact 保留期配置；macOS 侧默认用 PyInstaller 构建 `.app`，共用封装脚本默认优先选 PyInstaller 产物，仅在主链产物不存在时回退到备用 Nuitka 路径；Windows 侧继续保留独立 preflight job，会在长时间构建开始前先解析 Inno Setup 编译器并验证 `Default.isl` 是否可用，而安装器脚本默认也优先选择 `dist-pyinstaller\dist\Bao`，只在显式传参或主链缺失时使用 Nuitka 输出；简体中文语言文件直接使用仓库内自带资源，避免不同 runner 的 Inno Setup 安装内容差异把失败拖到整轮构建末尾才暴露；同时对 `.dmg` / `.zip` / `.exe` 这类已压缩产物关闭 artifact 二次压缩，减少 CPU 与上传时间。
 
-现在本地 PyInstaller 打包脚本和正式 CI 都默认把 browser runtime 当作当前平台硬门禁：`verify_browser_runtime.py --require-ready` 不通过就直接失败。推荐做法是：在哪个平台发包，就先在该平台运行一次 `update_agent_browser_runtime.py`，把该平台的 browser bundle 刷进资源目录，再继续打包。
+现在本地 PyInstaller 打包脚本和正式 CI 都默认把 browser runtime 当作当前平台硬门禁：`verify_browser_runtime.py --require-ready` 不通过就直接失败。需要浏览器真实拉起验证时，再显式运行 `verify_browser_runtime.py --require-ready --smoke`。推荐做法是：在哪个平台发包，就先在该平台运行一次 `update_agent_browser_runtime.py`，把该平台的 browser bundle 刷进资源目录，再继续打包。
 
 `.github/workflows/desktop-update-feed.yml` 会在 Release `published` 后运行：下载 update 资产、计算 SHA-256、生成 `desktop-update.json`，再部署到 GitHub Pages。由于桌面 release 现在默认直接发布正式 Release，tag 推送成功后会自动推进到 feed 更新，无需再手动点击 Publish Release。
 

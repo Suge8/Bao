@@ -25,6 +25,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Fail when the managed browser runtime is not ready.",
     )
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Run a browser smoke test after the runtime is structurally ready.",
+    )
     return parser.parse_args()
 
 
@@ -44,7 +49,14 @@ def main() -> int:
             os.environ["BAO_BROWSER_RUNTIME_ROOT"] = previous_override
 
     require_ready = args.require_ready or os.environ.get("BAO_DESKTOP_REQUIRE_BROWSER_RUNTIME") == "1"
+    require_smoke = args.smoke or os.environ.get("BAO_DESKTOP_BROWSER_RUNTIME_SMOKE") == "1"
     if state.available:
+        if not require_smoke:
+            print(f"[ok] Managed browser runtime ready: {runtime_root}")
+            print(f"      agent-browser home: {state.agent_browser_home_path}")
+            print(f"      agent-browser:      {state.agent_browser_path}")
+            print(f"      browser:            {state.browser_executable_path}")
+            return 0
         service = BrowserAutomationService(workspace=PROJECT_ROOT)
         smoke_error = asyncio.run(service.smoke_test())
         if smoke_error is None:
@@ -52,6 +64,7 @@ def main() -> int:
             print(f"      agent-browser home: {state.agent_browser_home_path}")
             print(f"      agent-browser:      {state.agent_browser_path}")
             print(f"      browser:            {state.browser_executable_path}")
+            print("      smoke:              passed")
             return 0
         level = "error" if require_ready else "warn"
         print(f"[{level}] Managed browser runtime failed smoke test: {runtime_root}")
