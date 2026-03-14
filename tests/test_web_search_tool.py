@@ -6,6 +6,8 @@ import httpx
 
 from bao.agent.tools import web as web_module
 from bao.agent.tools.web import WebFetchTool, WebSearchTool
+from bao.config.paths import set_runtime_config_path
+from tests.browser_runtime_fixture import write_fake_browser_runtime
 
 
 class _FakeResponse:
@@ -187,11 +189,13 @@ def test_web_fetch_rejects_non_integer_max_chars() -> None:
 
 
 def test_web_fetch_falls_back_to_agent_browser_on_block(monkeypatch, tmp_path) -> None:
+    runtime_root = write_fake_browser_runtime(tmp_path)
+    monkeypatch.setenv("BAO_BROWSER_RUNTIME_ROOT", str(runtime_root))
+    set_runtime_config_path(tmp_path / "config.jsonc")
     response = _FetchResponse(text="<html><title>Just a moment...</title></html>")
     monkeypatch.setattr(
         "bao.agent.tools.web._make_async_client", lambda *args, **kwargs: _FetchClient(response)
     )
-    monkeypatch.setattr("bao.agent.tools.web.agent_browser_available", lambda: True)
 
     async def fake_fetch_html(self, url: str, *, wait_ms: int = 1500, session: str | None = None):
         del self, wait_ms, session
@@ -200,12 +204,15 @@ def test_web_fetch_falls_back_to_agent_browser_on_block(monkeypatch, tmp_path) -
             "final_url": url,
         }
 
-    monkeypatch.setattr(
-        "bao.agent.tools.agent_browser.AgentBrowserRunner.fetch_html", fake_fetch_html
-    )
-    out = asyncio.run(
-        WebFetchTool(workspace=tmp_path, allowed_dir=tmp_path).execute(url="https://example.com")
-    )
+    monkeypatch.setattr("bao.browser.runtime.BrowserAutomationService.fetch_html", fake_fetch_html)
+    try:
+        out = asyncio.run(
+            WebFetchTool(workspace=tmp_path, allowed_dir=tmp_path).execute(
+                url="https://example.com"
+            )
+        )
+    finally:
+        set_runtime_config_path(None)
     payload = json.loads(out)
     assert payload["backend"] == "agent-browser"
     assert payload["fallbackUsed"] is True
@@ -214,6 +221,9 @@ def test_web_fetch_falls_back_to_agent_browser_on_block(monkeypatch, tmp_path) -
 
 
 def test_web_fetch_reports_browser_fallback_failure(monkeypatch, tmp_path) -> None:
+    runtime_root = write_fake_browser_runtime(tmp_path)
+    monkeypatch.setenv("BAO_BROWSER_RUNTIME_ROOT", str(runtime_root))
+    set_runtime_config_path(tmp_path / "config.jsonc")
     request = httpx.Request("GET", "https://example.com")
     response = httpx.Response(403, request=request, text="forbidden")
 
@@ -232,18 +242,20 @@ def test_web_fetch_reports_browser_fallback_failure(monkeypatch, tmp_path) -> No
     monkeypatch.setattr(
         "bao.agent.tools.web._make_async_client", lambda *args, **kwargs: _StatusClient()
     )
-    monkeypatch.setattr("bao.agent.tools.web.agent_browser_available", lambda: True)
 
     async def fake_fetch_html(self, url: str, *, wait_ms: int = 1500, session: str | None = None):
         del self, url, wait_ms, session
         return {"error": "Error: browser failed"}
 
-    monkeypatch.setattr(
-        "bao.agent.tools.agent_browser.AgentBrowserRunner.fetch_html", fake_fetch_html
-    )
-    out = asyncio.run(
-        WebFetchTool(workspace=tmp_path, allowed_dir=tmp_path).execute(url="https://example.com")
-    )
+    monkeypatch.setattr("bao.browser.runtime.BrowserAutomationService.fetch_html", fake_fetch_html)
+    try:
+        out = asyncio.run(
+            WebFetchTool(workspace=tmp_path, allowed_dir=tmp_path).execute(
+                url="https://example.com"
+            )
+        )
+    finally:
+        set_runtime_config_path(None)
     payload = json.loads(out)
     assert payload["error"].startswith("HTTP fetch failed and browser fallback also failed")
 

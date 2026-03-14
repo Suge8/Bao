@@ -1,0 +1,10 @@
+{
+  "source": "agent-browser",
+  "version": "0.19.0",
+  "platforms": {
+    "darwin-arm64": {
+      "agentBrowserPath": "platforms/darwin-arm64/bin/agent-browser",
+      "browserExecutablePath": "platforms/darwin-arm64/browser/chromium-1208/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+    }
+  }
+}

@@ -1,7 +1,7 @@
 ---
 name: agent-browser
 description: Use for browser automation, screenshots, form filling, web testing, or scraping.
-metadata: {"bao":{"emoji":"🌐","requires":{"bins":["agent-browser"]}}}
+metadata: {"bao":{"emoji":"🌐"}}
 allowed-tools: Bash(agent-browser:*)
 ---
 
@@ -13,14 +13,13 @@ If `agent_browser` is present in `## Available Now`, use that tool instead of co
 
 Use this skill to understand the workflow and command vocabulary behind the tool, or to debug the underlying CLI behavior when needed.
 
-## Prerequisite
+## Runtime
 
-This skill requires the external `agent-browser` CLI to be installed and available on `PATH`.
+Bao desktop builds should prefer the bundled managed browser runtime.
 
-If the CLI is missing:
-- Do not pretend browser automation is available.
-- Tell the user that this workflow depends on the `agent-browser` CLI.
-- Ask the user to install it using the installation method appropriate for their environment, then retry.
+Source / CLI environments can still use this workflow, but they must provide a browser runtime explicitly
+for Bao to call. The recommended testing path is to point `BAO_BROWSER_RUNTIME_ROOT` at a prepared runtime
+directory instead of assuming a global `agent-browser` binary on `PATH`.
 
 ## Quick start
 

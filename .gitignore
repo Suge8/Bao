@@ -36,6 +36,10 @@ docs/*
 # Runtime workspace (template is bao/templates/workspace/)
 /workspace/
 
+# Generated managed browser runtime payloads
+app/resources/runtime/browser/node_modules/
+app/resources/runtime/browser/platforms/
+
 # Skill lock (opencode artifact)
 skills-lock.json
 

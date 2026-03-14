@@ -22,6 +22,24 @@ where uv >nul 2>nul || (echo [ERROR] uv not installed. Install uv first: https:/
 uv run python -c "import PyInstaller" 2>nul || (echo [ERROR] PyInstaller not installed. Run: uv sync --extra desktop-build-pyinstaller & exit /b 1)
 uv run python -c "import PySide6" 2>nul || (echo [ERROR] PySide6 not installed. Run: uv sync --extra desktop-build-pyinstaller & exit /b 1)
 
+if defined BAO_BROWSER_RUNTIME_SOURCE_DIR (
+    echo [INFO] Syncing managed browser runtime from %BAO_BROWSER_RUNTIME_SOURCE_DIR% ...
+    uv run python app\scripts\sync_browser_runtime.py --source "%BAO_BROWSER_RUNTIME_SOURCE_DIR%"
+    if errorlevel 1 (
+        echo [ERROR] Failed to sync managed browser runtime.
+        popd
+        exit /b 1
+    )
+)
+
+echo [INFO] Verifying managed browser runtime ...
+uv run python app\scripts\verify_browser_runtime.py --require-ready
+if errorlevel 1 (
+    echo [ERROR] Managed browser runtime verification failed.
+    popd
+    exit /b 1
+)
+
 if exist "%WORK_DIR%" rmdir /s /q "%WORK_DIR%"
 if exist "%SPEC_DIR%" rmdir /s /q "%SPEC_DIR%"
 if exist "%DIST_DIR%\%APP_NAME%" rmdir /s /q "%DIST_DIR%\%APP_NAME%"

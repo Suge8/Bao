@@ -82,6 +82,14 @@ uv run python -c "import PySide6" 2>/dev/null || {
     exit 1
 }
 
+if [[ -n "${BAO_BROWSER_RUNTIME_SOURCE_DIR:-}" ]]; then
+    echo "▸ Syncing managed browser runtime from $BAO_BROWSER_RUNTIME_SOURCE_DIR ..."
+    uv run python app/scripts/sync_browser_runtime.py --source "$BAO_BROWSER_RUNTIME_SOURCE_DIR"
+fi
+
+echo "▸ Verifying managed browser runtime ..."
+uv run python app/scripts/verify_browser_runtime.py --require-ready
+
 echo "▸ Cleaning previous PyInstaller build..."
 rm -rf "$WORK_DIR" "$SPEC_DIR" "$OUTPUT_APP"
 mkdir -p "$DIST_DIR" "$WORK_DIR" "$SPEC_DIR"

@@ -46,23 +46,31 @@ dependencies = [
     "json-repair>=0.57.0,<1.0.0",
     "lancedb>=0.20.0,<0.26.0",
     "pillow>=10.0.0",
-    "mss>=9.0.0",
-    "pyautogui>=0.9.54",
     "pillow-heif>=0.18.0",
 ]
 
 [project.optional-dependencies]
 desktop = [
     "PySide6-Essentials>=6.7.0,<7.0.0",
+    "mss>=9.0.0",
+    "pyautogui>=0.9.54",
+]
+desktop-automation = [
+    "mss>=9.0.0",
+    "pyautogui>=0.9.54",
 ]
 desktop-build = [
     "PySide6-Essentials>=6.7.0,<7.0.0",
+    "mss>=9.0.0",
+    "pyautogui>=0.9.54",
     "nuitka>=4.0.2,<5.0.0",
     "ordered-set>=4.1.0",
     "zstandard>=0.25.0",
 ]
 desktop-build-pyinstaller = [
     "PySide6-Essentials>=6.7.0,<7.0.0",
+    "mss>=9.0.0",
+    "pyautogui>=0.9.54",
     "pyinstaller>=6.19.0,<7.0.0",
 ]
 dev = [

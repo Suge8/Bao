@@ -11,8 +11,8 @@ from urllib.parse import urlparse
 import httpx
 from loguru import logger
 
-from bao.agent.tools.agent_browser import AgentBrowserRunner, agent_browser_available
 from bao.agent.tools.base import Tool
+from bao.browser import BrowserAutomationService
 from bao.config.schema import WebSearchConfig
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"
@@ -480,19 +480,24 @@ class WebFetchTool(Tool):
         proxy: str | None = None,
         *,
         workspace: Path | None = None,
+        browser_enabled: bool = True,
         allowed_dir: Path | None = None,
     ):
         self.max_chars = max_chars
         self.proxy = (proxy or "").strip() or None
-        self._browser_runner = (
-            AgentBrowserRunner(workspace=workspace, allowed_dir=allowed_dir)
+        self._browser_service = (
+            BrowserAutomationService(
+                workspace=workspace,
+                enabled=browser_enabled,
+                allowed_dir=allowed_dir,
+            )
             if workspace is not None
             else None
         )
 
     def set_context(self, channel: str, chat_id: str, session_key: str | None = None) -> None:
-        if self._browser_runner is not None:
-            self._browser_runner.set_context(channel, chat_id, session_key)
+        if self._browser_service is not None:
+            self._browser_service.set_context(channel, chat_id, session_key)
 
     async def execute(self, **kwargs: Any) -> str:
         from readability import Document
@@ -722,7 +727,7 @@ class WebFetchTool(Tool):
         extracted_text: str,
         error_text: str = "",
     ) -> str | None:
-        if not self._browser_runner or not agent_browser_available():
+        if self._browser_service is None or not self._browser_service.available:
             return None
         if isinstance(status, int) and status in _BROWSER_BLOCK_STATUSES:
             return f"status_{status}"
@@ -745,10 +750,10 @@ class WebFetchTool(Tool):
         max_chars: int,
         fallback_reason: str | None,
     ) -> dict[str, Any] | None:
-        if self._browser_runner is None or fallback_reason is None:
+        if self._browser_service is None or fallback_reason is None:
             return None
         logger.info("WebFetch fallback via agent-browser for {} ({})", masked_url, fallback_reason)
-        fetched = await self._browser_runner.fetch_html(url, session=None)
+        fetched = await self._browser_service.fetch_html(url, session=None)
         if error := fetched.get("error"):
             return {
                 "error": f"HTTP fetch failed and browser fallback also failed: {error}",

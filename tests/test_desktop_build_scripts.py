@@ -20,6 +20,8 @@ def test_workspace_template_directories_exist() -> None:
     assert (PROJECT_ROOT / "bao/templates/workspace/zh/PERSONA.md").is_file()
     assert (PROJECT_ROOT / "bao/templates/workspace/zh/HEARTBEAT.md").is_file()
     assert (PROJECT_ROOT / "app/resources/installer/ChineseSimplified.isl").is_file()
+    assert (PROJECT_ROOT / "app/resources/runtime/browser/README.md").is_file()
+    assert (PROJECT_ROOT / "app/resources/runtime/browser/runtime.json").is_file()
 
 
 def test_build_mac_script_includes_workspace_package_data() -> None:
@@ -55,6 +57,9 @@ def test_build_mac_pyinstaller_script_includes_desktop_resources() -> None:
     assert '--add-data "$PROJECT_ROOT/assets:assets"' in text
     assert '--add-data "$PROJECT_ROOT/bao/skills:bao/skills"' in text
     assert '--add-data "$PROJECT_ROOT/bao/templates/workspace:bao/templates/workspace"' in text
+    assert "uv run python app/scripts/update_agent_browser_runtime.py" not in text
+    assert 'app/scripts/sync_browser_runtime.py --source "$BAO_BROWSER_RUNTIME_SOURCE_DIR"' in text
+    assert "uv run python app/scripts/verify_browser_runtime.py --require-ready" in text
     assert "--collect-submodules bao.channels" in text
     assert "--collect-submodules bao.providers" in text
     assert '--osx-bundle-identifier "$BUNDLE_IDENTIFIER"' in text
@@ -87,6 +92,9 @@ def test_desktop_packaging_doc_covers_mac_imessage_permissions() -> None:
     assert "NSAppleEventsUsageDescription" in text
     assert "Full Disk Access" in text
     assert "Privacy & Security > Automation" in text
+    assert "update_agent_browser_runtime.py" in text
+    assert "verify_browser_runtime.py" in text
+    assert "sync_browser_runtime.py" in text
 
 
 def test_build_win_pyinstaller_script_includes_desktop_resources() -> None:
@@ -98,6 +106,9 @@ def test_build_win_pyinstaller_script_includes_desktop_resources() -> None:
     assert (
         '--add-data "%PROJECT_ROOT%\\bao\\templates\\workspace;bao\\templates\\workspace"' in text
     )
+    assert "app\\scripts\\update_agent_browser_runtime.py" not in text
+    assert 'app\\scripts\\sync_browser_runtime.py --source "%BAO_BROWSER_RUNTIME_SOURCE_DIR%"' in text
+    assert "uv run python app\\scripts\\verify_browser_runtime.py --require-ready" in text
     assert "--collect-submodules bao.channels" in text
     assert "--collect-submodules bao.providers" in text
 
@@ -273,6 +284,11 @@ def test_desktop_release_workflow_uses_pyinstaller_as_primary_packager() -> None
         "  preflight-windows-installer:", maxsplit=1
     )[0]
     assert "desktop-build-pyinstaller" in build_mac_section
+    assert "BAO_DESKTOP_REQUIRE_BROWSER_RUNTIME: '1'" in build_mac_section
+    assert "uses: actions/setup-node@v4" in build_mac_section
+    assert "node-version: '20'" in build_mac_section
+    assert "Refresh managed browser runtime" in build_mac_section
+    assert "uv run python app/scripts/update_agent_browser_runtime.py" in build_mac_section
     assert "build_mac_pyinstaller.sh" in build_mac_section
     assert "create_dmg.sh --arch ${{ matrix.arch }} --app-path" in build_mac_section
     assert "create_update_zip.sh --arch ${{ matrix.arch }} --app-path" in build_mac_section
@@ -313,6 +329,11 @@ def test_desktop_release_workflow_checks_inno_setup_before_windows_build() -> No
     assert "Validate Inno Setup toolchain early" in text
     assert "BAO_ISCC_EXE=$resolved" in text
     assert "choco install innosetup --version=${{ env.INNOSETUP_VERSION }} -y" in text
+    assert "uses: actions/setup-node@v4" in text
+    assert "node-version: '20'" in text
+    assert "Refresh managed browser runtime" in text
+    assert "uv run python app/scripts/update_agent_browser_runtime.py" in text
+    assert "BAO_DESKTOP_REQUIRE_BROWSER_RUNTIME: '1'" in text
     assert "BAO_DESKTOP_REQUIRE_PRIMARY: '1'" in text
     assert (
         "package_win_installer.bat --require-primary --build-root dist-pyinstaller\\dist\\Bao"
@@ -324,6 +345,13 @@ def test_desktop_ci_lite_uses_pyinstaller_build_dependencies() -> None:
     text = _read(".github/workflows/desktop-ci-lite.yml")
 
     assert "desktop-build-pyinstaller" in text
+    assert "BAO_DESKTOP_REQUIRE_BROWSER_RUNTIME: '1'" in text
+    assert "uses: actions/setup-node@v4" in text
+    assert "node-version: '20'" in text
+    assert "Refresh managed browser runtime" in text
+    assert "uv run python app/scripts/update_agent_browser_runtime.py" in text
+    assert "Verify managed browser runtime" in text
+    assert "verify_browser_runtime.py --require-ready" in text
     assert "build_mac_pyinstaller.sh" in text
     assert "build_win_pyinstaller.bat" in text
     assert "Ensure Inno Setup" in text
@@ -343,6 +371,9 @@ def test_app_readme_documents_pyinstaller_default_scripts() -> None:
 
     assert "build_mac_pyinstaller.sh" in text
     assert "build_win_pyinstaller.bat" in text
+    assert "update_agent_browser_runtime.py" in text
+    assert "sync_browser_runtime.py" in text
+    assert "verify_browser_runtime.py" in text
     assert "# macOS 默认构建（PyInstaller）" in text
     assert "# Windows 默认构建（PyInstaller）" in text
     assert "# macOS 备用构建（Nuitka）" in text

@@ -226,13 +226,11 @@ dependencies = [
     { name = "loguru" },
     { name = "mcp" },
     { name = "msgpack" },
-    { name = "mss" },
     { name = "oauth-cli-kit" },
     { name = "openai" },
     { name = "pillow" },
     { name = "pillow-heif" },
     { name = "prompt-toolkit" },
-    { name = "pyautogui" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "python-socketio" },
@@ -251,15 +249,25 @@ dependencies = [
 
 [package.optional-dependencies]
 desktop = [
+    { name = "mss" },
+    { name = "pyautogui" },
     { name = "pyside6-essentials" },
 ]
+desktop-automation = [
+    { name = "mss" },
+    { name = "pyautogui" },
+]
 desktop-build = [
+    { name = "mss" },
     { name = "nuitka" },
     { name = "ordered-set" },
+    { name = "pyautogui" },
     { name = "pyside6-essentials" },
     { name = "zstandard" },
 ]
 desktop-build-pyinstaller = [
+    { name = "mss" },
+    { name = "pyautogui" },
     { name = "pyinstaller" },
     { name = "pyside6-essentials" },
 ]
@@ -282,7 +290,10 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3,<1.0.0" },
     { name = "mcp", specifier = ">=1.26.0,<2.0.0" },
     { name = "msgpack", specifier = ">=1.1.0,<2.0.0" },
-    { name = "mss", specifier = ">=9.0.0" },
+    { name = "mss", marker = "extra == 'desktop'", specifier = ">=9.0.0" },
+    { name = "mss", marker = "extra == 'desktop-automation'", specifier = ">=9.0.0" },
+    { name = "mss", marker = "extra == 'desktop-build'", specifier = ">=9.0.0" },
+    { name = "mss", marker = "extra == 'desktop-build-pyinstaller'", specifier = ">=9.0.0" },
     { name = "nuitka", marker = "extra == 'desktop-build'", specifier = ">=4.0.2,<5.0.0" },
     { name = "oauth-cli-kit", specifier = ">=0.1.3,<1.0.0" },
     { name = "openai", specifier = ">=1.83.0,<3.0.0" },
@@ -290,7 +301,10 @@ requires-dist = [
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "pillow-heif", specifier = ">=0.18.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.50,<4.0.0" },
-    { name = "pyautogui", specifier = ">=0.9.54" },
+    { name = "pyautogui", marker = "extra == 'desktop'", specifier = ">=0.9.54" },
+    { name = "pyautogui", marker = "extra == 'desktop-automation'", specifier = ">=0.9.54" },
+    { name = "pyautogui", marker = "extra == 'desktop-build'", specifier = ">=0.9.54" },
+    { name = "pyautogui", marker = "extra == 'desktop-build-pyinstaller'", specifier = ">=0.9.54" },
     { name = "pydantic", specifier = ">=2.12.0,<3.0.0" },
     { name = "pydantic-settings", specifier = ">=2.12.0,<3.0.0" },
     { name = "pyinstaller", marker = "extra == 'desktop-build-pyinstaller'", specifier = ">=6.19.0,<7.0.0" },
@@ -314,7 +328,7 @@ requires-dist = [
     { name = "websockets", specifier = ">=13.0,<17.0" },
     { name = "zstandard", marker = "extra == 'desktop-build'", specifier = ">=0.25.0" },
 ]
-provides-extras = ["desktop", "desktop-build", "desktop-build-pyinstaller", "dev"]
+provides-extras = ["desktop", "desktop-automation", "desktop-build", "desktop-build-pyinstaller", "dev"]
 
 [[package]]
 name = "bidict"

@@ -33,12 +33,18 @@ env:
 jobs:
   validate-mac-deps:
     runs-on: macos-14
+    env:
+      BAO_DESKTOP_REQUIRE_BROWSER_RUNTIME: '1'
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -47,6 +53,12 @@ jobs:
 
       - name: Install desktop dependencies
         run: uv sync --extra desktop-build-pyinstaller --frozen
+
+      - name: Refresh managed browser runtime
+        run: uv run python app/scripts/update_agent_browser_runtime.py
+
+      - name: Verify managed browser runtime
+        run: uv run python app/scripts/verify_browser_runtime.py --require-ready
 
       - name: Validate import graph
         run: uv run python -c "import bao, PySide6, lancedb"
@@ -56,12 +68,18 @@ jobs:
 
   validate-windows-deps:
     runs-on: windows-latest
+    env:
+      BAO_DESKTOP_REQUIRE_BROWSER_RUNTIME: '1'
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -70,6 +88,9 @@ jobs:
 
       - name: Install desktop dependencies
         run: uv sync --extra desktop-build-pyinstaller --frozen
+
+      - name: Refresh managed browser runtime
+        run: uv run python app/scripts/update_agent_browser_runtime.py
 
       - name: Validate Windows packaging scripts exist
         run: python -c "from pathlib import Path; assert Path('app/scripts/build_win_pyinstaller.bat').is_file(); assert Path('app/scripts/package_win_installer.bat').is_file()"
