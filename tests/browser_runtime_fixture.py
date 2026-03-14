@@ -11,11 +11,15 @@ def write_fake_browser_runtime(root: Path) -> Path:
     platform_key = current_browser_platform_key()
     agent_binary = "agent-browser.exe" if platform_key.startswith("win32-") else "agent-browser"
     browser_binary = "chrome.exe" if platform_key.startswith("win32-") else "chrome"
+    agent_browser_home = runtime_root / "node_modules" / "agent-browser"
     agent_browser = runtime_root / "platforms" / platform_key / "bin" / agent_binary
     browser_executable = runtime_root / "platforms" / platform_key / "browser" / browser_binary
     agent_browser.parent.mkdir(parents=True, exist_ok=True)
+    (agent_browser_home / "dist").mkdir(parents=True, exist_ok=True)
     browser_executable.parent.mkdir(parents=True, exist_ok=True)
     agent_browser.write_text("#!/bin/sh\n", encoding="utf-8")
+    (agent_browser_home / "package.json").write_text('{"name":"agent-browser"}\n', encoding="utf-8")
+    (agent_browser_home / "dist" / "daemon.js").write_text("export {};\n", encoding="utf-8")
     browser_executable.write_text("", encoding="utf-8")
     if agent_browser.suffix != ".exe":
         agent_browser.chmod(0o755)
@@ -26,6 +30,7 @@ def write_fake_browser_runtime(root: Path) -> Path:
                 "version": "0.19.0",
                 "platforms": {
                     platform_key: {
+                        "agentBrowserHomePath": str(agent_browser_home.relative_to(runtime_root)),
                         "agentBrowserPath": str(agent_browser.relative_to(runtime_root)),
                         "browserExecutablePath": str(browser_executable.relative_to(runtime_root)),
                     }

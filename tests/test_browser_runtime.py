@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -28,6 +29,7 @@ def test_browser_capability_state_uses_env_runtime_root(tmp_path: Path, monkeypa
     assert state.runtime_ready is True
     assert state.runtime_source == "env"
     assert state.runtime_root == str(runtime_root)
+    assert state.agent_browser_home_path == str(runtime_root / "node_modules" / "agent-browser")
     assert state.agent_browser_path == str(
         runtime_root / "platforms" / platform_key / "bin" / agent_binary
     )
@@ -67,6 +69,23 @@ def test_browser_capability_state_reports_missing_browser_binary(
 
     assert state.available is False
     assert state.reason == "agent_browser_missing"
+
+
+def test_browser_capability_state_reports_missing_daemon_assets(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_root = write_fake_browser_runtime(tmp_path)
+    daemon_path = runtime_root / "node_modules" / "agent-browser" / "dist" / "daemon.js"
+    daemon_path.unlink()
+    monkeypatch.setenv("BAO_BROWSER_RUNTIME_ROOT", str(runtime_root))
+    set_runtime_config_path(tmp_path / "config.jsonc")
+    try:
+        state = get_browser_capability_state(enabled=True)
+    finally:
+        set_runtime_config_path(None)
+
+    assert state.available is False
+    assert state.reason == "agent_browser_daemon_missing"
 
 
 def test_browser_automation_service_can_be_disabled(tmp_path: Path) -> None:
@@ -113,3 +132,34 @@ def test_browser_capability_state_reports_missing_current_platform_entry(
 
     assert state.available is False
     assert state.reason == "platform_missing"
+
+
+def test_browser_automation_service_smoke_test_uses_about_blank(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_root = write_fake_browser_runtime(tmp_path)
+    monkeypatch.setenv("BAO_BROWSER_RUNTIME_ROOT", str(runtime_root))
+    set_runtime_config_path(tmp_path / "config.jsonc")
+    try:
+        service = BrowserAutomationService(workspace=tmp_path)
+        calls: list[tuple[str, list[str]]] = []
+
+        async def fake_run(*, action: str, args: list[str] | None = None, **options):
+            del options
+            normalized_args = args or []
+            calls.append((action, normalized_args))
+            if action == "get":
+                return "about:blank"
+            return "ok"
+
+        monkeypatch.setattr(service, "run", fake_run)
+        result = asyncio.run(service.smoke_test())
+    finally:
+        set_runtime_config_path(None)
+
+    assert result is None
+    assert calls == [
+        ("open", ["about:blank"]),
+        ("get", ["url"]),
+        ("close", []),
+    ]

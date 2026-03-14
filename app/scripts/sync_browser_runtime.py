@@ -15,7 +15,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--source",
         required=True,
-        help="Source directory containing runtime.json, agent-browser, and bundled browser files.",
+        help="Source directory containing runtime.json, agent-browser home, and bundled browser files.",
     )
     return parser.parse_args()
 

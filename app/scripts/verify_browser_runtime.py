@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -28,7 +29,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    from bao.browser import get_browser_capability_state
+    from bao.browser import BrowserAutomationService, get_browser_capability_state
 
     args = parse_args()
     runtime_root = (PROJECT_ROOT / args.runtime_root).resolve(strict=False)
@@ -44,9 +45,20 @@ def main() -> int:
 
     require_ready = args.require_ready or os.environ.get("BAO_DESKTOP_REQUIRE_BROWSER_RUNTIME") == "1"
     if state.available:
-        print(f"[ok] Managed browser runtime ready: {runtime_root}")
-        print(f"      agent-browser: {state.agent_browser_path}")
-        print(f"      browser:      {state.browser_executable_path}")
+        service = BrowserAutomationService(workspace=PROJECT_ROOT)
+        smoke_error = asyncio.run(service.smoke_test())
+        if smoke_error is None:
+            print(f"[ok] Managed browser runtime ready: {runtime_root}")
+            print(f"      agent-browser home: {state.agent_browser_home_path}")
+            print(f"      agent-browser:      {state.agent_browser_path}")
+            print(f"      browser:            {state.browser_executable_path}")
+            return 0
+        level = "error" if require_ready else "warn"
+        print(f"[{level}] Managed browser runtime failed smoke test: {runtime_root}")
+        print("       reason: smoke_failed")
+        print(f"       detail: {smoke_error}")
+        if require_ready:
+            return 1
         return 0
 
     level = "error" if require_ready else "warn"

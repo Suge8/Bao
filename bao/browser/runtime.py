@@ -11,12 +11,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from bao.config.paths import get_data_dir
 
 _ENV_RUNTIME_ROOT = "BAO_BROWSER_RUNTIME_ROOT"
 _MANIFEST_NAMES = ("runtime.json", "manifest.json")
 _RUNTIME_RELATIVE_PATHS = ("app/resources/runtime/browser", "resources/runtime/browser")
+_AGENT_BROWSER_HOME_CANDIDATES = ("node_modules/agent-browser", "agent-browser")
 _AGENT_BROWSER_CANDIDATES = (
     "bin/agent-browser",
     "bin/agent-browser.exe",
@@ -78,6 +80,7 @@ class BrowserCapabilityState:
     runtime_root: str
     runtime_source: str
     profile_path: str
+    agent_browser_home_path: str
     agent_browser_path: str
     browser_executable_path: str
     reason: str
@@ -149,6 +152,12 @@ def get_browser_capability_state(*, enabled: bool = True) -> BrowserCapabilitySt
         manifest_key="agentBrowserPath",
         fallback_candidates=_AGENT_BROWSER_CANDIDATES,
     )
+    agent_browser_home_path = _resolve_runtime_file(
+        runtime_root=runtime_root,
+        platform_entry=platform_entry,
+        manifest_key="agentBrowserHomePath",
+        fallback_candidates=_AGENT_BROWSER_HOME_CANDIDATES,
+    )
     browser_executable_path = _resolve_runtime_file(
         runtime_root=runtime_root,
         platform_entry=platform_entry,
@@ -162,9 +171,35 @@ def get_browser_capability_state(*, enabled: bool = True) -> BrowserCapabilitySt
             runtime_root=runtime_root,
             runtime_source=runtime_source,
             profile_path=profile_path,
+            agent_browser_home_path=agent_browser_home_path,
             browser_executable_path=browser_executable_path,
             reason="agent_browser_missing",
             detail="Managed browser runtime is missing the agent-browser executable.",
+        )
+    if agent_browser_home_path is None:
+        return _build_capability_state(
+            enabled=True,
+            available=False,
+            runtime_root=runtime_root,
+            runtime_source=runtime_source,
+            profile_path=profile_path,
+            agent_browser_path=agent_browser_path,
+            browser_executable_path=browser_executable_path,
+            reason="agent_browser_home_missing",
+            detail="Managed browser runtime is missing the agent-browser home directory.",
+        )
+    if not _agent_browser_home_ready(agent_browser_home_path):
+        return _build_capability_state(
+            enabled=True,
+            available=False,
+            runtime_root=runtime_root,
+            runtime_source=runtime_source,
+            profile_path=profile_path,
+            agent_browser_home_path=agent_browser_home_path,
+            agent_browser_path=agent_browser_path,
+            browser_executable_path=browser_executable_path,
+            reason="agent_browser_daemon_missing",
+            detail="Managed browser runtime is missing agent-browser daemon assets.",
         )
     if browser_executable_path is None:
         return _build_capability_state(
@@ -173,6 +208,7 @@ def get_browser_capability_state(*, enabled: bool = True) -> BrowserCapabilitySt
             runtime_root=runtime_root,
             runtime_source=runtime_source,
             profile_path=profile_path,
+            agent_browser_home_path=agent_browser_home_path,
             agent_browser_path=agent_browser_path,
             reason="browser_executable_missing",
             detail="Managed browser runtime is missing the bundled browser executable.",
@@ -183,6 +219,7 @@ def get_browser_capability_state(*, enabled: bool = True) -> BrowserCapabilitySt
         runtime_root=runtime_root,
         runtime_source=runtime_source,
         profile_path=profile_path,
+        agent_browser_home_path=agent_browser_home_path,
         agent_browser_path=agent_browser_path,
         browser_executable_path=browser_executable_path,
         reason="ready",
@@ -261,7 +298,47 @@ class BrowserAutomationService:
             args=normalized_args,
             options=options,
         )
-        return await self._run_command(command)
+        return await self._run_command(command, env=_build_runtime_environment(state))
+
+    async def smoke_test(self) -> str | None:
+        state = self.state
+        if not state.available:
+            return f"Error: managed browser runtime is not ready: {state.detail}"
+
+        session = self.normalize_session(f"runtime-smoke-{uuid4().hex[:12]}")
+        open_result = await self.run(
+            action="open",
+            args=["about:blank"],
+            session=session,
+            json_output=False,
+        )
+        if open_result.startswith("Error:"):
+            return open_result
+
+        result: str | None = None
+        url_result = await self.run(
+            action="get",
+            args=["url"],
+            session=session,
+            json_output=False,
+        )
+        if url_result.startswith("Error:"):
+            result = url_result
+        elif url_result.strip() != "about:blank":
+            result = (
+                f"Error: browser smoke test returned unexpected URL: "
+                f"{url_result.strip() or '(empty)'}"
+            )
+
+        close_result = await self.run(
+            action="close",
+            args=[],
+            session=session,
+            json_output=False,
+        )
+        if close_result.startswith("Error:"):
+            return close_result
+        return result
 
     async def fetch_html(
         self, url: str, *, wait_ms: int = 1500, session: str | None = None
@@ -371,7 +448,7 @@ class BrowserAutomationService:
             return "must stay within the workspace"
         return None
 
-    async def _run_command(self, command: list[str]) -> str:
+    async def _run_command(self, command: list[str], *, env: dict[str, str]) -> str:
         process: asyncio.subprocess.Process | None = None
         try:
             process = await asyncio.create_subprocess_exec(
@@ -379,7 +456,7 @@ class BrowserAutomationService:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self.workspace),
-                env=os.environ.copy(),
+                env=env,
             )
             try:
                 stdout, stderr = await asyncio.wait_for(
@@ -467,6 +544,21 @@ def _resolve_runtime_file(
     return None
 
 
+def _agent_browser_home_ready(agent_browser_home_path: Path) -> bool:
+    return (
+        agent_browser_home_path.is_dir()
+        and (agent_browser_home_path / "package.json").is_file()
+        and (agent_browser_home_path / "dist" / "daemon.js").is_file()
+    )
+
+
+def _build_runtime_environment(state: BrowserCapabilityState) -> dict[str, str]:
+    env = os.environ.copy()
+    if state.agent_browser_home_path:
+        env["AGENT_BROWSER_HOME"] = state.agent_browser_home_path
+    return env
+
+
 def _load_runtime_manifest(runtime_root: Path) -> dict[str, object]:
     for name in _MANIFEST_NAMES:
         path = runtime_root / name
@@ -530,6 +622,7 @@ def _build_capability_state(
     profile_path: str,
     reason: str,
     detail: str,
+    agent_browser_home_path: Path | None = None,
     agent_browser_path: Path | None = None,
     browser_executable_path: Path | None = None,
 ) -> BrowserCapabilityState:
@@ -540,6 +633,7 @@ def _build_capability_state(
         runtime_root=str(runtime_root) if runtime_root else "",
         runtime_source=runtime_source,
         profile_path=profile_path,
+        agent_browser_home_path=str(agent_browser_home_path or ""),
         agent_browser_path=str(agent_browser_path or ""),
         browser_executable_path=str(browser_executable_path or ""),
         reason=reason,

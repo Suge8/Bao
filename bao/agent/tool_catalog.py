@@ -462,6 +462,7 @@ class ToolCatalog:
                 "browserProfilePath": browser_state.profile_path,
                 "browserStatusReason": browser_state.reason,
                 "browserStatusDetail": browser_state.detail,
+                "agentBrowserHomePath": browser_state.agent_browser_home_path,
                 "agentBrowserPath": browser_state.agent_browser_path,
                 "browserExecutablePath": browser_state.browser_executable_path,
             }

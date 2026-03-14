@@ -79,6 +79,7 @@ def test_agent_browser_runner_builds_command_with_context_and_flags(
 
     assert out == "ok"
     command = run_command.await_args.args[0]
+    env = run_command.await_args.kwargs["env"]
     assert command[0] == str(runtime_root / "platforms" / platform_key / "bin" / agent_binary)
     assert command[1:5] == [
         "--profile",
@@ -86,6 +87,7 @@ def test_agent_browser_runner_builds_command_with_context_and_flags(
         "--executable-path",
         str(runtime_root / "platforms" / platform_key / "browser" / browser_binary),
     ]
+    assert env["AGENT_BROWSER_HOME"] == str(runtime_root / "node_modules" / "agent-browser")
     assert "--session" in command
     assert "sess-one" in command
     assert "--headed" in command

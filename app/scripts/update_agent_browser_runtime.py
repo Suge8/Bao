@@ -15,6 +15,7 @@ RUNTIME_ROOT = PROJECT_ROOT / "app" / "resources" / "runtime" / "browser"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+_AGENT_BROWSER_HOME_RELATIVE_PATH = Path("node_modules") / "agent-browser"
 _PACKAGE_BINARY_MAP = {
     "darwin-arm64": ("bin/agent-browser-darwin-arm64", "platforms/darwin-arm64/bin/agent-browser"),
     "darwin-x64": ("bin/agent-browser-darwin-x64", "platforms/darwin-x64/bin/agent-browser"),
@@ -61,12 +62,18 @@ def main() -> int:
         extract_package(tarball=tarball, extract_dir=extract_dir)
         install_package(version=version, install_dir=install_dir)
 
+        agent_browser_home = vendor_agent_browser_home(install_dir=install_dir)
         vendor_native_binaries(package_dir=extract_dir / "package")
         vendor_browser_bundle(
             install_dir=install_dir,
             browser_dir=browser_dir,
         )
-        update_runtime_manifest(version=version, platform_key=platform_key, browser_dir=browser_dir)
+        update_runtime_manifest(
+            version=version,
+            platform_key=platform_key,
+            browser_dir=browser_dir,
+            agent_browser_home=agent_browser_home,
+        )
 
     print(f"[ok] Vendored agent-browser {version} for {platform_key} into {RUNTIME_ROOT}")
     return 0
@@ -121,6 +128,17 @@ def vendor_native_binaries(*, package_dir: Path) -> None:
             dst.chmod(0o755)
 
 
+def vendor_agent_browser_home(*, install_dir: Path) -> Path:
+    source_root = install_dir / "node_modules"
+    target_root = RUNTIME_ROOT / "node_modules"
+    if not source_root.is_dir():
+        raise RuntimeError(f"agent-browser install is missing node_modules: {source_root}")
+    if target_root.exists():
+        shutil.rmtree(target_root)
+    shutil.copytree(source_root, target_root)
+    return RUNTIME_ROOT / _AGENT_BROWSER_HOME_RELATIVE_PATH
+
+
 def vendor_browser_bundle(*, install_dir: Path, browser_dir: Path) -> None:
     browser_dir.parent.mkdir(parents=True, exist_ok=True)
     if browser_dir.exists():
@@ -146,7 +164,13 @@ def vendor_browser_bundle(*, install_dir: Path, browser_dir: Path) -> None:
     )
 
 
-def update_runtime_manifest(*, version: str, platform_key: str, browser_dir: Path) -> None:
+def update_runtime_manifest(
+    *,
+    version: str,
+    platform_key: str,
+    browser_dir: Path,
+    agent_browser_home: Path,
+) -> None:
     manifest_path = RUNTIME_ROOT / "runtime.json"
     manifest = {}
     if manifest_path.is_file():
@@ -161,6 +185,7 @@ def update_runtime_manifest(*, version: str, platform_key: str, browser_dir: Pat
 
     agent_browser_rel = _PACKAGE_BINARY_MAP[platform_key][1]
     platforms[platform_key] = {
+        "agentBrowserHomePath": str(agent_browser_home.relative_to(RUNTIME_ROOT)),
         "agentBrowserPath": agent_browser_rel,
         "browserExecutablePath": str(browser_executable.relative_to(RUNTIME_ROOT)),
     }

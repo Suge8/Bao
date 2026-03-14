@@ -237,7 +237,7 @@ app\scripts\package_win_installer.bat --build-root dist\build-win-x64\main.dist
 
 推送 `v*` tag 自动触发 GitHub Actions 构建双平台安装包（`desktop-release.yml`），并在构建成功后直接创建正式 Release；随后 `desktop-update-feed.yml` 会下载更新资产、生成 `desktop-update.json`，并发布到 GitHub Pages。release workflow 现已优先复用当前 GitHub-hosted Windows runner 上可用的 Inno Setup，并对已压缩安装包关闭 artifact 二次压缩；PR/非 tag push 使用轻量流水线 `desktop-ci-lite.yml` 做依赖可安装性与脚本校验。
 
-桌面版浏览器自动化只保留一条发行路径：`app/resources/runtime/browser/` 下的托管 runtime。日常开发更新官方最新版时，直接运行 `app/scripts/update_agent_browser_runtime.py`；这个脚本会刷新当前宿主平台的 browser bundle，并同步仓库内 vendored `agent-browser` 平台二进制。若你已经有一份外部准备好的 runtime，也可以用 `app/scripts/sync_browser_runtime.py` 覆盖同步。PyInstaller 构建脚本现在会直接运行 `app/scripts/verify_browser_runtime.py --require-ready`，缺 runtime 时本地打包就会失败，不再生成带空壳浏览器能力的安装包。正式 Desktop Release / CI Lite workflow 也已在每个平台 runner 上显式 provision Node 20，先执行 `update_agent_browser_runtime.py`，再以 ready 硬门禁继续打包。
+桌面版浏览器自动化只保留一条发行路径：`app/resources/runtime/browser/` 下的托管 runtime。日常开发更新官方最新版时，直接运行 `app/scripts/update_agent_browser_runtime.py`；这个脚本会刷新当前宿主平台的 browser bundle，并同步仓库内 vendored `agent-browser` home（含 daemon 资产）与平台二进制。若你已经有一份外部准备好的 runtime，也可以用 `app/scripts/sync_browser_runtime.py` 覆盖同步。PyInstaller 构建脚本现在会直接运行 `app/scripts/verify_browser_runtime.py --require-ready` 做真实 smoke 校验，缺 runtime 或 runtime 只能“假就绪”时本地打包都会失败，不再生成带空壳浏览器能力的安装包。正式 Desktop Release / CI Lite workflow 也已在每个平台 runner 上显式 provision Node 20，先执行 `update_agent_browser_runtime.py`，再以 ready 硬门禁继续打包。
 
 最新桌面发布版本与变更记录详见 [`../CHANGELOG.md`](../CHANGELOG.md)。
 
