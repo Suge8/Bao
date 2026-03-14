@@ -115,3 +115,14 @@ class TestBm25Rank:
         docs = [_make_doc("Found an error. Please fix it.")]
         ranked = MemoryStore._bm25_rank("error", docs)
         assert len(ranked) == 1
+
+    def test_accepts_precomputed_query_and_doc_tokens(self):
+        docs = [_make_doc("python flask deployment"), _make_doc("git rebase workflow")]
+        ranked = MemoryStore._bm25_rank(
+            "python flask",
+            docs,
+            query_terms=["python", "flask"],
+            doc_tokens=[["python", "flask", "deployment"], ["git", "rebase", "workflow"]],
+        )
+        assert len(ranked) == 1
+        assert ranked[0][1]["content"] == "python flask deployment"
