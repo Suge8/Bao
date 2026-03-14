@@ -6,6 +6,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.28] - 2026-03-14
+
+### Added
+
+- **OpenAI/Codex 回复速度档位现在可由配置统一透传** — `agents.defaults.serviceTier` 现可通过主代理、子代理、utility、startup greeting 与 heartbeat 单路径下发为官方 `service_tier`，并在桌面设置中提供“默认 / 极速优先 / 省钱优先”下拉。
+
+### Changed
+
+- **OpenAI-family 参数标准化改为单一事实源** — OpenAI compatible 与 Codex OAuth 现在复用同一套 `reasoning_effort` / `service_tier` 归一化规则，不再各自维护一套兼容分支。
+
+### Fixed
+
+- **`reasoningEffort=off` 在 OpenAI/Codex 上现会映射为官方 `reasoning.effort=none`** — 关闭推理时不再静默丢参，和 Anthropic/Gemini 的“显式关闭 thinking”语义保持一致。
+- **配置模板、README 与模块架构说明已对齐真实字段名** — `serviceTier`、`priority` / `flex` 与 OpenAI/Codex 的支持范围现在在用户文档和开发者文档中保持一致，不再混用模糊的 fastmode 文案。
+
 ## [0.3.27] - 2026-03-14
 
 ### Changed
