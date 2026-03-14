@@ -7,8 +7,12 @@ Item {
 
     property bool active: false
     property string currentScope: "installed"
-    readonly property bool hasToolsService: typeof toolsService !== "undefined" && toolsService !== null
-    readonly property bool hasConfigService: typeof configService !== "undefined" && configService !== null
+    property var toolsService: null
+    property var configService: null
+    property string uiLanguage: "auto"
+    property string autoLanguage: "en"
+    readonly property bool hasToolsService: toolsService !== null
+    readonly property bool hasConfigService: configService !== null
     readonly property string effectiveUiLanguage: {
         if (typeof uiLanguage === "string" && uiLanguage !== "auto")
             return uiLanguage
@@ -31,91 +35,30 @@ Item {
         return isZhLang ? zh : en
     }
 
-    function itemDisplayName(item) {
-        switch (String(item.id || "")) {
-        case "builtin:filesystem":
-            return tr("本地文件", "Local Files")
-        case "builtin:exec":
-            return tr("终端执行", "Terminal Exec")
-        case "builtin:coding":
-            return tr("编程代理", "Coding Agent")
-        case "builtin:web":
-            return tr("网页检索", "Web Retrieval")
-        case "builtin:embedding":
-            return tr("向量嵌入", "Embeddings")
-        case "builtin:image_generation":
-            return tr("图像生成", "Image Generation")
-        case "builtin:memory":
-            return tr("记忆控制", "Memory Controls")
-        case "builtin:planning_subagents":
-            return tr("计划与子代理", "Planning and Subagents")
-        case "builtin:message_diagnostics":
-            return tr("消息与诊断", "Messaging and Diagnostics")
-        case "builtin:cron":
-            return tr("定时任务", "Scheduled Tasks")
-        case "builtin:desktop":
-            return tr("桌面自动化", "Desktop Automation")
-        default:
-            return String(item.name || "")
+    function localizedText(value, fallback) {
+        if (value && typeof value === "object") {
+            var primary = isZhLang ? value.zh : value.en
+            var secondary = isZhLang ? value.en : value.zh
+            if (primary !== undefined && primary !== null && String(primary))
+                return String(primary)
+            if (secondary !== undefined && secondary !== null && String(secondary))
+                return String(secondary)
         }
+        if (value !== undefined && value !== null && typeof value !== "object" && String(value))
+            return String(value)
+        return String(fallback || "")
+    }
+
+    function itemDisplayName(item) {
+        return localizedText(item.displayName, item.name || "")
     }
 
     function itemDisplaySummary(item) {
-        switch (String(item.id || "")) {
-        case "builtin:filesystem":
-            return tr("读取、写入、编辑并列出工作区文件。", "Read, write, edit, and list workspace files.")
-        case "builtin:exec":
-            return tr("在运行主机上执行命令，并受超时与沙箱策略约束。", "Run commands on the runtime host with timeout and sandbox controls.")
-        case "builtin:coding":
-            return tr("把多文件实现、调试与重构委派给已安装的编程后端。", "Delegate multi-file implementation, debugging, and refactoring to installed coding backends.")
-        case "builtin:web":
-            return tr("搜索网页、抓取 URL，并在需要时驱动浏览器。", "Search the web, fetch URLs, and drive a browser when needed.")
-        case "builtin:embedding":
-            return tr("为语义检索与长期记忆提供向量嵌入。", "Provide embeddings for semantic retrieval and long-term memory.")
-        case "builtin:image_generation":
-            return tr("配置图像生成模型后即可从提示词产图。", "Generate images from prompts once an image model is configured.")
-        case "builtin:memory":
-            return tr("显式写入、更新和删除长期记忆。", "Write, update, and remove explicit long-term memory.")
-        case "builtin:planning_subagents":
-            return tr("管理计划步骤，并把长任务委派给子代理。", "Manage plans and delegate long-running work to subagents.")
-        case "builtin:message_diagnostics":
-            return tr("跨渠道发消息，并查看运行诊断。", "Send cross-channel messages and inspect runtime diagnostics.")
-        case "builtin:cron":
-            return tr("配置提醒和周期任务。", "Schedule reminders and recurring tasks.")
-        case "builtin:desktop":
-            return tr("截图、点击、输入并控制本地桌面。", "Capture and control the local desktop with visual and input actions.")
-        default:
-            return String(item.summary || "")
-        }
+        return localizedText(item.displaySummary, item.summary || "")
     }
 
     function itemDisplayDetail(item) {
-        switch (String(item.id || "")) {
-        case "builtin:filesystem":
-            return tr("这是 Bao 的核心本地文件能力，用于查看、创建和修改项目文件。", "This is Bao's core local file surface for inspecting, creating, and editing project files.")
-        case "builtin:exec":
-            return tr("Exec 是本机命令桥。你可以在这里控制超时、PATH 追加、沙箱模式与工作区边界。", "Exec is the local command bridge. Control timeout, PATH append, sandbox mode, and workspace boundaries here.")
-        case "builtin:coding":
-            return tr("编程代理把高复杂度实现委派给 OpenCode、Codex 或 Claude Code 等后端；这里主要展示当前可用后端。", "Coding Agent delegates heavy implementation work to backends like OpenCode, Codex, or Claude Code; this pane focuses on backend availability.")
-        case "builtin:web":
-            return tr("网页检索把搜索 provider、URL 抓取和浏览器操作聚合在同一工具族里；搜索质量取决于你配置的 provider key。", "Web Retrieval groups search providers, direct fetch, and browser automation in one family; search quality depends on the configured provider keys.")
-        case "builtin:embedding":
-            return tr("Embedding 设置会直接影响语义检索与记忆质量。只有模型与 API Key 都配置好时，它才会真正启用。", "Embedding settings directly affect semantic retrieval and memory quality. The family only becomes active once both model and API key are configured.")
-        case "builtin:image_generation":
-            return tr("图像生成是可选能力。配置好 API Key 之后，Bao 才会把它当作可调用工具。", "Image generation is optional. Bao only treats it as callable once an API key is configured.")
-        case "builtin:memory":
-            return tr("这组工具负责显式修改长期记忆；更细的查看与整理仍建议在记忆工作台完成。", "This family edits explicit long-term memory entries; deeper review and curation still belong in the Memory workspace.")
-        case "builtin:planning_subagents":
-            return tr("计划与子代理属于执行编排层：创建计划、推进步骤、委派任务、追踪进度和取消任务都在这里。", "Planning and Subagents belong to the execution-orchestration layer: create plans, advance steps, delegate work, inspect progress, and cancel tasks here.")
-        case "builtin:message_diagnostics":
-            return tr("消息与诊断把跨渠道发送和框架内部诊断放在一起，用于支持类与排障类任务。", "Messaging and Diagnostics groups cross-channel delivery with internal diagnostics for support and debugging workflows.")
-        case "builtin:cron":
-            return tr("Cron 只有在运行时挂上 cron service 时才会真正可用；这里先展示它的职责边界。", "Cron only becomes active when the runtime includes the cron service; this card mainly explains its scope.")
-        case "builtin:desktop":
-            return tr("桌面自动化是高权限能力，所以它的控制面应当清晰、直接、容易关闭。", "Desktop automation is a high-power surface, so its controls should stay explicit, direct, and easy to disable.")
-        default:
-            return String(item.detail || item.summary || "")
-        }
+        return localizedText(item.displayDetail, item.detail || item.summary || "")
     }
 
     function bundleLabel(bundle) {
@@ -140,32 +83,7 @@ Item {
     }
 
     function itemIconSource(item) {
-        switch (String(item.id || "")) {
-        case "builtin:filesystem":
-            return icon("book-stack")
-        case "builtin:exec":
-            return icon("computer")
-        case "builtin:coding":
-            return "../resources/icons/sidebar-subagent.svg"
-        case "builtin:web":
-            return icon("page-search")
-        case "builtin:embedding":
-            return icon("database-settings")
-        case "builtin:image_generation":
-            return icon("circle-spark")
-        case "builtin:memory":
-            return "../resources/icons/sidebar-memory.svg"
-        case "builtin:planning_subagents":
-            return "../resources/icons/sidebar-subagent.svg"
-        case "builtin:message_diagnostics":
-            return icon("message-alert")
-        case "builtin:cron":
-            return icon("calendar-rotate")
-        case "builtin:desktop":
-            return icon("computer")
-        default:
-            return "../resources/icons/sidebar-tools.svg"
-        }
+        return String(item.iconSource || "../resources/icons/sidebar-tools.svg")
     }
 
     function itemIconBackdrop(item) {
@@ -285,45 +203,7 @@ Item {
     }
 
     function statusDetail(item) {
-        if (item.kind === "mcp_server") {
-            if (item.status === "healthy")
-                return tr("握手成功，已发现 ", "Handshake succeeded, discovered ") + Number((item.includedTools || []).length) + tr(" 个运行时工具", " runtime tools")
-            if (item.status === "needs_setup")
-                return tr("补充 command 或 URL 后即可测试。", "Add a command or URL, then test the connection.")
-            if (item.status === "configured")
-                return tr("定义已保存，建议立即做一次探测。", "The definition is saved; run a probe next.")
-            if (item.status === "error")
-                return item.probe && item.probe.error ? String(item.probe.error) : tr("最近一次探测失败。", "The latest probe failed.")
-        }
-        if (item.kind === "builtin") {
-            switch (String(item.id || "")) {
-            case "builtin:coding":
-                return (item.configValues && item.configValues.backends && item.configValues.backends.length)
-                       ? tr("已检测到编程后端。", "Coding backends detected.")
-                       : tr("尚未检测到 OpenCode、Codex 或 Claude Code。", "No OpenCode, Codex, or Claude Code backend detected yet.")
-            case "builtin:web":
-                return item.status === "ready"
-                       ? tr("网页搜索 provider 已配置。", "A web search provider is configured.")
-                       : tr("当前只有抓取能力可用；若要启用联网搜索，请配置 provider key。", "Fetch is available, but live search still needs a provider key.")
-            case "builtin:embedding":
-                return item.status === "ready"
-                       ? tr("Embedding 模型与密钥已配置。", "Embedding model and key are configured.")
-                       : tr("配置模型和 API Key 后，语义检索才会启用。", "Configure a model and API key to enable semantic retrieval.")
-            case "builtin:image_generation":
-                return item.status === "ready"
-                       ? tr("图像生成模型已可用。", "Image generation is configured.")
-                       : tr("配置图像模型或 API Key 后才会启用。", "Configure a model or API key to enable image generation.")
-            case "builtin:desktop":
-                return item.status === "ready"
-                       ? tr("本地桌面控制已开启。", "Desktop control is enabled.")
-                       : tr("本地桌面控制当前关闭。", "Desktop control is currently disabled.")
-            case "builtin:exec":
-                return tr("命令执行受沙箱和工作区边界约束。", "Command execution is governed by sandbox and workspace boundaries.")
-            default:
-                return itemDisplaySummary(item)
-            }
-        }
-        return String(item.statusDetail || "")
+        return localizedText(item.statusDetailDisplay, item.statusDetail || "")
     }
 
     function includesSummary(item) {
@@ -2119,6 +1999,58 @@ Item {
 
                         RowLayout {
                             Layout.fillWidth: true
+                            spacing: 12
+
+                            Switch {
+                                id: webBrowserEnabledSwitch
+                                checked: Boolean(root.selectedItem.configValues.browserEnabled)
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: root.tr("启用托管浏览器自动化。Bao 只在需要交互页面、登录流或反爬回退时按需启动。", "Enable managed browser automation. Bao only starts it on demand for interactive pages, login flows, or anti-bot fallback.")
+                                color: textPrimary
+                                font.pixelSize: typeBody
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+
+                        Text {
+                            text: root.tr("Runtime 状态", "Runtime status")
+                            color: textSecondary
+                            font.pixelSize: typeMeta
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: Boolean(root.selectedItem.configValues.browserAvailable)
+                                  ? root.tr("托管浏览器 runtime 已就绪。", "Managed browser runtime is ready.")
+                                  : String(root.selectedItem.configValues.browserStatusDetail || root.tr("托管浏览器 runtime 尚未就绪。", "Managed browser runtime is not ready yet."))
+                            color: textPrimary
+                            font.pixelSize: typeBody
+                            wrapMode: Text.WordWrap
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            visible: String(root.selectedItem.configValues.browserProfilePath || "").length > 0
+                            text: root.tr("托管 profile", "Managed profile") + ": " + String(root.selectedItem.configValues.browserProfilePath || "")
+                            color: textSecondary
+                            font.pixelSize: typeMeta
+                            wrapMode: Text.WrapAnywhere
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            visible: String(root.selectedItem.configValues.browserRuntimeRoot || "").length > 0
+                            text: root.tr("Runtime 目录", "Runtime root") + ": " + String(root.selectedItem.configValues.browserRuntimeRoot || "")
+                            color: textSecondary
+                            font.pixelSize: typeMeta
+                            wrapMode: Text.WrapAnywhere
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
                             Item { Layout.fillWidth: true }
                             PillActionButton {
                                 text: root.tr("保存 Web 配置", "Save web settings")
@@ -2130,7 +2062,8 @@ Item {
                                     "tools.web.search.tavilyApiKey": tavilyField.text,
                                     "tools.web.search.braveApiKey": braveField.text,
                                     "tools.web.search.exaApiKey": exaField.text,
-                                    "tools.web.search.maxResults": parseInt(webMaxResultsField.text || "5")
+                                    "tools.web.search.maxResults": parseInt(webMaxResultsField.text || "5"),
+                                    "tools.web.browser.enabled": webBrowserEnabledSwitch.checked
                                 })
                             }
                         }

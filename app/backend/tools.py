@@ -8,6 +8,7 @@ from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from app.backend.asyncio_runner import AsyncioRunner
 from app.backend.config import ConfigService
+from bao.agent.capability_registry import build_capability_registry_snapshot
 from bao.agent.tool_catalog import ToolCatalog
 from bao.agent.tools.mcp import probe_mcp_server
 from bao.config.schema import MCPServerConfig
@@ -201,33 +202,19 @@ class ToolsService(QObject):
         return dict(_as_dict(self._config_service.get("tools.mcpServers", {})) or {})
 
     def _refresh(self) -> None:
-        all_items = self._catalog.list_items(self._config_data, self._probe_results)
-        self._overview = self._catalog.build_overview(all_items, self._config_data)
-        query = self._query.lower()
-        filtered = [item for item in all_items if self._matches_filters(item, query)]
-        self._items = filtered
-        if self._selected_id and any(item.get("id") == self._selected_id for item in filtered):
-            selected = next(item for item in filtered if item.get("id") == self._selected_id)
-            self._selected_item = dict(selected)
-        elif filtered:
-            self._selected_id = str(filtered[0].get("id") or "")
-            self._selected_item = dict(filtered[0])
-        else:
-            self._selected_id = ""
-            self._selected_item = {}
+        snapshot = build_capability_registry_snapshot(
+            catalog=self._catalog,
+            config_data=self._config_data,
+            probe_results=self._probe_results,
+            query=self._query.lower(),
+            source_filter=self._source_filter,
+            selected_id=self._selected_id,
+        )
+        self._overview = dict(snapshot.overview)
+        self._items = [dict(item) for item in snapshot.items]
+        self._selected_id = snapshot.selected_id
+        self._selected_item = dict(snapshot.selected_item)
         self.changed.emit()
-
-    def _matches_filters(self, item: dict[str, object], query: str) -> bool:
-        if self._source_filter == "builtin" and item.get("kind") != "builtin":
-            return False
-        if self._source_filter == "mcp" and item.get("kind") != "mcp_server":
-            return False
-        if self._source_filter == "attention" and not bool(item.get("needsAttention")):
-            return False
-        if not query:
-            return True
-        haystack = _as_str(item.get("searchText", ""), "").lower()
-        return query in haystack
 
     def _submit_task(self, kind: str, coro: Coroutine[Any, Any, Any]) -> None:
         try:
