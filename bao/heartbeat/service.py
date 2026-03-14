@@ -59,6 +59,7 @@ class HeartbeatService:
         on_notify: Callable[[str], Coroutine[Any, Any, None]] | None = None,
         interval_s: int = 30 * 60,
         enabled: bool = True,
+        service_tier: str | None = None,
     ):
         self.workspace = workspace
         self.provider = provider
@@ -67,6 +68,7 @@ class HeartbeatService:
         self.on_notify = on_notify
         self.interval_s = interval_s
         self.enabled = enabled
+        self.service_tier = service_tier
         self._running = False
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
@@ -104,6 +106,7 @@ class HeartbeatService:
             ],
             tools=_HEARTBEAT_TOOL,
             model=self.model,
+            service_tier=self.service_tier,
         )
 
         if not response.has_tool_calls:

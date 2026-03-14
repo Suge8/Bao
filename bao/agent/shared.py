@@ -187,6 +187,7 @@ async def call_provider_chat(
     temperature: float,
     max_tokens: int,
     reasoning_effort: str | None,
+    service_tier: str | None,
     source: str,
     on_progress: Callable[[str], Awaitable[None]] | None = None,
     patched_log_label: str,
@@ -202,6 +203,7 @@ async def call_provider_chat(
             temperature=temperature,
             max_tokens=max_tokens,
             reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
             on_progress=on_progress,
             source=source,
         )
@@ -548,6 +550,7 @@ async def call_experience_llm(
     model: str,
     utility_provider: Any | None,
     utility_model: str | None,
+    service_tier: str | None,
 ) -> dict[str, Any] | None:
     """Call LLM for experience-related tasks (compression, sufficiency, etc.)."""
     mode = (experience_mode or "utility").lower()
@@ -581,6 +584,7 @@ async def call_experience_llm(
         model=chosen_model,
         temperature=0.3,
         max_tokens=512,
+        service_tier=service_tier,
         source=source,
     )
     return parse_llm_json(response.content)

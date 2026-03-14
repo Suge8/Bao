@@ -320,6 +320,7 @@ class AgentDefaults(Base):
     max_tool_iterations: int = 50
     memory_window: int = 100
     reasoning_effort: str | None = None
+    service_tier: str | None = None
     context_management: str = "auto"  # off | observe | auto | aggressive
     tool_output_preview_chars: int = 3000
     tool_output_offload_chars: int = 8000

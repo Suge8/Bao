@@ -53,8 +53,12 @@ _JSONC_TEMPLATE = """\
       "maxToolIterations": 50,
       "memoryWindow": 100,
       // 推理强度（可选）| Reasoning effort (optional)
-      //   "low" | "medium" | "high"
+      //   "off" | "low" | "medium" | "high"
       "reasoningEffort": null,
+      // 服务档位（可选，OpenAI/Codex/兼容中转）| Service tier (optional, OpenAI/Codex/compatible relays)
+      //   "priority" — 更快响应 | faster responses
+      //   "flex"     — 更低成本，延迟可能波动 | lower cost, latency may vary
+      "serviceTier": null,
       // 上下文管理策略 | Context management strategy
       //   "off"        — 关闭，不做任何自动处理 | Disabled, no automatic handling
       //   "auto"       — 自动管理：大输出外置+上下文压实(推荐) | Auto: offload large outputs + compact context (recommended)

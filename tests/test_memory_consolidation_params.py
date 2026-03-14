@@ -25,6 +25,7 @@ async def test_memory_consolidation_inherits_generation_parameters(tmp_path) -> 
         temperature=0.25,
         max_tokens=321,
         reasoning_effort="low",
+        service_tier="priority",
     )
     loop.context.memory.read_long_term = MagicMock(return_value="")
     loop.context.memory.append_history = MagicMock()
@@ -45,3 +46,4 @@ async def test_memory_consolidation_inherits_generation_parameters(tmp_path) -> 
     assert kwargs["temperature"] == 0.25
     assert kwargs["max_tokens"] == 321
     assert kwargs["reasoning_effort"] == "low"
+    assert kwargs["service_tier"] == "priority"

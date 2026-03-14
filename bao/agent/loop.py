@@ -326,6 +326,7 @@ class AgentLoop:
         max_tokens: int = 4096,
         memory_window: int = 50,
         reasoning_effort: str | None = None,
+        service_tier: str | None = None,
         search_config: "WebSearchConfig | None" = None,
         web_proxy: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
@@ -351,6 +352,7 @@ class AgentLoop:
         self.max_tokens = max_tokens
         self.memory_window = memory_window
         self.reasoning_effort = reasoning_effort
+        self.service_tier = service_tier
         self.search_config = search_config
         self.web_proxy = web_proxy
         self.exec_config = exec_config or ExecToolConfig()
@@ -391,6 +393,7 @@ class AgentLoop:
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
             search_config=search_config,
             web_proxy=web_proxy,
             exec_config=self.exec_config,
@@ -1809,6 +1812,7 @@ class AgentLoop:
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             reasoning_effort=self.reasoning_effort,
+            service_tier=self.service_tier,
             on_progress=stream_progress,
             source="main",
             patched_log_label="Patched",
@@ -4112,6 +4116,7 @@ Respond with ONLY valid JSON, no markdown fences."""
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
                     reasoning_effort=self.reasoning_effort,
+                    service_tier=self.service_tier,
                     source="utility",
                 ),
                 timeout=90,
@@ -4172,6 +4177,7 @@ Respond with ONLY valid JSON, no markdown fences."""
             model=model,
             temperature=0.3,
             max_tokens=512,
+            service_tier=self.service_tier,
             source="utility",
         )
         return shared.parse_llm_json(response.content)
@@ -4255,6 +4261,7 @@ Respond with ONLY valid JSON, no markdown fences."""
             model=self.model,
             utility_provider=self._utility_provider,
             utility_model=self._utility_model,
+            service_tier=self.service_tier,
         )
 
     def _compact_messages(

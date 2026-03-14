@@ -70,6 +70,7 @@ def test_call_provider_chat_repairs_messages_and_clears_images() -> None:
             temperature=0.1,
             max_tokens=16,
             reasoning_effort=None,
+            service_tier="priority",
             source="test",
             patched_log_label="Patched",
         )
@@ -77,6 +78,7 @@ def test_call_provider_chat_repairs_messages_and_clears_images() -> None:
 
     assert result == {"ok": True}
     assert provider.calls and provider.calls[0]["source"] == "test"
+    assert provider.calls[0]["service_tier"] == "priority"
     assert "_image" not in messages[0]
     assert len(messages) == 2
     assert messages[1]["role"] == "tool"

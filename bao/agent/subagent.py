@@ -158,6 +158,7 @@ class SubagentManager:
         temperature: float = 0.7,
         max_tokens: int = 4096,
         reasoning_effort: str | None = None,
+        service_tier: str | None = None,
         search_config: "WebSearchConfig | None" = None,
         web_proxy: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
@@ -188,6 +189,7 @@ class SubagentManager:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.reasoning_effort = reasoning_effort
+        self.service_tier = service_tier
         self.search_config = search_config
         self.web_proxy = web_proxy
         self.exec_config = exec_config or ExecToolConfig()
@@ -653,6 +655,7 @@ class SubagentManager:
             model=self.model,
             utility_provider=self._utility_provider,
             utility_model=self._utility_model,
+            service_tier=self.service_tier,
         )
 
     @staticmethod
@@ -1030,6 +1033,7 @@ class SubagentManager:
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             reasoning_effort=self.reasoning_effort,
+            service_tier=self.service_tier,
             source="subagent",
             patched_log_label="Subagent repaired",
         )

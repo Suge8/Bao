@@ -219,12 +219,14 @@ async def test_call_experience_llm_utility_mode_falls_back_to_main(bus, tmp_path
         bus=bus,
         model="test-model",
         experience_mode="utility",
+        service_tier="priority",
     )
 
     result = await manager._call_experience_llm("system", "prompt")
     assert result == {"ok": True}
     provider.chat.assert_awaited_once()
     assert provider.chat.await_args.kwargs["source"] == "utility"
+    assert provider.chat.await_args.kwargs["service_tier"] == "priority"
 
 
 def test_subagent_error_detection_avoids_no_errors_false_positive():

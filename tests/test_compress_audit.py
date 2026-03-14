@@ -138,6 +138,7 @@ async def test_experience_utility_mode_falls_back_to_main_provider(tmp_path: Pat
     loop = _make_loop(tmp_path)
     loop._experience_mode = "utility"
     loop._utility_provider = None
+    loop.service_tier = "priority"
 
     mocked_chat = AsyncMock(return_value=LLMResponse(content='{"ok": true}'))
     with patch.object(loop.provider, "chat", new=mocked_chat):
@@ -148,6 +149,7 @@ async def test_experience_utility_mode_falls_back_to_main_provider(tmp_path: Pat
     await_args = mocked_chat.await_args
     assert await_args is not None
     assert await_args.kwargs["source"] == "utility"
+    assert await_args.kwargs["service_tier"] == "priority"
 
 
 # ---------------------------------------------------------------------------

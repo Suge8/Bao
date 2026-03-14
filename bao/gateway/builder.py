@@ -263,6 +263,7 @@ async def _generate_startup_greeting(
             model=model,
             max_tokens=80,
             temperature=0.7,
+            service_tier=getattr(agent, "service_tier", None),
         )
         text = (response.content or "").strip()
         return text or prompt
@@ -313,6 +314,7 @@ def build_gateway_stack(
         max_iterations=config.agents.defaults.max_tool_iterations,
         memory_window=config.agents.defaults.memory_window,
         reasoning_effort=config.agents.defaults.reasoning_effort,
+        service_tier=config.agents.defaults.service_tier,
         search_config=config.tools.web.search,
         web_proxy=config.tools.web.proxy,
         exec_config=config.tools.exec,
@@ -403,6 +405,7 @@ def build_gateway_stack(
         on_notify=on_heartbeat_notify,
         interval_s=hb_cfg.interval_s,
         enabled=hb_cfg.enabled,
+        service_tier=config.agents.defaults.service_tier,
     )
 
     channels = ChannelManager(config, bus, on_channel_error=on_channel_error)
