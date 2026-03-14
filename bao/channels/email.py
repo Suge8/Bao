@@ -72,7 +72,7 @@ class EmailChannel(BaseChannel):
             self.mark_ready()
             return
 
-        self._running = True
+        self._start_lifecycle()
         self.mark_ready()
         logger.info("📡 邮件通道启动 / channel start: IMAP polling mode")
 
@@ -99,12 +99,14 @@ class EmailChannel(BaseChannel):
             except Exception as e:
                 logger.error("❌ 邮件轮询异常 / polling error: {}", e)
 
-            await asyncio.sleep(poll_seconds)
+            if await self._wait_stop_or_timeout(poll_seconds):
+                break
 
     async def stop(self) -> None:
         """Stop polling loop."""
-        self._running = False
+        self._stop_lifecycle()
         self.mark_not_ready()
+        self._reset_lifecycle()
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send email via SMTP."""

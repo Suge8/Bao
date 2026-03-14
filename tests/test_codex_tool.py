@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from bao.agent.loop import AgentLoop
 from bao.agent.tools.codex import CodexDetailsTool, CodexTool
+from bao.agent.tools.coding_session_store import CodingSessionEvent
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider, LLMResponse
 
@@ -31,6 +32,23 @@ class _DummyProvider(LLMProvider):
 
 def _run(coro: Any) -> Any:
     return asyncio.run(coro)
+
+
+class _FakeSessionStore:
+    def __init__(self) -> None:
+        self.sessions: dict[tuple[str, str], str] = {}
+        self.events: list[CodingSessionEvent] = []
+
+    async def load(self, *, context_key: str, backend: str) -> str | None:
+        return self.sessions.get((context_key, backend))
+
+    async def publish(self, event: CodingSessionEvent) -> None:
+        self.events.append(event)
+        key = (event.context_key, event.backend)
+        if event.action == "active" and event.session_id:
+            self.sessions[key] = event.session_id
+        elif event.action == "cleared":
+            self.sessions.pop(key, None)
 
 
 def test_codex_tool_missing_binary() -> None:
@@ -100,6 +118,7 @@ def test_codex_tool_full_auto_enabled_explicitly() -> None:
 def test_codex_tool_continue_uses_context_session() -> None:
     with tempfile.TemporaryDirectory() as d:
         calls: list[list[str]] = []
+        store = _FakeSessionStore()
 
         async def _fake_run(cmd: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:
             del cwd, timeout_seconds
@@ -112,7 +131,7 @@ def test_codex_tool_continue_uses_context_session() -> None:
                 stdout = json.dumps({"message": "ok2"})
             return {"timed_out": False, "returncode": 0, "stdout": stdout, "stderr": ""}
 
-        tool = CodexTool(workspace=Path(d))
+        tool = CodexTool(workspace=Path(d), session_store=store)
         tool.set_context("telegram", "alice")
         with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/codex"):
             with patch.object(CodexTool, "_run_command", staticmethod(_fake_run)):
@@ -122,43 +141,61 @@ def test_codex_tool_continue_uses_context_session() -> None:
 
     assert calls and calls[0][0:3] == ["codex", "exec", "resume"]
     assert "sess-cx-a" in calls[0]
+    assert store.sessions[("telegram:alice", "codex")] == "sess-cx-a"
 
 
-def test_codex_tool_retries_once_when_cached_session_is_stale() -> None:
+def test_codex_tool_resume_ignores_sandbox_flag() -> None:
     with tempfile.TemporaryDirectory() as d:
         calls: list[list[str]] = []
+        store = _FakeSessionStore()
+        store.sessions[("telegram:alice", "codex")] = "sess-cx-a"
 
         async def _fake_run(cmd: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:
             del cwd, timeout_seconds
             calls.append(cmd)
-            if len(calls) == 1:
-                return {
-                    "timed_out": False,
-                    "returncode": 1,
-                    "stdout": "",
-                    "stderr": "session not found",
-                }
-
             out_idx = cmd.index("-o") + 1
             Path(cmd[out_idx]).write_text("ok", encoding="utf-8")
-            stdout = json.dumps({"session_id": "sess-cx-fresh", "message": "ok"})
-            return {"timed_out": False, "returncode": 0, "stdout": stdout, "stderr": ""}
+            return {"timed_out": False, "returncode": 0, "stdout": json.dumps({"message": "ok"}), "stderr": ""}
 
-        tool = CodexTool(workspace=Path(d))
+        tool = CodexTool(workspace=Path(d), session_store=store)
         tool.set_context("telegram", "alice")
-        tool._session_by_context["telegram:alice"] = "sess-cx-stale"
+        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/codex"):
+            with patch.object(CodexTool, "_run_command", staticmethod(_fake_run)):
+                _run(tool.execute(prompt="second", continue_session=True, sandbox="read-only"))
+
+    assert calls and calls[0][0:3] == ["codex", "exec", "resume"]
+    assert "-s" not in calls[0]
+
+
+def test_codex_tool_clears_stale_stored_session_without_hidden_retry() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        calls: list[list[str]] = []
+        store = _FakeSessionStore()
+        store.sessions[("telegram:alice", "codex")] = "sess-cx-stale"
+
+        async def _fake_run(cmd: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:
+            del cwd, timeout_seconds
+            calls.append(cmd)
+            return {
+                "timed_out": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "session not found",
+            }
+
+        tool = CodexTool(workspace=Path(d), session_store=store)
+        tool.set_context("telegram", "alice")
         with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/codex"):
             with patch.object(CodexTool, "_run_command", staticmethod(_fake_run)):
                 result = _run(tool.execute(prompt="retry stale", response_format="json"))
 
     payload = json.loads(result)
-    assert payload["status"] == "success"
-    assert payload["session_id"] == "sess-cx-fresh"
-    assert len(calls) == 2
-
+    assert payload["status"] == "error"
+    assert payload["error_type"] == "stale_session"
+    assert len(calls) == 1
     assert calls[0][0:3] == ["codex", "exec", "resume"]
     assert "sess-cx-stale" in calls[0]
-    assert calls[1][0:2] == ["codex", "exec"]
+    assert ("telegram:alice", "codex") not in store.sessions
 
 
 def test_codex_details_fetches_by_request_id() -> None:

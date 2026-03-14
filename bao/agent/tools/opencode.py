@@ -11,6 +11,7 @@ from bao.agent.tools.coding_agent_base import (
     BaseCodingDetailsTool,
     DetailCache,
 )
+from bao.agent.tools.coding_session_store import CodingSessionStore
 
 # Shared cache between OpenCodeTool and OpenCodeDetailsTool
 _opencode_cache = DetailCache()
@@ -25,12 +26,14 @@ class OpenCodeTool(BaseCodingAgentTool):
         workspace: Path,
         allowed_dir: Path | None = None,
         default_timeout_seconds: int = 1800,
+        session_store: CodingSessionStore | None = None,
     ):
         super().__init__(
             workspace=workspace,
             allowed_dir=allowed_dir,
             default_timeout_seconds=default_timeout_seconds,
             detail_cache=_opencode_cache,
+            session_store=session_store,
         )
         self._agent_aliases_by_cwd: dict[str, dict[str, str]] = {}
 
@@ -108,7 +111,7 @@ class OpenCodeTool(BaseCodingAgentTool):
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 2,
-                    "description": "Retry attempts on transient failures",
+                    "description": "Reserved compatibility field; hidden automatic retries are disabled",
                 },
                 "max_output_chars": {
                     "type": "integer",

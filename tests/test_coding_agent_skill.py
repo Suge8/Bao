@@ -84,7 +84,7 @@ class TestSkillMetadata:
         assert "codex" in bins_any
         assert "claude" in bins_any
 
-    def test_agent_browser_skill_has_required_cli_metadata(self, tmp_path):
+    def test_agent_browser_skill_has_no_required_cli_metadata(self, tmp_path):
         loader = SkillsLoader(
             workspace=tmp_path,
             builtin_skills_dir=SKILL_DIR,
@@ -96,7 +96,7 @@ class TestSkillMetadata:
         bao_meta = parsed.get("bao", {})
         requires = bao_meta.get("requires", {})
         bins = requires.get("bins", [])
-        assert "agent-browser" in bins
+        assert bins == []
 
     def test_agent_browser_skill_content_prefers_builtin_tool(self, tmp_path):
         loader = SkillsLoader(
@@ -262,7 +262,7 @@ class TestBinsAnyRequirements:
 
 
 class TestAgentBrowserRequirements:
-    def test_agent_browser_filtered_when_cli_missing(self, tmp_path, monkeypatch):
+    def test_agent_browser_not_filtered_when_cli_missing(self, tmp_path, monkeypatch):
         loader = SkillsLoader(workspace=tmp_path, builtin_skills_dir=SKILL_DIR)
         original_which = __import__("shutil").which
         monkeypatch.setattr(
@@ -271,9 +271,9 @@ class TestAgentBrowserRequirements:
         )
         skills = loader.list_skills(filter_unavailable=True)
         names = [s["name"] for s in skills]
-        assert "agent-browser" not in names
+        assert "agent-browser" in names
 
-    def test_agent_browser_missing_requirements_message(self, tmp_path, monkeypatch):
+    def test_agent_browser_missing_requirements_message_is_empty(self, tmp_path, monkeypatch):
         loader = SkillsLoader(workspace=tmp_path, builtin_skills_dir=SKILL_DIR)
         original_which = __import__("shutil").which
         monkeypatch.setattr(
@@ -282,7 +282,7 @@ class TestAgentBrowserRequirements:
         )
         meta = loader._get_skill_meta("agent-browser")
         msg = loader._get_missing_requirements(meta)
-        assert "CLI: agent-browser" in msg
+        assert msg == ""
 
 
 # ---------------------------------------------------------------------------

@@ -3,12 +3,12 @@
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
-from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
 from bao.agent import plan
+from bao.agent.reply_route import TurnContextStore
 from bao.agent.subagent import SpawnResult
 from bao.agent.tools.base import Tool
 from bao.bus.events import OutboundMessage
@@ -28,16 +28,11 @@ class SpawnTool(Tool):
     def __init__(self, manager: "SubagentManager"):
         self._manager = manager
         self._publish_outbound: Callable[[OutboundMessage], Awaitable[None]] | None = None
-        self._origin_channel: ContextVar[str] = ContextVar(
-            "spawn_origin_channel", default="gateway"
-        )
-        self._origin_chat_id: ContextVar[str] = ContextVar("spawn_origin_chat_id", default="direct")
-        self._lang: ContextVar[str] = ContextVar("spawn_lang", default="en")
-        self._reply_metadata: ContextVar[dict[str, Any]] = ContextVar(
-            "spawn_reply_metadata", default={}
-        )
-        self._session_key: ContextVar[str] = ContextVar(
-            "spawn_session_key", default="gateway:direct"
+        self._route = TurnContextStore(
+            "spawn_route",
+            channel="gateway",
+            chat_id="direct",
+            session_key="gateway:direct",
         )
 
     def set_publish_outbound(
@@ -54,30 +49,16 @@ class SpawnTool(Tool):
         reply_metadata: dict[str, Any] | None = None,
     ) -> None:
         """Set the origin context for subagent announcements."""
-        self._origin_channel.set(channel)
-        self._origin_chat_id.set(chat_id)
-        self._lang.set(plan.normalize_language(lang))
-        self._reply_metadata.set(self._normalize_reply_metadata(reply_metadata))
-        self._session_key.set(session_key or f"{channel}:{chat_id}")
-
-    @staticmethod
-    def _normalize_reply_metadata(reply_metadata: dict[str, Any] | None) -> dict[str, Any]:
-        if not isinstance(reply_metadata, dict):
-            return {}
-        slack_meta = reply_metadata.get("slack")
-        if not isinstance(slack_meta, dict):
-            return {}
-        thread_ts = slack_meta.get("thread_ts")
-        if not isinstance(thread_ts, str) or not thread_ts.strip():
-            return {}
-        normalized_slack: dict[str, Any] = {"thread_ts": thread_ts}
-        channel_type = slack_meta.get("channel_type")
-        if isinstance(channel_type, str) and channel_type.strip():
-            normalized_slack["channel_type"] = channel_type
-        return {"slack": normalized_slack}
+        self._route.set(
+            channel=channel,
+            chat_id=chat_id,
+            session_key=session_key or f"{channel}:{chat_id}",
+            lang=plan.normalize_language(lang),
+            reply_metadata=reply_metadata,
+        )
 
     def _spawn_notice_text(self) -> str:
-        if plan.normalize_language(self._lang.get()) == "zh":
+        if plan.normalize_language(self._route.get().lang) == "zh":
             return "已委派子代理处理中，完成后我会同步结果。"
         return "I've delegated this to a subagent and will share the result once it's done."
 
@@ -91,18 +72,19 @@ class SpawnTool(Tool):
         if result.status != "spawned" or result.task is None:
             return
 
-        metadata = dict(self._reply_metadata.get() or {})
+        route = self._route.get()
+        metadata = dict(route.reply_metadata)
         metadata.update(
             {
                 "_subagent_spawn": result.to_payload(),
-                "session_key": self._session_key.get(),
+                "session_key": route.session_key,
             }
         )
 
         await self._publish_outbound(
             OutboundMessage(
-                channel=self._origin_channel.get(),
-                chat_id=self._origin_chat_id.get(),
+                channel=route.channel,
+                chat_id=route.chat_id,
                 content=self._spawn_notice_text(),
                 metadata=metadata,
             )
@@ -161,9 +143,9 @@ class SpawnTool(Tool):
         spawn_kwargs: dict[str, Any] = {
             "task": task,
             "label": label,
-            "origin_channel": self._origin_channel.get(),
-            "origin_chat_id": self._origin_chat_id.get(),
-            "session_key": self._session_key.get(),
+            "origin_channel": self._route.get().channel,
+            "origin_chat_id": self._route.get().chat_id,
+            "session_key": self._route.get().session_key,
             "context_from": context_from if isinstance(context_from, str) else None,
         }
         if isinstance(child_session_key, str):

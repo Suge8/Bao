@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from contextvars import ContextVar
 from typing import Any
 
 from loguru import logger
 
 from bao.agent import plan
+from bao.agent.reply_route import TurnContextStore
 from bao.agent.tools.base import Tool
 from bao.bus.events import OutboundMessage
 from bao.session.manager import SessionManager
@@ -20,14 +20,11 @@ class _PlanToolBase:
     ):
         self._sessions = sessions
         self._publish_outbound = publish_outbound
-        self._origin_channel: ContextVar[str] = ContextVar("plan_origin_channel", default="gateway")
-        self._origin_chat_id: ContextVar[str] = ContextVar("plan_origin_chat_id", default="direct")
-        self._lang: ContextVar[str] = ContextVar("plan_lang", default="en")
-        self._reply_metadata: ContextVar[dict[str, Any]] = ContextVar(
-            "plan_reply_metadata", default={}
-        )
-        self._session_key: ContextVar[str] = ContextVar(
-            "plan_session_key", default="gateway:direct"
+        self._route = TurnContextStore(
+            "plan_route",
+            channel="gateway",
+            chat_id="direct",
+            session_key="gateway:direct",
         )
 
     def set_context(
@@ -38,42 +35,30 @@ class _PlanToolBase:
         lang: str | None = None,
         reply_metadata: dict[str, Any] | None = None,
     ) -> None:
-        _ = self._origin_channel.set(channel)
-        _ = self._origin_chat_id.set(chat_id)
-        _ = self._lang.set(plan.normalize_language(lang))
-        _ = self._reply_metadata.set(self._normalize_reply_metadata(reply_metadata))
-        _ = self._session_key.set(session_key or f"{channel}:{chat_id}")
+        self._route.set(
+            channel=channel,
+            chat_id=chat_id,
+            session_key=session_key or f"{channel}:{chat_id}",
+            lang=plan.normalize_language(lang),
+            reply_metadata=reply_metadata,
+        )
 
     def _get_session_key(self) -> str:
-        key = self._session_key.get().strip()
+        key = self._route.get().session_key.strip()
         if key:
             return key
-        return f"{self._origin_channel.get()}:{self._origin_chat_id.get()}"
+        route = self._route.get()
+        return f"{route.channel}:{route.chat_id}"
 
     def _get_language(self) -> str:
-        return plan.normalize_language(self._lang.get())
-
-    @staticmethod
-    def _normalize_reply_metadata(reply_metadata: dict[str, Any] | None) -> dict[str, Any]:
-        if not isinstance(reply_metadata, dict):
-            return {}
-        slack_meta = reply_metadata.get("slack")
-        if not isinstance(slack_meta, dict):
-            return {}
-        thread_ts = slack_meta.get("thread_ts")
-        if not isinstance(thread_ts, str) or not thread_ts.strip():
-            return {}
-        normalized_slack: dict[str, Any] = {"thread_ts": thread_ts}
-        channel_type = slack_meta.get("channel_type")
-        if isinstance(channel_type, str) and channel_type.strip():
-            normalized_slack["channel_type"] = channel_type
-        return {"slack": normalized_slack}
+        return plan.normalize_language(self._route.get().lang)
 
     async def _notify_user(self, content: str, *, action: str) -> None:
         if not self._publish_outbound or not content.strip():
             return
         try:
-            payload = dict(self._reply_metadata.get() or {})
+            route = self._route.get()
+            payload = dict(route.reply_metadata)
             payload.update(
                 {
                     "_plan": True,
@@ -83,8 +68,8 @@ class _PlanToolBase:
             )
             await self._publish_outbound(
                 OutboundMessage(
-                    channel=self._origin_channel.get(),
-                    chat_id=self._origin_chat_id.get(),
+                    channel=route.channel,
+                    chat_id=route.chat_id,
                     content=content,
                     metadata=payload,
                 )
@@ -93,8 +78,8 @@ class _PlanToolBase:
             logger.warning(
                 "⚠️ 计划通知发送失败 / plan notify failed: action={} channel={} chat_id={} session={} err={}",
                 action,
-                self._origin_channel.get(),
-                self._origin_chat_id.get(),
+                route.channel,
+                route.chat_id,
                 self._get_session_key(),
                 exc,
             )
@@ -146,7 +131,7 @@ class CreatePlanTool(_PlanToolBase, Tool):
         notify_text = plan.format_plan_for_channel(
             state,
             lang=self._get_language(),
-            channel=self._origin_channel.get(),
+            channel=self._route.get().channel,
         )
         await self._notify_user(
             notify_text,
@@ -225,7 +210,7 @@ class UpdatePlanStepTool(_PlanToolBase, Tool):
             archived_for_notify = plan.archive_plan_for_channel(
                 new_state,
                 lang=self._get_language(),
-                channel=self._origin_channel.get(),
+                channel=self._route.get().channel,
             )
             if archived:
                 session.metadata[plan.PLAN_ARCHIVED_KEY] = archived
@@ -234,7 +219,7 @@ class UpdatePlanStepTool(_PlanToolBase, Tool):
         notify_text = plan.format_plan_for_channel(
             new_state,
             lang=self._get_language(),
-            channel=self._origin_channel.get(),
+            channel=self._route.get().channel,
         )
         if archived_for_notify:
             notify_text = f"{notify_text}\n{archived_for_notify}"
@@ -277,7 +262,7 @@ class ClearPlanTool(_PlanToolBase, Tool):
         notify_text = plan.plan_cleared_text_for_channel(
             archived_text,
             lang=self._get_language(),
-            channel=self._origin_channel.get(),
+            channel=self._route.get().channel,
         )
         await self._notify_user(notify_text, action="clear")
         return clear_text

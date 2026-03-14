@@ -3,7 +3,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from bao.agent.tool_result import ToolTextResult, cleanup_result_file
+from bao.agent.tool_result import (
+    ToolExecutionResult,
+    ToolTextResult,
+    cleanup_result_file,
+    tool_result_excerpt,
+)
 from bao.agent.tools.base import Tool
 from bao.agent.tools.filesystem import ReadFileTool
 from bao.agent.tools.registry import ToolRegistry
@@ -91,16 +96,37 @@ async def test_registry_returns_validation_error() -> None:
     reg = ToolRegistry()
     reg.register(SampleTool())
     result = await reg.execute("sample", {"query": "hi"})
-    assert "Invalid parameters" in result
+    assert isinstance(result, ToolExecutionResult)
+    assert result.code == "invalid_params"
+    assert "Invalid parameters" in tool_result_excerpt(result)
 
 
 async def test_registry_unknown_tool_shows_available() -> None:
     reg = ToolRegistry()
     reg.register(SampleTool())
     result = await reg.execute("nonexistent_tool", {})
-    assert "Available" in result
-    assert "sample" in result
-    assert "[Analyze the error" in result
+    text = tool_result_excerpt(result)
+    assert isinstance(result, ToolExecutionResult)
+    assert result.code == "tool_not_found"
+    assert "Available" in text
+    assert "sample" in text
+    assert "[Analyze the error" in text
+
+
+async def test_registry_returns_invalid_params_on_argument_parse_error() -> None:
+    reg = ToolRegistry()
+    reg.register(SampleTool())
+    result = await reg.execute(
+        "sample",
+        {},
+        raw_arguments='{"query"',
+        argument_parse_error="unexpected end of input",
+    )
+    text = tool_result_excerpt(result)
+    assert isinstance(result, ToolExecutionResult)
+    assert result.code == "invalid_params"
+    assert "failed to parse tool arguments" in text
+    assert 'Raw arguments: {"query"' in text
 
 
 def test_exec_extract_absolute_paths_keeps_full_windows_path() -> None:
@@ -320,5 +346,106 @@ async def test_registry_auto_casts_before_validation() -> None:
 
     result = await reg.execute("cast_test", {"count": "7", "enabled": "true"})
 
-    assert "'count': 7" in result
-    assert "'enabled': True" in result
+    text = tool_result_excerpt(result)
+    assert "'count': 7" in text
+    assert "'enabled': True" in text
+
+
+class CountingSchemaTool(SampleTool):
+    def __init__(self) -> None:
+        self.calls: list[bool] = []
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "title": "SampleTitle",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "query text",
+                    "default": "x",
+                    "examples": ["x"],
+                    "minLength": 2,
+                },
+                "meta": {
+                    "type": "object",
+                    "title": "MetaTitle",
+                    "properties": {
+                        "tag": {
+                            "type": "string",
+                            "description": "tag",
+                        },
+                        "flags": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "description": "flag",
+                            },
+                        },
+                    },
+                    "required": ["tag"],
+                },
+            },
+            "required": ["query"],
+        }
+
+    def to_schema(self, *, slim: bool = False) -> dict[str, Any]:
+        self.calls.append(slim)
+        return super().to_schema(slim=slim)
+
+
+def test_tool_to_schema_slim_strips_nested_metadata() -> None:
+    tool = CountingSchemaTool()
+
+    full = tool.to_schema()
+    slim = tool.to_schema(slim=True)
+
+    assert full["function"]["parameters"]["title"] == "SampleTitle"
+    assert full["function"]["parameters"]["properties"]["query"]["description"] == "query text"
+    params = slim["function"]["parameters"]
+    assert params["type"] == "object"
+    assert "title" not in params
+    assert "description" not in params["properties"]["query"]
+    assert "default" not in params["properties"]["query"]
+    assert "examples" not in params["properties"]["query"]
+    assert params["properties"]["query"]["minLength"] == 2
+    assert params["properties"]["meta"]["required"] == ["tag"]
+    assert params["properties"]["meta"]["properties"]["flags"]["items"]["type"] == "string"
+
+
+def test_registry_caches_full_and_slim_schemas_separately() -> None:
+    reg = ToolRegistry()
+    tool = CountingSchemaTool()
+    reg.register(tool)
+
+    first_full = reg.get_definitions()
+    second_full = reg.get_definitions()
+    first_slim = reg.get_definitions(slim=True)
+    second_slim = reg.get_definitions(slim=True)
+
+    assert tool.calls == [False, True]
+    assert first_full == second_full
+    assert first_slim == second_slim
+    assert "title" not in first_slim[0]["function"]["parameters"]
+
+
+def test_registry_switches_to_slim_schema_when_tool_count_exceeds_budget() -> None:
+    class NamedCountingSchemaTool(CountingSchemaTool):
+        def __init__(self, suffix: int) -> None:
+            super().__init__()
+            self._suffix = suffix
+
+        @property
+        def name(self) -> str:
+            return f"counting_{self._suffix}"
+
+    reg = ToolRegistry()
+    for idx in range(9):
+        reg.register(NamedCountingSchemaTool(idx))
+
+    definitions, slim = reg.get_budgeted_definitions()
+
+    assert slim is True
+    assert len(definitions) == 9
+    assert "title" not in definitions[0]["function"]["parameters"]

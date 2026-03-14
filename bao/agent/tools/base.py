@@ -165,13 +165,52 @@ class Tool(ABC):
                 )
         return errors
 
-    def to_schema(self) -> dict[str, Any]:
-        """Convert tool to OpenAI function schema format."""
+    @classmethod
+    def slim_schema_definition(cls, schema: dict[str, Any]) -> dict[str, Any]:
         return {
+            "type": "function",
+            "function": {
+                "name": str(schema.get("function", {}).get("name", "")),
+                "description": str(schema.get("function", {}).get("description", "")),
+                "parameters": cls._slim_parameters(
+                    schema.get("function", {}).get("parameters", {})
+                ),
+            },
+        }
+
+    @classmethod
+    def _slim_parameters(cls, schema: Any) -> Any:
+        if isinstance(schema, list):
+            return [cls._slim_parameters(item) for item in schema]
+        if not isinstance(schema, dict):
+            return schema
+
+        slim: dict[str, Any] = {}
+        for key in ("type", "required", "enum", "minimum", "maximum", "minLength", "maxLength"):
+            if key in schema:
+                slim[key] = schema[key]
+        if "properties" in schema and isinstance(schema["properties"], dict):
+            slim["properties"] = {
+                name: cls._slim_parameters(value)
+                for name, value in schema["properties"].items()
+            }
+        if "items" in schema:
+            slim["items"] = cls._slim_parameters(schema["items"])
+        return slim
+
+    def to_schema(self, *, slim: bool = False) -> dict[str, Any]:
+        """Convert tool to OpenAI function schema format."""
+        schema = {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
                 "parameters": self.parameters,
             },
+        }
+        if slim:
+            return self.slim_schema_definition(schema)
+        return {
+            "type": schema["type"],
+            "function": schema["function"],
         }

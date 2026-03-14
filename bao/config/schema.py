@@ -413,11 +413,18 @@ class WebSearchConfig(Base):
     max_results: int = 5
 
 
+class WebBrowserConfig(Base):
+    """Managed browser automation configuration."""
+
+    enabled: bool = True
+
+
 class WebToolsConfig(Base):
     """Web tools configuration."""
 
     proxy: str | None = None
     search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+    browser: WebBrowserConfig = Field(default_factory=WebBrowserConfig)
 
 
 class ExecToolConfig(Base):

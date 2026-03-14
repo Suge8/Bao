@@ -69,6 +69,7 @@ class HeartbeatService:
         self.enabled = enabled
         self._running = False
         self._task: asyncio.Task | None = None
+        self._stop_event = asyncio.Event()
 
     @property
     def heartbeat_file(self) -> Path:
@@ -121,34 +122,37 @@ class HeartbeatService:
             return
 
         self._running = True
+        self._stop_event.clear()
         self._task = asyncio.create_task(self._run_loop())
         logger.info("💓 心跳已启动 / started ({}s)", self.interval_s)
 
     def stop(self) -> None:
         """Stop the heartbeat service."""
         self._running = False
+        self._stop_event.set()
         if self._task:
             self._task.cancel()
             self._task = None
 
     async def _run_loop(self) -> None:
         """Main heartbeat loop."""
-        while self._running:
+        while self._running and not self._stop_event.is_set():
             try:
-                await asyncio.sleep(self.interval_s)
-                if self._running:
-                    await self._tick()
+                await asyncio.wait_for(self._stop_event.wait(), timeout=self.interval_s)
+            except asyncio.TimeoutError:
+                if self._running and not self._stop_event.is_set():
+                    await self.execute_once()
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error("❌ 心跳异常 / loop error: {}", e)
 
-    async def _tick(self) -> None:
-        """Execute a single heartbeat tick."""
+    async def execute_once(self, *, notify: bool = True) -> str | None:
+        """Execute heartbeat decision once and optionally notify."""
         content = self._read_heartbeat_file()
         if not content:
             logger.debug("💓 心跳文件缺失 / file missing: HEARTBEAT.md missing or empty")
-            return
+            return None
 
         logger.debug("💓 心跳检查任务 / checking tasks")
 
@@ -157,23 +161,19 @@ class HeartbeatService:
 
             if action != "run":
                 logger.debug("💓 心跳无需上报 / nothing to report")
-                return
+                return None
 
             logger.info("💓 心跳发现任务 / tasks found: executing")
             if self.on_execute:
                 response = await self.on_execute(tasks)
-                if response and self.on_notify:
+                if response and notify and self.on_notify:
                     logger.info("💓 心跳执行完成 / completed: delivering response")
                     await self.on_notify(response)
+                return response
         except Exception:
             logger.exception("❌ 心跳执行失败 / execution failed")
+        return None
 
     async def trigger_now(self) -> str | None:
         """Manually trigger a heartbeat."""
-        content = self._read_heartbeat_file()
-        if not content:
-            return None
-        action, tasks = await self._decide(content)
-        if action != "run" or not self.on_execute:
-            return None
-        return await self.on_execute(tasks)
+        return await self.execute_once(notify=False)

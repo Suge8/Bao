@@ -3,6 +3,8 @@
 import asyncio
 import importlib
 
+from bao.agent.tool_result import ToolExecutionResult
+
 pytest = importlib.import_module("pytest")
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -37,7 +39,9 @@ async def test_await_tool_with_interrupt_cancels_long_tool():
 
     result = await loop._await_tool_with_interrupt(tool_task, run_task)
 
-    assert result == "Cancelled by soft interrupt."
+    assert isinstance(result, ToolExecutionResult)
+    assert result.status == "interrupted"
+    assert result.code == "soft_interrupt"
     assert cancelled.is_set()
     assert tool_task.done()
 
@@ -118,6 +122,7 @@ async def test_await_tool_with_interrupt_swallowed_cancel_bounded_wait():
     result = await loop._await_tool_with_interrupt(tool_task, run_task)
     elapsed = time.monotonic() - t0
 
-    assert result == "Cancelled by soft interrupt."
+    assert isinstance(result, ToolExecutionResult)
+    assert result.status == "interrupted"
     # Must not hang 60s; bounded by _TOOL_CANCEL_TIMEOUT
     assert elapsed < loop._TOOL_CANCEL_TIMEOUT + 1.0

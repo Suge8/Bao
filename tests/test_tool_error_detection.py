@@ -1,4 +1,5 @@
 from bao.agent import shared
+from bao.agent.tool_result import ToolExecutionResult
 
 _ERROR_KEYWORDS = ("error:", "traceback", "failed", "exception", "permission denied")
 
@@ -123,12 +124,28 @@ def test_tool_trace_contains_ok_and_error_substrings() -> None:
 def test_interrupted_not_error() -> None:
     from bao.agent.shared import parse_tool_error
 
-    info = parse_tool_error("exec", "Cancelled by soft interrupt.", _ERROR_KEYWORDS)
+    info = parse_tool_error("exec", ToolExecutionResult.interrupted(), _ERROR_KEYWORDS)
     assert info is not None
     assert info.is_error is False
     assert info.category == "interrupted"
     # has_tool_error must return False for interrupted
-    assert not shared.has_tool_error("exec", "Cancelled by soft interrupt.", _ERROR_KEYWORDS)
+    assert not shared.has_tool_error("exec", ToolExecutionResult.interrupted(), _ERROR_KEYWORDS)
+
+
+def test_parse_tool_error_structured_invalid_params() -> None:
+    from bao.agent.shared import parse_tool_error
+
+    info = parse_tool_error(
+        "my_tool",
+        ToolExecutionResult.error(
+            code="invalid_params",
+            message="Invalid tool parameters",
+            value="Error: Invalid parameters for tool 'my_tool': missing x",
+        ),
+        _ERROR_KEYWORDS,
+    )
+    assert info is not None
+    assert info.category == "invalid_params"
 
 
 def test_parse_tool_error_invalid_params() -> None:

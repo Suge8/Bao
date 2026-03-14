@@ -244,6 +244,7 @@ class MochatChannel(BaseChannel):
         self._http: httpx.AsyncClient | None = None
         self._socket: Any = None
         self._ws_connected = self._ws_ready = False
+        self._transport_mode = "stopped"
 
         self._state_dir = get_data_path() / "mochat"
         self._cursor_path = self._state_dir / "session_cursors.json"
@@ -261,7 +262,6 @@ class MochatChannel(BaseChannel):
         self._seen_queue: dict[str, deque[str]] = {}
         self._delay_states: dict[str, DelayState] = {}
 
-        self._fallback_mode = False
         self._session_fallback_tasks: dict[str, asyncio.Task[None]] = {}
         self._panel_fallback_tasks: dict[str, asyncio.Task[None]] = {}
         self._refresh_task: asyncio.Task[None] | None = None
@@ -280,10 +280,12 @@ class MochatChannel(BaseChannel):
         self._state_dir.mkdir(parents=True, exist_ok=True)
         await self._load_session_cursors()
         self._seed_targets_from_config()
-        await self._refresh_targets(subscribe_new=False)
+        await self._refresh_targets()
 
-        if not await self._start_socket_client():
-            await self._ensure_fallback_workers()
+        socket_started = await self._start_socket_client()
+        await self._reconcile_transport_mode(
+            "socket" if socket_started and self._ws_ready else "fallback"
+        )
 
         self._refresh_task = asyncio.create_task(self._refresh_loop())
         await self._wait_until_stopped()
@@ -295,7 +297,7 @@ class MochatChannel(BaseChannel):
             self._refresh_task.cancel()
             self._refresh_task = None
 
-        await self._stop_fallback_workers()
+        await self._reconcile_transport_mode("stopped")
         await self._cancel_delay_timers()
 
         if self._socket:
@@ -314,6 +316,7 @@ class MochatChannel(BaseChannel):
             await self._http.aclose()
             self._http = None
         self._ws_connected = self._ws_ready = False
+        self._transport_mode = "stopped"
         self._reset_lifecycle()
 
     async def send(self, msg: OutboundMessage) -> None:
@@ -405,7 +408,7 @@ class MochatChannel(BaseChannel):
             logger.info("✅ Mochat 已连接 / ws connected: websocket connected")
             subscribed = await self._subscribe_all()
             self._ws_ready = subscribed
-            await (self._stop_fallback_workers() if subscribed else self._ensure_fallback_workers())
+            await self._reconcile_transport_mode("socket" if subscribed else "fallback")
 
         @client.event
         async def disconnect() -> None:
@@ -413,7 +416,7 @@ class MochatChannel(BaseChannel):
                 return
             self._ws_connected = self._ws_ready = False
             logger.info("ℹ️ Mochat 已断开 / ws disconnected: websocket disconnected")
-            await self._ensure_fallback_workers()
+            await self._reconcile_transport_mode("fallback")
 
         @client.event
         async def connect_error(data: Any) -> None:
@@ -474,7 +477,7 @@ class MochatChannel(BaseChannel):
         ok = await self._subscribe_sessions(sorted(self._session_set))
         ok = await self._subscribe_panels(sorted(self._panel_set)) and ok
         if self._auto_discover_sessions or self._auto_discover_panels:
-            await self._refresh_targets(subscribe_new=True)
+            await self._refresh_targets()
         return ok
 
     async def _subscribe_sessions(self, session_ids: list[str]) -> bool:
@@ -537,15 +540,16 @@ class MochatChannel(BaseChannel):
     async def _refresh_loop(self) -> None:
         interval_s = max(1.0, self.config.refresh_interval_ms / 1000.0)
         while self._running:
-            await asyncio.sleep(interval_s)
+            if await self._wait_stop_or_timeout(interval_s):
+                break
             try:
-                await self._refresh_targets(subscribe_new=self._ws_ready)
+                await self._refresh_targets()
             except Exception as e:
                 logger.warning("⚠️ Mochat 刷新失败 / refresh failed: {}", e)
-            if self._fallback_mode:
-                await self._ensure_fallback_workers()
+            await self._reconcile_transport_mode(self._transport_mode)
 
-    async def _refresh_targets(self, subscribe_new: bool) -> None:
+    async def _refresh_targets(self) -> None:
+        subscribe_new = self._transport_mode == "socket"
         if self._auto_discover_sessions:
             await self._refresh_sessions_directory(subscribe_new)
         if self._auto_discover_panels:
@@ -582,8 +586,6 @@ class MochatChannel(BaseChannel):
             return
         if self._ws_ready and subscribe_new:
             await self._subscribe_sessions(new_ids)
-        if self._fallback_mode:
-            await self._ensure_fallback_workers()
 
     async def _refresh_panels(self, subscribe_new: bool) -> None:
         try:
@@ -612,38 +614,55 @@ class MochatChannel(BaseChannel):
             return
         if self._ws_ready and subscribe_new:
             await self._subscribe_panels(new_ids)
-        if self._fallback_mode:
-            await self._ensure_fallback_workers()
 
     # ---- fallback workers --------------------------------------------------
 
-    async def _ensure_fallback_workers(self) -> None:
-        if not self._running:
+    async def _reconcile_transport_mode(self, mode: str) -> None:
+        if mode not in {"socket", "fallback", "stopped"}:
+            mode = "fallback"
+        self._transport_mode = mode
+        if mode == "fallback" and self._running:
+            self._sync_fallback_workers()
             return
-        self._fallback_mode = True
-        for sid in sorted(self._session_set):
-            t = self._session_fallback_tasks.get(sid)
-            if not t or t.done():
+        await self._cancel_fallback_workers()
+
+    def _sync_fallback_workers(self) -> None:
+        desired_sessions = set(self._session_set)
+        desired_panels = set(self._panel_set)
+
+        for sid, task in list(self._session_fallback_tasks.items()):
+            if sid in desired_sessions and not task.done():
+                continue
+            task.cancel()
+            self._session_fallback_tasks.pop(sid, None)
+        for pid, task in list(self._panel_fallback_tasks.items()):
+            if pid in desired_panels and not task.done():
+                continue
+            task.cancel()
+            self._panel_fallback_tasks.pop(pid, None)
+
+        for sid in sorted(desired_sessions):
+            task = self._session_fallback_tasks.get(sid)
+            if task is None:
                 self._session_fallback_tasks[sid] = asyncio.create_task(
                     self._session_watch_worker(sid)
                 )
-        for pid in sorted(self._panel_set):
-            t = self._panel_fallback_tasks.get(pid)
-            if not t or t.done():
+        for pid in sorted(desired_panels):
+            task = self._panel_fallback_tasks.get(pid)
+            if task is None:
                 self._panel_fallback_tasks[pid] = asyncio.create_task(self._panel_poll_worker(pid))
 
-    async def _stop_fallback_workers(self) -> None:
-        self._fallback_mode = False
+    async def _cancel_fallback_workers(self) -> None:
         tasks = [*self._session_fallback_tasks.values(), *self._panel_fallback_tasks.values()]
-        for t in tasks:
-            t.cancel()
+        for task in tasks:
+            task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._session_fallback_tasks.clear()
         self._panel_fallback_tasks.clear()
 
     async def _session_watch_worker(self, session_id: str) -> None:
-        while self._running and self._fallback_mode:
+        while self._running and self._transport_mode == "fallback":
             try:
                 payload = await self._post_json(
                     "/api/claw/sessions/watch",
@@ -659,11 +678,12 @@ class MochatChannel(BaseChannel):
                 break
             except Exception as e:
                 logger.warning("⚠️ Mochat 轮询回退异常 / fallback watch error: {} {}", session_id, e)
-                await asyncio.sleep(max(0.1, self.config.retry_delay_ms / 1000.0))
+                if await self._wait_stop_or_timeout(max(0.1, self.config.retry_delay_ms / 1000.0)):
+                    break
 
     async def _panel_poll_worker(self, panel_id: str) -> None:
         sleep_s = max(1.0, self.config.refresh_interval_ms / 1000.0)
-        while self._running and self._fallback_mode:
+        while self._running and self._transport_mode == "fallback":
             try:
                 resp = await self._post_json(
                     "/api/claw/groups/panels/messages",
@@ -692,7 +712,8 @@ class MochatChannel(BaseChannel):
                 break
             except Exception as e:
                 logger.warning("⚠️ Mochat 面板轮询异常 / panel poll error: {} {}", panel_id, e)
-            await asyncio.sleep(sleep_s)
+            if await self._wait_stop_or_timeout(sleep_s):
+                break
 
     # ---- inbound event processing ------------------------------------------
 
@@ -909,7 +930,7 @@ class MochatChannel(BaseChannel):
 
         session_id = self._session_by_converse.get(converse_id)
         if not session_id:
-            await self._refresh_sessions_directory(self._ws_ready)
+            await self._refresh_sessions_directory(self._transport_mode == "socket")
             session_id = self._session_by_converse.get(converse_id)
         if not session_id:
             return

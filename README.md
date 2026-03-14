@@ -197,6 +197,16 @@ uv run bao
 - `apiBase` 自动补全版本段，避免重复拼接
 - 推理强度支持：`off` / `low` / `medium` / `high`
 
+**Codex Provider 与 Codex 工具是两条独立能力线**：
+- `providers.*.type = "openai_codex"`：把 Codex OAuth 当作 Bao 的主聊天模型。
+- `coding_agent(agent="codex")`：调用本机 `codex` CLI 代你改代码，适合在 Telegram、WhatsApp、iMessage 等聊天里远程让 Bao 做代码任务。
+
+**远程用 Codex 改代码**：
+- 先在运行 Bao 的机器安装并登录 Codex CLI：`npm i -g @openai/codex@latest`，然后执行 `codex login`
+- 后续在同一个 Bao 会话里继续追问时，`coding_agent(agent="codex", continue_session=true)` 会自动续上该聊天对应的 Codex session
+- 续接状态持久化在 Bao 自己的会话 metadata 中，Bao 重启后也能继续尝试复用
+- 如果外部 Codex session 已失效，Bao 会清掉旧 session 并明确提示你重试一次，不做隐藏重试
+
 ## 🔌 MCP 支持
 
 Model Context Protocol — 接入任何工具生态。配置兼容 **Claude Desktop 和 Cursor**。
@@ -479,6 +489,16 @@ Simple 4-type config, covers all mainstream models.
 - `apiBase` auto-completes version segments, avoids duplicate concatenation
 - Reasoning effort support: `off` / `low` / `medium` / `high`
 
+**Codex provider and Codex tool are separate capabilities**:
+- `providers.*.type = "openai_codex"` uses Codex OAuth as Bao's chat model.
+- `coding_agent(agent="codex")` uses the local `codex` CLI to perform coding work on Bao's host machine.
+
+**Using Codex for remote coding via chat**:
+- Install and authenticate Codex CLI on the machine running Bao: `npm i -g @openai/codex@latest`, then `codex login`
+- In the same Bao conversation, follow-up calls with `coding_agent(agent="codex", continue_session=true)` automatically resume that chat's Codex session
+- Session continuity is persisted in Bao session metadata, so Bao can reuse it across restarts
+- If the external Codex session has expired, Bao clears the stored session and tells you to retry once instead of doing a hidden retry
+
 ### 🔌 MCP Support
 
 Model Context Protocol — plug into any tool ecosystem. Config format **compatible with Claude Desktop and Cursor**.
@@ -555,7 +575,7 @@ Full security config: [`SECURITY.md`](SECURITY.md).
 ```
 bao/
 ├── agent/          # Core agent logic
-│   ├── loop.py     # Agent loop (retry + correction + experience)
+│   ├── loop.py     # Agent loop (interrupt + control routing + experience)
 │   ├── context.py  # Prompt assembly + experience injection
 │   ├── memory.py   # LanceDB persistent memory
 │   ├── subagent.py # Background task execution

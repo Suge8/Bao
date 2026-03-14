@@ -170,11 +170,14 @@ def test_process_message_persists_tool_observability_in_session_metadata(tmp_pat
 
     session = loop.sessions.get_or_create("telegram:c1")
     last_entry = session.metadata.get("_tool_observability_last")
-    recent_entries = session.metadata.get("_tool_observability_recent")
+    diagnostics_summary = loop._runtime_diagnostics.snapshot(max_events=0, max_log_lines=0).get(
+        "tool_observability", {}
+    )
     assert isinstance(last_entry, dict)
-    assert isinstance(recent_entries, list)
-    assert len(recent_entries) == 1
     assert last_entry["schema_tool_count_last"] > 0
+    assert "_tool_observability_recent" not in session.metadata
+    assert isinstance(diagnostics_summary, dict)
+    assert diagnostics_summary["schema_tool_count_last"] == last_entry["schema_tool_count_last"]
 
 
 def test_process_message_localizes_empty_final_fallback(tmp_path: Path) -> None:

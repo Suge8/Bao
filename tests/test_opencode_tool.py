@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import patch
 
 from bao.agent.loop import AgentLoop
+from bao.agent.tools.coding_session_store import CodingSessionEvent
 from bao.agent.tools.opencode import OpenCodeDetailsTool, OpenCodeTool
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider, LLMResponse
@@ -31,6 +32,23 @@ class _DummyProvider(LLMProvider):
 
 def _run(coro: Any) -> Any:
     return asyncio.run(coro)
+
+
+class _FakeSessionStore:
+    def __init__(self) -> None:
+        self.sessions: dict[tuple[str, str], str] = {}
+        self.events: list[CodingSessionEvent] = []
+
+    async def load(self, *, context_key: str, backend: str) -> str | None:
+        return self.sessions.get((context_key, backend))
+
+    async def publish(self, event: CodingSessionEvent) -> None:
+        self.events.append(event)
+        key = (event.context_key, event.backend)
+        if event.action == "active" and event.session_id:
+            self.sessions[key] = event.session_id
+        elif event.action == "cleared":
+            self.sessions.pop(key, None)
 
 
 def test_opencode_tool_missing_binary() -> None:
@@ -183,6 +201,7 @@ def test_opencode_tool_keeps_short_name_when_alias_is_ambiguous() -> None:
 def test_opencode_tool_continue_uses_chat_specific_session() -> None:
     with tempfile.TemporaryDirectory() as d:
         calls: list[list[str]] = []
+        store = _FakeSessionStore()
 
         async def _fake_run(cmd: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:
             del cwd, timeout_seconds
@@ -195,7 +214,7 @@ def test_opencode_tool_continue_uses_chat_specific_session() -> None:
             del self, cwd, title, timeout_seconds
             return "sess-a"
 
-        tool = OpenCodeTool(workspace=Path(d))
+        tool = OpenCodeTool(workspace=Path(d), session_store=store)
         tool.set_context("telegram", "alice")
         with patch(
             "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
@@ -209,6 +228,7 @@ def test_opencode_tool_continue_uses_chat_specific_session() -> None:
     assert "--session" in calls[0]
     idx = calls[0].index("--session")
     assert calls[0][idx + 1] == "sess-a"
+    assert store.sessions[("telegram:alice", "opencode")] == "sess-a"
 
 
 def test_opencode_tool_failure_returns_hints() -> None:
@@ -288,8 +308,9 @@ def test_opencode_tool_continue_false_starts_new_session() -> None:
     assert "--session" not in calls[0]
 
 
-def test_opencode_tool_session_cache_evicts_lru_context() -> None:
+def test_opencode_tool_persists_sessions_per_context_via_store() -> None:
     with tempfile.TemporaryDirectory() as d:
+        store = _FakeSessionStore()
 
         async def _fake_run(cmd: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:
             del cmd, cwd, timeout_seconds
@@ -306,27 +327,28 @@ def test_opencode_tool_session_cache_evicts_lru_context() -> None:
             del stdout_text, resolved_session, cwd, exec_state, timeout
             return f"sess-{self._context_key.get()}"
 
-        tool = OpenCodeTool(workspace=Path(d))
-        with patch("bao.agent.tools.coding_agent_base._SESSION_CACHE_LIMIT", 2):
-            with patch(
-                "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
-            ):
-                with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
-                    with patch.object(
-                        OpenCodeTool,
-                        "_resolve_session_after_success",
-                        _fake_resolve_after_success,
-                    ):
-                        tool.set_context("telegram", "alice")
-                        _run(tool.execute(prompt="alice-1"))
-                        tool.set_context("telegram", "bob")
-                        _run(tool.execute(prompt="bob-1"))
-                        tool.set_context("telegram", "alice")
-                        _run(tool.execute(prompt="alice-2", continue_session=True))
-                        tool.set_context("telegram", "carol")
-                        _run(tool.execute(prompt="carol-1"))
+        tool = OpenCodeTool(workspace=Path(d), session_store=store)
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
+        ):
+            with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
+                with patch.object(
+                    OpenCodeTool,
+                    "_resolve_session_after_success",
+                    _fake_resolve_after_success,
+                ):
+                    tool.set_context("telegram", "alice")
+                    _run(tool.execute(prompt="alice-1"))
+                    tool.set_context("telegram", "bob")
+                    _run(tool.execute(prompt="bob-1"))
+                    tool.set_context("telegram", "carol")
+                    _run(tool.execute(prompt="carol-1"))
 
-    assert set(tool._session_by_context.keys()) == {"telegram:alice", "telegram:carol"}
+    assert store.sessions == {
+        ("telegram:alice", "opencode"): "sess-telegram:alice",
+        ("telegram:bob", "opencode"): "sess-telegram:bob",
+        ("telegram:carol", "opencode"): "sess-telegram:carol",
+    }
 
 
 def test_opencode_tool_timeout_returns_actionable_error() -> None:
@@ -400,21 +422,19 @@ def test_opencode_tool_json_response_contains_structured_fields() -> None:
     assert payload["details_available"] is True
 
 
-def test_opencode_tool_retries_transient_failure_once_by_default() -> None:
+def test_opencode_tool_reports_transient_failure_without_hidden_retry() -> None:
     with tempfile.TemporaryDirectory() as d:
         calls: list[int] = []
 
         async def _fake_run(cmd: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:
             del cmd, cwd, timeout_seconds
             calls.append(1)
-            if len(calls) == 1:
-                return {
-                    "timed_out": False,
-                    "returncode": 1,
-                    "stdout": "",
-                    "stderr": "rate limit",
-                }
-            return {"timed_out": False, "returncode": 0, "stdout": "ok", "stderr": ""}
+            return {
+                "timed_out": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "rate limit",
+            }
 
         async def _fake_resolve(
             self: OpenCodeTool, cwd: Path, title: str, timeout_seconds: int
@@ -431,64 +451,45 @@ def test_opencode_tool_retries_transient_failure_once_by_default() -> None:
                     result = _run(tool.execute(prompt="x", response_format="json"))
 
     payload = json.loads(result)
-    assert payload["status"] == "success"
-    assert payload["attempts"] == 2
-    assert len(calls) == 2
+    assert payload["status"] == "error"
+    assert payload["attempts"] == 1
+    assert len(calls) == 1
 
 
-def test_opencode_tool_retries_once_when_cached_session_is_stale() -> None:
+def test_opencode_tool_clears_stale_stored_session_without_hidden_retry() -> None:
     with tempfile.TemporaryDirectory() as d:
         calls: list[list[str]] = []
+        store = _FakeSessionStore()
+        store.sessions[("telegram:alice", "opencode")] = "sess-stale"
 
         async def _fake_run(cmd: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:
             del cwd, timeout_seconds
             calls.append(cmd)
-            if len(calls) == 1:
-                return {
-                    "timed_out": False,
-                    "returncode": 1,
-                    "stdout": "",
-                    "stderr": "session not found",
-                }
-            return {"timed_out": False, "returncode": 0, "stdout": "ok", "stderr": ""}
+            return {
+                "timed_out": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "session not found",
+            }
 
-        async def _fake_resolve_after_success(
-            self: OpenCodeTool,
-            *,
-            stdout_text: str,
-            resolved_session: str | None,
-            cwd: Path,
-            exec_state: dict[str, Any],
-            timeout: int,
-        ) -> str | None:
-            del self, stdout_text, resolved_session, cwd, exec_state, timeout
-            return "sess-fresh"
-
-        tool = OpenCodeTool(workspace=Path(d))
+        tool = OpenCodeTool(workspace=Path(d), session_store=store)
         tool.set_context("telegram", "alice")
-        tool._session_by_context["telegram:alice"] = "sess-stale"
         with patch(
             "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/opencode"
         ):
             with patch.object(OpenCodeTool, "_run_command", staticmethod(_fake_run)):
-                with patch.object(
-                    OpenCodeTool,
-                    "_resolve_session_after_success",
-                    _fake_resolve_after_success,
-                ):
-                    result = _run(tool.execute(prompt="retry stale", response_format="json"))
+                result = _run(tool.execute(prompt="retry stale", response_format="json"))
 
     payload = json.loads(result)
-    assert payload["status"] == "success"
+    assert payload["status"] == "error"
+    assert payload["error_type"] == "stale_session"
     assert payload["attempts"] == 1
-    assert len(calls) == 2
+    assert len(calls) == 1
 
     assert "--session" in calls[0]
     stale_idx = calls[0].index("--session")
     assert calls[0][stale_idx + 1] == "sess-stale"
-
-    assert "--session" not in calls[1]
-    assert "--title" in calls[1]
+    assert ("telegram:alice", "opencode") not in store.sessions
 
 
 def test_opencode_tool_rejects_invalid_timeout_type() -> None:

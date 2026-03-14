@@ -37,7 +37,7 @@ Do NOT use when:
 | `model` | string | no | — | Override model (e.g. `anthropic/claude-sonnet-4-20250514`, `o4-mini`). |
 | `timeout_seconds` | integer | no | 1800 | Optional execution timeout. Usually omit this and use the 30-minute default. Range: 30–1800. |
 | `response_format` | string | no | `hybrid` | Output format: `hybrid`, `json`, or `text`. |
-| `max_retries` | integer | no | 1 | Retry attempts on transient failures. Range: 0–2. |
+| `max_retries` | integer | no | 1 | Reserved compatibility field. Hidden automatic retries are disabled. Range: 0–2. |
 | `max_output_chars` | integer | no | 4000 | Max chars for stdout/stderr. Range: 200–50000. |
 | `include_details` | boolean | no | false | Include full stdout/stderr inline. |
 
@@ -80,7 +80,7 @@ Use coding_agent with:
 
 Sessions persist per chat per backend. With `continue_session: true` (the default), follow-ups automatically resume the same backend session.
 
-Session cache is in-memory, isolated per backend, and capped at 256 chat contexts per backend with least-recently-used eviction.
+Session continuity is stored in Bao session metadata, isolated per backend, and survives Bao process restarts. If a stored backend session is stale, Bao clears it and tells you to retry once with a fresh session.
 
 ```
 # Round 1 — implement

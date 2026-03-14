@@ -116,7 +116,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ### Fixed
 
-- **子代理完成回传收口为内部结构化事件** — `subagent.py` 与 `loop.py` 现在通过共享的 `subagent_result` schema 交接完成态：子代理只发布 `metadata.system_event`，父代理消费后仅保留面向用户的 assistant 摘要；Desktop 不再回显 raw 子代理 system 气泡。
+- **子代理完成回传收口为内部结构化事件** — `subagent.py` 与 `loop.py` 现在通过共享的 `subagent_result` schema 交接完成态：子代理主路径发布 `ControlEvent(kind=subagent_result)`，父代理消费后仅保留面向用户的 assistant 摘要；Desktop 不再回显 raw 子代理 system 气泡。
 - **Desktop 会话冷开、未读与历史贴合路径进一步稳定** — `SessionManager` 新增 `session_display_tail` companion 表与内存 tail cache，`ChatService`/`SessionService` 改为围绕 active session summary、known-empty session 与 latest-only history apply 收口，减少切会话黑屏、红点复活和历史回放抖动。
 - **Desktop 浅色主题 icon 与欢迎胶囊继续收口** — `Main.qml` 现在统一产出浅色空态/侧栏装饰 icon 的主题 source 与相关 token，`ChatView.qml`、`Sidebar.qml` 只消费解析后的结果；浅色 greeting 胶囊和 light icon 资源也改为更高对比的单一路径。
 

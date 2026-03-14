@@ -6,8 +6,11 @@ Both classes retain thin wrapper methods that delegate here.
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
+import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, TypedDict
 
 import json_repair
@@ -17,6 +20,7 @@ if TYPE_CHECKING:
     from bao.agent.artifacts import ArtifactStore
 
 from bao.agent.protocol import ToolErrorCategory, ToolErrorInfo
+from bao.agent.tool_result import SOFT_INTERRUPT_MESSAGE, ToolExecutionResult, tool_result_excerpt
 
 SubagentResultStatus = Literal["ok", "error"]
 SUBAGENT_RESULT_EVENT_TYPE = "subagent_result"
@@ -53,10 +57,7 @@ def build_subagent_result_event(
     }
 
 
-def parse_subagent_result_event(metadata: dict[str, Any] | None) -> SubagentResultEvent | None:
-    if not isinstance(metadata, dict):
-        return None
-    raw_event = metadata.get("system_event")
+def parse_subagent_result_payload(raw_event: Any) -> SubagentResultEvent | None:
     if not isinstance(raw_event, dict):
         return None
     if raw_event.get("type") != SUBAGENT_RESULT_EVENT_TYPE:
@@ -76,6 +77,14 @@ def parse_subagent_result_event(metadata: dict[str, Any] | None) -> SubagentResu
     )
 
 
+def parse_subagent_result_event(metadata: dict[str, Any] | None) -> SubagentResultEvent | None:
+    if not isinstance(metadata, dict):
+        return None
+    return parse_subagent_result_payload(
+        metadata.get("control_event", metadata.get("system_event"))
+    )
+
+
 # ---------------------------------------------------------------------------
 # 1. parse_llm_json — pure function, no deps
 # ---------------------------------------------------------------------------
@@ -92,13 +101,118 @@ def parse_llm_json(content: str | None) -> dict[str, Any] | None:
     return result if isinstance(result, dict) else None
 
 
-# Mirrors loop.py:_TOOL_CANCELLED_MSG — kept in sync manually.
-_TOOL_CANCELLED_MSG = "Cancelled by soft interrupt."
+def strip_think_tags(text: str | None) -> str | None:
+    if not text:
+        return None
+    return re.sub(r"<think>[\s\S]*?</think>", "", text).strip() or None
+
+
+def handle_screenshot_marker(
+    tool_name: str,
+    result: str | Any,
+    *,
+    read_error_label: str,
+    unsafe_path_label: str,
+) -> tuple[str | Any, str | None]:
+    if (
+        tool_name != "screenshot"
+        or not isinstance(result, str)
+        or not result.startswith("__SCREENSHOT__:")
+    ):
+        return result, None
+    image_base64: str | None = None
+    marker = result
+    result = "[screenshot unavailable]"
+    screenshot_path = marker[len("__SCREENSHOT__:") :].strip()
+    screenshot_file = Path(screenshot_path).expanduser()
+    tmp_dir = Path(tempfile.gettempdir()).resolve()
+    try:
+        resolved_parent = screenshot_file.resolve(strict=False).parent
+    except Exception:
+        resolved_parent = None
+    safe_marker = screenshot_file.name.startswith("bao_screenshot_") and resolved_parent == tmp_dir
+    if safe_marker:
+        try:
+            import base64
+
+            with screenshot_file.open("rb") as screenshot_stream:
+                image_base64 = base64.b64encode(screenshot_stream.read()).decode()
+            result = "[screenshot captured]"
+        except Exception as screenshot_err:
+            logger.warning(
+                "⚠️ {}: {}: {}",
+                read_error_label,
+                screenshot_file,
+                screenshot_err,
+            )
+        finally:
+            try:
+                if screenshot_file.exists():
+                    screenshot_file.unlink()
+            except Exception:
+                pass
+    else:
+        logger.warning("⚠️ {}: {}", unsafe_path_label, screenshot_file)
+    return result, image_base64
+
+
+def maybe_backoff_empty_final(
+    *,
+    force_final_response: bool,
+    force_final_backoff_used: bool,
+    clean_final: str | None,
+) -> tuple[bool, bool, dict[str, str] | None]:
+    if not force_final_response or force_final_backoff_used or clean_final:
+        return force_final_response, force_final_backoff_used, None
+    return (
+        False,
+        True,
+        {
+            "role": "user",
+            "content": (
+                "Your previous final response was empty. "
+                "If more evidence is needed, use tools briefly and then provide a "
+                "complete final answer."
+            ),
+        },
+    )
+
+
+async def call_provider_chat(
+    *,
+    provider: Any,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    model: str,
+    temperature: float,
+    max_tokens: int,
+    reasoning_effort: str | None,
+    source: str,
+    on_progress: Callable[[str], Awaitable[None]] | None = None,
+    patched_log_label: str,
+) -> Any:
+    repaired = patch_dangling_tool_results(messages)
+    if repaired:
+        logger.warning("{} {} dangling tool_call(s) before provider chat", patched_log_label, repaired)
+    try:
+        return await provider.chat(
+            messages=messages,
+            tools=tools,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
+            on_progress=on_progress,
+            source=source,
+        )
+    finally:
+        for message in messages:
+            message.pop("_image", None)
 
 
 def parse_tool_error(
     tool_name: str,
-    result: str,
+    result: object,
     error_keywords: tuple[str, ...],
 ) -> ToolErrorInfo | None:
     """Classify a tool result into a structured :class:`ToolErrorInfo`.
@@ -107,7 +221,7 @@ def parse_tool_error(
     Returns ``ToolErrorInfo(is_error=False, ...)`` for non-error special
     cases such as soft-interrupt cancellation.
     """
-    result_text = (result or "").strip()
+    result_text = tool_result_excerpt(result).strip()
     if not result_text:
         return None
 
@@ -135,14 +249,50 @@ def parse_tool_error(
             details=details or {},
         )
 
+    if isinstance(result, ToolExecutionResult):
+        if result.status == "interrupted":
+            return _info(
+                is_error=False,
+                category=ToolErrorCategory.INTERRUPTED,
+                code=result.code or "soft_interrupt",
+                retryable=False,
+                message=result.message or SOFT_INTERRUPT_MESSAGE,
+            )
+        if result.status == "error":
+            if result.code == "invalid_params":
+                return _info(
+                    category=ToolErrorCategory.INVALID_PARAMS,
+                    code=result.code,
+                    message=result.message or "Invalid tool parameters",
+                )
+            if result.code == "tool_not_found":
+                return _info(
+                    category=ToolErrorCategory.TOOL_NOT_FOUND,
+                    code=result.code,
+                    retryable=False,
+                    message=result.message or "Tool not found",
+                )
+            if result.code == "timeout":
+                return _info(
+                    category=ToolErrorCategory.TIMEOUT,
+                    code=result.code,
+                    message=result.message or "Tool timed out",
+                )
+            return _info(
+                category=ToolErrorCategory.EXECUTION_ERROR,
+                code=result.code or "execution_error",
+                message=result.message or "Error executing tool",
+            )
+        return None
+
     # ── 1. interrupted (soft-interrupt cancellation) ──────────────────
-    if result_text == _TOOL_CANCELLED_MSG:
+    if result_text == SOFT_INTERRUPT_MESSAGE:
         return _info(
             is_error=False,
             category=ToolErrorCategory.INTERRUPTED,
             code="soft_interrupt",
             retryable=False,
-            message="Cancelled by soft interrupt",
+            message=SOFT_INTERRUPT_MESSAGE,
         )
 
     # ── 2. invalid_params ───────────────────────────────────────────
@@ -296,10 +446,34 @@ def parse_tool_error(
     return None
 
 
-def has_tool_error(tool_name: str, result: str, error_keywords: tuple[str, ...]) -> bool:
+def has_tool_error(tool_name: str, result: object, error_keywords: tuple[str, ...]) -> bool:
     """Return True if *result* indicates a tool failure."""
     info = parse_tool_error(tool_name, result, error_keywords)
     return bool(info and info.is_error)
+
+
+def build_tool_execute_kwargs(
+    execute_fn: Callable[..., Any],
+    *,
+    raw_arguments: str | None,
+    argument_parse_error: str | None,
+) -> dict[str, str]:
+    """Only pass structured tool-call kwargs when the executor supports them."""
+    try:
+        parameters = inspect.signature(execute_fn).parameters.values()
+    except (TypeError, ValueError):
+        parameters = ()
+    accepts_var_kwargs = any(param.kind is inspect.Parameter.VAR_KEYWORD for param in parameters)
+    param_names = {param.name for param in parameters}
+
+    kwargs: dict[str, str] = {}
+    if raw_arguments is not None and (accepts_var_kwargs or "raw_arguments" in param_names):
+        kwargs["raw_arguments"] = raw_arguments
+    if argument_parse_error is not None and (
+        accepts_var_kwargs or "argument_parse_error" in param_names
+    ):
+        kwargs["argument_parse_error"] = argument_parse_error
+    return kwargs
 
 
 def sanitize_visible_text(text: str) -> str:
