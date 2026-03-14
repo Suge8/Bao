@@ -548,7 +548,7 @@ def _agent_browser_home_ready(agent_browser_home_path: Path) -> bool:
     return (
         agent_browser_home_path.is_dir()
         and (agent_browser_home_path / "package.json").is_file()
-        and (agent_browser_home_path / "dist" / "daemon.js").is_file()
+        and (agent_browser_home_path / "bin" / "agent-browser.js").is_file()
     )
 
 

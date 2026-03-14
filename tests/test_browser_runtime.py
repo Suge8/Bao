@@ -75,8 +75,10 @@ def test_browser_capability_state_reports_missing_daemon_assets(
     tmp_path: Path, monkeypatch
 ) -> None:
     runtime_root = write_fake_browser_runtime(tmp_path)
-    daemon_path = runtime_root / "node_modules" / "agent-browser" / "dist" / "daemon.js"
-    daemon_path.unlink()
+    entrypoint_path = (
+        runtime_root / "node_modules" / "agent-browser" / "bin" / "agent-browser.js"
+    )
+    entrypoint_path.unlink()
     monkeypatch.setenv("BAO_BROWSER_RUNTIME_ROOT", str(runtime_root))
     set_runtime_config_path(tmp_path / "config.jsonc")
     try:

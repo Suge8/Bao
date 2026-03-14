@@ -57,9 +57,9 @@ def test_detect_browser_executable_supports_windows_win64_layout(tmp_path: Path)
 def test_vendor_agent_browser_home_copies_node_modules_tree(tmp_path: Path, monkeypatch) -> None:
     install_dir = tmp_path / "install"
     source_home = install_dir / "node_modules" / "agent-browser"
-    (source_home / "dist").mkdir(parents=True, exist_ok=True)
+    (source_home / "bin").mkdir(parents=True, exist_ok=True)
     (source_home / "package.json").write_text('{"name":"agent-browser"}\n', encoding="utf-8")
-    (source_home / "dist" / "daemon.js").write_text("export {};\n", encoding="utf-8")
+    (source_home / "bin" / "agent-browser.js").write_text("#!/usr/bin/env node\n", encoding="utf-8")
     (install_dir / "node_modules" / "ws" / "index.js").parent.mkdir(parents=True, exist_ok=True)
     (install_dir / "node_modules" / "ws" / "index.js").write_text("", encoding="utf-8")
     monkeypatch.setattr(runtime_script, "RUNTIME_ROOT", tmp_path / "runtime")
@@ -67,7 +67,7 @@ def test_vendor_agent_browser_home_copies_node_modules_tree(tmp_path: Path, monk
     agent_browser_home = runtime_script.vendor_agent_browser_home(install_dir=install_dir)
 
     assert agent_browser_home == tmp_path / "runtime" / "node_modules" / "agent-browser"
-    assert (agent_browser_home / "dist" / "daemon.js").is_file()
+    assert (agent_browser_home / "bin" / "agent-browser.js").is_file()
     assert (tmp_path / "runtime" / "node_modules" / "ws" / "index.js").is_file()
 
 

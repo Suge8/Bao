@@ -15,11 +15,11 @@ def write_fake_browser_runtime(root: Path) -> Path:
     agent_browser = runtime_root / "platforms" / platform_key / "bin" / agent_binary
     browser_executable = runtime_root / "platforms" / platform_key / "browser" / browser_binary
     agent_browser.parent.mkdir(parents=True, exist_ok=True)
-    (agent_browser_home / "dist").mkdir(parents=True, exist_ok=True)
+    (agent_browser_home / "bin").mkdir(parents=True, exist_ok=True)
     browser_executable.parent.mkdir(parents=True, exist_ok=True)
     agent_browser.write_text("#!/bin/sh\n", encoding="utf-8")
     (agent_browser_home / "package.json").write_text('{"name":"agent-browser"}\n', encoding="utf-8")
-    (agent_browser_home / "dist" / "daemon.js").write_text("export {};\n", encoding="utf-8")
+    (agent_browser_home / "bin" / "agent-browser.js").write_text("#!/usr/bin/env node\n", encoding="utf-8")
     browser_executable.write_text("", encoding="utf-8")
     if agent_browser.suffix != ".exe":
         agent_browser.chmod(0o755)
