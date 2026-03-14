@@ -1,7 +1,7 @@
 ---
 name: tmux
 description: Use for interactive terminal sessions, TUI apps, or long-lived CLI workflows.
-metadata: {"bao":{"emoji":"🧵","os":["darwin","linux"],"requires":{"bins":["tmux"]}}}
+metadata: {"bao":{"emoji":"🧵","icon":"computer","display":{"name":"tmux Sessions","nameZh":"tmux 会话","descriptionZh":"管理交互式终端会话和长生命周期 CLI 工作流。"},"category":"automation","capabilityRefs":["exec"],"activationRefs":["exec"],"os":["darwin","linux"],"requires":{"bins":["tmux"]},"examplePrompts":["帮我起一个 tmux 会话跑这个服务","接管这个现有 tmux pane"]}}
 ---
 
 # tmux Skill

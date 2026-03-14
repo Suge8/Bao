@@ -20,7 +20,7 @@ from bao.agent import commands, experience, shared
 from bao.agent import plan as plan_state
 from bao.agent.capability_registry import build_available_tool_lines
 from bao.agent.context import ContextBuilder
-from bao.agent.memory import MEMORY_CATEGORIES, MEMORY_CATEGORY_CAPS
+from bao.agent.memory import MEMORY_CATEGORIES, MEMORY_CATEGORY_CAPS, MemoryPolicy
 from bao.agent.protocol import StreamEvent, StreamEventType
 from bao.agent.reply_route import normalize_reply_metadata
 from bao.agent.run_artifacts import build_run_artifact_payload
@@ -31,14 +31,14 @@ from bao.agent.run_controller import (
 )
 from bao.agent.subagent import SubagentManager
 from bao.agent.tool_exposure import ToolExposureSnapshot
-from bao.agent.tool_result import ToolExecutionResult, tool_result_payload
+from bao.agent.tool_result import ToolExecutionResult, tool_reply_contribution, tool_result_payload
 from bao.agent.tools.agent_browser import AgentBrowserTool
 from bao.agent.tools.base import Tool
 from bao.agent.tools.cron import CronTool
 from bao.agent.tools.diagnostics import RuntimeDiagnosticsTool
 from bao.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from bao.agent.tools.memory import ForgetTool, RememberTool, UpdateMemoryTool
-from bao.agent.tools.message import MessageTool
+from bao.agent.tools.notify import NotifyTool
 from bao.agent.tools.plan import ClearPlanTool, CreatePlanTool, UpdatePlanStepTool
 from bao.agent.tools.registry import ToolMetadata, ToolRegistry
 from bao.agent.tools.shell import ExecTool
@@ -51,6 +51,11 @@ from bao.providers.base import LLMProvider
 from bao.providers.retry import PROGRESS_RESET
 from bao.runtime_diagnostics import get_runtime_diagnostics_store
 from bao.session.manager import Session, SessionManager
+from bao.utils.attachments import (
+    attachment_file_paths,
+    build_attachment_payload,
+    persist_attachment_records,
+)
 
 if TYPE_CHECKING:
     from bao.agent.artifacts import ArtifactStore
@@ -75,7 +80,7 @@ _TOOL_ROUTE_INTENT_THRESHOLD = 0.65
 _ROUTE_CODE_ESSENTIAL_TOOLS = frozenset({"read_file", "edit_file"})
 _ROUTE_RESCUE_TOOLS = frozenset(
     {
-        "message",
+        "notify",
         "exec",
         "create_plan",
         "update_plan_step",
@@ -178,7 +183,7 @@ _TOOL_HINT_LABELS = {
     "web_search": ("搜索网页", "Search Web"),
     "web_fetch": ("打开网页", "Fetch Web Page"),
     "agent_browser": ("操作浏览器", "Control Browser"),
-    "message": ("发送消息", "Send Message"),
+    "notify": ("发送通知", "Send Notification"),
     "runtime_diagnostics": ("查看诊断", "Inspect Runtime"),
     "create_plan": ("创建计划", "Create Plan"),
     "update_plan_step": ("更新计划", "Update Plan"),
@@ -217,7 +222,7 @@ _TOOL_HINT_ICONS = {
     "web_search": "🔎",
     "web_fetch": "🌐",
     "agent_browser": "🌐",
-    "message": "✉️",
+    "notify": "✉️",
     "runtime_diagnostics": "🩺",
     "create_plan": "🗂️",
     "update_plan_step": "🗂️",
@@ -292,6 +297,7 @@ class _ProcessMessageRunResult:
     provider_error: bool
     interrupted: bool
     completed_tool_msgs: list[dict[str, Any]]
+    reply_attachments: list[dict[str, Any]]
 
 
 def _extract_text(content: Any) -> str:
@@ -314,17 +320,27 @@ def _archive_all_signature(messages: list[dict[str, Any]]) -> str:
     return f"{len(messages)}:{tail_ts}"
 
 
+def _reply_attachment_name_hint(tool_name: str, file_name: str) -> str:
+    stem = Path(file_name).stem.strip() or "attachment"
+    return f"{tool_name}_{stem}"
+
+
 class AgentLoop:
     def __init__(
         self,
         bus: MessageBus,
         provider: LLMProvider,
         workspace: Path,
+        prompt_root: Path | None = None,
+        state_root: Path | None = None,
+        profile_id: str | None = None,
+        profile_metadata: dict[str, Any] | None = None,
         model: str | None = None,
         max_iterations: int = 20,
         temperature: float = 0.7,
         max_tokens: int = 4096,
-        memory_window: int = 50,
+        memory_window: int | None = None,
+        memory_policy: "MemoryPolicy | None" = None,
         reasoning_effort: str | None = None,
         service_tier: str | None = None,
         search_config: "WebSearchConfig | None" = None,
@@ -343,14 +359,33 @@ class AgentLoop:
         self.bus = bus
         self.provider = provider
         self.workspace = workspace
+        self.prompt_root = prompt_root or workspace
+        self.state_root = state_root or workspace
+        self.profile_id = str(profile_id or "")
         self.model = model or provider.get_default_model()
         self.available_models = list(available_models) if available_models else []
         if self.model and self.model not in self.available_models:
             self.available_models.insert(0, self.model)
+        defaults = getattr(getattr(config, "agents", None), "defaults", None) if config else None
+        resolved_memory_policy = (
+            memory_policy
+            if isinstance(memory_policy, MemoryPolicy)
+            else MemoryPolicy.from_agent_defaults(defaults)
+        )
+        effective_recent_window = memory_window
+        if effective_recent_window is None and defaults is None:
+            effective_recent_window = 50
+        if effective_recent_window is not None:
+            resolved_memory_policy = resolved_memory_policy.with_recent_window(
+                effective_recent_window
+            )
+        if config is None and not isinstance(memory_policy, MemoryPolicy):
+            resolved_memory_policy = resolved_memory_policy.with_learning_mode("none")
         self.max_iterations = max_iterations
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.memory_window = memory_window
+        self.memory_policy = resolved_memory_policy
+        self.memory_window = self.memory_policy.recent_window
         self.reasoning_effort = reasoning_effort
         self.service_tier = service_tier
         self.search_config = search_config
@@ -361,12 +396,19 @@ class AgentLoop:
         self.restrict_to_workspace = restrict_to_workspace
         self._config = config
 
-        self.context = ContextBuilder(workspace, embedding_config=embedding_config)
-        self.sessions = session_manager or SessionManager(workspace)
+        self.context = ContextBuilder(
+            workspace,
+            prompt_root=self.prompt_root,
+            state_root=self.state_root,
+            embedding_config=embedding_config,
+            memory_policy=self.memory_policy,
+            profile_metadata=profile_metadata,
+        )
+        self.sessions = session_manager or SessionManager(self.state_root)
         self.tools = ToolRegistry()
         self._runtime_diagnostics = get_runtime_diagnostics_store()
         # Context management config
-        _cm = config.agents.defaults if config else None
+        _cm = defaults
         self._ctx_mgmt: str = _cm.context_management if _cm else "auto"
         self._tool_offload_chars: int = _cm.tool_output_offload_chars if _cm else 8000
         self._tool_preview_chars: int = _cm.tool_output_preview_chars if _cm else 3000
@@ -407,6 +449,7 @@ class AgentLoop:
             context_compact_keep_recent_tool_blocks=self._compact_keep_blocks,
             artifact_retention_days=self._artifact_retention_days,
             memory_store=self.context.memory,
+            memory_policy=self.memory_policy,
             image_generation_config=self._image_generation_config,
             desktop_config=self._desktop_config,
             browser_enabled=self._web_browser_enabled,
@@ -472,9 +515,7 @@ class AgentLoop:
             except Exception as e:
                 logger.warning("⚠️ 效用模型初始化失败 / utility init failed: {}", e)
 
-        self._experience_mode = (
-            config.agents.defaults.experience_model if config else "none"
-        ).lower()
+        self._experience_mode = self.memory_policy.learning_mode.lower()
         self.subagents.set_aux_runtime(
             utility_provider=self._utility_provider,
             utility_model=self._utility_model,
@@ -708,10 +749,10 @@ class AgentLoop:
                 ),
             )
         self._register_tool(
-            MessageTool(send_callback=self.bus.publish_outbound),
+            NotifyTool(send_callback=self.bus.publish_outbound),
             bundle=_TOOL_BUNDLE_CORE,
-            short_hint="Send a message to another channel or chat; normal replies do not need this tool.",
-            aliases=("send message", "发消息", "跨渠道发送"),
+            short_hint="Send an explicit notification to another channel or chat; current-session replies do not use this tool.",
+            aliases=("send notification", "notify", "发通知", "跨渠道发送"),
             keyword_aliases=("message", "deliver", "notify", "消息", "通知"),
         )
         self._register_tool(
@@ -916,13 +957,6 @@ class AgentLoop:
         lang: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        if isinstance(message_id, bool) or message_id is None:
-            normalized_message_id = None
-        elif isinstance(message_id, (str, int)):
-            normalized_message_id = str(message_id)
-        else:
-            normalized_message_id = None
-
         preferred_lang = (
             plan_state.normalize_language(lang)
             if isinstance(lang, str)
@@ -930,12 +964,12 @@ class AgentLoop:
         )
         reply_metadata = normalize_reply_metadata(metadata)
 
-        if (t := self.tools.get("message")) and isinstance(t, MessageTool):
+        if (t := self.tools.get("notify")) and isinstance(t, NotifyTool):
             t.set_context(
                 channel,
                 chat_id,
-                normalized_message_id,
-                reply_metadata=reply_metadata,
+                session_key=session_key,
+                lang=preferred_lang,
             )
         if (t := self.tools.get("spawn")) and isinstance(t, SpawnTool):
             t.set_context(
@@ -983,7 +1017,7 @@ class AgentLoop:
         try:
             from bao.config.onboarding import infer_language
 
-            return plan_state.normalize_language(infer_language(self.workspace))
+            return plan_state.normalize_language(infer_language(self.prompt_root))
         except Exception:
             return "en"
 
@@ -1517,7 +1551,7 @@ class AgentLoop:
         if name == "spawn":
             label = AgentLoop._tool_hint_first_string(args, "label")
             return AgentLoop._short_hint_arg(label, max_len=32) if label else ""
-        if name == "message":
+        if name == "notify":
             channel = AgentLoop._tool_hint_first_string(args, "channel")
             return AgentLoop._short_hint_arg(channel, max_len=18) if channel else ""
         if name in {"coding_agent", "coding_agent_details"}:
@@ -1829,6 +1863,64 @@ class AgentLoop:
             unsafe_path_label="忽略非安全截图路径 / ignored unsafe screenshot path",
         )
 
+    def _archive_reply_attachments(
+        self,
+        *,
+        tool_name: str,
+        artifact_session_key: str | None,
+        artifact_store: "ArtifactStore | None",
+        raw_result: Any,
+    ) -> list[dict[str, Any]]:
+        contribution = tool_reply_contribution(raw_result)
+        if contribution is None or not contribution.attachments:
+            return []
+        if artifact_store is None:
+            from bao.agent.artifacts import ArtifactStore
+
+            artifact_store = ArtifactStore(
+                self.state_root,
+                artifact_session_key or "main_loop",
+                self._artifact_retention_days,
+            )
+
+        archived: list[dict[str, Any]] = []
+        for attachment in contribution.attachments:
+            try:
+                source_path = Path(attachment.path).expanduser().resolve()
+            except OSError:
+                continue
+            if not source_path.is_file():
+                continue
+            try:
+                size = source_path.stat().st_size
+            except OSError:
+                continue
+            ref = artifact_store.write_binary_file(
+                "reply_media",
+                _reply_attachment_name_hint(
+                    tool_name,
+                    attachment.name.strip() or source_path.name,
+                ),
+                source_path,
+                size=size,
+                move_source=attachment.cleanup,
+            )
+            payload = build_attachment_payload(ref.path)
+            if isinstance(payload, dict):
+                if attachment.name.strip():
+                    payload["fileName"] = attachment.name.strip()
+                if attachment.mime_type.strip():
+                    payload["mimeType"] = attachment.mime_type.strip()
+                    payload["isImage"] = attachment.mime_type.strip().startswith("image/")
+                try:
+                    relative_path = str(ref.path.relative_to(self.workspace))
+                except ValueError:
+                    relative_path = str(ref.path)
+                payload["path"] = relative_path
+                payload["size"] = int(payload.get("sizeBytes") or size)
+                archived.append(payload)
+        return archived
+
     async def _handle_tool_call_iteration(
         self,
         *,
@@ -1848,6 +1940,7 @@ class AgentLoop:
         failed_directions: list[str],
         sufficiency_trace: list[str],
         completed_tool_msgs: list[dict[str, Any]],
+        reply_attachments: list[dict[str, Any]],
         tool_budget: dict[str, int],
         on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
         on_visible_assistant_turn: Callable[[str], Awaitable[None]] | None = None,
@@ -1938,6 +2031,14 @@ class AgentLoop:
                     self.tools.execute(tool_call.name, tool_call.arguments, **execute_kwargs)
                 )
                 raw_result = await self._await_tool_with_interrupt(tool_task, current_task_ref)
+            reply_attachments.extend(
+                self._archive_reply_attachments(
+                    tool_name=tool_call.name,
+                    artifact_session_key=artifact_session_key,
+                    artifact_store=artifact_store,
+                    raw_result=raw_result,
+                )
+            )
             _tool_err = shared.parse_tool_error(tool_call.name, raw_result, _ERROR_KEYWORDS)
             if _tool_err:
                 if _tool_err.category == "invalid_params":
@@ -2204,6 +2305,7 @@ class AgentLoop:
         bool,
         bool,
         list[dict[str, Any]],
+        list[dict[str, Any]],
     ]: ...
 
     async def _run_agent_loop(
@@ -2236,6 +2338,7 @@ class AgentLoop:
         tool_trace: list[str] = []
         reasoning_snippets: list[str] = []
         _completed_tool_msgs: list[dict[str, Any]] = []
+        _reply_attachments: list[dict[str, Any]] = []
         failed_directions: list[str] = []
         sufficiency_trace: list[str] = []
         current_task = asyncio.current_task()
@@ -2255,7 +2358,7 @@ class AgentLoop:
 
         _artifact_store: ArtifactStore | None = (
             ArtifactStore(
-                self.workspace,
+                self.state_root,
                 artifact_session_key or "main_loop",
                 self._artifact_retention_days,
             )
@@ -2337,6 +2440,7 @@ class AgentLoop:
                     failed_directions=failed_directions,
                     sufficiency_trace=sufficiency_trace,
                     completed_tool_msgs=_completed_tool_msgs,
+                    reply_attachments=_reply_attachments,
                     tool_budget=tool_budget,
                     on_event=on_event,
                     on_visible_assistant_turn=on_visible_assistant_turn,
@@ -2424,7 +2528,7 @@ class AgentLoop:
                 diagnostics_snapshot=diagnostics_snapshot,
             )
             artifact_store_for_run = _artifact_store or ArtifactStore(
-                self.workspace,
+                self.state_root,
                 artifact_session_key or "main_loop",
                 self._artifact_retention_days,
             )
@@ -2445,6 +2549,7 @@ class AgentLoop:
                 state.provider_error,
                 state.interrupted,
                 _completed_tool_msgs,
+                _reply_attachments,
             )
         return state.final_content, tools_used, tool_trace, state.total_errors, reasoning_snippets
 
@@ -2845,6 +2950,7 @@ class AgentLoop:
             "long_term_memory": "",
             "related_memory": [],
             "related_experience": [],
+            "references": {},
         }
 
     async def _recall_context_for_query(self, query: str) -> dict[str, Any]:
@@ -2888,6 +2994,18 @@ class AgentLoop:
     ) -> _ProcessMessageRunResult:
         result_parts = cast(tuple[Any, ...], run_result)
         result_size = len(result_parts)
+        if result_size == 9:
+            return _ProcessMessageRunResult(
+                final_content=cast(str | None, result_parts[0]),
+                tools_used=cast(list[str], result_parts[1]),
+                tool_trace=cast(list[str], result_parts[2]),
+                total_errors=cast(int, result_parts[3]),
+                reasoning_snippets=cast(list[str], result_parts[4]),
+                provider_error=bool(result_parts[5]),
+                interrupted=bool(result_parts[6]),
+                completed_tool_msgs=cast(list[dict[str, Any]], result_parts[7]),
+                reply_attachments=cast(list[dict[str, Any]], result_parts[8]),
+            )
         if result_size == 8:
             return _ProcessMessageRunResult(
                 final_content=cast(str | None, result_parts[0]),
@@ -2898,6 +3016,7 @@ class AgentLoop:
                 provider_error=bool(result_parts[5]),
                 interrupted=bool(result_parts[6]),
                 completed_tool_msgs=cast(list[dict[str, Any]], result_parts[7]),
+                reply_attachments=[],
             )
         if result_size == 5:
             return _ProcessMessageRunResult(
@@ -2909,6 +3028,7 @@ class AgentLoop:
                 provider_error=False,
                 interrupted=False,
                 completed_tool_msgs=[],
+                reply_attachments=[],
             )
         raise ValueError(f"Unexpected _run_agent_loop result length: {result_size}")
 
@@ -3018,25 +3138,30 @@ class AgentLoop:
         logger.debug(log_message, generation_key)
         return True
 
+    @staticmethod
+    def _reply_fallback_text(session_lang: str, has_attachments: bool) -> str:
+        if has_attachments:
+            return "附件已准备好。" if session_lang != "en" else "The attachment is ready."
+        return "处理完成。" if session_lang != "en" else "Completed."
+
     async def _persist_assistant_turn(
         self,
         *,
         session: Session,
-        key: str,
         final_content: str,
         tools_used: list[str],
         assistant_status: str,
-    ) -> bool:
-        persisted_content = final_content
-        if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
-            persisted_content = t.last_sent_summary or final_content
-
-        if persisted_content or tools_used:
+        reply_attachments: list[dict[str, Any]] | None = None,
+        references: dict[str, Any] | None = None,
+    ) -> None:
+        if final_content or tools_used or reply_attachments:
             session.add_message(
                 "assistant",
-                persisted_content,
+                final_content,
                 tools_used=tools_used if tools_used else None,
                 status=assistant_status,
+                attachments=persist_attachment_records(reply_attachments),
+                references=dict(references or {}),
             )
 
         await asyncio.to_thread(self.sessions.save, session)
@@ -3051,10 +3176,6 @@ class AgentLoop:
                     self._title_generation_inflight.discard(session.key)
 
             asyncio.create_task(_generate_and_clear_title())
-
-        if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
-            return True
-        return False
 
     async def _persist_display_only_assistant_turn(
         self,
@@ -3112,7 +3233,11 @@ class AgentLoop:
         return out_meta, reply_to
 
     def _build_user_outbound_message(
-        self, msg: InboundMessage, final_content: str
+        self,
+        msg: InboundMessage,
+        final_content: str,
+        *,
+        reply_attachments: list[dict[str, Any]] | None = None,
     ) -> OutboundMessage:
         out_meta, reply_to = self._prepare_outbound_metadata(msg.metadata)
 
@@ -3121,6 +3246,7 @@ class AgentLoop:
             chat_id=msg.chat_id,
             content=final_content,
             reply_to=reply_to,
+            media=attachment_file_paths(reply_attachments),
             metadata=out_meta,
         )
 
@@ -3132,6 +3258,7 @@ class AgentLoop:
         session_key: str,
         final_content: str,
         metadata: dict[str, Any] | None = None,
+        reply_attachments: list[dict[str, Any]] | None = None,
     ) -> OutboundMessage:
         out_meta, reply_to = self._prepare_outbound_metadata(
             metadata,
@@ -3142,6 +3269,7 @@ class AgentLoop:
             chat_id=chat_id,
             content=final_content,
             reply_to=reply_to,
+            media=attachment_file_paths(reply_attachments),
             metadata=out_meta,
         )
 
@@ -3184,7 +3312,7 @@ class AgentLoop:
                 from bao.agent.artifacts import ArtifactStore
 
                 ArtifactStore(
-                    self.workspace, "_stale_", self._artifact_retention_days
+                    self.state_root, "_stale_", self._artifact_retention_days
                 ).cleanup_stale()
             except Exception as _e:
                 logger.debug("ctx stale cleanup failed: {}", _e)
@@ -3316,7 +3444,7 @@ class AgentLoop:
         )
 
         onboarding_stage = (
-            detect_onboarding_stage(self.workspace) if msg.channel != "system" else "ready"
+            detect_onboarding_stage(self.prompt_root) if msg.channel != "system" else "ready"
         )
         if onboarding_stage == "lang_select":
             if cmd in ("1", "2"):
@@ -3324,15 +3452,19 @@ class AgentLoop:
 
                 lang = "zh" if cmd == "1" else "en"
                 try:
-                    write_instructions(self.workspace, lang)
+                    write_instructions(self.prompt_root, lang)
                 except Exception as e:
                     logger.debug("Failed to write instructions template: {}", e)
                 try:
-                    write_heartbeat(self.workspace, lang)
+                    write_heartbeat(self.prompt_root, lang)
                 except Exception as e:
                     logger.debug("Failed to write heartbeat template: {}", e)
                 self.context = ContextBuilder(
-                    self.workspace, embedding_config=self.embedding_config
+                    self.workspace,
+                    prompt_root=self.prompt_root,
+                    state_root=self.state_root,
+                    embedding_config=self.embedding_config,
+                    memory_policy=self.memory_policy,
                 )
                 greeting = PERSONA_GREETING[lang]
                 session.add_message("assistant", greeting)
@@ -3340,7 +3472,7 @@ class AgentLoop:
                 return self._reply(msg, greeting)
             return self._reply(msg, LANG_PICKER)
         if onboarding_stage == "persona_setup":
-            lang = infer_language(self.workspace)
+            lang = infer_language(self.prompt_root)
             extract_system = (
                 "You extract user profile info from casual text. "
                 "Return ONLY valid JSON with these keys: "
@@ -3360,9 +3492,13 @@ class AgentLoop:
                 from bao.config.onboarding import write_persona_profile
 
                 try:
-                    write_persona_profile(self.workspace, lang, profile)
+                    write_persona_profile(self.prompt_root, lang, profile)
                     self.context = ContextBuilder(
-                        self.workspace, embedding_config=self.embedding_config
+                        self.workspace,
+                        prompt_root=self.prompt_root,
+                        state_root=self.state_root,
+                        embedding_config=self.embedding_config,
+                        memory_policy=self.memory_policy,
                     )
                 except Exception as e:
                     logger.debug("Failed to write persona profile: {}", e)
@@ -3403,8 +3539,6 @@ class AgentLoop:
             lang=session_lang,
             metadata=msg.metadata,
         )
-        if (t := self.tools.get("message")) and isinstance(t, MessageTool):
-            t.start_turn()
         recall = await self._recall_context_for_query(msg.content)
         initial_messages = self._build_initial_messages_for_user_turn(
             session,
@@ -3477,7 +3611,10 @@ class AgentLoop:
             final_content = parsed_result.final_content
 
             if not isinstance(final_content, str) or not final_content.strip():
-                final_content = "处理完成。" if session_lang != "en" else "Completed."
+                final_content = self._reply_fallback_text(
+                    session_lang,
+                    bool(parsed_result.reply_attachments),
+                )
 
             assistant_status = "error" if parsed_result.provider_error else "done"
 
@@ -3499,29 +3636,23 @@ class AgentLoop:
             )
             self._persist_tool_observability(session, channel=msg.channel, session_key=key)
 
-            if await self._persist_assistant_turn(
+            await self._persist_assistant_turn(
                 session=session,
-                key=key,
                 final_content=final_content,
                 tools_used=parsed_result.tools_used,
                 assistant_status=assistant_status,
-            ):
-                await self._clear_progress_buffer(
-                    channel=msg.channel,
-                    chat_id=msg.chat_id,
-                    metadata=msg.metadata,
-                )
-                logger.debug(
-                    "Suppressing duplicate outbound after message tool send for {}:{}",
-                    msg.channel,
-                    msg.chat_id,
-                )
-                return None
+                reply_attachments=parsed_result.reply_attachments,
+                references=cast(dict[str, Any], recall.get("references") or {}),
+            )
 
             preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
             logger.info("💬 回复消息 / out: {}:{}: {}", msg.channel, msg.sender_id, preview)
 
-            return self._build_user_outbound_message(msg, final_content)
+            return self._build_user_outbound_message(
+                msg,
+                final_content,
+                reply_attachments=parsed_result.reply_attachments,
+            )
         finally:
             if track_running:
                 await self._set_session_running_metadata(session.key, False)
@@ -3569,7 +3700,9 @@ class AgentLoop:
         )
         return "\n\n".join(parts), event["task"]
 
-    def _background_turn_fallback_text(self, session_lang: str) -> str:
+    def _background_turn_fallback_text(self, session_lang: str, *, has_attachments: bool) -> str:
+        if has_attachments:
+            return "后台附件已准备好。" if session_lang != "en" else "The background attachment is ready."
         return "后台任务已完成。" if session_lang != "en" else "Background task completed."
 
     def _finalize_background_turn(
@@ -3582,7 +3715,8 @@ class AgentLoop:
         system_prompt_text: str,
         final_content: str,
         parsed_result: _ProcessMessageRunResult,
-    ) -> bool:
+        references: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         assistant_status = "error" if parsed_result.provider_error else "done"
         self._maybe_learn_experience(
             session=session,
@@ -3598,22 +3732,17 @@ class AgentLoop:
             channel=origin_channel,
             session_key=session_key,
         )
-        message_tool = self.tools.get("message")
-        sent_in_turn = isinstance(message_tool, MessageTool) and message_tool._sent_in_turn
-        persisted_content = (
-            message_tool.last_sent_summary or final_content
-            if sent_in_turn
-            else final_content
-        )
-        if persisted_content or parsed_result.tools_used:
+        if final_content or parsed_result.tools_used or parsed_result.reply_attachments:
             session.add_message(
                 "assistant",
-                persisted_content,
+                final_content,
                 tools_used=parsed_result.tools_used if parsed_result.tools_used else None,
                 status=assistant_status,
+                attachments=persist_attachment_records(parsed_result.reply_attachments),
+                references=dict(references or {}),
             )
         self.sessions.save(session)
-        return sent_in_turn
+        return list(parsed_result.reply_attachments)
 
     async def _process_subagent_result_payload(
         self,
@@ -3635,8 +3764,6 @@ class AgentLoop:
             lang=session_lang,
             metadata=metadata,
         )
-        if (t := self.tools.get("message")) and isinstance(t, MessageTool):
-            t.start_turn()
         system_prompt_text, search_query = self._resolve_subagent_result_inputs(event_payload)
         recall = await self._recall_context_for_query(search_query)
         initial_messages = self.context.build_messages(
@@ -3668,8 +3795,11 @@ class AgentLoop:
             return None
         final_content = parsed_result.final_content
         if not isinstance(final_content, str) or not final_content.strip():
-            final_content = self._background_turn_fallback_text(session_lang)
-        sent_in_turn = self._finalize_background_turn(
+            final_content = self._background_turn_fallback_text(
+                session_lang,
+                has_attachments=bool(parsed_result.reply_attachments),
+            )
+        reply_attachments = self._finalize_background_turn(
             session=session,
             session_key=session_key,
             origin_channel=origin_channel,
@@ -3677,21 +3807,16 @@ class AgentLoop:
             system_prompt_text=system_prompt_text,
             final_content=final_content,
             parsed_result=parsed_result,
+            references=cast(dict[str, Any], recall.get("references") or {}),
         )
         out_meta, _ = self._prepare_outbound_metadata(metadata, session_key=session_key)
-        if sent_in_turn:
-            await self._clear_progress_buffer(
-                channel=origin_channel,
-                chat_id=origin_chat_id,
-                metadata=out_meta,
-            )
-            return None
         return self._build_control_outbound_message(
             channel=origin_channel,
             chat_id=origin_chat_id,
             session_key=session_key,
             final_content=final_content,
             metadata=out_meta,
+            reply_attachments=reply_attachments,
         )
 
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
@@ -3724,8 +3849,6 @@ class AgentLoop:
             lang=session_lang,
             metadata=msg.metadata,
         )
-        if (t := self.tools.get("message")) and isinstance(t, MessageTool):
-            t.start_turn()
         system_prompt_text, search_query = self._resolve_system_message_inputs(msg)
         recall = await self._recall_context_for_query(search_query)
         initial_messages = self.context.build_messages(
@@ -3754,10 +3877,13 @@ class AgentLoop:
 
         final_content = parsed_result.final_content
         if not isinstance(final_content, str) or not final_content.strip():
-            final_content = self._background_turn_fallback_text(session_lang)
+            final_content = self._background_turn_fallback_text(
+                session_lang,
+                has_attachments=bool(parsed_result.reply_attachments),
+            )
 
         out_meta, _ = self._prepare_outbound_metadata(msg.metadata, session_key=session_key)
-        sent_in_turn = self._finalize_background_turn(
+        reply_attachments = self._finalize_background_turn(
             session=session,
             session_key=session_key,
             origin_channel=origin_channel,
@@ -3765,21 +3891,15 @@ class AgentLoop:
             system_prompt_text=system_prompt_text,
             final_content=final_content,
             parsed_result=parsed_result,
+            references=cast(dict[str, Any], recall.get("references") or {}),
         )
-        if sent_in_turn:
-            await self._clear_progress_buffer(
-                channel=origin_channel,
-                chat_id=origin_chat_id,
-                metadata=out_meta,
-            )
-            return None
-
         return self._build_control_outbound_message(
             channel=origin_channel,
             chat_id=origin_chat_id,
             session_key=session_key,
             final_content=final_content,
             metadata=out_meta,
+            reply_attachments=reply_attachments,
         )
 
     @staticmethod

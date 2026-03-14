@@ -235,14 +235,14 @@ def test_tool_hint_localizes_exec_and_message_labels_for_zh_sessions() -> None:
             ),
             ToolCallRequest(
                 id="t2",
-                name="message",
+                name="notify",
                 arguments={"channel": "telegram", "content": "不要暴露这段正文"},
             ),
         ],
         lang="zh",
     )
 
-    assert hint == "💻 执行命令: uv run pytest | ✉️ 发送消息: telegram"
+    assert hint == "💻 执行命令: uv run pytest | ✉️ 发送通知: telegram"
 
 
 def test_tool_hint_localizes_cron_actions_for_zh_sessions() -> None:
@@ -285,7 +285,7 @@ def test_tool_hint_hides_message_content_and_long_prompt_fields() -> None:
         [
             ToolCallRequest(
                 id="t1",
-                name="message",
+                name="notify",
                 arguments={"content": "把这段很长很长的消息发给用户", "channel": "telegram"},
             ),
             ToolCallRequest(
@@ -296,7 +296,7 @@ def test_tool_hint_hides_message_content_and_long_prompt_fields() -> None:
         ]
     )
 
-    assert hint == "✉️ Send Message: telegram | 🤖 Coding Agent: opencode"
+    assert hint == "✉️ Send Notification: telegram | 🤖 Coding Agent: opencode"
 
 
 def test_tool_hint_summarizes_exec_command_briefly() -> None:

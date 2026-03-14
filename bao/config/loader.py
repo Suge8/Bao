@@ -11,6 +11,7 @@ from bao.config.paths import get_config_path as resolve_config_path
 from bao.config.paths import get_data_dir as resolve_data_dir
 from bao.config.paths import set_runtime_config_path
 from bao.config.schema import Config
+from bao.profile import ensure_profile_registry
 
 
 class ConfigLoadError(Exception):
@@ -19,7 +20,7 @@ class ConfigLoadError(Exception):
 
 _JSONC_TEMPLATE = """\
 {
-  "config_version": 3,
+  "config_version": 4,
   // 💡 环境变量可覆盖此文件中的任何配置 | Env vars override any config below
   //    命名 Naming: BAO_{SECTION}__{FIELD}  (snake_case, 双下划线分隔层级)
   //    示例 Examples: BAO_AGENTS__DEFAULTS__MODEL=xxx  BAO_PROVIDERS__NAME__API_KEY=sk-xxx
@@ -41,20 +42,23 @@ _JSONC_TEMPLATE = """\
       // 轻量模型（可选）：后台任务用，节省开销
       // Utility model (optional): for background tasks, saves cost
       "utilityModel": "",
-      // 经验模型策略 | Experience model strategy
-      //   "utility" — 用轻量模型(默认) | use utility model (default)
-      //   "main"    — 用主模型 | use main model
-      //   "none"    — 不调用 LLM | no LLM calls
-      "experienceModel": "utility",
       // 可切换模型列表，运行时 /model 切换 | Switchable models, use /model at runtime
       "models": [],
       "maxTokens": 16000,
       "temperature": 0.1,
       "maxToolIterations": 50,
-      "memoryWindow": 100,
+      "memory": {
+        // 最近保留多少条消息作为对话上下文 | Recent messages kept in prompt context
+        "recentWindow": 100,
+        // 自动学习经验的模型来源 | Model used for automatic learning
+        //   "utility" — 用轻量模型(默认) | use utility model (default)
+        //   "main"    — 用主模型 | use main model
+        //   "none"    — 关闭自动学习 | disable automatic learning
+        "learningMode": "utility"
+      },
       // 推理强度（可选）| Reasoning effort (optional)
       //   "off" | "low" | "medium" | "high"
-      "reasoningEffort": null,
+      "reasoningEffort": "off",
       // 服务档位（可选，OpenAI/Codex/兼容中转）| Service tier (optional, OpenAI/Codex/compatible relays)
       //   "priority" — 更快响应 | faster responses
       //   "flex"     — 更低成本，延迟可能波动 | lower cost, latency may vary
@@ -328,6 +332,7 @@ def ensure_first_run() -> bool:
     config = Config()
     save_config(config)
     _ensure_workspace(config)
+    ensure_profile_registry(config.workspace_path)
     return True
 
 
@@ -430,7 +435,9 @@ def load_config(config_path: Path | None = None) -> Config:
             data = json.loads(text)
             data = _migrate_config(data)
             data = _apply_env_overlay(data)
-            return Config.model_validate(data)
+            config = Config.model_validate(data)
+            ensure_profile_registry(config.workspace_path)
+            return config
         except Exception as e:
             return _handle_config_error(path, e)
 

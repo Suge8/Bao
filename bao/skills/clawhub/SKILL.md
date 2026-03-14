@@ -2,7 +2,7 @@
 name: clawhub
 description: Use to find, install, or update skills from ClawHub.
 homepage: https://clawhub.ai
-metadata: {"bao":{"emoji":"🦞"}}
+metadata: {"bao":{"emoji":"🦞","icon":"toolbox","display":{"name":"ClawHub Market","nameZh":"ClawHub 市场","descriptionZh":"查找、安装或更新外部技能。"},"category":"discovery","capabilityRefs":["exec"],"activationRefs":["exec"],"requires":{"bins":["npx"]},"examplePrompts":["帮我找一个适合做 PR review 的技能","从 ClawHub 安装一个前端设计技能"]}}
 ---
 
 # ClawHub

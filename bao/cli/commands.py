@@ -708,6 +708,7 @@ def run_gateway(
     from bao.config import set_runtime_config_path
     from bao.config.loader import load_config
     from bao.gateway.builder import build_gateway_stack, send_startup_greeting
+    from bao.profile import active_profile_context
 
     _setup_logging(verbose)
 
@@ -717,10 +718,11 @@ def run_gateway(
     config = load_config()
     if workspace:
         config.agents.defaults.workspace = workspace
+    profile_ctx = active_profile_context(shared_workspace=config.workspace_path)
     effective_port = port if isinstance(port, int) else int(config.gateway.port)
 
     provider = _make_provider(config)
-    stack = build_gateway_stack(config, provider)
+    stack = build_gateway_stack(config, provider, profile_context=profile_ctx)
     cron_status = stack.cron.status()
     _print_startup_screen(
         _build_startup_screen_model(
@@ -747,6 +749,7 @@ def run_gateway(
                     stack.config,
                     channels=stack.channels,
                     session_manager=stack.session_manager,
+                    profile_context=profile_ctx,
                 ),
             )
         except KeyboardInterrupt:

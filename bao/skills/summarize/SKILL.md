@@ -2,7 +2,7 @@
 name: summarize
 description: Use to summarize URLs, files, podcasts, videos, or extract transcripts.
 homepage: https://summarize.sh
-metadata: {"bao":{"emoji":"🧾","requires":{"bins":["summarize"]},"install":[{"id":"brew","kind":"brew","formula":"steipete/tap/summarize","bins":["summarize"],"label":"Install summarize (brew)"}]}}
+metadata: {"bao":{"emoji":"🧾","icon":"message","display":{"name":"Summarize","nameZh":"总结","descriptionZh":"总结 URL、文件、视频、播客和转录内容。"},"category":"research","capabilityRefs":["exec"],"activationRefs":["exec"],"requires":{"bins":["summarize"]},"install":[{"id":"brew","kind":"brew","formula":"steipete/tap/summarize","bins":["summarize"],"label":"Install summarize (brew)"}],"examplePrompts":["总结这个网页的核心观点","把这段视频转录并提炼要点"]}}
 ---
 
 # Summarize

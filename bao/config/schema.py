@@ -9,6 +9,7 @@ from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ExperienceModelLiteral = Literal["utility", "main", "none"]
+MemoryLearningModeLiteral = ExperienceModelLiteral
 ContextManagementLiteral = Literal["off", "observe", "auto", "aggressive"]
 ExecSandboxModeLiteral = Literal["full-auto", "semi-auto", "read-only"]
 SlackGroupPolicyLiteral = Literal["mention", "open", "allowlist"]
@@ -313,12 +314,10 @@ class AgentDefaults(Base):
     workspace: str = "~/.bao/workspace"
     model: str = ""
     utility_model: str = ""
-    experience_model: str = "utility"  # "utility" | "main" | "none"
     models: list[str] = Field(default_factory=list)
     max_tokens: int = 16000
     temperature: float = 0.1
     max_tool_iterations: int = 50
-    memory_window: int = 100
     reasoning_effort: str | None = None
     service_tier: str | None = None
     context_management: str = "auto"  # off | observe | auto | aggressive
@@ -330,13 +329,37 @@ class AgentDefaults(Base):
     artifact_retention_days: int = 7
     send_progress: bool = True
     send_tool_hints: bool = True
+    memory: "AgentMemorySettings" = Field(default_factory=lambda: AgentMemorySettings())
+    experience_model: str | None = None
+    memory_window: int | None = None
 
     @model_validator(mode="after")
     def _warn_policies(self) -> "AgentDefaults":
+        fields_set = set(getattr(self, "model_fields_set", set()))
+        memory_fields_set = set(getattr(self.memory, "model_fields_set", set()))
+
+        if "memory" in fields_set and "learning_mode" in memory_fields_set:
+            chosen_learning = self.memory.learning_mode
+        elif self.experience_model not in (None, ""):
+            chosen_learning = self.experience_model
+        else:
+            chosen_learning = self.memory.learning_mode
+
+        if "memory" in fields_set and "recent_window" in memory_fields_set:
+            chosen_recent_window = int(self.memory.recent_window)
+        elif self.memory_window is not None:
+            chosen_recent_window = int(self.memory_window)
+        else:
+            chosen_recent_window = int(self.memory.recent_window)
+
+        self.memory.learning_mode = chosen_learning
+        self.experience_model = chosen_learning
+        self.memory.recent_window = chosen_recent_window
+        self.memory_window = chosen_recent_window
         _warn_unknown_policy(
             model_name="AgentDefaults",
             field_name="experience_model",
-            value=self.experience_model,
+            value=self.memory.learning_mode,
             allowed_values=get_args(ExperienceModelLiteral),
         )
         _warn_unknown_policy(
@@ -344,6 +367,23 @@ class AgentDefaults(Base):
             field_name="context_management",
             value=self.context_management,
             allowed_values=get_args(ContextManagementLiteral),
+        )
+        return self
+
+
+class AgentMemorySettings(Base):
+    """User-facing memory settings shared by desktop and core."""
+
+    recent_window: int = 100
+    learning_mode: str = "utility"  # "utility" | "main" | "none"
+
+    @model_validator(mode="after")
+    def _warn_policies(self) -> "AgentMemorySettings":
+        _warn_unknown_policy(
+            model_name="AgentMemorySettings",
+            field_name="learning_mode",
+            value=self.learning_mode,
+            allowed_values=get_args(MemoryLearningModeLiteral),
         )
         return self
 

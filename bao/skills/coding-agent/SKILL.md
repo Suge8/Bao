@@ -1,7 +1,7 @@
 ---
 name: coding-agent
 description: Use for general coding tasks when no more specific coding skill matches.
-metadata: {"bao":{"emoji":"⌨️","requires":{"bins_any":["opencode","codex","claude"]}}}
+metadata: {"bao":{"emoji":"⌨️","icon":"computer","display":{"name":"Coding Agent","nameZh":"编程代理","descriptionZh":"把多文件实现、调试和重构委派给已安装的编程后端。"},"category":"coding","capabilityRefs":["coding"],"activationRefs":["coding"],"requires":{"bins_any":["opencode","codex","claude"]},"examplePrompts":["帮我修这个测试失败","实现这个新接口并补测试"]}}
 ---
 
 # Coding Agent Skill

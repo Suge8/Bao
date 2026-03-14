@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from bao.config.loader import ensure_first_run, get_config_path, load_config
+from bao.config.migrations import CURRENT_VERSION
 from bao.utils.helpers import get_media_path
 
 
@@ -26,8 +27,9 @@ def test_ensure_first_run_creates_files(fake_home):
     config_path = fake_home / ".bao" / "config.jsonc"
     assert config_path.exists()
     text = config_path.read_text(encoding="utf-8")
-    assert '"config_version": 3' in text
+    assert f'"config_version": {CURRENT_VERSION}' in text
     assert (fake_home / ".bao" / "workspace").is_dir()
+    assert (fake_home / ".bao" / "profiles.json").exists()
 
 
 def test_ensure_first_run_idempotent(fake_home):

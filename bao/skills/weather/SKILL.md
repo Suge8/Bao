@@ -2,7 +2,7 @@
 name: weather
 description: Use for current weather, forecasts, or weather questions by location.
 homepage: https://wttr.in/:help
-metadata: {"bao":{"emoji":"🌤️","requires":{"bins":["curl"]}}}
+metadata: {"bao":{"emoji":"🌤️","icon":"weather","display":{"name":"Weather","nameZh":"天气","descriptionZh":"查询当前位置天气和未来预报。"},"category":"utility","capabilityRefs":["exec"],"activationRefs":["exec"],"requires":{"bins":["curl"]},"examplePrompts":["帮我查一下悉尼今天的天气","看看明天纽约会不会下雨"]}}
 ---
 
 # Weather

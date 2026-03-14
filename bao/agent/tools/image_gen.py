@@ -2,11 +2,13 @@
 
 import base64
 import tempfile
+from pathlib import Path
 from typing import Any
 
 import httpx
 from loguru import logger
 
+from bao.agent.tool_result import ReplyAttachment, ReplyContributionResult
 from bao.agent.tools.base import Tool
 
 _DEFAULT_MODEL = "gemini-2.0-flash-exp-image-generation"
@@ -30,7 +32,7 @@ class ImageGenTool(Tool):
     def description(self) -> str:
         return (
             "Generate an image from a text prompt. "
-            "Returns a local file path. Send it via message(media=[path])."
+            "The generated image is attached to the final reply automatically."
         )
 
     @property
@@ -50,7 +52,9 @@ class ImageGenTool(Tool):
             "required": ["prompt"],
         }
 
-    async def execute(self, prompt: str, aspect_ratio: str = "", **kwargs: Any) -> str:
+    async def execute(
+        self, prompt: str, aspect_ratio: str = "", **kwargs: Any
+    ) -> str | ReplyContributionResult:
         url = f"{self._base_url}/models/{self._model}:generateContent?key={self._api_key}"
         payload: dict[str, Any] = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -76,8 +80,8 @@ class ImageGenTool(Tool):
 
         return self._parse_response(resp.json())
 
-    def _parse_response(self, data: dict[str, Any]) -> str:
-        """Extract image from API response, save to temp file, return path."""
+    def _parse_response(self, data: dict[str, Any]) -> str | ReplyContributionResult:
+        """Extract image from API response, save to temp file, return reply contribution."""
         for candidate in data.get("candidates", []):
             for part in candidate.get("content", {}).get("parts", []):
                 inline = part.get("inlineData")
@@ -94,7 +98,17 @@ class ImageGenTool(Tool):
                         f.write(img_bytes)
                         path = f.name
                     logger.info("🎨 图像已保存 / saved: {} ({} bytes)", path, len(img_bytes))
-                    return f"Image saved: {path}\nSend via message(media=['{path}'])"
+                    return ReplyContributionResult(
+                        prompt_text="Image generated successfully. It is ready to attach to the final reply.",
+                        attachments=[
+                            ReplyAttachment(
+                                path=Path(path),
+                                cleanup=True,
+                                name=f"generated{suffix}",
+                                mime_type=mime,
+                            )
+                        ],
+                    )
 
         # No image — check for text fallback
         for candidate in data.get("candidates", []):

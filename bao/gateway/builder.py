@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from bao.agent.context import build_runtime_block
+from bao.agent.memory import MemoryPolicy
 from bao.agent.tools.cron import CronTool
+from bao.profile import ProfileContext, load_profile_registry_snapshot, profile_runtime_metadata
 
 
 @dataclass
@@ -282,6 +284,7 @@ def build_gateway_stack(
     provider: Any,
     session_manager: Any | None = None,
     on_channel_error: Callable[[str, str, str], None] | None = None,
+    profile_context: ProfileContext | None = None,
 ) -> GatewayStack:
     """Build the full gateway service stack from config and provider.
 
@@ -300,19 +303,49 @@ def build_gateway_stack(
     from bao.session.manager import SessionManager
 
     bus = MessageBus()
-    session_manager = session_manager or SessionManager(config.workspace_path)
+    shared_workspace = Path(str(config.workspace_path)).expanduser()
+    prompt_root = (
+        profile_context.prompt_root
+        if profile_context is not None
+        else shared_workspace
+    )
+    state_root = (
+        profile_context.state_root
+        if profile_context is not None
+        else shared_workspace
+    )
+    cron_store_path = (
+        profile_context.cron_store_path
+        if profile_context is not None
+        else get_data_dir() / "cron" / "jobs.json"
+    )
+    memory_policy = MemoryPolicy.from_agent_defaults(config.agents.defaults)
+    session_manager = session_manager or SessionManager(state_root)
     assert session_manager is not None
-    cron = CronService(get_data_dir() / "cron" / "jobs.json")
+    cron = CronService(cron_store_path)
 
     agent = AgentLoop(
         bus=bus,
         provider=provider,
         workspace=config.workspace_path,
+        prompt_root=prompt_root,
+        state_root=state_root,
+        profile_id=profile_context.profile_id if profile_context is not None else None,
+        profile_metadata=(
+            profile_runtime_metadata(
+                profile_context.profile_id,
+                display_name=profile_context.display_name,
+                shared_workspace=shared_workspace,
+                registry=load_profile_registry_snapshot(shared_workspace),
+            )
+            if profile_context is not None
+            else None
+        ),
         model=config.agents.defaults.model,
         temperature=config.agents.defaults.temperature,
         max_tokens=config.agents.defaults.max_tokens,
         max_iterations=config.agents.defaults.max_tool_iterations,
-        memory_window=config.agents.defaults.memory_window,
+        memory_policy=memory_policy,
         reasoning_effort=config.agents.defaults.reasoning_effort,
         service_tier=config.agents.defaults.service_tier,
         search_config=config.tools.web.search,
@@ -398,7 +431,7 @@ def build_gateway_stack(
 
     hb_cfg = config.gateway.heartbeat
     heartbeat = HeartbeatService(
-        workspace=config.workspace_path,
+        workspace=prompt_root,
         provider=provider,
         model=agent.model,
         on_execute=on_heartbeat_execute,
@@ -427,8 +460,10 @@ async def send_startup_greeting(
     config: Any,
     *,
     on_desktop_startup_message: Any | None = None,
+    on_startup_activity: Any | None = None,
     channels: Any | None = None,
     session_manager: Any | None = None,
+    profile_context: ProfileContext | None = None,
 ) -> None:
     from loguru import logger
 
@@ -445,6 +480,16 @@ async def send_startup_greeting(
                 await maybe
         except Exception as e:
             logger.warning("⚠️ 桌面回调失败 / callback failed: {} — {}", phase, e)
+
+    async def _emit_startup_activity(activity: dict[str, Any], phase: str) -> None:
+        if not on_startup_activity:
+            return
+        try:
+            maybe = on_startup_activity(dict(activity))
+            if isawaitable(maybe):
+                await maybe
+        except Exception as e:
+            logger.warning("⚠️ 启动活动回调失败 / activity callback failed: {} — {}", phase, e)
 
     async def _send_external_greeting(
         channel_name: str,
@@ -554,8 +599,27 @@ async def send_startup_greeting(
                 DesktopStartupMessage(content=text, role="assistant", entrance_style="greeting"),
                 "Desktop startup",
             )
+            await _emit_startup_activity(
+                {
+                    "channelKey": "desktop",
+                    "sessionKey": "desktop:local",
+                },
+                "Desktop startup activity",
+            )
 
     targets = _collect_channel_targets(config, logger)
+
+    planned_channel_keys: list[str] = []
+    planned_session_keys: list[str] = []
+    if on_desktop_startup_message is not None:
+        planned_channel_keys.append("desktop")
+        planned_session_keys.append("desktop:local")
+    for channel_name, chat_id in targets:
+        if channel_name not in planned_channel_keys:
+            planned_channel_keys.append(channel_name)
+        session_key = f"{channel_name}:{chat_id}"
+        if session_key not in planned_session_keys:
+            planned_session_keys.append(session_key)
 
     from bao.config.onboarding import (
         LANG_PICKER,
@@ -564,11 +628,22 @@ async def send_startup_greeting(
         infer_language,
     )
 
-    workspace_path = Path(str(config.workspace_path)).expanduser()
+    workspace_path = (
+        profile_context.prompt_root if profile_context is not None else Path(str(config.workspace_path)).expanduser()
+    )
     stage = detect_onboarding_stage(workspace_path)
 
     # Onboarding: broadcast static messages (no session needed)
     if stage in ("lang_select", "persona_setup"):
+        await _emit_startup_activity(
+            {
+                "kind": "startup_greeting",
+                "status": "running",
+                "channelKeys": planned_channel_keys,
+                "sessionKeys": planned_session_keys,
+            },
+            "Onboarding startup plan",
+        )
         if stage == "lang_select":
             content = LANG_PICKER
         else:
@@ -597,6 +672,16 @@ async def send_startup_greeting(
     persona_lang_tag = _extract_persona_language_tag(persona_text) if persona_text else None
     preferred_language = persona_lang_tag or infer_language(workspace_path)
     prompt = _build_startup_trigger()
+
+    await _emit_startup_activity(
+        {
+            "kind": "startup_greeting",
+            "status": "running",
+            "channelKeys": planned_channel_keys,
+            "sessionKeys": planned_session_keys,
+        },
+        "Ready startup plan",
+    )
 
     if on_desktop_startup_message:
         await asyncio.gather(

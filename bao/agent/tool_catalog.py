@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import shutil
 from dataclasses import dataclass
 
@@ -180,7 +182,7 @@ _BUILTIN_TOOL_FAMILIES: tuple[BuiltinToolFamily, ...] = (
         detail="These tools cover explicit outbound delivery and structured internal diagnostics for framework-side failures.",
         detail_zh="消息与诊断把跨渠道发送和框架内部诊断放在一起，用于支持类与排障类任务。",
         capabilities=("Messaging", "Diagnostics", "Support"),
-        included_tools=("message", "runtime_diagnostics"),
+        included_tools=("notify", "runtime_diagnostics"),
         icon_source=_iconoir("message-alert"),
     ),
     BuiltinToolFamily(
@@ -261,15 +263,35 @@ def _get_path(data: dict[str, object], dotpath: str, default: object = None) -> 
 
 
 def _attention_status(status: str) -> bool:
-    return status in {"limited", "disabled", "needs_setup", "error", "unavailable"}
+    return status in {"limited", "disabled", "needs_setup", "error", "unavailable", "blocked"}
 
 
-def _coding_backends() -> list[str]:
+def _desktop_missing_dependencies() -> list[str]:
+    missing: list[str] = []
+    for label, module_name in (("mss", "mss"), ("pyautogui", "pyautogui"), ("Pillow", "PIL")):
+        if importlib.util.find_spec(module_name) is None:
+            missing.append(label)
+    return missing
+
+
+def _coding_backends() -> tuple[list[str], list[str]]:
     backends: list[str] = []
-    for name, binary in (("OpenCode", "opencode"), ("Codex", "codex"), ("Claude Code", "claude")):
-        if shutil.which(binary):
-            backends.append(name)
-    return backends
+    errors: list[str] = []
+    for label, binary, module_path, class_name in (
+        ("OpenCode", "opencode", "bao.agent.tools.opencode", "OpenCodeTool"),
+        ("Codex", "codex", "bao.agent.tools.codex", "CodexTool"),
+        ("Claude Code", "claude", "bao.agent.tools.claudecode", "ClaudeCodeTool"),
+    ):
+        if not shutil.which(binary):
+            continue
+        try:
+            module = importlib.import_module(module_path)
+            getattr(module, class_name)
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
+            continue
+        backends.append(label)
+    return backends, errors
 
 
 def _mcp_transport(command: str, url: str) -> str:
@@ -511,35 +533,69 @@ class ToolCatalog:
             meta_lines.append(f"Model: {model or 'default'}")
         elif spec.form_kind == "desktop":
             enabled = bool(_get_path(config_data, "tools.desktop.enabled", True))
-            status = "ready" if enabled else "disabled"
-            status_label = "Enabled" if enabled else "Disabled"
-            status_detail = (
-                "Desktop automation is available to the agent."
-                if enabled
-                else "Enable desktop automation before Bao can act on the local UI."
-            )
-            status_detail_display = _localized(
-                "本地桌面控制已开启。" if enabled else "本地桌面控制当前关闭。",
-                "Desktop control is enabled." if enabled else "Desktop control is currently disabled.",
-            )
-            config_values = {"enabled": enabled}
+            missing_dependencies = _desktop_missing_dependencies() if enabled else []
+            if not enabled:
+                status = "disabled"
+                status_label = "Disabled"
+                status_detail = "Enable desktop automation before Bao can act on the local UI."
+                status_detail_display = _localized(
+                    "本地桌面控制当前关闭。",
+                    "Desktop control is currently disabled.",
+                )
+            elif missing_dependencies:
+                joined = ", ".join(missing_dependencies)
+                status = "blocked"
+                status_label = "Missing dependencies"
+                status_detail = f"Missing desktop dependencies: {joined}"
+                status_detail_display = _localized(
+                    f"缺少桌面依赖：{joined}。",
+                    f"Missing desktop dependencies: {joined}.",
+                )
+                meta_lines.append(f"Missing deps: {joined}")
+            else:
+                status = "ready"
+                status_label = "Enabled"
+                status_detail = "Desktop automation is available to the agent."
+                status_detail_display = _localized(
+                    "本地桌面控制已开启。",
+                    "Desktop control is enabled.",
+                )
+            config_values = {
+                "enabled": enabled,
+                "missingDependencies": missing_dependencies,
+            }
         elif spec.form_kind == "coding":
-            backends = _coding_backends()
-            status = "ready" if backends else "unavailable"
-            status_label = "Available" if backends else "No backend"
-            status_detail = (
-                ", ".join(backends)
-                if backends
-                else "Install OpenCode, Codex, or Claude Code to activate coding delegation."
-            )
-            status_detail_display = _localized(
-                "已检测到编程后端。" if backends else "尚未检测到 OpenCode、Codex 或 Claude Code。",
-                "Coding backends detected."
-                if backends
-                else "No OpenCode, Codex, or Claude Code backend detected yet.",
-            )
-            config_values = {"backends": backends}
-            meta_lines.append(status_detail)
+            backends, backend_errors = _coding_backends()
+            if backends:
+                status = "ready"
+                status_label = "Available"
+                status_detail = ", ".join(backends)
+                status_detail_display = _localized(
+                    "已检测到编程后端。",
+                    "Coding backends detected.",
+                )
+            elif backend_errors:
+                status = "blocked"
+                status_label = "Backend blocked"
+                status_detail = backend_errors[0]
+                status_detail_display = _localized(
+                    "检测到编程命令，但后端初始化失败。",
+                    "A coding backend binary was found, but initialization failed.",
+                )
+            else:
+                status = "unavailable"
+                status_label = "No backend"
+                status_detail = (
+                    "Install OpenCode, Codex, or Claude Code to activate coding delegation."
+                )
+                status_detail_display = _localized(
+                    "尚未检测到 OpenCode、Codex 或 Claude Code。",
+                    "No OpenCode, Codex, or Claude Code backend detected yet.",
+                )
+            config_values = {"backends": backends, "backendErrors": backend_errors}
+            if status_detail:
+                meta_lines.append(status_detail)
+            meta_lines.extend(backend_errors[:2])
 
         if spec.form_kind == "overview":
             if spec.id == "cron":

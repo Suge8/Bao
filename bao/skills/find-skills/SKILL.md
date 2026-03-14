@@ -1,6 +1,7 @@
 ---
 name: find-skills
 description: Use when asked to find, install, or recommend a skill or new capability.
+metadata: {"bao":{"icon":"toolbox","display":{"name":"Find Skills","nameZh":"发现技能","descriptionZh":"搜索、推荐并导入新的技能能力。"},"category":"discovery","capabilityRefs":["exec"],"activationRefs":["exec"],"requires":{"bins":["npx"]},"examplePrompts":["有没有适合做设计评审的技能","帮我搜索一个 changelog skill"]}}
 ---
 
 # Find Skills

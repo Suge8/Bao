@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
@@ -72,6 +73,29 @@ class HeartbeatService:
         self._running = False
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
+        self._change_listeners: list[Callable[[], None]] = []
+        self._last_checked_at_ms: int | None = None
+        self._last_run_at_ms: int | None = None
+        self._last_decision: str = ""
+        self._last_error: str = ""
+
+    def add_change_listener(self, listener: Callable[[], None]) -> None:
+        if listener not in self._change_listeners:
+            self._change_listeners.append(listener)
+
+    def remove_change_listener(self, listener: Callable[[], None]) -> None:
+        if listener in self._change_listeners:
+            self._change_listeners.remove(listener)
+
+    def _notify_changed(self) -> None:
+        for listener in tuple(self._change_listeners):
+            try:
+                listener()
+            except Exception as exc:
+                logger.debug("Skip heartbeat change listener: {}", exc)
+
+    def _now_ms(self) -> int:
+        return int(datetime.now().timestamp() * 1000)
 
     @property
     def heartbeat_file(self) -> Path:
@@ -127,6 +151,7 @@ class HeartbeatService:
         self._running = True
         self._stop_event.clear()
         self._task = asyncio.create_task(self._run_loop())
+        self._notify_changed()
         logger.info("💓 心跳已启动 / started ({}s)", self.interval_s)
 
     def stop(self) -> None:
@@ -136,6 +161,7 @@ class HeartbeatService:
         if self._task:
             self._task.cancel()
             self._task = None
+        self._notify_changed()
 
     async def _run_loop(self) -> None:
         """Main heartbeat loop."""
@@ -152,31 +178,56 @@ class HeartbeatService:
 
     async def execute_once(self, *, notify: bool = True) -> str | None:
         """Execute heartbeat decision once and optionally notify."""
+        self._last_checked_at_ms = self._now_ms()
+        self._last_error = ""
+        self._notify_changed()
         content = self._read_heartbeat_file()
         if not content:
             logger.debug("💓 心跳文件缺失 / file missing: HEARTBEAT.md missing or empty")
+            self._last_decision = "missing"
+            self._notify_changed()
             return None
 
         logger.debug("💓 心跳检查任务 / checking tasks")
 
         try:
             action, tasks = await self._decide(content)
+            self._last_decision = action
 
             if action != "run":
                 logger.debug("💓 心跳无需上报 / nothing to report")
+                self._notify_changed()
                 return None
 
             logger.info("💓 心跳发现任务 / tasks found: executing")
             if self.on_execute:
+                self._last_run_at_ms = self._now_ms()
+                self._notify_changed()
                 response = await self.on_execute(tasks)
                 if response and notify and self.on_notify:
                     logger.info("💓 心跳执行完成 / completed: delivering response")
                     await self.on_notify(response)
+                self._notify_changed()
                 return response
-        except Exception:
+        except Exception as exc:
+            self._last_error = str(exc)
             logger.exception("❌ 心跳执行失败 / execution failed")
+            self._notify_changed()
         return None
 
     async def trigger_now(self) -> str | None:
         """Manually trigger a heartbeat."""
         return await self.execute_once(notify=False)
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "running": self._running,
+            "interval_s": self.interval_s,
+            "heartbeat_file": str(self.heartbeat_file),
+            "heartbeat_file_exists": self.heartbeat_file.exists(),
+            "last_checked_at_ms": self._last_checked_at_ms,
+            "last_run_at_ms": self._last_run_at_ms,
+            "last_decision": self._last_decision,
+            "last_error": self._last_error,
+        }

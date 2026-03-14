@@ -6,6 +6,8 @@ import re
 import shutil
 from pathlib import Path
 
+from bao.agent.skill_catalog import SkillCatalog
+
 # Default builtin skills directory (relative to this file)
 BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
@@ -22,6 +24,7 @@ class SkillsLoader:
         self.workspace = workspace
         self.workspace_skills = workspace / "skills"
         self.builtin_skills = builtin_skills_dir or BUILTIN_SKILLS_DIR
+        self._catalog = SkillCatalog(workspace=workspace, builtin_skills_dir=self.builtin_skills)
         self._skill_content_cache: dict[Path, tuple[tuple[int, int, int], str]] = {}
 
     def list_skills(self, filter_unavailable: bool = True) -> list[dict[str, str]]:
@@ -34,32 +37,17 @@ class SkillsLoader:
         Returns:
             List of skill info dicts with 'name', 'path', 'source'.
         """
-        skills = []
-
-        # Workspace skills (highest priority)
-        if self.workspace_skills.exists():
-            for skill_dir in self.workspace_skills.iterdir():
-                if skill_dir.is_dir():
-                    skill_file = skill_dir / "SKILL.md"
-                    if skill_file.exists():
-                        skills.append(
-                            {"name": skill_dir.name, "path": str(skill_file), "source": "workspace"}
-                        )
-
-        # Built-in skills
-        if self.builtin_skills and self.builtin_skills.exists():
-            for skill_dir in self.builtin_skills.iterdir():
-                if skill_dir.is_dir():
-                    skill_file = skill_dir / "SKILL.md"
-                    if skill_file.exists() and not any(s["name"] == skill_dir.name for s in skills):
-                        skills.append(
-                            {"name": skill_dir.name, "path": str(skill_file), "source": "builtin"}
-                        )
-
-        # Filter by requirements
+        records = self._catalog.list_records()
         if filter_unavailable:
-            return [s for s in skills if self._check_requirements(self._get_skill_meta(s["name"]))]
-        return skills
+            records = [record for record in records if bool(record.get("available"))]
+        return [
+            {
+                "name": str(record.get("name") or ""),
+                "path": str(record.get("path") or ""),
+                "source": str(record.get("source") or ""),
+            }
+            for record in records
+        ]
 
     def load_skill(self, name: str) -> str | None:
         """

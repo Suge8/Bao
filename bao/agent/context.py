@@ -2,6 +2,7 @@
 
 import base64
 import importlib
+import inspect
 import logging
 import mimetypes
 import platform
@@ -10,20 +11,26 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
-from bao.agent.memory import MemoryStore
+from bao.agent.memory import (
+    DEFAULT_MEMORY_POLICY,
+    MemoryPolicy,
+    MemoryStore,
+    summarize_recall_bundle,
+)
 from bao.agent.plan import format_plan_for_prompt, is_plan_done
 from bao.agent.skills import SkillsLoader
+from bao.profile import format_profile_runtime_block
 
 # ---------------------------------------------------------------------------
 # Budget constants for memory / experience injection
 # ---------------------------------------------------------------------------
-MAX_MEMORY_ITEMS = 5
-MAX_EXPERIENCE_ITEMS = 3
-MAX_MEMORY_CHARS = 2000
-MAX_EXPERIENCE_CHARS = 1500
-MAX_LONG_TERM_MEMORY_CHARS = 1500
+MAX_MEMORY_ITEMS = DEFAULT_MEMORY_POLICY.related_memory_limit
+MAX_EXPERIENCE_ITEMS = DEFAULT_MEMORY_POLICY.related_experience_limit
+MAX_MEMORY_CHARS = DEFAULT_MEMORY_POLICY.related_memory_chars
+MAX_EXPERIENCE_CHARS = DEFAULT_MEMORY_POLICY.related_experience_chars
+MAX_LONG_TERM_MEMORY_CHARS = DEFAULT_MEMORY_POLICY.long_term_chars
 
 
 def format_current_time(*, include_weekday: bool = True) -> str:
@@ -110,9 +117,15 @@ _CHANNEL_FORMAT_HINTS: dict[str, str] = {
 class _LazyMemoryStoreProxy:
     """Defer expensive memory store setup until it is actually needed."""
 
-    def __init__(self, workspace: Path, embedding_config: Any = None):
-        object.__setattr__(self, "_workspace", workspace)
+    def __init__(
+        self,
+        storage_root: Path,
+        embedding_config: Any = None,
+        memory_policy: MemoryPolicy | None = None,
+    ):
+        object.__setattr__(self, "_storage_root", storage_root)
         object.__setattr__(self, "_embedding_config", embedding_config)
+        object.__setattr__(self, "_memory_policy", memory_policy)
         object.__setattr__(self, "_lock", threading.RLock())
         object.__setattr__(self, "_store", None)
 
@@ -124,10 +137,15 @@ class _LazyMemoryStoreProxy:
         with lock:
             store = object.__getattribute__(self, "_store")
             if store is None:
-                store = MemoryStore(
-                    object.__getattribute__(self, "_workspace"),
-                    embedding_config=object.__getattribute__(self, "_embedding_config"),
-                )
+                init_kwargs = {"embedding_config": object.__getattribute__(self, "_embedding_config")}
+                memory_policy = object.__getattribute__(self, "_memory_policy")
+                try:
+                    accepts_memory_policy = "memory_policy" in inspect.signature(MemoryStore).parameters
+                except (TypeError, ValueError):
+                    accepts_memory_policy = False
+                if accepts_memory_policy:
+                    init_kwargs["memory_policy"] = memory_policy
+                store = MemoryStore(object.__getattribute__(self, "_storage_root"), **init_kwargs)
                 object.__setattr__(self, "_store", store)
             return store
 
@@ -164,9 +182,26 @@ class ContextBuilder:
     _AVAILABLE_NOW_START = "<available_now>"
     _AVAILABLE_NOW_END = "</available_now>"
 
-    def __init__(self, workspace: Path, embedding_config: Any = None):
+    def __init__(
+        self,
+        workspace: Path,
+        *,
+        prompt_root: Path | None = None,
+        state_root: Path | None = None,
+        embedding_config: Any = None,
+        memory_policy: MemoryPolicy | None = None,
+        profile_metadata: Mapping[str, Any] | None = None,
+    ):
         self.workspace = workspace
-        self.memory = _LazyMemoryStoreProxy(workspace, embedding_config=embedding_config)
+        self.prompt_root = prompt_root or workspace
+        self.state_root = state_root or workspace
+        self.profile_metadata = dict(profile_metadata or {})
+        self.memory_policy = memory_policy or DEFAULT_MEMORY_POLICY
+        self.memory = _LazyMemoryStoreProxy(
+            self.state_root,
+            embedding_config=embedding_config,
+            memory_policy=self.memory_policy,
+        )
         self.skills = SkillsLoader(workspace)
         self._bootstrap_cache: dict[str, tuple[tuple[int, int, int], str]] = {}
 
@@ -244,8 +279,7 @@ If `available="false"`, that skill's dependencies are not currently available, s
     ) -> str:
         workspace_path = str(self.workspace.expanduser().resolve())
         runtime_block = build_runtime_block(channel=channel, chat_id=chat_id)
-
-        return f"""# Bao 🍞
+        prompt = f"""# Bao 🍞
 
 You are Bao, a tool-using personal AI assistant running inside the bao framework.
 
@@ -269,6 +303,13 @@ When deciding whether you can act, use the current Available now block and curre
 
 ## Workspace
 Your workspace is at: {workspace_path}"""
+        profile_runtime_block = self._build_profile_runtime_block()
+        if profile_runtime_block:
+            prompt += f"\n\n## Profiles\n{profile_runtime_block}"
+        return prompt
+
+    def _build_profile_runtime_block(self) -> str:
+        return format_profile_runtime_block(self.profile_metadata)
 
     @staticmethod
     def get_channel_format_hint(channel: str | None) -> str | None:
@@ -280,7 +321,7 @@ Your workspace is at: {workspace_path}"""
         parts = []
 
         for filename in self.BOOTSTRAP_FILES:
-            file_path = self.workspace / filename
+            file_path = self.prompt_root / filename
             if file_path.exists():
                 stat = file_path.stat()
                 cache_key = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
@@ -389,8 +430,8 @@ Your workspace is at: {workspace_path}"""
         if related_memory:
             budgeted = self._budget_items(
                 related_memory,
-                max_items=MAX_MEMORY_ITEMS,
-                max_chars=MAX_MEMORY_CHARS,
+                max_items=self.memory_policy.related_memory_limit,
+                max_chars=self.memory_policy.related_memory_chars,
             )
             if budgeted:
                 system_prompt += (
@@ -402,8 +443,8 @@ Your workspace is at: {workspace_path}"""
         if related_experience:
             budgeted = self._budget_items(
                 related_experience,
-                max_items=MAX_EXPERIENCE_ITEMS,
-                max_chars=MAX_EXPERIENCE_CHARS,
+                max_items=self.memory_policy.related_experience_limit,
+                max_chars=self.memory_policy.related_experience_chars,
             )
             if budgeted:
                 system_prompt += (
@@ -426,14 +467,15 @@ Your workspace is at: {workspace_path}"""
     def recall(self, query: str) -> dict[str, Any]:
         bundle = self.memory.recall(
             query,
-            related_limit=MAX_MEMORY_ITEMS,
-            experience_limit=MAX_EXPERIENCE_ITEMS,
-            long_term_chars=MAX_LONG_TERM_MEMORY_CHARS,
+            related_limit=self.memory_policy.related_memory_limit,
+            experience_limit=self.memory_policy.related_experience_limit,
+            long_term_chars=self.memory_policy.long_term_chars,
         )
         return {
             "long_term_memory": bundle.long_term_context,
             "related_memory": list(bundle.related_memory),
             "related_experience": list(bundle.related_experience),
+            "references": summarize_recall_bundle(bundle),
         }
 
     # Formats natively supported by vision APIs

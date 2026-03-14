@@ -15,6 +15,7 @@ from loguru import logger
 from bao.agent import shared
 from bao.agent.artifacts import ArtifactStore, apply_tool_output_budget
 from bao.agent.capability_registry import build_available_tool_lines
+from bao.agent.memory import DEFAULT_MEMORY_POLICY, MemoryPolicy
 from bao.agent.protocol import ToolErrorCategory
 from bao.agent.run_artifacts import build_run_artifact_payload
 from bao.agent.run_controller import RunLoopState, apply_pre_iteration_checks, build_error_feedback
@@ -172,6 +173,7 @@ class SubagentManager:
         context_compact_keep_recent_tool_blocks: int = 4,
         artifact_retention_days: int = 7,
         memory_store: Any | None = None,
+        memory_policy: MemoryPolicy | None = None,
         image_generation_config: Any | None = None,
         desktop_config: Any | None = None,
         browser_enabled: bool = True,
@@ -207,6 +209,7 @@ class SubagentManager:
         self._compact_keep_blocks = max(1, int(context_compact_keep_recent_tool_blocks))
         self._artifact_retention_days = max(1, int(artifact_retention_days))
         self._memory = memory_store
+        self._memory_policy = memory_policy or DEFAULT_MEMORY_POLICY
         self._utility_provider = utility_provider
         self._utility_model = utility_model
         self._experience_mode = experience_mode.lower()
@@ -1597,14 +1600,7 @@ class SubagentManager:
         related_experience: list[str] | None = None,
     ) -> str:
         """Build a focused system prompt for the subagent."""
-        from bao.agent.context import (
-            MAX_EXPERIENCE_CHARS,
-            MAX_EXPERIENCE_ITEMS,
-            MAX_MEMORY_CHARS,
-            MAX_MEMORY_ITEMS,
-            ContextBuilder,
-            format_current_time,
-        )
+        from bao.agent.context import ContextBuilder, format_current_time
 
         search_capability = "\n- Search the web and fetch web pages" if has_search else ""
         browser_capability = (
@@ -1642,16 +1638,16 @@ class SubagentManager:
         if related_memory:
             budgeted_memory = self._budget_items(
                 related_memory,
-                max_items=MAX_MEMORY_ITEMS,
-                max_chars=MAX_MEMORY_CHARS,
+                max_items=self._memory_policy.related_memory_limit,
+                max_chars=self._memory_policy.related_memory_chars,
             )
             if budgeted_memory:
                 memory_section += "\n\n## Related Memory\n" + "\n---\n".join(budgeted_memory)
         if related_experience:
             budgeted_experience = self._budget_items(
                 related_experience,
-                max_items=MAX_EXPERIENCE_ITEMS,
-                max_chars=MAX_EXPERIENCE_CHARS,
+                max_items=self._memory_policy.related_experience_limit,
+                max_chars=self._memory_policy.related_experience_chars,
             )
             if budgeted_experience:
                 memory_section += (
@@ -1678,7 +1674,7 @@ You are a subagent spawned by the main agent to complete a specific task.
 - Complete the task thoroughly
 
 ## What You Cannot Do
-- Send messages directly to users (no message tool available)
+- Send messages directly to users (no direct notify tool available)
 - Spawn other subagents
 - Access the main agent's conversation history
 - Write or mutate memory/experience (read-only context only)

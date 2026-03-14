@@ -6,9 +6,30 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from bao.agent.skills import BUILTIN_SKILLS_DIR
-
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$")
+BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
+
+
+def _as_dict(value: object) -> dict[str, object]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: object) -> list[object]:
+    return value if isinstance(value, list) else []
+
+
+def _as_str(value: object, default: str = "") -> str:
+    return value if isinstance(value, str) else default
+
+
+def _parse_string_list(value: object) -> tuple[str, ...]:
+    items = [str(item).strip() for item in _as_list(value)]
+    return tuple(item for item in items if item)
+
+
+def _humanize_name(name: str) -> str:
+    parts = [part for part in re.split(r"[-_]+", name.strip()) if part]
+    return " ".join(part.capitalize() for part in parts) or name
 
 
 @dataclass(frozen=True)
@@ -25,8 +46,15 @@ class SkillRecord:
     emoji: str
     can_edit: bool
     can_delete: bool
-    can_fork: bool
     metadata: dict[str, str]
+    display_name: str
+    display_name_zh: str
+    display_description_zh: str
+    icon: str
+    category: str
+    capability_refs: tuple[str, ...]
+    activation_refs: tuple[str, ...]
+    example_prompts: tuple[str, ...]
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -42,8 +70,15 @@ class SkillRecord:
             "emoji": self.emoji,
             "canEdit": self.can_edit,
             "canDelete": self.can_delete,
-            "canFork": self.can_fork,
             "metadata": dict(self.metadata),
+            "displayName": self.display_name,
+            "displayNameZh": self.display_name_zh,
+            "displayDescriptionZh": self.display_description_zh,
+            "icon": self.icon,
+            "category": self.category,
+            "capabilityRefs": list(self.capability_refs),
+            "activationRefs": list(self.activation_refs),
+            "examplePrompts": list(self.example_prompts),
         }
 
 
@@ -93,29 +128,6 @@ class SkillCatalog:
         _ = skill_file.write_text(body, encoding="utf-8")
         return self._record_for(name, "workspace").to_dict()
 
-    def fork_builtin_skill(
-        self, name: str, destination_name: str | None = None
-    ) -> dict[str, object]:
-        builtin_dir = self.builtin_skills / name
-        if not builtin_dir.exists():
-            raise FileNotFoundError(f"Built-in skill not found: {name}")
-
-        target_name = normalize_skill_name(destination_name or name)
-        target_dir = self.workspace_skills / target_name
-        if target_dir.exists():
-            raise ValueError(f"Workspace skill already exists: {target_name}")
-
-        _ = self.workspace_skills.mkdir(parents=True, exist_ok=True)
-        _ = shutil.copytree(builtin_dir, target_dir)
-        if target_name != name:
-            skill_file = target_dir / "SKILL.md"
-            content = skill_file.read_text(encoding="utf-8")
-            content = re.sub(
-                r"^name:\s*.*$", f"name: {target_name}", content, count=1, flags=re.MULTILINE
-            )
-            _ = skill_file.write_text(content, encoding="utf-8")
-        return self._record_for(target_name, "workspace").to_dict()
-
     def update_workspace_skill(self, name: str, content: str) -> dict[str, object]:
         skill_file = self._skill_file(name, "workspace")
         if not skill_file.exists():
@@ -155,6 +167,7 @@ class SkillCatalog:
         metadata = self._get_file_metadata(content)
         description = metadata.get("description") or name
         skill_meta = self._parse_bao_metadata(metadata.get("metadata", ""))
+        display_meta = _as_dict(skill_meta.get("display"))
         available = self._check_requirements(skill_meta)
         missing_requirements = self._get_missing_requirements(skill_meta)
         always = bool(skill_meta.get("always") or metadata.get("always") == "true")
@@ -172,8 +185,15 @@ class SkillCatalog:
             emoji=emoji,
             can_edit=source == "workspace",
             can_delete=source == "workspace",
-            can_fork=source == "builtin",
             metadata=metadata,
+            display_name=_as_str(display_meta.get("name")) or _humanize_name(name),
+            display_name_zh=_as_str(display_meta.get("nameZh")) or _humanize_name(name),
+            display_description_zh=_as_str(display_meta.get("descriptionZh")),
+            icon=_as_str(skill_meta.get("icon")) or "book-stack",
+            category=_as_str(skill_meta.get("category")) or "general",
+            capability_refs=_parse_string_list(skill_meta.get("capabilityRefs")),
+            activation_refs=_parse_string_list(skill_meta.get("activationRefs")),
+            example_prompts=_parse_string_list(skill_meta.get("examplePrompts")),
         )
 
     @staticmethod
