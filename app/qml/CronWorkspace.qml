@@ -9,7 +9,9 @@ Item {
     property bool active: false
     property var appRoot: null
     property var cronService: null
+    property var heartbeatService: null
     readonly property bool hasCronService: cronService !== null
+    readonly property bool hasHeartbeatService: heartbeatService !== null && typeof heartbeatService.heartbeatFileExists !== "undefined"
     readonly property var draft: hasCronService ? cronService.draft : ({})
     readonly property var selectedTask: hasCronService ? cronService.selectedTask : ({})
     readonly property bool hasDraft: hasCronService ? cronService.hasDraft : false
@@ -26,12 +28,13 @@ Item {
             return autoLanguage
         return "en"
     }
+    property string currentPane: "tasks"
     property real revealOpacity: 1.0
-    property real revealScale: 1.0
-    property real revealShift: 0.0
+    property real contentRevealOpacity: 1.0
+    property real contentRevealShift: 0.0
 
-    readonly property color cronAccent: isDark ? Qt.rgba(1.0, 0.69, 0.20, 1.0) : Qt.rgba(0.95, 0.56, 0.05, 1.0)
-    readonly property color cronAccentHover: isDark ? Qt.rgba(1.0, 0.74, 0.30, 1.0) : Qt.rgba(0.98, 0.61, 0.10, 1.0)
+    readonly property color cronAccent: accent
+    readonly property color cronAccentHover: accentHover
     readonly property color panelFill: bgCard
     readonly property color panelBorder: isDark ? "#20FFFFFF" : "#126E4B2A"
     readonly property color sectionFill: isDark ? "#16110E" : "#FCF8F3"
@@ -45,11 +48,42 @@ Item {
         return resolvedLang === "zh" ? zh : en
     }
 
+    function workspaceString(key, fallbackZh, fallbackEn) {
+        if (typeof strings === "object" && strings !== null) {
+            var value = strings[key]
+            if (value !== undefined && value !== null && String(value))
+                return String(value)
+        }
+        return tr(fallbackZh, fallbackEn)
+    }
+
+    function currentPaneDirection() {
+        return currentPane === "checks" ? 1 : -1
+    }
+
+    function automationHeaderCaption() {
+        return workspaceString(
+            "workspace_cron_caption",
+            "统一管理计划任务和自动检查。",
+            "Manage scheduled tasks and automatic checks in one place."
+        )
+    }
+
     function playReveal() {
         revealOpacity = motionPageRevealStartOpacity
-        revealScale = motionPageRevealStartScale
-        revealShift = motionPageShiftSubtle
         revealAnimation.restart()
+    }
+
+    function playContentReveal(direction) {
+        contentRevealOpacity = motionPageRevealStartOpacity
+        contentRevealShift = direction >= 0 ? motionPageShiftSubtle : -motionPageShiftSubtle
+        contentRevealAnimation.restart()
+    }
+
+    function switchPane(nextPane) {
+        if (currentPane === nextPane)
+            return
+        currentPane = nextPane
     }
 
     function setDraft(path, value) {
@@ -67,6 +101,13 @@ Item {
             appRoot.activeWorkspace = "sessions"
         if (hasCronService)
             cronService.openSelectedSession()
+    }
+
+    function openHeartbeatSession() {
+        if (appRoot)
+            appRoot.activeWorkspace = "sessions"
+        if (hasHeartbeatService)
+            heartbeatService.openHeartbeatSession()
     }
 
     function draftString(key, fallback) {
@@ -172,11 +213,11 @@ Item {
         }
     }
 
+    onCurrentPaneChanged: playContentReveal(currentPaneDirection())
+
     Item {
         anchors.fill: parent
         opacity: root.revealOpacity
-        scale: root.revealScale
-        transform: Translate { x: root.revealShift }
 
         Rectangle {
             anchors.fill: parent
@@ -199,152 +240,181 @@ Item {
 
                 CalloutPanel {
                     Layout.fillWidth: true
-                    panelColor: isDark ? "#15100E" : "#FFFBF7"
-                    panelBorderColor: isDark ? "#1CFFFFFF" : "#12000000"
-                    overlayColor: isDark ? "#08FFFFFF" : "#04FFFFFF"
+                    panelColor: isDark ? "#15100D" : "#FFF7F0"
+                    panelBorderColor: isDark ? "#22FFFFFF" : "#14000000"
+                    overlayColor: isDark ? "#0BFFFFFF" : "#08FFFFFF"
                     overlayVisible: true
                     sideGlowVisible: false
                     accentBlobVisible: false
                     padding: 14
 
-                    RowLayout {
-                        id: headerRow
+                    ColumnLayout {
                         width: parent.width
-                        spacing: 12
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 4
-
-                            RowLayout {
-                                spacing: 10
-
-                                Rectangle {
-                                    width: 40
-                                    height: 40
-                                    radius: 14
-                                    color: isDark ? "#1E1612" : "#FFF0DE"
-
-                                    Image {
-                                        anchors.centerIn: parent
-                                        width: 18
-                                        height: 18
-                                        source: root.icon("calendar-rotate")
-                                        sourceSize: Qt.size(width, height)
-                                        fillMode: Image.PreserveAspectFit
-                                        smooth: true
-                                        mipmap: true
-                                    }
-                                }
-
-                                ColumnLayout {
-                                    spacing: 2
-
-                                    Text {
-                                        text: tr("定时任务", "Scheduled Tasks")
-                                        color: textPrimary
-                                        font.pixelSize: typeTitle
-                                        font.weight: weightBold
-                                    }
-
-                                    Text {
-                                        text: tr("给 Bao 安排自动提醒和周期工作。", "Set up reminders and recurring work for Bao.")
-                                        color: textSecondary
-                                        font.pixelSize: typeMeta
-                                    }
-                                }
-                            }
-
-                            Text {
-                                color: textSecondary
-                                font.pixelSize: typeMeta
-                                text: tr("在这里集中管理提醒、投递和自动任务。", "Manage reminders, delivery, and recurring work in one place.")
-                                maximumLineCount: 2
-                                elide: Text.ElideRight
-                                wrapMode: Text.WordWrap
-                            }
-                        }
+                        spacing: 6
 
                         Item {
                             Layout.fillWidth: true
-                        }
+                            implicitHeight: 52
 
-                        RowLayout {
-                            Layout.alignment: Qt.AlignRight | Qt.AlignTop
-                            spacing: 8
+                            Row {
+                                id: automationHeaderIntro
+                                anchors.left: parent.left
+                                anchors.right: automationHeaderCenter.left
+                                anchors.rightMargin: 18
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 10
 
-                            PillActionButton {
-                                text: tr("新建任务", "New task")
-                                iconSource: root.icon("circle-spark")
-                                fillColor: cronAccent
-                                hoverFillColor: cronAccentHover
-                                onClicked: if (hasCronService) cronService.newDraft()
+                                WorkspaceHeroIcon {
+                                    iconSource: root.icon("calendar-rotate")
+                                }
+
+                                Column {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: Math.max(0, automationHeaderIntro.width - 50)
+                                    spacing: 2
+
+                                    Text {
+                                        width: parent.width
+                                        text: workspaceString("workspace_cron_title", "自动任务", "Automation")
+                                        color: textPrimary
+                                        font.pixelSize: typeTitle - 1
+                                        font.weight: weightBold
+                                        elide: Text.ElideRight
+                                    }
+
+                                    Text {
+                                        width: parent.width
+                                        text: root.automationHeaderCaption()
+                                        color: textSecondary
+                                        font.pixelSize: typeMeta
+                                        maximumLineCount: 1
+                                        elide: Text.ElideRight
+                                    }
+                                }
                             }
 
-                            PillActionButton {
-                                text: tr("刷新", "Refresh")
-                                iconSource: root.labIcon("watch-loader")
-                                fillColor: "transparent"
-                                hoverFillColor: bgCardHover
-                                outlineColor: borderSubtle
-                                textColor: textSecondary
-                                outlined: true
-                                onClicked: if (hasCronService) cronService.refresh()
+                            Item {
+                                id: automationHeaderCenter
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: automationTabBar.implicitWidth
+                                height: automationTabBar.implicitHeight
+
+                                SegmentedTabs {
+                                    id: automationTabBar
+                                    objectName: "automationTabBar"
+                                    anchors.centerIn: parent
+                                    preferredTrackWidth: 214
+                                    fillSegments: true
+                                    currentValue: root.currentPane
+                                    accentColor: cronAccent
+                                    items: [
+                                        {
+                                            value: "tasks",
+                                            label: root.tr("计划任务", "Tasks"),
+                                            icon: root.icon("calendar-rotate")
+                                        },
+                                        {
+                                            value: "checks",
+                                            label: root.tr("自动检查", "Checks"),
+                                            icon: root.labIcon("watch-activity")
+                                        }
+                                    ]
+                                    onSelected: function(value) { root.switchPane(value) }
+                                }
                             }
-                        }
-                    }
-                }
 
-                Rectangle {
-                    Layout.fillWidth: true
-                    visible: hasCronService && cronService.noticeText !== ""
-                    radius: 18
-                    color: cronService.noticeSuccess ? (isDark ? "#132015" : "#ECF8EF") : (isDark ? "#2A1513" : "#FFF1EE")
-                    border.width: 1
-                    border.color: cronService.noticeSuccess ? (isDark ? "#245A37" : "#AED9B6") : (isDark ? "#6B2A22" : "#F0B2A8")
-                    implicitHeight: noticeLabel.implicitHeight + 18
+                            Item {
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: automationHeaderActions.implicitWidth
+                                height: automationHeaderActions.implicitHeight
 
-                    Text {
-                        id: noticeLabel
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.margins: 14
-                        text: cronService.noticeText
-                        color: cronService.noticeSuccess ? textPrimary : statusError
-                        font.pixelSize: typeLabel
-                        font.weight: weightMedium
-                        wrapMode: Text.WordWrap
-                    }
-                }
+                                RowLayout {
+                                    id: automationHeaderActions
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 8
 
-                SplitView {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    orientation: Qt.Horizontal
-                    spacing: 10
-                    handle: Item {
-                        implicitWidth: 10
-                        implicitHeight: 10
+                                    PillActionButton {
+                                        visible: root.currentPane === "tasks"
+                                        text: tr("新建任务", "New task")
+                                        iconSource: root.icon("circle-spark")
+                                        fillColor: cronAccent
+                                        hoverFillColor: cronAccentHover
+                                        onClicked: if (hasCronService) cronService.newDraft()
+                                    }
 
-                        Column {
-                            anchors.centerIn: parent
-                            spacing: 6
-
-                            Repeater {
-                                model: 18
-
-                                delegate: Rectangle {
-                                    width: 2
-                                    height: 4
-                                    radius: 1
-                                    color: isDark ? "#18FFFFFF" : "#16000000"
+                                    PillActionButton {
+                                        text: tr("刷新", "Refresh")
+                                        iconSource: root.labIcon("watch-loader")
+                                    fillColor: "transparent"
+                                    hoverFillColor: bgCardHover
+                                    outlineColor: borderSubtle
+                                    hoverOutlineColor: borderDefault
+                                    textColor: textPrimary
+                                    outlined: true
+                                    onClicked: {
+                                        if (root.currentPane === "checks" && hasHeartbeatService)
+                                                heartbeatService.refresh()
+                                            else if (hasCronService)
+                                                cronService.refresh()
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
+                }
+
+                Item {
+                    id: automationContentStage
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    opacity: root.contentRevealOpacity
+                    transform: Translate { x: root.contentRevealShift }
 
                     Item {
+                        objectName: "automationTasksPanel"
+                        anchors.fill: parent
+                        visible: root.currentPane === "tasks"
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            spacing: 12
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                visible: hasCronService && cronService.noticeText !== ""
+                                radius: 18
+                                color: cronService.noticeSuccess ? (isDark ? "#132015" : "#ECF8EF") : (isDark ? "#2A1513" : "#FFF1EE")
+                                border.width: 1
+                                border.color: cronService.noticeSuccess ? (isDark ? "#245A37" : "#AED9B6") : (isDark ? "#6B2A22" : "#F0B2A8")
+                                implicitHeight: noticeLabel.implicitHeight + 18
+
+                                Text {
+                                    id: noticeLabel
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.margins: 14
+                                    text: cronService.noticeText
+                                    color: cronService.noticeSuccess ? textPrimary : statusError
+                                    font.pixelSize: typeLabel
+                                    font.weight: weightMedium
+                                    wrapMode: Text.WordWrap
+                                }
+                            }
+
+                            SplitView {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                orientation: Qt.Horizontal
+                                spacing: 10
+                                handle: WorkspaceSplitHandle {}
+
+                                Item {
                         id: listPanel
                         objectName: "cronListPanel"
                         SplitView.preferredWidth: 320
@@ -396,7 +466,7 @@ Item {
                                 selectedTextColor: textSelectionFg
                                 onTextEdited: if (hasCronService) cronService.setFilterQuery(text)
 
-                                Image {
+                                AppIcon {
                                     anchors.left: parent.left
                                     anchors.leftMargin: 0
                                     anchors.verticalCenter: parent.verticalCenter
@@ -404,9 +474,6 @@ Item {
                                     height: 16
                                     source: root.icon("page-search")
                                     sourceSize: Qt.size(width, height)
-                                    fillMode: Image.PreserveAspectFit
-                                    smooth: true
-                                    mipmap: true
                                     opacity: 0.52
                                 }
                             }
@@ -539,15 +606,16 @@ Item {
                                             Layout.fillWidth: true
                                             spacing: 8
 
-                                            Image {
-                                                width: 16
-                                                height: 16
-                                                source: statusKey === "error" ? root.icon("message-alert") : root.icon("calendar-rotate")
-                                                sourceSize: Qt.size(width, height)
-                                                fillMode: Image.PreserveAspectFit
-                                                smooth: true
-                                                mipmap: true
-                                                opacity: 0.9
+                                            Item {
+                                                Layout.preferredWidth: 16
+                                                Layout.preferredHeight: 16
+
+                                                AppIcon {
+                                                    anchors.fill: parent
+                                                    source: statusKey === "error" ? root.icon("message-alert") : root.icon("calendar-rotate")
+                                                    sourceSize: Qt.size(width, height)
+                                                    opacity: 0.9
+                                                }
                                             }
 
                                             Rectangle {
@@ -654,9 +722,9 @@ Item {
                             }
                         }
                         }
-                    }
+                                }
 
-                    Item {
+                                Item {
                         id: detailPanel
                         objectName: "cronDetailPanel"
                         SplitView.preferredWidth: 620
@@ -790,28 +858,27 @@ Item {
                                 padding: 14
 
                                 ColumnLayout {
-                                    width: parent.width
+                                    Layout.fillWidth: true
                                     spacing: 10
 
                                     RowLayout {
-                                        width: parent.width
+                                        Layout.fillWidth: true
                                         spacing: 10
 
                                         Rectangle {
-                                            width: 34
-                                            height: 34
+                                            implicitWidth: 34
+                                            implicitHeight: 34
+                                            Layout.preferredWidth: implicitWidth
+                                            Layout.preferredHeight: implicitHeight
                                             radius: 17
                                             color: isDark ? "#19130F" : "#FFF4E6"
 
-                                            Image {
+                                            AppIcon {
                                                 anchors.centerIn: parent
                                                 width: 18
                                                 height: 18
                                                 source: root.labIcon("watch-activity")
                                                 sourceSize: Qt.size(width, height)
-                                                fillMode: Image.PreserveAspectFit
-                                                smooth: true
-                                                mipmap: true
                                             }
                                         }
 
@@ -881,14 +948,11 @@ Item {
                                                         Row {
                                                             spacing: 8
 
-                                                            Image {
+                                                            AppIcon {
                                                                 width: 16
                                                                 height: 16
                                                                 source: modelData.icon
                                                                 sourceSize: Qt.size(width, height)
-                                                                fillMode: Image.PreserveAspectFit
-                                                                smooth: true
-                                                                mipmap: true
                                                                 opacity: 0.72
                                                             }
 
@@ -956,7 +1020,7 @@ Item {
                                             Layout.preferredWidth: 156
                                             text: tr("现在执行一次", "Run now")
                                             busy: hasCronService && cronService.busy
-                                            buttonEnabled: root.showingExistingTask && hasCronService && !cronService.busy
+                                            buttonEnabled: root.showingExistingTask && hasCronService && !cronService.busy && cronService.canRunSelectedNow
                                             fillColor: cronAccent
                                             hoverFillColor: cronAccentHover
                                             iconSource: root.icon("play")
@@ -991,6 +1055,15 @@ Item {
                                         }
 
                                         Item { Layout.fillWidth: true }
+                                    }
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        visible: root.showingExistingTask && hasCronService && String(cronService.runNowBlockedReason || "") !== ""
+                                        text: String(cronService.runNowBlockedReason || "")
+                                        color: textSecondary
+                                        font.pixelSize: typeMeta
+                                        wrapMode: Text.WordWrap
                                     }
                                 }
                             }
@@ -1328,7 +1401,7 @@ Item {
                                     }
 
                                     Flow {
-                                        width: parent.width
+                                        Layout.fillWidth: true
                                         spacing: 8
 
                                         PillActionButton {
@@ -1439,9 +1512,9 @@ Item {
                             }
 
                             RowLayout {
+                                id: footerActionRow
                                 Layout.fillWidth: true
                                 spacing: 8
-                                id: footerActionRow
 
                                 AsyncActionButton {
                                     Layout.preferredWidth: 150
@@ -1486,12 +1559,306 @@ Item {
                         }
                     }
                 }
-
             }
         }
     }
 
+                    Item {
+                        objectName: "automationChecksPanel"
+                        anchors.fill: parent
+                        visible: root.currentPane === "checks"
+
+                        ScrollView {
+                            id: checksScroll
+                            anchors.fill: parent
+                            clip: true
+                            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+                            ColumnLayout {
+                                width: Math.max(0, checksScroll.availableWidth)
+                                spacing: 12
+
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    radius: 18
+                                    color: sectionFill
+                                    border.width: 1
+                                    border.color: panelBorder
+                                    implicitHeight: heartbeatExamplesColumn.implicitHeight + 28
+
+                                    ColumnLayout {
+                                        id: heartbeatExamplesColumn
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.margins: 14
+                                        spacing: 8
+
+                                        Text {
+                                            text: tr("适合写进自动检查的内容", "Good automatic check prompts")
+                                            color: textPrimary
+                                            font.pixelSize: typeBody + 1
+                                            font.weight: weightBold
+                                        }
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: tr("每天查看收件箱，把需要跟进的事项整理出来。", "Review the inbox every day and surface anything that needs a follow-up.")
+                                            color: textSecondary
+                                            font.pixelSize: typeMeta
+                                            wrapMode: Text.WordWrap
+                                        }
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: tr("定期检查项目里的阻塞项，发现卡点就开始处理。", "Check projects for blockers on a schedule and start work when something is stuck.")
+                                            color: textSecondary
+                                            font.pixelSize: typeMeta
+                                            wrapMode: Text.WordWrap
+                                        }
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: tr("每周检查固定来源，例如 GitHub、任务板或文档目录。", "Review fixed sources each week, such as GitHub, task boards, or document folders.")
+                                            color: textSecondary
+                                            font.pixelSize: typeMeta
+                                            wrapMode: Text.WordWrap
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    radius: 18
+                                    color: sectionFill
+                                    border.width: 1
+                                    border.color: panelBorder
+                                    implicitHeight: heartbeatContent.implicitHeight + 28
+
+                                    ColumnLayout {
+                                        id: heartbeatContent
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.margins: 14
+                                        spacing: 12
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 12
+
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 4
+
+                                                Text {
+                                                    text: tr("自动检查", "Automatic Checks")
+                                                    color: textPrimary
+                                                    font.pixelSize: typeLabel
+                                                    font.weight: weightBold
+                                                }
+
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    text: hasHeartbeatService && heartbeatService.heartbeatFileExists
+                                                          ? tr("Bao 会按你的检查说明定期查看是否有新任务，发现需要处理的事项就会开始执行。", "Bao follows these instructions on schedule and starts working when something needs attention.")
+                                                          : tr("还没有检查说明。点“编辑检查说明”会先创建模板，再打开当前空间的检查说明文件。", "No instructions yet. Edit instructions will create the template first, then open the instructions for this space.")
+                                                    color: textSecondary
+                                                    font.pixelSize: typeMeta
+                                                    wrapMode: Text.WordWrap
+                                                }
+                                            }
+
+                                            AsyncActionButton {
+                                                Layout.preferredWidth: 152
+                                                text: tr("立即检查", "Run check")
+                                                busy: hasHeartbeatService && heartbeatService.busy
+                                                buttonEnabled: hasHeartbeatService && !heartbeatService.busy && heartbeatService.canRunNow
+                                                fillColor: cronAccent
+                                                hoverFillColor: cronAccentHover
+                                                iconSource: root.labIcon("watch-activity")
+                                                onClicked: if (hasHeartbeatService) heartbeatService.runNow()
+                                            }
+
+                                            PillActionButton {
+                                                Layout.preferredWidth: 154
+                                                text: tr("打开检查会话", "Open check chat")
+                                                iconSource: root.icon("chat-lines")
+                                                fillColor: "transparent"
+                                                hoverFillColor: bgCardHover
+                                                outlineColor: borderSubtle
+                                                hoverOutlineColor: borderDefault
+                                                textColor: textPrimary
+                                                outlined: true
+                                                buttonEnabled: hasHeartbeatService
+                                                onClicked: root.openHeartbeatSession()
+                                            }
+                                        }
+
+                                        Flow {
+                                            id: heartbeatStatsFlow
+                                            Layout.fillWidth: true
+                                            spacing: 12
+
+                                            Repeater {
+                                                model: [
+                                                    { label: tr("检查说明", "Instructions"), value: hasHeartbeatService && heartbeatService.heartbeatFileExists ? tr("已设置", "Ready") : tr("未设置", "Not set") },
+                                                    { label: tr("检查频率", "Frequency"), value: hasHeartbeatService ? String(heartbeatService.intervalText || tr("等待开始", "Waiting to start")) : "" },
+                                                    { label: tr("上次检查", "Last check"), value: hasHeartbeatService ? String(heartbeatService.lastCheckedText || tr("尚未检查", "Never checked")) : "" },
+                                                    { label: tr("上次结果", "Last result"), value: hasHeartbeatService ? String(heartbeatService.lastDecisionLabel || tr("暂无", "None")) : "" }
+                                                ]
+
+                                                delegate: Rectangle {
+                                                    required property var modelData
+                                                    width: heartbeatStatsFlow.width >= 920
+                                                           ? (heartbeatStatsFlow.width - heartbeatStatsFlow.spacing * 3) / 4
+                                                           : heartbeatStatsFlow.width >= 520
+                                                             ? (heartbeatStatsFlow.width - heartbeatStatsFlow.spacing) / 2
+                                                             : heartbeatStatsFlow.width
+                                                    radius: 14
+                                                    color: fieldFill
+                                                    border.width: 1
+                                                    border.color: fieldBorder
+                                                    implicitHeight: heartbeatStatColumn.implicitHeight + 18
+
+                                                    Column {
+                                                        id: heartbeatStatColumn
+                                                        anchors.fill: parent
+                                                        anchors.margins: 10
+                                                        spacing: 4
+
+                                                        Text {
+                                                            text: modelData.label
+                                                            color: textSecondary
+                                                            font.pixelSize: typeMeta
+                                                            font.weight: weightBold
+                                                        }
+
+                                                        Text {
+                                                            width: parent.width
+                                                            text: modelData.value
+                                                            color: textPrimary
+                                                            font.pixelSize: typeBody
+                                                            wrapMode: Text.WordWrap
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            visible: hasHeartbeatService && String(heartbeatService.heartbeatPreview || "") !== ""
+                                            text: tr("当前会检查：", "What Bao will review: ") + String(heartbeatService.heartbeatPreview || "")
+                                            color: textSecondary
+                                            font.pixelSize: typeMeta
+                                            wrapMode: Text.WordWrap
+                                            maximumLineCount: 3
+                                            elide: Text.ElideRight
+                                        }
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            visible: hasHeartbeatService && String(heartbeatService.runNowBlockedReason || "") !== ""
+                                            text: String(heartbeatService.runNowBlockedReason || "")
+                                            color: textSecondary
+                                            font.pixelSize: typeMeta
+                                            wrapMode: Text.WordWrap
+                                        }
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            visible: hasHeartbeatService && String(heartbeatService.lastError || "") !== ""
+                                            text: String(heartbeatService.lastError || "")
+                                            color: statusError
+                                            font.pixelSize: typeMeta
+                                            wrapMode: Text.WordWrap
+                                        }
+
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            visible: hasHeartbeatService && String(heartbeatService.noticeText || "") !== ""
+                                            radius: 14
+                                            color: heartbeatService.noticeSuccess ? (isDark ? "#132015" : "#ECF8EF") : (isDark ? "#2A1513" : "#FFF1EE")
+                                            border.width: 1
+                                            border.color: heartbeatService.noticeSuccess ? (isDark ? "#245A37" : "#AED9B6") : (isDark ? "#6B2A22" : "#F0B2A8")
+                                            implicitHeight: heartbeatNotice.implicitHeight + 18
+
+                                            Text {
+                                                id: heartbeatNotice
+                                                anchors.fill: parent
+                                                anchors.margins: 10
+                                                text: String(heartbeatService.noticeText || "")
+                                                color: heartbeatService.noticeSuccess ? textPrimary : statusError
+                                                font.pixelSize: typeMeta
+                                                wrapMode: Text.WordWrap
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    radius: 18
+                                    color: sectionFill
+                                    border.width: 1
+                                    border.color: panelBorder
+                                    implicitHeight: heartbeatAddColumn.implicitHeight + 28
+
+                                    ColumnLayout {
+                                        id: heartbeatAddColumn
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.margins: 14
+                                        spacing: 10
+
+                                        Text {
+                                            text: tr("添加检查内容", "Add checks")
+                                            color: textPrimary
+                                            font.pixelSize: typeBody + 1
+                                            font.weight: weightBold
+                                        }
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: tr("你可以直接编辑检查说明，也可以先在对话里告诉 Bao 想定期查看什么，再回来整理说明。", "You can edit the instructions directly, or tell Bao in chat what should be reviewed on a schedule and refine the instructions here.")
+                                            color: textSecondary
+                                            font.pixelSize: typeMeta
+                                            wrapMode: Text.WordWrap
+                                        }
+
+                                        Flow {
+                                            Layout.fillWidth: true
+                                            spacing: 8
+
+                                            PillActionButton {
+                                                objectName: "heartbeatInlineEditButton"
+                                                text: tr("编辑检查说明", "Edit instructions")
+                                                iconSource: root.labIcon("copy-file-path")
+                                                fillColor: cronAccent
+                                                hoverFillColor: cronAccentHover
+                                                buttonEnabled: hasHeartbeatService
+                                                onClicked: if (hasHeartbeatService) heartbeatService.openHeartbeatFile()
+                                            }
+                                        }
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: tr("如果还没有说明，点击上面的“编辑检查说明”会先创建模板，再直接打开当前空间的文件。", "If no instructions exist yet, Edit instructions creates the template first, then opens the file for this space.")
+                                            color: textSecondary
+                                            font.pixelSize: typeMeta
+                                            wrapMode: Text.WordWrap
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
+    }
 
     AppModal {
         id: deleteModal
@@ -1538,10 +1905,15 @@ Item {
     SequentialAnimation {
         id: revealAnimation
 
+        NumberAnimation { target: root; property: "revealOpacity"; to: 1.0; duration: motionUi; easing.type: easeStandard }
+    }
+
+    SequentialAnimation {
+        id: contentRevealAnimation
+
         ParallelAnimation {
-            NumberAnimation { target: root; property: "revealOpacity"; to: 1.0; duration: motionUi; easing.type: easeStandard }
-            NumberAnimation { target: root; property: "revealScale"; to: 1.0; duration: motionPanel; easing.type: easeEmphasis }
-            NumberAnimation { target: root; property: "revealShift"; to: 0.0; duration: motionPanel; easing.type: easeEmphasis }
+            NumberAnimation { target: root; property: "contentRevealOpacity"; to: 1.0; duration: motionUi; easing.type: easeStandard }
+            NumberAnimation { target: root; property: "contentRevealShift"; to: 0.0; duration: motionPanel; easing.type: easeEmphasis }
         }
     }
 }

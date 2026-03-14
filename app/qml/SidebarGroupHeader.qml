@@ -36,15 +36,12 @@ Rectangle {
             Layout.preferredWidth: 20
             Layout.preferredHeight: 20
 
-            Image {
+            AppIcon {
                 width: 16
                 height: 16
                 anchors.centerIn: parent
                 source: root.iconSource
                 sourceSize: Qt.size(16, 16)
-                fillMode: Image.PreserveAspectFit
-                smooth: true
-                mipmap: true
                 opacity: root.expanded ? 1.0 : 0.92
             }
         }
@@ -136,16 +133,13 @@ Rectangle {
             border.width: 1
             border.color: sidebarGroupChevronBorder
 
-            Image {
+            AppIcon {
                 objectName: root.chevronObjectName
                 anchors.centerIn: parent
                 width: 12
                 height: 12
                 source: themedIconSource("sidebar-chevron")
                 sourceSize: Qt.size(12, 12)
-                fillMode: Image.PreserveAspectFit
-                smooth: true
-                mipmap: true
                 rotation: root.expanded ? 90 : 0
                 opacity: headerArea.containsMouse ? 1.0 : 0.86
 

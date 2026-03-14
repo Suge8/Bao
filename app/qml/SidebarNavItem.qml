@@ -48,7 +48,7 @@ Rectangle {
         Behavior on width { NumberAnimation { duration: motionUi; easing.type: easeEmphasis } }
     }
 
-    Image {
+    AppIcon {
         id: navIcon
         width: 18
         height: 18
@@ -57,9 +57,6 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         source: root.iconSource
         sourceSize: Qt.size(18, 18)
-        fillMode: Image.PreserveAspectFit
-        smooth: true
-        mipmap: true
         opacity: root.active ? 1.0 : (root.hovering ? 0.92 : 0.72)
 
         Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }

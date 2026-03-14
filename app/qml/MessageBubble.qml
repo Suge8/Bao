@@ -14,6 +14,8 @@ Item {
     property bool showDateDivider: false
     property string dateDividerText: ""
     property var toastFunc: null
+    property var attachments: []
+    property var references: ({})
 
     property bool isGreeting: entranceStyle === "greeting"
     property bool isUser: role === "user"
@@ -22,6 +24,11 @@ Item {
     property bool isPending: status === "pending"
     property bool isMarkdown: format === "markdown"
     property bool isTypingBubble: status === "typing" && content === ""
+    readonly property bool hasAttachments: Array.isArray(attachments) && attachments.length > 0
+    readonly property string referenceSummaryText: buildReferenceSummary()
+    readonly property bool showsReferenceSummary: role === "assistant"
+                                                 && status !== "typing"
+                                                 && referenceSummaryText !== ""
     property bool isAssistantEntrance: !isSystem && entranceStyle === "assistantReceived"
     property bool isUserEntrance: !isSystem && entranceStyle === "userSent"
     property bool _entranceStarted: false
@@ -55,6 +62,50 @@ Item {
     }
     function clamp01(value) {
         return Math.max(0.0, Math.min(1.0, value))
+    }
+    function uiLangCode() {
+        if (typeof effectiveLang === "string" && (effectiveLang === "zh" || effectiveLang === "en"))
+            return effectiveLang
+        if (typeof uiLanguage === "string" && uiLanguage === "zh")
+            return "zh"
+        return "en"
+    }
+    function tr(zh, en) {
+        return uiLangCode() === "zh" ? zh : en
+    }
+    function referenceCategoryLabel(category) {
+        switch (String(category || "")) {
+        case "preference":
+            return tr("偏好记忆", "Preference memory")
+        case "personal":
+            return tr("个人记忆", "Personal memory")
+        case "project":
+            return tr("项目记忆", "Project memory")
+        case "general":
+            return tr("通用记忆", "General memory")
+        default:
+            return String(category || "")
+        }
+    }
+    function buildReferenceSummary() {
+        var data = references || {}
+        var segments = []
+        var categories = Array.isArray(data.longTermCategories) ? data.longTermCategories : []
+        if (categories.length > 0) {
+            var labels = []
+            for (var i = 0; i < categories.length; ++i)
+                labels.push(referenceCategoryLabel(categories[i]))
+            segments.push(labels.join(" / "))
+        }
+        var relatedMemoryCount = Number(data.relatedMemoryCount || 0)
+        if (relatedMemoryCount > 0)
+            segments.push(tr("相关记忆 " + relatedMemoryCount + " 条", relatedMemoryCount + " memories"))
+        var experienceCount = Number(data.experienceCount || 0)
+        if (experienceCount > 0)
+            segments.push(tr("经验 " + experienceCount + " 条", experienceCount + " experiences"))
+        if (segments.length === 0)
+            return ""
+        return tr("参考：", "Referenced: ") + segments.join(" · ")
     }
     function resetFeedbackSheen(sheen) {
         sheen.opacity = 0.0
@@ -265,6 +316,38 @@ Item {
     readonly property int bubblePaddingX: 16
     readonly property int bubblePaddingTop: 12
     readonly property int bubblePaddingBottom: 16
+    readonly property int bubbleAttachmentGap: 10
+    readonly property real bubbleMaxWidth: root.width * 0.75
+    readonly property real bubbleAttachmentContentWidth: {
+        if (!hasAttachments) return 0
+        var total = 0
+        for (var i = 0; i < attachments.length; ++i) {
+            var item = attachments[i]
+            var imageWidth = item && item.isImage ? 72 : 164
+            total += imageWidth
+            if (i > 0)
+                total += 8
+        }
+        return total
+    }
+    readonly property real bubbleAttachmentViewportWidth: Math.min(
+        Math.max(0, bubbleMaxWidth - (bubblePaddingX * 2)),
+        bubbleAttachmentContentWidth
+    )
+    readonly property real bubbleContentWidth: Math.max(
+        contentMetrics.implicitWidth,
+        bubbleAttachmentViewportWidth
+    )
+    readonly property real contentColumnSpacing: {
+        var visibleBlocks = 0
+        if (root.showsContentBody)
+            visibleBlocks += 1
+        if (root.hasAttachments)
+            visibleBlocks += 1
+        if (root.showsReferenceSummary)
+            visibleBlocks += 1
+        return visibleBlocks > 1 ? 8 : 0
+    }
     readonly property int dividerBlockHeight: showDateDivider && dateDividerText !== "" ? 28 : 0
     readonly property color dividerLineColor: alphaColor(textSecondary, isSystem ? 0.18 : 0.14)
     readonly property real bubbleEntranceGlowPeak: entranceMotion.glowPeak
@@ -810,8 +893,8 @@ Item {
             topMargin: root.dividerBlockHeight + 5
         }
         property bool isTyping: root.isTypingBubble
-        width: isTyping ? 72 : Math.min(contentMetrics.implicitWidth + (bubblePaddingX * 2), root.width * 0.75)
-        height: isTyping ? 42 : contentText.contentHeight + bubblePaddingTop + bubblePaddingBottom
+        width: isTyping ? 72 : Math.min(bubbleContentWidth + (bubblePaddingX * 2), bubbleMaxWidth)
+        height: isTyping ? 42 : bubbleContent.implicitHeight + bubblePaddingTop + bubblePaddingBottom
         radius: sizeBubbleRadius
         clip: true
         opacity: shouldAnimateEntrance && !_entranceStarted ? 0.0 : 1.0
@@ -832,7 +915,6 @@ Item {
         MouseArea {
             id: clickArea
             anchors.fill: parent
-            z: 10
             hoverEnabled: true
             preventStealing: true
             cursorShape: Qt.PointingHandCursor
@@ -935,34 +1017,91 @@ Item {
             }
         }
 
-        Text {
-            id: contentText
-            objectName: "contentText"
+        Item {
+            id: bubbleContent
             anchors {
                 top: parent.top
-                bottom: parent.bottom
                 left: parent.left
                 right: parent.right
                 topMargin: bubblePaddingTop
-                bottomMargin: bubblePaddingBottom
                 leftMargin: bubblePaddingX
                 rightMargin: bubblePaddingX
             }
-            text: root.content
-            visible: root.showsContentBody || opacity > 0.01
-            color: root.isUser ? "#FFFFFF" : textPrimary
-            font.pixelSize: typeBody
-            wrapMode: Text.Wrap
-            textFormat: root.isMarkdown ? Text.MarkdownText : Text.PlainText
-            lineHeight: lineHeightBody
-            verticalAlignment: Text.AlignVCenter
-            opacity: root.showsContentBody ? 1.0 : 0.0
-            y: root.contentMorphOffsetY
-            scale: root.contentMorphScale
-            transformOrigin: Item.Center
-            Behavior on opacity { NumberAnimation { duration: root.contentMorphDuration; easing.type: easeStandard } }
-            Behavior on y { NumberAnimation { duration: root.contentMorphDuration; easing.type: easeSoft } }
-            Behavior on scale { NumberAnimation { duration: root.contentMorphDuration; easing.type: easeSoft } }
+            implicitWidth: Math.max(
+                contentText.implicitWidth,
+                attachmentStrip.width,
+                referenceText.implicitWidth
+            )
+            implicitHeight: contentColumn.implicitHeight
+
+            Column {
+                id: contentColumn
+                width: parent.width
+                spacing: root.contentColumnSpacing
+
+                Text {
+                    id: contentText
+                    objectName: "contentText"
+                    width: parent.width
+                    text: root.content
+                    visible: root.showsContentBody || opacity > 0.01
+                    color: root.isUser ? "#FFFFFF" : textPrimary
+                    font.pixelSize: typeBody
+                    wrapMode: Text.Wrap
+                    textFormat: root.isMarkdown ? Text.MarkdownText : Text.PlainText
+                    lineHeight: lineHeightBody
+                    opacity: root.showsContentBody ? 1.0 : 0.0
+                    y: root.contentMorphOffsetY
+                    scale: root.contentMorphScale
+                    transformOrigin: Item.Center
+                    Behavior on opacity { NumberAnimation { duration: root.contentMorphDuration; easing.type: easeStandard } }
+                    Behavior on y { NumberAnimation { duration: root.contentMorphDuration; easing.type: easeSoft } }
+                    Behavior on scale { NumberAnimation { duration: root.contentMorphDuration; easing.type: easeSoft } }
+                }
+
+                Flickable {
+                    id: attachmentStrip
+                    objectName: "attachmentStrip"
+                    width: bubbleAttachmentViewportWidth
+                    height: root.hasAttachments ? 56 : 0
+                    visible: root.hasAttachments
+                    contentWidth: attachmentRow.implicitWidth
+                    contentHeight: attachmentRow.implicitHeight
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    interactive: contentWidth > width
+
+                    Row {
+                        id: attachmentRow
+                        spacing: 8
+
+                        Repeater {
+                            model: root.attachments
+
+                            delegate: AttachmentChip {
+                                fileName: modelData.fileName ?? ""
+                                fileSizeLabel: modelData.fileSizeLabel ?? ""
+                                previewUrl: modelData.previewUrl ?? ""
+                                isImage: Boolean(modelData.isImage)
+                                extensionLabel: modelData.extensionLabel ?? "FILE"
+                                openOnClick: true
+                            }
+                        }
+                    }
+                }
+
+                Text {
+                    id: referenceText
+                    objectName: "referenceText"
+                    width: parent.width
+                    visible: root.showsReferenceSummary
+                    text: root.referenceSummaryText
+                    color: textSecondary
+                    font.pixelSize: typeMeta
+                    wrapMode: Text.Wrap
+                    opacity: 0.84
+                }
+            }
         }
 
         Item {

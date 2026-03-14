@@ -134,10 +134,10 @@ def test_sidebar_guards_injected_services_at_root() -> None:
     assert "readonly property bool hasChatService: chatService !== null" in text
     assert "readonly property bool hasSessionService: sessionService !== null" in text
     assert "readonly property bool hasDiagnosticsService: diagnosticsService !== null" in text
-    assert 'property string currentState: hasChatService ? chatService.gatewayState : "idle"' in text
-    assert 'property bool isRunning: hasChatService && chatService.gatewayState === "running"' in text
-    assert 'property bool isStarting: hasChatService && chatService.gatewayState === "starting"' in text
-    assert 'property bool isError: hasChatService && chatService.gatewayState === "error"' in text
+    assert 'readonly property string currentState: resolvedGatewayState()' in text
+    assert 'readonly property bool isRunning: currentState === "running"' in text
+    assert 'readonly property bool isStarting: currentState === "starting"' in text
+    assert 'readonly property bool isError: currentState === "error"' in text
 
 
 def test_main_guards_injected_services_at_root() -> None:
@@ -155,6 +155,11 @@ def test_main_guards_injected_services_at_root() -> None:
     assert 'readonly property var sessionService: hasAppServices ? appServices.sessionService : null' in text
     assert 'readonly property var chatService: hasAppServices ? appServices.chatService : null' in text
     assert (
+        'readonly property var profileSupervisorService: hasAppServices ? appServices.profileSupervisorService : null'
+        in text
+    )
+    assert (
         'readonly property var diagnosticsService: hasAppServices ? appServices.diagnosticsService : null'
         in text
     )
+    assert 'readonly property var workspaceOrder: ["sessions", "control_tower", "memory", "skills", "tools", "cron"]' in text

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import functools
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import (
@@ -54,6 +55,15 @@ def _parse_at_input(raw: str) -> int | None:
 
 def _tr(lang: str, zh: str, en: str) -> str:
     return zh if lang == "zh" else en
+
+
+def _normalized_store_path(value: object) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    return str(Path(text).expanduser())
 
 
 def _schedule_summary(job: CronJob, lang: str) -> str:
@@ -337,6 +347,8 @@ class CronBridgeService(QObject):
     errorChanged = Signal(str)
     noticeChanged = Signal(str, bool)
     filtersChanged = Signal()
+    profileChanged = Signal()
+    executionStateChanged = Signal()
     _refreshRequested = Signal()
     _loadResult = Signal(bool, str, object)
     _saveResult = Signal(bool, str, str)
@@ -362,6 +374,8 @@ class CronBridgeService(QObject):
         self._session_service: Any = None
         self._gateway_running = False
         self._lang = "en"
+        self._current_profile_id = ""
+        self._current_profile_name = ""
         self._local_cron = CronService(get_data_dir() / "cron" / "jobs.json")
         self._live_cron: CronService | None = None
         self._local_listener = lambda: self._refreshRequested.emit()
@@ -449,9 +463,41 @@ class CronBridgeService(QObject):
     def statusFilter(self) -> str:
         return self._status_filter
 
+    @Property(str, notify=profileChanged)
+    def currentProfileId(self) -> str:
+        return self._current_profile_id
+
+    def supervisorTasksSnapshot(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self._all_tasks if isinstance(item, dict)]
+
+    @Property(str, notify=profileChanged)
+    def currentProfileName(self) -> str:
+        return self._current_profile_name
+
+    @Property(bool, notify=executionStateChanged)
+    def canRunSelectedNow(self) -> bool:
+        return self._run_now_state()[0]
+
+    @Property(str, notify=executionStateChanged)
+    def runNowBlockedReason(self) -> str:
+        return self._run_now_state()[1]
+
     @Slot(object)
     def setSessionService(self, service: object) -> None:
         self._session_service = service
+
+    @Slot(str, str)
+    def setProfileInfo(self, profile_id: str, profile_name: str) -> None:
+        next_profile_id = profile_id.strip()
+        next_profile_name = profile_name.strip()
+        if (
+            self._current_profile_id == next_profile_id
+            and self._current_profile_name == next_profile_name
+        ):
+            return
+        self._current_profile_id = next_profile_id
+        self._current_profile_name = next_profile_name
+        self.profileChanged.emit()
 
     @Slot(str)
     def setLanguage(self, lang: str) -> None:
@@ -459,6 +505,22 @@ class CronBridgeService(QObject):
         if self._lang == normalized:
             return
         self._lang = normalized
+        self.refresh()
+
+    @Slot(str)
+    def setLocalStorePath(self, path: str) -> None:
+        raw = path.strip()
+        if not raw:
+            return
+        next_path = str(raw)
+        current_path = str(getattr(self._local_cron, "store_path", ""))
+        if current_path == next_path:
+            self.refresh()
+            return
+        self._local_cron.remove_change_listener(self._local_listener)
+        self._local_cron = CronService(Path(next_path))
+        self._local_cron.add_change_listener(self._local_listener)
+        self.executionStateChanged.emit()
         self.refresh()
 
     @Slot(object)
@@ -471,11 +533,13 @@ class CronBridgeService(QObject):
         self._live_cron = next_service
         if self._live_cron is not None:
             self._live_cron.add_change_listener(self._live_listener)
+        self.executionStateChanged.emit()
         self.refresh()
 
     @Slot(bool)
     def setGatewayRunning(self, running: bool) -> None:
         self._gateway_running = bool(running)
+        self.executionStateChanged.emit()
 
     @Slot()
     def refresh(self) -> None:
@@ -640,15 +704,49 @@ class CronBridgeService(QObject):
             return await self._runner.run_user_io(call)
         return await asyncio.to_thread(call)
 
-    def _current_service(self) -> CronService:
-        return self._live_cron or self._local_cron
+    def _local_store_path(self) -> str:
+        return _normalized_store_path(getattr(self._local_cron, "store_path", None))
+
+    def _live_store_path(self) -> str:
+        return _normalized_store_path(
+            getattr(self._live_cron, "store_path", None) if self._live_cron is not None else None
+        )
+
+    def _live_matches_current_profile(self) -> bool:
+        return self._live_cron is not None and self._live_store_path() == self._local_store_path()
+
+    def _effective_service(self) -> CronService:
+        return self._live_cron if self._live_matches_current_profile() else self._local_cron
+
+    def _run_now_state(self) -> tuple[bool, str]:
+        if not self._current_saved_task_id():
+            return False, ""
+        if not self._gateway_running or self._live_cron is None:
+            return (
+                False,
+                _tr(
+                    self._lang,
+                    "请先启动网关，再立即执行任务",
+                    "Start the gateway to run a task now",
+                ),
+            )
+        if not self._live_matches_current_profile():
+            return (
+                False,
+                _tr(
+                    self._lang,
+                    "正在切换到当前 profile，请稍后再试",
+                    "Switching to the current profile. Try again in a moment",
+                ),
+            )
+        return True, ""
 
     async def _load_tasks(self) -> list[dict[str, Any]]:
-        jobs = await self._run_user_io(self._current_service().list_jobs, True)
+        jobs = await self._run_user_io(self._effective_service().list_jobs, True)
         return [_serialize_job(job, self._lang) for job in jobs]
 
     async def _save_draft(self) -> tuple[str, str]:
-        service = self._current_service()
+        service = self._effective_service()
         draft = dict(self._draft)
         name = str(draft.get("name", "")).strip()
         if not name:
@@ -701,22 +799,17 @@ class CronBridgeService(QObject):
         return job.id, _tr(self._lang, "任务已创建", "Task created")
 
     async def _delete_task(self, task_id: str) -> tuple[str, bool]:
-        removed = await self._run_user_io(self._current_service().remove_job, task_id)
+        removed = await self._run_user_io(self._effective_service().remove_job, task_id)
         return task_id, bool(removed)
 
     async def _toggle_task(self, task_id: str, enabled: bool) -> tuple[str, bool]:
-        job = await self._run_user_io(self._current_service().enable_job, task_id, enabled)
+        job = await self._run_user_io(self._effective_service().enable_job, task_id, enabled)
         return task_id, job is not None
 
     async def _run_task_now(self, task_id: str) -> bool:
-        if not self._gateway_running or self._live_cron is None:
-            raise ValueError(
-                _tr(
-                    self._lang,
-                    "请先启动网关，再立即执行任务",
-                    "Start the gateway to run a task now",
-                )
-            )
+        ok, blocked_reason = self._run_now_state()
+        if not ok:
+            raise ValueError(blocked_reason)
         return await self._live_cron.run_job(task_id, force=True)
 
     def _schedule_from_draft(self, draft: dict[str, Any]) -> CronSchedule:
@@ -830,6 +923,7 @@ class CronBridgeService(QObject):
         self.tasksChanged.emit()
         self.filtersChanged.emit()
         self.selectedTaskChanged.emit()
+        self.executionStateChanged.emit()
 
     def _set_busy(self, busy: bool) -> None:
         if self._busy == busy:
@@ -901,6 +995,7 @@ class CronBridgeService(QObject):
         self._selected_task_id = task_id
         self._draft_dirty = False
         self.selectedTaskChanged.emit()
+        self.executionStateChanged.emit()
         self.draftChanged.emit()
         self._set_error("")
         self._set_notice(error, True)
@@ -931,6 +1026,7 @@ class CronBridgeService(QObject):
             self._draft = _empty_draft()
             self._draft_dirty = False
             self.selectedTaskChanged.emit()
+            self.executionStateChanged.emit()
             self.draftChanged.emit()
         self._set_error("")
         self._set_notice(error, True)

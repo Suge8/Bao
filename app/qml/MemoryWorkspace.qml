@@ -11,6 +11,8 @@ Item {
     property var memoryService: null
     property string currentScope: "memory"
     property string experienceDeprecatedMode: "active"
+    property string experienceCategory: ""
+    property string experienceOutcome: ""
     property int experienceMinQuality: 0
     property string experienceSortBy: "updated_desc"
     property string noticeText: ""
@@ -21,10 +23,15 @@ Item {
     property string editorCategory: ""
     property string editorText: ""
     property bool editorDirty: false
-    property string appendText: ""
+    property string factDraftKey: ""
+    property string factEditorText: ""
+    property bool factEditorActive: false
     property string promoteCategory: "project"
     property string memorySearchQuery: ""
     property string experienceSearchQuery: ""
+    property bool syncingEditors: false
+    property var memoryEditorRef: null
+    property var factEditorRef: null
     property real revealOpacity: 1.0
     property real revealScale: 1.0
     property real revealShift: 0.0
@@ -34,13 +41,14 @@ Item {
     readonly property string detailIconSource: "../resources/icons/vendor/iconoir/message-text.svg"
     readonly property string refreshIconSource: "../resources/icons/vendor/iconoir/calendar-rotate.svg"
     readonly property string saveIconSource: "../resources/icons/vendor/iconoir/book-stack.svg"
-    readonly property string appendIconSource: "../resources/icons/vendor/iconoir/nav-arrow-up.svg"
     readonly property string deprecateIconSource: "../resources/icons/vendor/iconoir/message-alert.svg"
     readonly property string removeIconSource: "../resources/icons/vendor/iconoir/bubble-xmark.svg"
     readonly property bool hasMemoryService: memoryService !== null
     readonly property var memoryStats: hasMemoryService ? memoryService.memoryStats : ({})
     readonly property var experienceStats: hasMemoryService ? memoryService.experienceStats : ({})
     readonly property var selectedMemoryCategory: hasMemoryService ? memoryService.selectedMemoryCategory : ({})
+    readonly property var selectedMemoryFact: hasMemoryService ? memoryService.selectedMemoryFact : ({})
+    readonly property string selectedMemoryFactKey: hasMemoryService ? String(memoryService.selectedMemoryFactKey || "") : ""
     readonly property var selectedExperience: hasMemoryService ? memoryService.selectedExperience : ({})
     readonly property bool canMutate: hasMemoryService && memoryService.ready && !memoryService.blockingBusy
     readonly property var filteredMemoryCategories: {
@@ -115,6 +123,42 @@ Item {
         )
     }
 
+    function memoryFactMeta(fact) {
+        var updatedLabel = String(fact.updated_label || "")
+        var hitCount = Number(fact.hit_count || 0)
+        if (!updatedLabel && hitCount <= 0)
+            return tr("稳定事实", "Durable fact")
+        if (!updatedLabel)
+            return tr("命中 " + hitCount + " 次", "Used " + hitCount + " times")
+        if (hitCount <= 0)
+            return tr("更新于 " + updatedLabel, "Updated " + updatedLabel)
+        return tr("更新于 " + updatedLabel + " · 命中 " + hitCount + " 次", "Updated " + updatedLabel + " · Used " + hitCount + " times")
+    }
+
+    function experienceCategoryLabel(category) {
+        switch (String(category || "")) {
+        case "coding":
+            return tr("编码", "Coding")
+        case "project":
+            return tr("项目", "Project")
+        case "general":
+            return tr("通用", "General")
+        default:
+            return category ? String(category) : tr("全部分类", "All categories")
+        }
+    }
+
+    function experienceOutcomeLabel(outcome) {
+        switch (String(outcome || "")) {
+        case "success":
+            return tr("成功", "Success")
+        case "failed":
+            return tr("失败", "Failed")
+        default:
+            return outcome ? String(outcome) : tr("全部结果", "All outcomes")
+        }
+    }
+
     function hasSelectedMemory() {
         return !!String(selectedMemoryCategory.category || "")
     }
@@ -128,8 +172,8 @@ Item {
             return
         memoryService.reloadExperiences(
             root.experienceSearchQuery,
-            "",
-            "",
+            root.experienceCategory,
+            root.experienceOutcome,
             experienceDeprecatedMode,
             experienceMinQuality,
             experienceSortBy
@@ -139,22 +183,117 @@ Item {
     function selectMemory(category) {
         if (!hasMemoryService)
             return
+        factEditorActive = false
         memoryService.selectMemoryCategory(category)
         promoteCategory = category
     }
 
-    function syncEditorFromSelection() {
+    function syncEditorFromSelection(force) {
         if (currentScope !== "memory")
             return
         var detail = selectedMemoryCategory
         var category = String(detail.category || "")
         if (!category)
             return
-        if (editorDirty && editorCategory === category)
+        if (!force && editorDirty && editorCategory === category)
             return
+        syncingEditors = true
         editorCategory = category
         editorText = String(detail.content || "")
+        if (memoryEditorRef)
+            memoryEditorRef.text = editorText
         editorDirty = false
+        syncingEditors = false
+    }
+
+    function hasSelectedMemoryFact() {
+        return !!String(selectedMemoryFact.key || "")
+    }
+
+    function setFactEditorState(key, text, active) {
+        syncingEditors = true
+        factDraftKey = String(key || "")
+        factEditorText = String(text || "")
+        if (factEditorRef)
+            factEditorRef.text = factEditorText
+        factEditorActive = active
+        syncingEditors = false
+    }
+
+    function beginFactEdit() {
+        var fact = selectedMemoryFact
+        if (!String(fact.key || ""))
+            return
+        setFactEditorState(fact.key, fact.content, true)
+        if (factEditorRef)
+            factEditorRef.forceActiveFocus()
+    }
+
+    function beginNewFact() {
+        setFactEditorState("", "", true)
+        if (factEditorRef)
+            factEditorRef.forceActiveFocus()
+    }
+
+    function submitFactEditor() {
+        var category = String(selectedMemoryCategory.category || "")
+        var content = String(factEditorText || "").trim()
+        if (!category || !content)
+            return
+        factEditorActive = false
+        memoryService.saveMemoryFact(category, factDraftKey, content)
+    }
+
+    function triggerPrimaryFactAction() {
+        if (factEditorActive) {
+            submitFactEditor()
+            return
+        }
+        beginFactEdit()
+    }
+
+    function syncFactEditorFromSelection() {
+        if (currentScope !== "memory")
+            return
+        if (factEditorActive)
+            return
+        setFactEditorState(selectedMemoryFact.key, selectedMemoryFact.content, false)
+    }
+
+    function factComposerTitle() {
+        if (factEditorActive)
+            return factDraftKey ? tr("编辑该条事实", "Edit fact") : tr("新增一条事实", "Add fact")
+        return tr("当前事实", "Current fact")
+    }
+
+    function factComposerPlaceholder() {
+        if (factEditorActive)
+            return factDraftKey
+                ? tr("编辑这条稳定事实，然后点右上角保存。", "Edit this durable fact, then save from the top right.")
+                : tr("写一条短而稳定的事实，然后点右上角保存。", "Write one short durable fact, then save from the top right.")
+        return tr("点右上角编辑当前事实，或新增一条。", "Edit the current fact or add a new one from the top right.")
+    }
+
+    function factComposerMeta() {
+        if (factEditorActive)
+            return factDraftKey ? tr("保存后会覆盖当前这条事实。", "Saving replaces the current fact.") : tr("保存后会追加到当前分类。", "Saving appends a new fact to this category.")
+        if (!String(selectedMemoryFact.key || ""))
+            return tr("这个分类还没有稳定事实。可以先新增一条。", "This category has no durable facts yet. Add one to get started.")
+        return memoryFactMeta(selectedMemoryFact)
+    }
+
+    function selectFact(fact) {
+        if (!hasMemoryService)
+            return
+        var key = String((fact && fact.key) || "")
+        if (!key)
+            return
+        factEditorActive = false
+        memoryService.selectMemoryFact(key)
+    }
+
+    function isSelectedFact(fact) {
+        return String((fact && fact.key) || "") === String(selectedMemoryFactKey || "")
     }
 
     function openDestructiveModal(action, key, category) {
@@ -176,6 +315,8 @@ Item {
 
     function resetExperienceFilters() {
         experienceDeprecatedMode = "active"
+        experienceCategory = ""
+        experienceOutcome = ""
         experienceMinQuality = 0
         experienceSortBy = "updated_desc"
         root.experienceSearchQuery = ""
@@ -192,6 +333,12 @@ Item {
         if (active)
             playReveal()
     }
+    onSelectedMemoryCategoryChanged: {
+        root.syncEditorFromSelection(false)
+        root.syncFactEditorFromSelection()
+    }
+    onSelectedMemoryFactChanged: root.syncFactEditorFromSelection()
+    onSelectedMemoryFactKeyChanged: root.syncFactEditorFromSelection()
 
     Component.onCompleted: {
         playReveal()
@@ -203,14 +350,6 @@ Item {
 
         function onReadyChanged() {
             root.onReadyIfNeeded()
-        }
-
-        function onSelectedMemoryCategoryChanged() {
-            root.syncEditorFromSelection()
-        }
-
-        function onAppendCommitted() {
-            root.appendText = ""
         }
 
         function onOperationFinished(message, ok) {
@@ -652,7 +791,6 @@ Item {
 
             Flow {
                 Layout.fillWidth: true
-                width: parent.width
                 spacing: 8
 
                 Repeater {
@@ -769,7 +907,56 @@ Item {
 
             Flow {
                 Layout.fillWidth: true
-                width: parent.width
+                spacing: 8
+
+                Repeater {
+                    model: ["", "coding", "project", "general"]
+
+                    delegate: PillActionButton {
+                        required property var modelData
+                        text: root.experienceCategoryLabel(modelData)
+                        minHeight: 30
+                        horizontalPadding: 14
+                        outlined: true
+                        fillColor: root.experienceCategory === String(modelData) ? accentMuted : "transparent"
+                        hoverFillColor: root.experienceCategory === String(modelData) ? accentMuted : bgCardHover
+                        outlineColor: root.experienceCategory === String(modelData) ? accent : borderSubtle
+                        textColor: textPrimary
+                        onClicked: {
+                            root.experienceCategory = String(modelData)
+                            root.applyExperienceFilters()
+                        }
+                    }
+                }
+            }
+
+            Flow {
+                Layout.fillWidth: true
+                spacing: 8
+
+                Repeater {
+                    model: ["", "success", "failed"]
+
+                    delegate: PillActionButton {
+                        required property var modelData
+                        text: root.experienceOutcomeLabel(modelData)
+                        minHeight: 30
+                        horizontalPadding: 14
+                        outlined: true
+                        fillColor: root.experienceOutcome === String(modelData) ? accentMuted : "transparent"
+                        hoverFillColor: root.experienceOutcome === String(modelData) ? accentMuted : bgCardHover
+                        outlineColor: root.experienceOutcome === String(modelData) ? accent : borderSubtle
+                        textColor: textPrimary
+                        onClicked: {
+                            root.experienceOutcome = String(modelData)
+                            root.applyExperienceFilters()
+                        }
+                    }
+                }
+            }
+
+            Flow {
+                Layout.fillWidth: true
                 spacing: 8
 
                 Repeater {
@@ -816,7 +1003,6 @@ Item {
 
             Flow {
                 Layout.fillWidth: true
-                width: parent.width
                 spacing: 8
 
                 Repeater {
@@ -884,7 +1070,6 @@ Item {
                            : (cardMouse.containsMouse ? bgCardHover : (isDark ? "#1A1411" : "#FFFFFF"))
                     border.width: 1
                     border.color: String(root.selectedMemoryCategory.category || "") === String(modelData.category || "") ? accent : borderSubtle
-                    scale: String(root.selectedMemoryCategory.category || "") === String(modelData.category || "") ? motionSelectionScaleActive : (cardMouse.containsMouse ? motionSelectionScaleHover : 1.0)
 
                     Rectangle {
                         anchors.fill: parent
@@ -902,7 +1087,6 @@ Item {
 
                     Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
                     Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
-                    Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeEmphasis } }
 
                     ColumnLayout {
                         anchors.fill: parent
@@ -1061,11 +1245,9 @@ Item {
                            : (expMouse.containsMouse ? bgCardHover : (isDark ? "#1A1411" : "#FFFFFF"))
                     border.width: 1
                     border.color: String(root.selectedExperience.key || "") === String(modelData.key || "") ? "#D8A23C" : borderSubtle
-                    scale: String(root.selectedExperience.key || "") === String(modelData.key || "") ? motionSelectionScaleActive : (expMouse.containsMouse ? motionSelectionScaleHover : 1.0)
 
                     Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
                     Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
-                    Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeEmphasis } }
 
                     ColumnLayout {
                         anchors.fill: parent
@@ -1142,6 +1324,22 @@ Item {
                                     id: reuseText
                                     anchors.centerIn: parent
                                     text: tr("复用 " + Number(modelData.uses || 0), "Reuse " + Number(modelData.uses || 0))
+                                    color: textSecondary
+                                    font.pixelSize: typeCaption
+                                    font.weight: weightDemiBold
+                                }
+                            }
+
+                            Rectangle {
+                                radius: 9
+                                color: isDark ? "#18FFFFFF" : "#12000000"
+                                implicitWidth: hitText.implicitWidth + 12
+                                implicitHeight: hitText.implicitHeight + 6
+
+                                Text {
+                                    id: hitText
+                                    anchors.centerIn: parent
+                                    text: tr("命中 " + Number(modelData.hit_count || 0), "Used " + Number(modelData.hit_count || 0))
                                     color: textSecondary
                                     font.pixelSize: typeCaption
                                     font.weight: weightDemiBold
@@ -1276,6 +1474,93 @@ Item {
                     }
                 }
 
+                Text {
+                    Layout.fillWidth: true
+                    text: tr("事实清单", "Fact list")
+                    color: textSecondary
+                    font.pixelSize: typeMeta
+                    font.weight: weightBold
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: factColumn.implicitHeight + 24
+                    radius: radiusLg
+                    color: bgCard
+                    border.width: 1
+                    border.color: borderSubtle
+
+                    Column {
+                        id: factColumn
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 8
+
+                        Repeater {
+                            model: selectedMemoryCategory.facts || []
+
+                            delegate: Rectangle {
+                                required property var modelData
+                                width: factColumn.width
+                                radius: radiusMd
+                                color: root.isSelectedFact(modelData)
+                                       ? (isDark ? "#241A15" : "#FFF2E3")
+                                       : (isDark ? "#1B1512" : "#FFF9F3")
+                                border.width: 1
+                                border.color: root.isSelectedFact(modelData) ? accent : borderSubtle
+                                implicitHeight: factContent.implicitHeight + 20
+
+                                Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
+                                Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
+
+                                Column {
+                                    id: factContent
+                                    anchors.fill: parent
+                                    anchors.margins: 10
+                                    spacing: 8
+
+                                    Text {
+                                        width: parent.width
+                                        text: String(modelData.content || "")
+                                        color: textPrimary
+                                        font.pixelSize: typeLabel
+                                        wrapMode: Text.WordWrap
+                                    }
+
+                                    RowLayout {
+                                        width: parent.width
+                                        spacing: 8
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: root.memoryFactMeta(modelData)
+                                            color: textSecondary
+                                            font.pixelSize: typeMeta
+                                            wrapMode: Text.WordWrap
+                                        }
+                                    }
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.selectFact(modelData)
+                                }
+                            }
+                        }
+
+                        Text {
+                            visible: (selectedMemoryCategory.facts || []).length === 0
+                            width: parent.width
+                            text: tr("这个分类还没有稳定事实。先补充一条短而稳定的记忆。", "This category has no durable facts yet. Add one short, stable memory first.")
+                            color: textSecondary
+                            font.pixelSize: typeLabel
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+
                 Rectangle {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
@@ -1292,7 +1577,7 @@ Item {
 
                         TextArea {
                             id: editor
-                            text: root.editorText
+                            objectName: "memoryCategoryEditor"
                             color: textPrimary
                             placeholderText: tr("把值得长期保留的内容写在这里。每一行都会被视为一个稳定记忆片段。", "Write durable information here. Each line is treated as a stable memory fragment.")
                             placeholderTextColor: textPlaceholder
@@ -1302,7 +1587,13 @@ Item {
                             selectedTextColor: textSelectionFg
                             background: null
                             padding: 14
+                            Component.onCompleted: {
+                                root.memoryEditorRef = editor
+                                root.syncEditorFromSelection(true)
+                            }
                             onTextChanged: {
+                                if (root.syncingEditors)
+                                    return
                                 root.editorText = text
                                 root.editorDirty = text !== String(selectedMemoryCategory.content || "")
                             }
@@ -1310,35 +1601,113 @@ Item {
                     }
                 }
 
-                        Text {
-                            text: tr("补充一条记忆", "Add one memory")
-                            color: textSecondary
-                            font.pixelSize: typeMeta
-                            font.weight: weightBold
-                }
-
                 Rectangle {
                     Layout.fillWidth: true
-                    implicitHeight: 92
-                    radius: radiusMd
-                    color: bgBase
+                    implicitHeight: factComposerColumn.implicitHeight + 24
+                    radius: radiusLg
+                    color: root.factEditorActive ? bgInput : bgCard
                     border.width: 1
-                    border.color: borderSubtle
+                    border.color: appendEditor.activeFocus ? borderFocus : (root.factEditorActive ? accent : borderSubtle)
 
-                    TextArea {
-                        id: appendEditor
+                    Behavior on color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
+                    Behavior on border.color { ColorAnimation { duration: motionUi; easing.type: easeStandard } }
+
+                    ColumnLayout {
+                        id: factComposerColumn
                         anchors.fill: parent
-                        text: root.appendText
-                        color: textPrimary
-                        placeholderText: tr("写下要补充到当前分类的一条记忆", "Write one memory to add to this category")
-                        placeholderTextColor: textPlaceholder
-                        wrapMode: TextArea.Wrap
-                        selectByMouse: true
-                        selectionColor: textSelectionBg
-                        selectedTextColor: textSelectionFg
-                        background: null
-                        padding: 12
-                        onTextChanged: root.appendText = text
+                        anchors.margins: 12
+                        spacing: 10
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: root.factComposerTitle()
+                                color: textSecondary
+                                font.pixelSize: typeMeta
+                                font.weight: weightBold
+                            }
+
+                            IconCircleButton {
+                                id: factPrimaryAction
+                                objectName: "memoryFactPrimaryAction"
+                                buttonSize: 32
+                                glyphSize: typeMeta + 2
+                                glyphText: root.factEditorActive ? "✓" : "✎"
+                                emphasized: root.factEditorActive
+                                fillColor: root.factEditorActive ? accent : "transparent"
+                                hoverFillColor: root.factEditorActive ? accentHover : bgCardHover
+                                outlineColor: root.factEditorActive ? accent : borderSubtle
+                                glyphColor: root.factEditorActive ? "#FFFFFFFF" : accent
+                                buttonEnabled: root.factEditorActive
+                                               ? root.canMutate
+                                                 && !!selectedMemoryCategory.category
+                                                 && root.factEditorText.trim().length > 0
+                                               : root.canMutate && root.hasSelectedMemoryFact()
+                                onClicked: root.triggerPrimaryFactAction()
+                            }
+
+                            IconCircleButton {
+                                objectName: "memoryFactAddAction"
+                                buttonSize: 32
+                                glyphSize: typeMeta + 4
+                                glyphText: "+"
+                                fillColor: "transparent"
+                                hoverFillColor: bgCardHover
+                                outlineColor: borderSubtle
+                                glyphColor: accent
+                                buttonEnabled: root.canMutate && !!selectedMemoryCategory.category
+                                onClicked: root.beginNewFact()
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: root.factComposerMeta()
+                            color: textSecondary
+                            font.pixelSize: typeMeta
+                            wrapMode: Text.WordWrap
+                        }
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: 124
+                            radius: radiusMd
+                            color: bgBase
+                            border.width: 1
+                            border.color: borderSubtle
+
+                            ScrollView {
+                                anchors.fill: parent
+                                clip: true
+
+                                TextArea {
+                                    id: appendEditor
+                                    objectName: "memoryFactEditor"
+                                    color: textPrimary
+                                    readOnly: !root.factEditorActive
+                                    placeholderText: root.factComposerPlaceholder()
+                                    placeholderTextColor: textPlaceholder
+                                    wrapMode: TextArea.Wrap
+                                    selectByMouse: true
+                                    selectionColor: textSelectionBg
+                                    selectedTextColor: textSelectionFg
+                                    background: null
+                                    padding: 12
+                                    Component.onCompleted: {
+                                        root.factEditorRef = appendEditor
+                                        root.syncFactEditorFromSelection()
+                                    }
+                                    onTextChanged: {
+                                        if (root.syncingEditors)
+                                            return
+                                        root.factEditorText = text
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1362,33 +1731,18 @@ Item {
                         onClicked: memoryService.saveMemoryCategory(selectedMemoryCategory.category, root.editorText)
                     }
 
-                    Flow {
-                        Layout.fillWidth: true
-                        width: parent.width
-                        spacing: 8
-
-                        PillActionButton {
-                            text: tr("加入到当前分类", "Add to this category")
-                            iconSource: root.appendIconSource
-                            buttonEnabled: root.canMutate
-                                           && !!selectedMemoryCategory.category
-                                           && root.appendText.trim().length > 0
-                            onClicked: memoryService.appendMemoryCategory(selectedMemoryCategory.category, root.appendText)
-                        }
-
-                        PillActionButton {
-                            text: tr("清空当前分类", "Clear")
-                            iconSource: root.removeIconSource
-                            outlined: true
-                            fillColor: "transparent"
-                            hoverFillColor: isDark ? "#2A1614" : "#FFF1EE"
-                            outlineColor: statusError
-                            textColor: statusError
-                            buttonEnabled: root.canMutate
-                                           && !!selectedMemoryCategory.category
-                                           && String(selectedMemoryCategory.content || "").trim().length > 0
-                            onClicked: root.openDestructiveModal("clearMemory", "", selectedMemoryCategory.category)
-                        }
+                    PillActionButton {
+                        text: tr("清空当前分类", "Clear")
+                        iconSource: root.removeIconSource
+                        outlined: true
+                        fillColor: "transparent"
+                        hoverFillColor: isDark ? "#2A1614" : "#FFF1EE"
+                        outlineColor: statusError
+                        textColor: statusError
+                        buttonEnabled: root.canMutate
+                                       && !!selectedMemoryCategory.category
+                                       && String(selectedMemoryCategory.content || "").trim().length > 0
+                        onClicked: root.openDestructiveModal("clearMemory", "", selectedMemoryCategory.category)
                     }
                 }
             }
@@ -1585,7 +1939,9 @@ Item {
                             Text { text: tr("分类：", "Category: ") + String(selectedExperience.category || tr("无", "none")); color: textPrimary; font.pixelSize: typeLabel }
                             Text { text: tr("复用次数：", "Reuse: ") + Number(selectedExperience.uses || 0); color: textPrimary; font.pixelSize: typeLabel }
                             Text { text: tr("成功次数：", "Successes: ") + Number(selectedExperience.successes || 0); color: textPrimary; font.pixelSize: typeLabel }
+                            Text { text: tr("命中次数：", "Hits: ") + Number(selectedExperience.hit_count || 0); color: textPrimary; font.pixelSize: typeLabel }
                             Text { text: tr("最近更新：", "Updated: ") + String(selectedExperience.updated_label || tr("无", "none")); color: textPrimary; font.pixelSize: typeLabel }
+                            Text { visible: !!selectedExperience.last_hit_label; text: tr("最近命中：", "Last hit: ") + String(selectedExperience.last_hit_label || tr("无", "none")); color: textPrimary; font.pixelSize: typeLabel }
                             Text { visible: !!selectedExperience.keywords; text: tr("关键词：", "Keywords: ") + String(selectedExperience.keywords || ""); color: textPrimary; font.pixelSize: typeLabel; wrapMode: Text.WordWrap; width: parent.width }
                             Text { visible: !!selectedExperience.trace; text: tr("轨迹：", "Trace: ") + String(selectedExperience.trace || ""); color: textSecondary; font.pixelSize: typeMeta; wrapMode: Text.WordWrap; width: parent.width }
                         }
@@ -1653,7 +2009,6 @@ Item {
 
                     Flow {
                         Layout.fillWidth: true
-                        width: parent.width
                         spacing: 8
 
                         PillActionButton {

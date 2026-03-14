@@ -1816,6 +1816,8 @@ def test_load_history_uses_display_history_for_ui_model():
             "entrancestyle": "none",
             "entrancepending": False,
             "dividertext": "",
+            "attachments": [],
+            "references": {},
         }
     ]
     assert payload[4] is True

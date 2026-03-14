@@ -34,7 +34,10 @@ ApplicationWindow {
     readonly property bool hasAppServices: typeof appServices !== "undefined" && appServices !== null
     readonly property var chatService: hasAppServices ? appServices.chatService : null
     readonly property var configService: hasAppServices ? appServices.configService : null
+    readonly property var profileService: hasAppServices ? appServices.profileService : null
     readonly property var sessionService: hasAppServices ? appServices.sessionService : null
+    readonly property var profileSupervisorService: hasAppServices ? appServices.profileSupervisorService : null
+    readonly property var heartbeatService: hasAppServices ? appServices.heartbeatService : null
     readonly property var diagnosticsService: hasAppServices ? appServices.diagnosticsService : null
     readonly property var desktopPreferences: hasAppServices ? appServices.desktopPreferences : null
     readonly property var updateService: hasAppServices ? appServices.updateService : null
@@ -61,9 +64,10 @@ ApplicationWindow {
         "sidebar_sessions": "会话",
         "sidebar_library_title": "工作区",
         "sidebar_memory": "记忆",
+        "sidebar_control_tower": "指挥舱",
         "sidebar_skills": "技能",
         "sidebar_tools_nav": "工具",
-        "sidebar_cron": "定时任务",
+        "sidebar_cron": "自动任务",
         "sidebar_empty_title": "开始一个新对话",
         "sidebar_empty_hint": "点击即可新建会话",
         "sidebar_empty_cta": "新建对话",
@@ -79,6 +83,14 @@ ApplicationWindow {
         "gateway_channels_running": "活跃渠道",
         "gateway_channels_error": "异常渠道",
         "button_start_gateway": "启动",
+        "profile_switch": "分身档案",
+        "profile_create_placeholder": "例如：工作搭子 / 深度研究员 / 生活管家",
+        "profile_display_name_placeholder": "例如：研发档 / 日常 / 深度研究",
+        "profile_delete_title": "确认删除这个分身？",
+        "profile_delete_hint": "删除后，“%1”专属的人设提示词、记忆和会话历史都会被永久移除，之后无法恢复。",
+        "profile_delete_irreversible": "不可撤销",
+        "profile_delete_confirm": "确认删除",
+        "profile_delete_cancel": "取消",
         "chat_placeholder": "给 Bao 发消息…",
         "chat_attach_title": "选择附件",
         "chat_loading_history": "加载会话中…",
@@ -177,12 +189,14 @@ ApplicationWindow {
         "diagnostics_metrics_title": "运行观测",
         "workspace_memory_title": "记忆档案",
         "workspace_memory_caption": "这里将承载 Bao 的长期记忆浏览、筛选与管理。",
-        "workspace_skills_title": "技能画廊",
-        "workspace_skills_caption": "这里将集中呈现可用技能、来源与能力说明。",
-        "workspace_tools_title": "工具工作台",
-        "workspace_tools_caption": "这里将展示工具清单、可用状态与调用能力。",
-        "workspace_cron_title": "定时任务",
-        "workspace_cron_caption": "这里将展示 cron 任务、下一次运行时间与调度状态。",
+        "workspace_control_tower_title": "指挥舱",
+        "workspace_control_tower_caption": "统一查看分身回复、自动化与待处理事项。",
+        "workspace_skills_title": "技能",
+        "workspace_skills_caption": "管理 AI 可用技能。",
+        "workspace_tools_title": "工具",
+        "workspace_tools_caption": "管理 AI 可用工具。",
+        "workspace_cron_title": "自动任务",
+        "workspace_cron_caption": "统一管理计划任务与自动检查。",
         "workspace_kicker_future": "即将到来",
     })
 
@@ -190,9 +204,10 @@ ApplicationWindow {
         "sidebar_sessions": "Sessions",
         "sidebar_library_title": "Workspace",
         "sidebar_memory": "Memory",
+        "sidebar_control_tower": "Control Tower",
         "sidebar_skills": "Skills",
         "sidebar_tools_nav": "Tools",
-        "sidebar_cron": "Cron",
+        "sidebar_cron": "Automation",
         "sidebar_empty_title": "Start a new chat",
         "sidebar_empty_hint": "Click to create one",
         "sidebar_empty_cta": "New chat",
@@ -208,6 +223,14 @@ ApplicationWindow {
         "gateway_channels_running": "Active channels",
         "gateway_channels_error": "Channel issues",
         "button_start_gateway": "Start",
+        "profile_switch": "Profiles",
+        "profile_create_placeholder": "Examples: Work partner / Research mode / Life coach",
+        "profile_display_name_placeholder": "Examples: Research / Daily / Deep Work",
+        "profile_delete_title": "Delete this profile?",
+        "profile_delete_hint": "This permanently removes the persona prompts, memory, and chat history stored under \"%1\". This cannot be undone.",
+        "profile_delete_irreversible": "Permanent",
+        "profile_delete_confirm": "Delete profile",
+        "profile_delete_cancel": "Cancel",
         "chat_placeholder": "Message Bao\u2026",
         "chat_attach_title": "Choose Attachments",
         "chat_loading_history": "Loading session\u2026",
@@ -305,12 +328,14 @@ ApplicationWindow {
         "diagnostics_gateway_error": "Startup issue",
         "workspace_memory_title": "Memory Archive",
         "workspace_memory_caption": "This area will host Bao's long-term memory browsing, filters, and editing flow.",
-        "workspace_skills_title": "Skills Gallery",
-        "workspace_skills_caption": "This area will gather available skills, their source, and what each one can do.",
-        "workspace_tools_title": "Tool Workbench",
-        "workspace_tools_caption": "This area will present registered tools, availability, and invocation capabilities.",
-        "workspace_cron_title": "Scheduled Tasks",
-        "workspace_cron_caption": "This area will present cron jobs, next run timing, and scheduling status.",
+        "workspace_control_tower_title": "Control Tower",
+        "workspace_control_tower_caption": "Monitor replies, automation, and review items across profiles.",
+        "workspace_skills_title": "Skills",
+        "workspace_skills_caption": "Manage AI available skills.",
+        "workspace_tools_title": "Tools",
+        "workspace_tools_caption": "Manage AI available tools.",
+        "workspace_cron_title": "Automation",
+        "workspace_cron_caption": "Manage scheduled tasks and automatic checks in one place.",
         "workspace_kicker_future": "Coming next",
     })
 
@@ -335,9 +360,13 @@ ApplicationWindow {
     }
 
     function diagnosticsGatewayState() {
-        if (!chatService || typeof chatService.gatewayState !== "string" || !chatService.gatewayState)
+        if (!chatService)
             return "idle"
-        return chatService.gatewayState
+        if (typeof chatService.gatewayState === "string" && chatService.gatewayState)
+            return chatService.gatewayState
+        if (typeof chatService.state === "string" && chatService.state)
+            return chatService.state
+        return "idle"
     }
 
     function diagnosticsGatewayLabel() {
@@ -433,7 +462,8 @@ ApplicationWindow {
                                      : true
     property bool _previousSetupMode: true
     property int setupCompletionToken: 0
-    readonly property var workspaceOrder: ["sessions", "memory", "skills", "tools", "cron"]
+    property int _lastActiveWorkspaceIndex: 0
+    readonly property var workspaceOrder: ["sessions", "control_tower", "memory", "skills", "tools", "cron"]
     readonly property bool showingSettings: setupMode || startView === "settings"
     readonly property int currentPageIndex: showingSettings ? 1 : 0
     readonly property string sidebarSelectionTarget: showingSettings ? "settings" : activeWorkspace
@@ -443,6 +473,7 @@ ApplicationWindow {
             setupCompletionToken += 1
         _previousSetupMode = setupMode
     }
+    Component.onCompleted: _lastActiveWorkspaceIndex = activeWorkspaceIndex
 
     Connections {
         target: hasSessionService ? sessionService : null
@@ -688,7 +719,7 @@ ApplicationWindow {
                 id: titleBar
                 Layout.fillWidth: true
                 visible: !root.useNativeTitleBar
-                height: visible ? 48 : 0
+                Layout.preferredHeight: visible ? 48 : 0
 
                 // Drag the frameless window by the title bar background.
                 // Ignore the traffic-light area so the buttons remain clickable.
@@ -805,7 +836,9 @@ ApplicationWindow {
                         visible: !root.setupMode
                         selectionTarget: root.sidebarSelectionTarget
                         chatService: root.chatService
+                        profileService: root.profileService
                         sessionService: root.sessionService
+                        supervisorService: root.profileSupervisorService
                         diagnosticsService: root.diagnosticsService
                         onSettingsRequested: root.startView = "settings"
                         onDiagnosticsRequested: diagnosticsModal.open()
@@ -846,6 +879,12 @@ ApplicationWindow {
                             property real revealAuraOpacity: 0.0
                             property real completionFlashOpacity: 0.0
                             property real completionFlashScale: 0.94
+                            property real workspaceSwitchOpacity: 1.0
+                            property real workspaceSwitchScale: 1.0
+                            property real workspaceSwitchShift: 0.0
+                            property real workspaceSwitchAuraOpacity: 0.0
+                            property real workspaceSwitchSweepOpacity: 0.0
+                            property real workspaceSwitchSweepX: -0.22
 
                             function playReveal(direction, distance) {
                                 revealOpacity = motionPageRevealStartOpacity
@@ -862,6 +901,16 @@ ApplicationWindow {
                                 setupCompletionReveal.restart()
                             }
 
+                            function playWorkspaceSwitch(direction) {
+                                workspaceSwitchOpacity = 0.78
+                                workspaceSwitchScale = 0.992
+                                workspaceSwitchShift = direction * motionPageShiftSubtle
+                                workspaceSwitchAuraOpacity = motionPageAuraPeak * 1.2
+                                workspaceSwitchSweepOpacity = 0.24
+                                workspaceSwitchSweepX = direction > 0 ? -0.22 : 0.22
+                                workspaceSwitchReveal.restart()
+                            }
+
                             onActiveChanged: {
                                 if (active)
                                     playReveal(-1, motionPageShift)
@@ -872,6 +921,14 @@ ApplicationWindow {
                                 function onSetupCompletionTokenChanged() {
                                     if (chatPage.active)
                                         chatPage.playSetupCompletionReveal()
+                                }
+                                function onActiveWorkspaceChanged() {
+                                    if (!chatPage.active)
+                                        return
+                                    var nextIndex = root.activeWorkspaceIndex
+                                    var direction = nextIndex >= root._lastActiveWorkspaceIndex ? 1 : -1
+                                    root._lastActiveWorkspaceIndex = nextIndex
+                                    chatPage.playWorkspaceSwitch(direction)
                                 }
                             }
 
@@ -894,71 +951,117 @@ ApplicationWindow {
                                 visible: opacity > 0.01
                             }
 
+                            Rectangle {
+                                anchors.fill: parent
+                                anchors.margins: 8
+                                radius: chrome.radius - 8
+                                color: root.isDark ? "#16FFB33D" : "#10FFB33D"
+                                opacity: chatPage.workspaceSwitchAuraOpacity
+                                visible: opacity > 0.01
+                            }
+
                             Item {
                                 anchors.fill: parent
                                 opacity: chatPage.revealOpacity
                                 scale: chatPage.revealScale
                                 transform: Translate { x: chatPage.revealShift }
 
-                                StackLayout {
-                                    id: workspaceStack
+                                Item {
                                     anchors.fill: parent
-                                    currentIndex: root.activeWorkspaceIndex
+                                    opacity: chatPage.workspaceSwitchOpacity
+                                    scale: chatPage.workspaceSwitchScale
+                                    transform: Translate { x: chatPage.workspaceSwitchShift }
 
-                                    SessionsWorkspace {
-                                        Layout.fillWidth: true
-                                        Layout.fillHeight: true
-                                        active: root.activeWorkspace === "sessions"
-                                        chatService: root.chatService
-                                        sessionService: root.sessionService
-                                        configService: root.configService
+                                    Rectangle {
+                                        width: parent.width * 0.30
+                                        height: parent.height
+                                        radius: chrome.radius - 8
+                                        x: chatPage.workspaceSwitchSweepX * parent.width
+                                        color: root.isDark ? "#18FFF0D1" : "#12FFFFFF"
+                                        opacity: chatPage.workspaceSwitchSweepOpacity
+                                        rotation: 7
+                                        visible: opacity > 0.01
                                     }
 
-                                    Loader {
-                                        Layout.fillWidth: true
-                                        Layout.fillHeight: true
-                                        active: root.activeWorkspace === "memory"
-                                        source: "MemoryWorkspace.qml"
-                                        onLoaded: if (item) {
-                                            item.active = true
-                                            item.memoryService = root.hasAppServices ? appServices.memoryService : null
+                                    StackLayout {
+                                        id: workspaceStack
+                                        anchors.fill: parent
+                                        currentIndex: root.activeWorkspaceIndex
+
+                                        SessionsWorkspace {
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+                                            active: root.activeWorkspace === "sessions"
+                                            chatService: root.chatService
+                                            sessionService: root.sessionService
+                                            configService: root.configService
                                         }
-                                    }
 
-                                    Loader {
-                                        Layout.fillWidth: true
-                                        Layout.fillHeight: true
-                                        active: root.activeWorkspace === "skills"
-                                        source: "SkillsWorkspace.qml"
-                                        onLoaded: if (item) {
-                                            item.active = true
-                                            item.skillsService = root.hasAppServices ? appServices.skillsService : null
+                                        Loader {
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+                                            active: root.activeWorkspace === "control_tower"
+                                            source: "ControlTowerWorkspace.qml"
+                                            onLoaded: if (item) {
+                                                item.active = true
+                                                item.appRoot = root
+                                                item.supervisorService = root.profileSupervisorService
+                                            }
                                         }
-                                    }
 
-                                    Loader {
-                                        Layout.fillWidth: true
-                                        Layout.fillHeight: true
-                                        active: root.activeWorkspace === "tools"
-                                        source: "ToolsWorkspace.qml"
-                                        onLoaded: if (item) {
-                                            item.active = true
-                                            item.toolsService = root.hasAppServices ? appServices.toolsService : null
-                                            item.configService = root.configService
-                                            item.uiLanguage = root.uiLanguage
-                                            item.autoLanguage = root.autoLanguage
+                                        Loader {
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+                                            active: root.activeWorkspace === "memory"
+                                            asynchronous: true
+                                            source: "MemoryWorkspace.qml"
+                                            onLoaded: if (item) {
+                                                item.active = true
+                                                item.memoryService = root.hasAppServices ? appServices.memoryService : null
+                                            }
                                         }
-                                    }
 
-                                    Loader {
-                                        Layout.fillWidth: true
-                                        Layout.fillHeight: true
-                                        active: root.activeWorkspace === "cron"
-                                        source: "CronWorkspace.qml"
-                                        onLoaded: if (item) {
-                                            item.active = true
-                                            item.appRoot = root
-                                            item.cronService = root.hasAppServices ? appServices.cronService : null
+                                        Loader {
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+                                            active: root.activeWorkspace === "skills"
+                                            asynchronous: true
+                                            source: "SkillsWorkspace.qml"
+                                            onLoaded: if (item) {
+                                                var skillsService = root.hasAppServices ? appServices.skillsService : null
+                                                item.active = true
+                                                item.skillsService = skillsService
+                                                if (skillsService && skillsService.hydrateIfNeeded)
+                                                    skillsService.hydrateIfNeeded()
+                                            }
+                                        }
+
+                                        Loader {
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+                                            active: root.activeWorkspace === "tools"
+                                            asynchronous: true
+                                            source: "ToolsWorkspace.qml"
+                                            onLoaded: if (item) {
+                                                item.active = true
+                                                item.toolsService = root.hasAppServices ? appServices.toolsService : null
+                                                item.configService = root.configService
+                                                item.uiLanguage = root.uiLanguage
+                                                item.autoLanguage = root.autoLanguage
+                                            }
+                                        }
+
+                                        Loader {
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+                                            active: root.activeWorkspace === "cron"
+                                            source: "CronWorkspace.qml"
+                                            onLoaded: if (item) {
+                                                item.active = true
+                                                item.appRoot = root
+                                                item.cronService = root.hasAppServices ? appServices.cronService : null
+                                                item.heartbeatService = root.hasAppServices ? appServices.heartbeatService : null
+                                            }
                                         }
                                     }
                                 }
@@ -1024,6 +1127,54 @@ ApplicationWindow {
                                     easing.type: easeSoft
                                 }
                             }
+
+                            SequentialAnimation {
+                                id: workspaceSwitchReveal
+                                ParallelAnimation {
+                                    NumberAnimation {
+                                        target: chatPage
+                                        property: "workspaceSwitchOpacity"
+                                        to: 1.0
+                                        duration: motionUi
+                                        easing.type: easeStandard
+                                    }
+                                    NumberAnimation {
+                                        target: chatPage
+                                        property: "workspaceSwitchScale"
+                                        to: 1.0
+                                        duration: motionPanel
+                                        easing.type: easeEmphasis
+                                    }
+                                    NumberAnimation {
+                                        target: chatPage
+                                        property: "workspaceSwitchShift"
+                                        to: 0.0
+                                        duration: motionPanel
+                                        easing.type: easeEmphasis
+                                    }
+                                    NumberAnimation {
+                                        target: chatPage
+                                        property: "workspaceSwitchAuraOpacity"
+                                        to: 0.0
+                                        duration: motionPanel
+                                        easing.type: easeStandard
+                                    }
+                                    NumberAnimation {
+                                        target: chatPage
+                                        property: "workspaceSwitchSweepOpacity"
+                                        to: 0.0
+                                        duration: motionUi
+                                        easing.type: easeStandard
+                                    }
+                                    NumberAnimation {
+                                        target: chatPage
+                                        property: "workspaceSwitchSweepX"
+                                        to: 0.82
+                                        duration: motionPanel
+                                        easing.type: easeEmphasis
+                                    }
+                                }
+                            }
                         }
 
                         Item {
@@ -1033,6 +1184,7 @@ ApplicationWindow {
                             clip: true
 
                             property bool active: root.showingSettings
+                            property bool preloadReady: false
                             property real revealOpacity: 1.0
                             property real revealScale: 1.0
                             property real revealShift: 0.0
@@ -1051,6 +1203,13 @@ ApplicationWindow {
                                     playReveal(1, motionPageShift)
                             }
 
+                            Component.onCompleted: {
+                                Qt.callLater(function() {
+                                    if (!settingsPage.active)
+                                        settingsPage.preloadReady = true
+                                })
+                            }
+
                             Rectangle {
                                 anchors.fill: parent
                                 anchors.margins: 8
@@ -1060,16 +1219,11 @@ ApplicationWindow {
                                 visible: opacity > 0.01
                             }
 
-                            Item {
-                                anchors.fill: parent
-                                opacity: settingsPage.revealOpacity
-                                scale: settingsPage.revealScale
-                                transform: Translate { x: settingsPage.revealShift }
+                            Component {
+                                id: settingsViewComponent
 
                                 SettingsView {
                                     objectName: "settingsView"
-                                    id: settingsView
-                                    anchors.fill: parent
                                     appRoot: root
                                     onboardingMode: root.setupMode
                                     configService: root.configService
@@ -1077,6 +1231,16 @@ ApplicationWindow {
                                     updateBridge: root.updateBridge
                                     desktopPreferences: root.desktopPreferences
                                 }
+                            }
+
+                            Loader {
+                                id: settingsPageLoader
+                                anchors.fill: parent
+                                active: settingsPage.active || settingsPage.preloadReady
+                                opacity: settingsPage.revealOpacity
+                                scale: settingsPage.revealScale
+                                transform: Translate { x: settingsPage.revealShift }
+                                sourceComponent: settingsViewComponent
                             }
 
                             SequentialAnimation {
@@ -1156,7 +1320,6 @@ ApplicationWindow {
         onOpened: {
             if (diagnosticsService)
                 diagnosticsService.refresh()
-            diagnosticsLogTailView.followTail()
         }
 
         Item {
@@ -1197,15 +1360,12 @@ ApplicationWindow {
                                     radius: 10
                                     color: isDark ? "#1F1814" : "#F1E8DF"
 
-                                    Image {
+                                    AppIcon {
                                         width: 24
                                         height: 24
                                         anchors.centerIn: parent
                                         source: diagnosticsSectionIcon("gateway")
                                         sourceSize: Qt.size(24, 24)
-                                        fillMode: Image.PreserveAspectFit
-                                        smooth: true
-                                        mipmap: true
                                     }
                                 }
 
@@ -1221,7 +1381,7 @@ ApplicationWindow {
 
                             Rectangle {
                                 Layout.fillWidth: true
-                                height: 1
+                                Layout.preferredHeight: 1
                                 color: borderSubtle
                             }
 
@@ -1229,15 +1389,12 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 spacing: 12
 
-                                Image {
+                                AppIcon {
                                     Layout.alignment: Qt.AlignTop
                                     source: diagnosticsGatewayIcon()
                                     sourceSize: Qt.size(28, 28)
-                                    width: 28
-                                    height: 28
-                                    fillMode: Image.PreserveAspectFit
-                                    smooth: true
-                                    mipmap: true
+                                    Layout.preferredWidth: 28
+                                    Layout.preferredHeight: 28
                                 }
 
                                 ColumnLayout {
@@ -1257,8 +1414,8 @@ ApplicationWindow {
 
                                         Rectangle {
                                             Layout.alignment: Qt.AlignVCenter
-                                            width: 8
-                                            height: 8
+                                            Layout.preferredWidth: 8
+                                            Layout.preferredHeight: 8
                                             radius: 4
                                             color: diagnosticsGatewayBadgeColor()
                                         }
@@ -1304,15 +1461,12 @@ ApplicationWindow {
                                     radius: 10
                                     color: isDark ? "#1F1814" : "#F1E8DF"
 
-                                    Image {
+                                    AppIcon {
                                         width: 24
                                         height: 24
                                         anchors.centerIn: parent
                                         source: diagnosticsSectionIcon("file")
                                         sourceSize: Qt.size(24, 24)
-                                        fillMode: Image.PreserveAspectFit
-                                        smooth: true
-                                        mipmap: true
                                     }
                                 }
 
@@ -1353,7 +1507,7 @@ ApplicationWindow {
 
                             Rectangle {
                                 Layout.fillWidth: true
-                                height: 1
+                                Layout.preferredHeight: 1
                                 color: borderSubtle
                             }
 
@@ -1398,15 +1552,12 @@ ApplicationWindow {
                                     radius: 10
                                     color: isDark ? "#1F1814" : "#F1E8DF"
 
-                                    Image {
+                                    AppIcon {
                                         width: 24
                                         height: 24
                                         anchors.centerIn: parent
                                         source: diagnosticsSectionIcon("events")
                                         sourceSize: Qt.size(24, 24)
-                                        fillMode: Image.PreserveAspectFit
-                                        smooth: true
-                                        mipmap: true
                                     }
                                 }
 
@@ -1444,7 +1595,7 @@ ApplicationWindow {
 
                             Rectangle {
                                 Layout.fillWidth: true
-                                height: 1
+                                Layout.preferredHeight: 1
                                 color: borderSubtle
                             }
 
@@ -1464,15 +1615,12 @@ ApplicationWindow {
                                         anchors.horizontalCenter: parent.horizontalCenter
                                         color: isDark ? "#1F1814" : "#F1E8DF"
 
-                                        Image {
+                                        AppIcon {
                                             width: 24
                                             height: 24
                                             anchors.centerIn: parent
                                             source: diagnosticsSectionIcon("events")
                                             sourceSize: Qt.size(24, 24)
-                                            fillMode: Image.PreserveAspectFit
-                                            smooth: true
-                                            mipmap: true
                                         }
                                     }
 
@@ -1596,15 +1744,12 @@ ApplicationWindow {
                                     radius: 10
                                     color: isDark ? "#1F1814" : "#F1E8DF"
 
-                                    Image {
+                                    AppIcon {
                                         width: 24
                                         height: 24
                                         anchors.centerIn: parent
                                         source: diagnosticsSectionIcon("logtail")
                                         sourceSize: Qt.size(24, 24)
-                                        fillMode: Image.PreserveAspectFit
-                                        smooth: true
-                                        mipmap: true
                                     }
                                 }
 
@@ -1635,7 +1780,7 @@ ApplicationWindow {
 
                             Rectangle {
                                 Layout.fillWidth: true
-                                height: 1
+                                Layout.preferredHeight: 1
                                 color: borderSubtle
                             }
 
@@ -1655,15 +1800,12 @@ ApplicationWindow {
                                         anchors.horizontalCenter: parent.horizontalCenter
                                         color: isDark ? "#1F1814" : "#F1E8DF"
 
-                                        Image {
+                                        AppIcon {
                                             width: 24
                                             height: 24
                                             anchors.centerIn: parent
                                             source: diagnosticsSectionIcon("logtail")
                                             sourceSize: Qt.size(24, 24)
-                                            fillMode: Image.PreserveAspectFit
-                                            smooth: true
-                                            mipmap: true
                                         }
                                     }
 

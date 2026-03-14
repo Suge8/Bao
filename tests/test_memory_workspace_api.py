@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 
-from bao.agent.memory import MEMORY_CATEGORIES, MemoryStore
+from bao.agent.memory import MEMORY_CATEGORIES, MemoryChangeEvent, MemoryStore
 
 
 def _matches_where(row: dict[str, object], where: str | None) -> bool:
@@ -144,6 +144,74 @@ def test_write_long_term_stores_fact_rows_and_remember_dedupes() -> None:
     assert detail is not None
     assert detail["content"] == "Fact A\nFact B\nFact C"
     assert detail["fact_count"] == 3
+    assert [fact["content"] for fact in detail["facts"]] == ["Fact A", "Fact B", "Fact C"]
+
+
+def test_memory_fact_api_lists_and_deletes_fact_rows() -> None:
+    store = _build_store()
+
+    store.write_long_term("Fact A\nFact B", "project")
+    facts = store.list_memory_facts("project")
+
+    assert [fact["content"] for fact in facts] == ["Fact A", "Fact B"]
+
+    deleted = store.delete_memory_fact("project", str(facts[0]["key"]))
+    assert deleted is not None
+    assert [fact["content"] for fact in deleted["facts"]] == ["Fact B"]
+
+
+def test_memory_fact_api_upserts_single_fact_rows() -> None:
+    store = _build_store()
+
+    created = store.upsert_memory_fact("project", "Keep memory settings user friendly")
+    assert created is not None
+    assert [fact["content"] for fact in created["facts"]] == ["Keep memory settings user friendly"]
+
+    key = str(created["facts"][0]["key"])
+    updated = store.upsert_memory_fact("project", "Keep memory settings genuinely useful", key=key)
+
+    assert updated is not None
+    assert str(updated["facts"][0]["key"]) == key
+    assert [fact["content"] for fact in updated["facts"]] == [
+        "Keep memory settings genuinely useful"
+    ]
+
+
+def test_memory_fact_api_append_preserves_existing_fact_keys() -> None:
+    store = _build_store()
+
+    created = store.upsert_memory_fact("project", "Fact A")
+    assert created is not None
+    first_key = str(created["facts"][0]["key"])
+
+    appended = store.upsert_memory_fact("project", "Fact B")
+
+    assert appended is not None
+    assert [fact["content"] for fact in appended["facts"]] == ["Fact A", "Fact B"]
+    assert str(appended["facts"][0]["key"]) == first_key
+    assert str(appended["facts"][1]["key"]) != first_key
+
+
+def test_memory_fact_delete_preserves_remaining_fact_metadata() -> None:
+    store = _build_store()
+
+    store.write_long_term("Fact A\nFact B", "project")
+    facts = store.list_memory_facts("project")
+    first_key = str(facts[0]["key"])
+    second_key = str(facts[1]["key"])
+    for row in store._tbl.rows:
+        if row.get("key") == second_key:
+            row["hit_count"] = 3
+            row["last_hit_at"] = "2026-03-13T12:00:00"
+
+    deleted = store.delete_memory_fact("project", first_key)
+
+    assert deleted is not None
+    remaining = deleted["facts"]
+    assert len(remaining) == 1
+    assert str(remaining[0]["key"]) == second_key
+    assert remaining[0]["hit_count"] == 3
+    assert remaining[0]["last_hit_at"] == "2026-03-13T12:00:00"
 
 
 def test_forget_rewrites_category_with_fresh_updated_at() -> None:
@@ -207,3 +275,19 @@ def test_experience_workspace_api_supports_filter_mutate_and_promote() -> None:
 
     assert store.delete_experience(key) is True
     assert store.get_experience_item(key) is None
+
+
+def test_memory_change_events_are_broadcast_per_storage_root() -> None:
+    received: list[MemoryChangeEvent] = []
+    listener_store = _build_store()
+    emitter_store = _build_store()
+    listener_store._storage_root = "/tmp/bao-memory-root"
+    emitter_store._storage_root = "/tmp/bao-memory-root"
+
+    listener_store.add_change_listener(received.append)
+    emitter_store._emit_change(scope="long_term", operation="append_fact", category="project")
+    listener_store.remove_change_listener(received.append)
+
+    assert len(received) == 1
+    assert received[0].scope == "long_term"
+    assert received[0].category == "project"

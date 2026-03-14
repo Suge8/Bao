@@ -1,4 +1,5 @@
 import QtQuick 2.15
+import QtQuick.Effects
 
 Rectangle {
     id: root
@@ -19,6 +20,7 @@ Rectangle {
     property real minHeight: 30
     readonly property bool interactive: root.buttonEnabled && !root.busy
     readonly property color currentFillColor: buttonArea.containsMouse ? root.hoverFillColor : root.fillColor
+    readonly property color currentTextColor: root.buttonEnabled ? root.textColor : textSecondary
     readonly property real currentOpacity: root.busy ? 0.72 : (root.buttonEnabled ? 1.0 : 0.42)
     readonly property real currentScale: buttonArea.pressed ? 0.988 : (buttonArea.containsMouse ? motionHoverScaleSubtle : 1.0)
     signal clicked()
@@ -39,15 +41,18 @@ Rectangle {
         anchors.centerIn: parent
         spacing: 7
 
-        Image {
+        AppIcon {
+            id: iconGlyph
             visible: root.iconSource !== "" && !root.busy
             source: root.iconSource
             width: root.iconSize
             height: root.iconSize
             sourceSize: Qt.size(root.iconSize, root.iconSize)
-            fillMode: Image.PreserveAspectFit
-            smooth: true
-            mipmap: true
+            layer.enabled: visible
+            layer.effect: MultiEffect {
+                colorization: 1.0
+                colorizationColor: root.currentTextColor
+            }
         }
 
         LoadingOrbit {
@@ -66,7 +71,7 @@ Rectangle {
         Text {
             anchors.verticalCenter: parent.verticalCenter
             text: root.text
-            color: root.textColor
+            color: root.currentTextColor
             font.pixelSize: typeLabel
             font.weight: Font.DemiBold
         }

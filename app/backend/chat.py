@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from datetime import datetime
 from enum import IntEnum
-from typing import Any
+from typing import Any, cast
 
 from PySide6.QtCore import (
     QAbstractListModel,
@@ -32,6 +32,8 @@ class _Role(IntEnum):
     EntranceStyle = _BASE + 7
     EntrancePending = _BASE + 8
     DividerText = _BASE + 9
+    Attachments = _BASE + 10
+    References = _BASE + 11
 
 
 class ChatMessageModel(QAbstractListModel):
@@ -51,6 +53,8 @@ class ChatMessageModel(QAbstractListModel):
         _Role.EntranceStyle: b"entranceStyle",
         _Role.EntrancePending: b"entrancePending",
         _Role.DividerText: b"dividerText",
+        _Role.Attachments: b"attachments",
+        _Role.References: b"references",
     }
     _UPDATE_ROLES = [int(role) for role in _ROLE_NAMES]
 
@@ -227,6 +231,8 @@ class ChatMessageModel(QAbstractListModel):
         fmt: str = "plain",
         created_at: int = 0,
         source: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        references: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         prepared = {
             "id": index + 1,
@@ -238,6 +244,8 @@ class ChatMessageModel(QAbstractListModel):
             "entrancestyle": entrance_style,
             "entrancepending": False,
             "dividertext": "",
+            "attachments": list(attachments or []),
+            "references": dict(references or {}),
         }
         if isinstance(source, str) and source:
             prepared["_source"] = source
@@ -266,6 +274,13 @@ class ChatMessageModel(QAbstractListModel):
             if key in message:
                 return cls._normalize_created_at(message.get(key))
         return 0
+
+    @staticmethod
+    def _message_attachments(message: dict[str, Any]) -> list[dict[str, Any]] | None:
+        attachments = message.get("attachments")
+        if not isinstance(attachments, list):
+            return None
+        return cast(list[dict[str, Any]] | None, attachments)
 
     @staticmethod
     def _same_calendar_day(left_ms: int, right_ms: int) -> bool:
@@ -327,6 +342,8 @@ class ChatMessageModel(QAbstractListModel):
             fmt_default = "markdown" if role == "assistant" else "plain"
             fmt = ChatMessageModel._normalize_format(m.get("format"), default=fmt_default)
             created_at = ChatMessageModel._message_created_at(m)
+            attachments = ChatMessageModel._message_attachments(m)
+            references = m.get("references") if isinstance(m.get("references"), dict) else None
 
             if role == "assistant":
                 entrance_style = ChatMessageModel._normalize_entrance_style(
@@ -342,6 +359,8 @@ class ChatMessageModel(QAbstractListModel):
                         fmt=fmt,
                         created_at=created_at,
                         source=m.get("_source"),
+                        attachments=attachments,
+                        references=references,
                     )
                 )
             elif role == "system":
@@ -358,6 +377,8 @@ class ChatMessageModel(QAbstractListModel):
                         fmt=fmt,
                         created_at=created_at,
                         source=m.get("_source"),
+                        attachments=attachments,
+                        references=references,
                     )
                 )
             elif role == "user":
@@ -375,6 +396,8 @@ class ChatMessageModel(QAbstractListModel):
                             fmt=fmt,
                             created_at=created_at,
                             source=m.get("_source"),
+                            attachments=attachments,
+                            references=references,
                         )
                     )
                 else:
@@ -386,6 +409,8 @@ class ChatMessageModel(QAbstractListModel):
                             status=status,
                             fmt=fmt,
                             created_at=created_at,
+                            attachments=attachments,
+                            references=references,
                         )
                     )
             elif role in ("tool", "tool_calls"):
@@ -402,6 +427,8 @@ class ChatMessageModel(QAbstractListModel):
                         entrance_style=entrance_style,
                         fmt=fmt,
                         created_at=created_at,
+                        attachments=attachments,
+                        references=references,
                     )
                 )
         return ChatMessageModel._apply_divider_texts(prepared)
@@ -697,13 +724,15 @@ class ChatMessageModel(QAbstractListModel):
     @staticmethod
     def _render_tuple(
         message: dict[str, Any], *, ignore_user_status: bool = False
-    ) -> tuple[str, str, str, str, str, str]:
+    ) -> tuple[str, str, str, str, str, str, str, str]:
         role = message.get("role", "")
         content = message.get("content", "")
         fmt = message.get("format", "")
         status = message.get("status", "")
         entrance_style = message.get("entrancestyle", "none")
         divider_text = message.get("dividertext", "")
+        attachments = message.get("attachments", [])
+        references = message.get("references", {})
         role_s = role if isinstance(role, str) else str(role)
         fmt_s = fmt if isinstance(fmt, str) else str(fmt)
         status_s = status if isinstance(status, str) else str(status)
@@ -719,6 +748,8 @@ class ChatMessageModel(QAbstractListModel):
             status_s,
             entrance_s,
             divider_text if isinstance(divider_text, str) else str(divider_text),
+            repr(attachments),
+            repr(references),
         )
 
     def load_history(self, messages: list[dict[str, Any]]) -> None:

@@ -12,6 +12,9 @@ Item {
     property string uiLanguage: "auto"
     property string autoLanguage: "en"
     readonly property bool hasToolsService: toolsService !== null
+    readonly property bool hasToolsSignals: hasToolsService
+        && typeof toolsService.changed !== "undefined"
+        && typeof toolsService.operationFinished !== "undefined"
     readonly property bool hasConfigService: configService !== null
     readonly property string effectiveUiLanguage: {
         if (typeof uiLanguage === "string" && uiLanguage !== "auto")
@@ -21,12 +24,20 @@ Item {
         return "en"
     }
     readonly property bool isZhLang: effectiveUiLanguage === "zh"
-    readonly property var allItems: hasToolsService ? (toolsService.items || []) : []
+    readonly property var allItems: hasToolsService && typeof toolsService.items !== "undefined"
+        ? (toolsService.items || [])
+        : []
     readonly property var installedItems: allItems.filter(function(item) { return item.kind === "builtin" })
     readonly property var serverItems: allItems.filter(function(item) { return item.kind === "mcp_server" })
-    readonly property var selectedItem: hasToolsService ? toolsService.selectedItem : ({})
-    readonly property string selectedItemId: hasToolsService ? toolsService.selectedItemId : ""
-    readonly property var overview: hasToolsService ? toolsService.overview : ({})
+    readonly property var selectedItem: hasToolsService && typeof toolsService.selectedItem !== "undefined"
+        ? (toolsService.selectedItem || ({}))
+        : ({})
+    readonly property string selectedItemId: hasToolsService && typeof toolsService.selectedItemId !== "undefined"
+        ? String(toolsService.selectedItemId || "")
+        : ""
+    readonly property var overview: hasToolsService && typeof toolsService.overview !== "undefined"
+        ? (toolsService.overview || ({}))
+        : ({})
     property real revealOpacity: 1.0
     property real revealScale: 1.0
     property real revealShift: 0.0
@@ -62,6 +73,8 @@ Item {
     }
 
     function bundleLabel(bundle) {
+        if (bundle && typeof bundle === "object")
+            return localizedText(bundle, "")
         switch (String(bundle || "")) {
         case "core":
             return tr("核心", "Core")
@@ -82,8 +95,21 @@ Item {
         return "../resources/icons/vendor/iconoir/" + path + ".svg"
     }
 
+    function labIcon(path) {
+        return "../resources/icons/vendor/lucide-lab/" + path + ".svg"
+    }
+
+    function workspaceString(key, fallbackZh, fallbackEn) {
+        if (typeof strings === "object" && strings !== null) {
+            var value = strings[key]
+            if (value !== undefined && value !== null && String(value))
+                return String(value)
+        }
+        return tr(fallbackZh, fallbackEn)
+    }
+
     function itemIconSource(item) {
-        return String(item.iconSource || "../resources/icons/sidebar-tools.svg")
+        return String(item.iconSource || labIcon("toolbox"))
     }
 
     function itemIconBackdrop(item) {
@@ -93,6 +119,7 @@ Item {
             return isDark ? "#1B1A12" : "#FFF2E2"
         case "configured":
             return isDark ? "#111B22" : "#EEF7FF"
+        case "blocked":
         case "error":
             return isDark ? "#241111" : "#FFF0EE"
         default:
@@ -101,6 +128,8 @@ Item {
     }
 
     function capabilityLabel(capability) {
+        if (capability && typeof capability === "object")
+            return localizedText(capability, "")
         switch (String(capability || "")) {
         case "Filesystem":
             return tr("文件系统", "Filesystem")
@@ -180,6 +209,8 @@ Item {
     }
 
     function statusLabel(item) {
+        if (item && item.displayStatusLabel)
+            return localizedText(item.displayStatusLabel, item.statusLabel || "")
         switch (String(item.status || "")) {
         case "healthy":
             return tr("已连接", "Connected")
@@ -195,6 +226,8 @@ Item {
             return tr("待配置", "Needs setup")
         case "unavailable":
             return tr("不可用", "Unavailable")
+        case "blocked":
+            return tr("受阻", "Blocked")
         case "error":
             return tr("异常", "Error")
         default:
@@ -206,7 +239,21 @@ Item {
         return localizedText(item.statusDetailDisplay, item.statusDetail || "")
     }
 
+    function exposureNote(item) {
+        return localizedText(item.exposureSummaryDisplay, "")
+    }
+
+    function attentionAction(item) {
+        return localizedText(item.attentionActionDisplay, "")
+    }
+
+    function runtimeStateText(item) {
+        return localizedText(item.runtimeStateDisplay, "")
+    }
+
     function includesSummary(item) {
+        if (item && item.includesSummaryDisplay)
+            return localizedText(item.includesSummaryDisplay, "")
         var count = Number((item.includedTools || []).length)
         if (count <= 0)
             return tr("这个能力族没有单独的用户侧配置入口。", "This capability family does not expose separate end-user configuration.")
@@ -218,14 +265,15 @@ Item {
     function detailStatusNote(item) {
         if (!item || !item.kind)
             return ""
-        if (item.kind === "mcp_server")
-            return statusDetail(item)
-        if (item.needsAttention)
-            return statusDetail(item)
-        return ""
+        var attentionReason = localizedText(item.attentionReasonDisplay, "")
+        if (attentionReason)
+            return attentionReason
+        return statusDetail(item)
     }
 
     function listBadges(item) {
+        if (item && item.badges && item.badges.length)
+            return item.badges
         var badges = []
         var status = statusLabel(item)
         if (status)
@@ -243,9 +291,15 @@ Item {
     }
 
     function summaryMetricLabel(key) {
+        if (key && typeof key === "object")
+            return localizedText(key, "")
         switch (key) {
-        case "running":
-            return tr("运行中", "Running")
+        case "available":
+            return tr("当前可用", "Available now")
+        case "recent_exposure":
+            return tr("最近暴露", "Exposed recently")
+        case "mcp_connected":
+            return tr("MCP 已连通", "MCP connected")
         case "builtin":
             return tr("工具族", "Families")
         case "mcp":
@@ -255,18 +309,6 @@ Item {
         default:
             return key
         }
-    }
-
-    function currentScopeIndex() {
-        if (currentScope === "servers")
-            return 1
-        if (currentScope === "policies")
-            return 2
-        return 0
-    }
-
-    function setScopeByIndex(index) {
-        currentScope = index === 1 ? "servers" : (index === 2 ? "policies" : "installed")
     }
 
     function slimSchemaModeFromValue(value) {
@@ -354,6 +396,7 @@ Item {
         case "needs_setup":
         case "unavailable":
             return "#F97316"
+        case "blocked":
         case "error":
             return statusError
         default:
@@ -362,19 +405,15 @@ Item {
     }
 
     function scopeIntroTitle() {
-        if (currentScope === "servers")
-            return tr("MCP 服务", "MCP Servers")
-        if (currentScope === "policies")
-            return tr("暴露与安全策略", "Exposure and safety policies")
-        return tr("已安装能力", "Installed capabilities")
+        return workspaceString("workspace_tools_title", "工具", "Tools")
     }
 
     function scopeIntroCaption() {
-        if (currentScope === "servers")
-            return tr("集中管理外部 MCP 服务，保存配置、测试连接并查看运行时展开出的工具。", "Manage external MCP servers in one place, save definitions, test connectivity, and inspect the runtime tools they expose.")
-        if (currentScope === "policies")
-            return tr("这里收口工具暴露模式、bundle 选择和工作区限制，避免把控制面散落在设置页各处。", "This page centralizes exposure mode, bundle selection, and workspace restrictions instead of scattering control surfaces across Settings.")
-        return tr("这里集中展示 Bao 现在可用的内建能力；选中一项后，右侧会告诉你它能做什么、要不要配置。", "This view shows the built-in capabilities Bao can use right now. Select one to see what it does and whether it needs setup.")
+        return workspaceString(
+            "workspace_tools_caption",
+            "管理 AI 可用工具",
+            "Manage AI available tools"
+        )
     }
 
     function installedDetailComponent(item) {
@@ -435,7 +474,7 @@ Item {
     Component.onCompleted: ensureSelectionForScope()
 
     Connections {
-        target: root.hasToolsService ? toolsService : null
+        target: root.hasToolsSignals ? toolsService : null
 
         function onChanged() {
             root.ensureSelectionForScope()
@@ -473,9 +512,9 @@ Item {
 
                 CalloutPanel {
                     Layout.fillWidth: true
-                    panelColor: isDark ? "#15100E" : "#FFFBF7"
-                    panelBorderColor: isDark ? "#1CFFFFFF" : "#12000000"
-                    overlayColor: isDark ? "#08FFFFFF" : "#04FFFFFF"
+                    panelColor: isDark ? "#15100D" : "#FFF7F0"
+                    panelBorderColor: isDark ? "#22FFFFFF" : "#14000000"
+                    overlayColor: isDark ? "#0BFFFFFF" : "#08FFFFFF"
                     overlayVisible: true
                     sideGlowVisible: false
                     accentBlobVisible: false
@@ -485,123 +524,106 @@ Item {
                         width: parent.width
                         spacing: 10
 
-                        RowLayout {
+                        Item {
                             Layout.fillWidth: true
-                            spacing: 12
+                            implicitHeight: 52
 
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 4
+                            Row {
+                                id: toolsHeaderIntro
+                                anchors.left: parent.left
+                                anchors.right: toolsHeaderCenter.left
+                                anchors.rightMargin: 18
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 10
 
-                                Text {
-                                    text: tr("工具", "Tools")
-                                    color: textSecondary
-                                    font.pixelSize: typeMeta
-                                    font.weight: weightBold
-                                    font.letterSpacing: letterWide
+                                WorkspaceHeroIcon {
+                                    iconSource: root.labIcon("toolbox")
                                 }
 
-                                Text {
-                                    text: scopeIntroTitle()
-                                    color: textPrimary
-                                    font.pixelSize: typeTitle
-                                    font.weight: weightBold
-                                }
+                                Column {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: Math.max(0, toolsHeaderIntro.width - 44)
+                                    spacing: 2
 
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: scopeIntroCaption()
-                                    color: textSecondary
-                                    font.pixelSize: typeMeta
-                                    maximumLineCount: 2
-                                    elide: Text.ElideRight
-                                    wrapMode: Text.WordWrap
+                                    Text {
+                                        width: parent.width
+                                        text: scopeIntroTitle()
+                                        color: textPrimary
+                                        font.pixelSize: typeTitle - 1
+                                        font.weight: weightBold
+                                        elide: Text.ElideRight
+                                    }
+
+                                    Text {
+                                        width: parent.width
+                                        text: scopeIntroCaption()
+                                        color: textSecondary
+                                        font.pixelSize: typeMeta
+                                        maximumLineCount: 1
+                                        elide: Text.ElideRight
+                                    }
                                 }
                             }
 
-                            Rectangle {
-                                Layout.alignment: Qt.AlignTop
-                                implicitWidth: 250
-                                implicitHeight: 46
-                                radius: 23
-                                color: isDark ? "#12FFFFFF" : "#08000000"
-                                border.color: borderSubtle
-                                border.width: 1
+                            Item {
+                                id: toolsHeaderCenter
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: scopeTabBar.implicitWidth
+                                height: scopeTabBar.implicitHeight
 
-                                readonly property var tabItems: [
-                                    { label: tr("已安装", "Installed"), icon: "../resources/icons/sidebar-tools.svg" },
-                                    { label: "MCP", icon: icon("database-settings") },
-                                    { label: tr("策略", "Policies"), icon: "../resources/icons/settings.svg" }
-                                ]
-                                readonly property real tabSpacing: 6
-                                readonly property real trackPadding: 6
-                                readonly property real segmentWidth: (width - (trackPadding * 2) - (tabSpacing * (tabItems.length - 1))) / tabItems.length
-
-                                Rectangle {
-                                    id: scopeTabHighlight
-                                    y: 6
-                                    height: parent.height - 12
-                                    width: parent.segmentWidth
-                                    x: 6 + (parent.segmentWidth + parent.tabSpacing) * root.currentScopeIndex()
-                                    radius: height / 2
-                                    color: accent
-
-                                    Behavior on x { NumberAnimation { duration: 220; easing.type: easeEmphasis } }
-                                    Behavior on width { NumberAnimation { duration: 220; easing.type: easeStandard } }
+                                SegmentedTabs {
+                                    id: scopeTabBar
+                                    anchors.centerIn: parent
+                                    preferredTrackWidth: 250
+                                    fillSegments: true
+                                    currentValue: root.currentScope
+                                    items: [
+                                        {
+                                            value: "installed",
+                                            label: tr("已安装", "Installed"),
+                                            icon: labIcon("toolbox")
+                                        },
+                                        {
+                                            value: "servers",
+                                            label: "MCP",
+                                            icon: icon("database-settings")
+                                        },
+                                        {
+                                            value: "policies",
+                                            label: tr("策略", "Policies"),
+                                            icon: icon("ios-settings")
+                                        }
+                                    ]
+                                    onSelected: function(value) { root.currentScope = value }
                                 }
+                            }
+
+                            Item {
+                                id: toolsHeaderActionSlot
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: toolsHeaderActions.implicitWidth
+                                height: toolsHeaderActions.implicitHeight
 
                                 RowLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 6
-                                    spacing: parent.tabSpacing
+                                    id: toolsHeaderActions
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 8
 
-                                    Repeater {
-                                        model: parent.parent.tabItems
-
-                                        delegate: Rectangle {
-                                            required property int index
-                                            required property var modelData
-
-                                            Layout.fillWidth: true
-                                            Layout.fillHeight: true
-                                            radius: 17
-                                            color: scopeTabHover.containsMouse && root.currentScopeIndex() !== index
-                                                   ? (isDark ? "#10FFFFFF" : "#08000000")
-                                                   : "transparent"
-
-                                            Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-
-                                            Row {
-                                                anchors.centerIn: parent
-                                                spacing: 6
-
-                                                Image {
-                                                    width: 14
-                                                    height: 14
-                                                    source: modelData.icon
-                                                    sourceSize: Qt.size(width, height)
-                                                    fillMode: Image.PreserveAspectFit
-                                                    smooth: true
-                                                    mipmap: true
-                                                    opacity: root.currentScopeIndex() === index ? 1.0 : 0.72
-                                                }
-
-                                                Text {
-                                                    text: modelData.label
-                                                    color: root.currentScopeIndex() === index ? "#FFFFFFFF" : textSecondary
-                                                    font.pixelSize: typeLabel
-                                                    font.weight: Font.DemiBold
-                                                }
-                                            }
-
-                                            MouseArea {
-                                                id: scopeTabHover
-                                                anchors.fill: parent
-                                                hoverEnabled: true
-                                                cursorShape: Qt.PointingHandCursor
-                                                onClicked: root.setScopeByIndex(index)
-                                            }
-                                        }
+                                    AsyncActionButton {
+                                        visible: root.currentScope === "servers"
+                                        text: root.hasToolsService && toolsService.busy ? tr("测试中", "Testing") : tr("新增 MCP 服务", "Add MCP server")
+                                        iconSource: icon("circle-spark")
+                                        busy: root.hasToolsService
+                                            && typeof toolsService.busy !== "undefined"
+                                            && toolsService.busy
+                                        minHeight: 34
+                                        horizontalPadding: 18
+                                        fillColor: accent
+                                        hoverFillColor: accentHover
+                                        onClicked: createServerModal.open()
                                     }
                                 }
                             }
@@ -612,32 +634,28 @@ Item {
                             spacing: 8
 
                             Repeater {
-                                model: [
+                                model: (root.overview.summaryMetrics || []).length ? (root.overview.summaryMetrics || []) : [
                                     {
-                                        key: "running",
-                                        labelZh: "运行健康",
-                                        labelEn: "Running now",
-                                        value: Number(root.overview.runningNowCount || 0),
+                                        key: "available",
+                                        displayLabel: { "zh": "当前可用", "en": "Available now" },
+                                        value: Number(root.overview.availableCount || 0),
                                         tone: accent
                                     },
                                     {
-                                        key: "builtin",
-                                        labelZh: "内建族",
-                                        labelEn: "Built-in families",
-                                        value: Number(root.overview.builtinCount || 0),
+                                        key: "recent_exposure",
+                                        displayLabel: { "zh": "最近暴露", "en": "Exposed recently" },
+                                        value: Number(root.overview.recentExposureCount || 0),
+                                        tone: "#34D399"
+                                    },
+                                    {
+                                        key: "mcp_connected",
+                                        displayLabel: { "zh": "MCP 已连通", "en": "MCP connected" },
+                                        value: Number(root.overview.healthyMcpCount || 0),
                                         tone: "#60A5FA"
                                     },
                                     {
-                                        key: "mcp",
-                                        labelZh: "MCP 服务",
-                                        labelEn: "MCP servers",
-                                        value: Number(root.overview.mcpServerCount || 0),
-                                        tone: "#F59E0B"
-                                    },
-                                    {
                                         key: "attention",
-                                        labelZh: "需处理",
-                                        labelEn: "Needs attention",
+                                        displayLabel: { "zh": "需处理", "en": "Needs attention" },
                                         value: Number(root.overview.attentionCount || 0),
                                         tone: statusError
                                     }
@@ -667,7 +685,7 @@ Item {
                                         }
 
                                         Text {
-                                            text: root.summaryMetricLabel(modelData.key)
+                                            text: root.summaryMetricLabel(modelData.displayLabel || modelData.key)
                                             color: textSecondary
                                             font.pixelSize: typeCaption
                                             font.weight: weightBold
@@ -698,26 +716,7 @@ Item {
                         Layout.fillHeight: true
                         orientation: Qt.Horizontal
                         spacing: 10
-                        handle: Item {
-                            implicitWidth: 10
-                            implicitHeight: 10
-
-                            Column {
-                                anchors.centerIn: parent
-                                spacing: 6
-
-                                Repeater {
-                                    model: 18
-
-                                    delegate: Rectangle {
-                                        width: 2
-                                        height: 4
-                                        radius: 1
-                                        color: isDark ? "#18FFFFFF" : "#16000000"
-                                    }
-                                }
-                            }
-                        }
+                        handle: WorkspaceSplitHandle {}
 
                         Rectangle {
                             SplitView.preferredWidth: 152
@@ -761,7 +760,9 @@ Item {
                                         placeholderTextColor: textPlaceholder
                                         selectionColor: textSelectionBg
                                         selectedTextColor: textSelectionFg
-                                        text: root.hasToolsService ? toolsService.query : ""
+                                        text: root.hasToolsService && typeof toolsService.query !== "undefined"
+                                            ? String(toolsService.query || "")
+                                            : ""
                                         onTextEdited: if (root.hasToolsService) toolsService.setQuery(text)
                                     }
                                 }
@@ -876,11 +877,9 @@ Item {
                                                    : (builtinDelegateRoot.selected ? (isDark ? "#201612" : "#FFF7F0") : (isDark ? "#17120F" : "#FFFFFF"))
                                             border.width: builtinDelegateRoot.selected ? 1.5 : 1
                                             border.color: builtinDelegateRoot.selected ? accent : (isDark ? "#14FFFFFF" : "#10000000")
-                                            scale: builtinArea.pressed ? 0.99 : (builtinArea.containsMouse ? motionHoverScaleSubtle : 1.0)
 
                                             Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
                                             Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-                                            Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeEmphasis } }
 
                                             ColumnLayout {
                                                 id: builtinCardColumn
@@ -895,22 +894,21 @@ Item {
 
                                                     Rectangle {
                                                         Layout.alignment: Qt.AlignTop
-                                                        width: 36
-                                                        height: 36
+                                                        implicitWidth: 36
+                                                        implicitHeight: 36
+                                                        Layout.preferredWidth: implicitWidth
+                                                        Layout.preferredHeight: implicitHeight
                                                         radius: 12
                                                         color: root.itemIconBackdrop(builtinDelegateRoot.modelData)
                                                         border.width: builtinDelegateRoot.selected ? 1 : 0
                                                         border.color: builtinDelegateRoot.selected ? accent : "transparent"
 
-                                                        Image {
+                                                        AppIcon {
                                                             anchors.centerIn: parent
                                                             width: 18
                                                             height: 18
                                                             source: root.itemIconSource(builtinDelegateRoot.modelData)
                                                             sourceSize: Qt.size(width, height)
-                                                            fillMode: Image.PreserveAspectFit
-                                                            smooth: true
-                                                            mipmap: true
                                                         }
                                                     }
 
@@ -951,7 +949,7 @@ Item {
                                                 }
 
                                                 Row {
-                                                    width: parent.width
+                                                    Layout.fillWidth: true
                                                     spacing: 8
                                                     clip: true
 
@@ -1130,6 +1128,25 @@ Item {
                                             font.pixelSize: typeCaption
                                             wrapMode: Text.WordWrap
                                         }
+
+                                        Text {
+                                            width: parent.width
+                                            visible: text.length > 0
+                                            text: root.exposureNote(root.selectedItem)
+                                            color: textSecondary
+                                            font.pixelSize: typeCaption
+                                            wrapMode: Text.WordWrap
+                                        }
+
+                                        Text {
+                                            width: parent.width
+                                            visible: text.length > 0
+                                            text: root.attentionAction(root.selectedItem)
+                                            color: accent
+                                            font.pixelSize: typeCaption
+                                            font.weight: weightBold
+                                            wrapMode: Text.WordWrap
+                                        }
                                     }
                                 }
 
@@ -1149,26 +1166,7 @@ Item {
                         Layout.fillHeight: true
                         orientation: Qt.Horizontal
                         spacing: 10
-                        handle: Item {
-                            implicitWidth: 10
-                            implicitHeight: 10
-
-                            Column {
-                                anchors.centerIn: parent
-                                spacing: 6
-
-                                Repeater {
-                                    model: 18
-
-                                    delegate: Rectangle {
-                                        width: 2
-                                        height: 4
-                                        radius: 1
-                                        color: isDark ? "#18FFFFFF" : "#16000000"
-                                    }
-                                }
-                            }
-                        }
+                        handle: WorkspaceSplitHandle {}
 
                         Rectangle {
                             SplitView.preferredWidth: 152
@@ -1212,7 +1210,9 @@ Item {
                                         placeholderTextColor: textPlaceholder
                                         selectionColor: textSelectionBg
                                         selectedTextColor: textSelectionFg
-                                        text: root.hasToolsService ? toolsService.query : ""
+                                        text: root.hasToolsService && typeof toolsService.query !== "undefined"
+                                            ? String(toolsService.query || "")
+                                            : ""
                                         onTextEdited: if (root.hasToolsService) toolsService.setQuery(text)
                                     }
                                 }
@@ -1244,15 +1244,6 @@ Item {
                                             onClicked: if (root.hasToolsService) toolsService.setSourceFilter(modelData.value)
                                         }
                                     }
-                                }
-
-                                AsyncActionButton {
-                                    text: root.hasToolsService && toolsService.busy ? tr("测试中", "Testing") : tr("新增 MCP 服务", "Add MCP server")
-                                    iconSource: icon("nav-arrow-right")
-                                    busy: root.hasToolsService && toolsService.busy
-                                    minHeight: 40
-                                    horizontalPadding: 24
-                                    onClicked: createServerModal.open()
                                 }
 
                                 Item { Layout.fillHeight: true }
@@ -1336,11 +1327,9 @@ Item {
                                                    : (serverDelegateRoot.selected ? (isDark ? "#201612" : "#FFF7F0") : (isDark ? "#17120F" : "#FFFFFF"))
                                             border.width: serverDelegateRoot.selected ? 1.5 : 1
                                             border.color: serverDelegateRoot.selected ? accent : (isDark ? "#14FFFFFF" : "#10000000")
-                                            scale: serverArea.pressed ? 0.99 : (serverArea.containsMouse ? motionHoverScaleSubtle : 1.0)
 
                                             Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
                                             Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-                                            Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeEmphasis } }
 
                                             ColumnLayout {
                                                 id: serverCardColumn
@@ -1355,22 +1344,21 @@ Item {
 
                                                     Rectangle {
                                                         Layout.alignment: Qt.AlignTop
-                                                        width: 36
-                                                        height: 36
+                                                        implicitWidth: 36
+                                                        implicitHeight: 36
+                                                        Layout.preferredWidth: implicitWidth
+                                                        Layout.preferredHeight: implicitHeight
                                                         radius: 12
                                                         color: root.itemIconBackdrop(serverDelegateRoot.modelData)
                                                         border.width: serverDelegateRoot.selected ? 1 : 0
                                                         border.color: serverDelegateRoot.selected ? accent : "transparent"
 
-                                                        Image {
+                                                        AppIcon {
                                                             anchors.centerIn: parent
                                                             width: 18
                                                             height: 18
-                                                            source: "../resources/icons/sidebar-tools.svg"
+                                                            source: icon("database-settings")
                                                             sourceSize: Qt.size(width, height)
-                                                            fillMode: Image.PreserveAspectFit
-                                                            smooth: true
-                                                            mipmap: true
                                                         }
                                                     }
 
@@ -1411,7 +1399,7 @@ Item {
                                                 }
 
                                                 Row {
-                                                    width: parent.width
+                                                    Layout.fillWidth: true
                                                     spacing: 8
                                                     clip: true
 
@@ -1577,18 +1565,13 @@ Item {
                                         spacing: 10
 
                                         Repeater {
-                                            model: [
-                                                { key: "core", zh: "Core", en: "Core" },
-                                                { key: "web", zh: "Web", en: "Web" },
-                                                { key: "desktop", zh: "Desktop", en: "Desktop" },
-                                                { key: "code", zh: "Code", en: "Code" }
-                                            ]
+                                            model: root.overview.exposureBundleOptions || []
 
                                             delegate: PillActionButton {
                                                 required property var modelData
                                                 readonly property bool enabledBundle: (root.overview.toolExposureBundles || []).indexOf(modelData.key) !== -1
 
-                                                text: root.tr(modelData.zh, modelData.en)
+                                                text: root.localizedText(modelData.displayLabel, modelData.key)
                                                 outlined: true
                                                 fillColor: enabledBundle ? accentMuted : "transparent"
                                                 hoverFillColor: enabledBundle ? accentMuted : bgCardHover
@@ -1676,6 +1659,82 @@ Item {
                                     }
                                 }
                             }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                radius: 24
+                                color: isDark ? "#15100D" : "#FFF9F2"
+                                border.width: 1
+                                border.color: isDark ? "#18FFFFFF" : "#12000000"
+                                implicitHeight: observabilityColumn.implicitHeight + 32
+
+                                ColumnLayout {
+                                    id: observabilityColumn
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    anchors.margins: 16
+                                    spacing: 14
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: tr("最近一次工具观测", "Latest tool observability")
+                                        color: textPrimary
+                                        font.pixelSize: typeLabel
+                                        font.weight: weightBold
+                                    }
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: tr("这里显示最近一次运行的工具调用摘要，用来判断自动暴露是否真的有帮助。", "This shows the latest tool-call summary so you can tell whether auto exposure is actually helping.")
+                                        color: textSecondary
+                                        font.pixelSize: typeBody
+                                        wrapMode: Text.WordWrap
+                                    }
+
+                                    Flow {
+                                        Layout.fillWidth: true
+                                        spacing: 10
+
+                                        Repeater {
+                                            model: root.overview.observability || []
+
+                                            delegate: Rectangle {
+                                                required property var modelData
+
+                                                visible: textLabel.text.length > 0
+                                                radius: 14
+                                                implicitHeight: 38
+                                                implicitWidth: metricPair.implicitWidth + 18
+                                                color: isDark ? "#181310" : "#FFFDFC"
+                                                border.width: 1
+                                                border.color: isDark ? "#12FFFFFF" : "#0E000000"
+
+                                                Row {
+                                                    id: metricPair
+                                                    anchors.centerIn: parent
+                                                    spacing: 8
+
+                                                    Text {
+                                                        id: textLabel
+                                                        text: String(modelData.label || "")
+                                                        color: textSecondary
+                                                        font.pixelSize: typeCaption
+                                                        font.weight: weightBold
+                                                    }
+
+                                                    Text {
+                                                        text: String(modelData.value || "")
+                                                        color: textPrimary
+                                                        font.pixelSize: typeLabel
+                                                        font.weight: weightBold
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1734,6 +1793,35 @@ Item {
                             text: root.statusDetail(root.selectedItem) || ""
                             color: textSecondary
                             font.pixelSize: typeBody
+                            wrapMode: Text.WordWrap
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            visible: text.length > 0
+                            text: root.runtimeStateText(root.selectedItem)
+                            color: textSecondary
+                            font.pixelSize: typeCaption
+                            font.weight: weightBold
+                            wrapMode: Text.WordWrap
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            visible: text.length > 0
+                            text: root.exposureNote(root.selectedItem)
+                            color: textSecondary
+                            font.pixelSize: typeCaption
+                            wrapMode: Text.WordWrap
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            visible: text.length > 0
+                            text: root.attentionAction(root.selectedItem)
+                            color: accent
+                            font.pixelSize: typeCaption
+                            font.weight: weightBold
                             wrapMode: Text.WordWrap
                         }
 
@@ -1861,7 +1949,7 @@ Item {
                             Item { Layout.fillWidth: true }
                             PillActionButton {
                                 text: root.tr("保存执行策略", "Save exec settings")
-                                iconSource: icon("nav-arrow-right")
+                                iconSource: icon("circle-spark")
                                 fillColor: accent
                                 hoverFillColor: accentHover
                                 onClicked: if (root.hasToolsService) toolsService.saveConfig({
@@ -2054,7 +2142,7 @@ Item {
                             Item { Layout.fillWidth: true }
                             PillActionButton {
                                 text: root.tr("保存 Web 配置", "Save web settings")
-                                iconSource: icon("nav-arrow-right")
+                                iconSource: icon("circle-spark")
                                 fillColor: accent
                                 hoverFillColor: accentHover
                                 onClicked: if (root.hasToolsService) toolsService.saveConfig({
@@ -2172,7 +2260,7 @@ Item {
                             Item { Layout.fillWidth: true }
                             PillActionButton {
                                 text: root.tr("保存 Embedding 配置", "Save embedding settings")
-                                iconSource: icon("nav-arrow-right")
+                                iconSource: icon("circle-spark")
                                 fillColor: accent
                                 hoverFillColor: accentHover
                                 onClicked: if (root.hasToolsService) toolsService.saveConfig({
@@ -2265,7 +2353,7 @@ Item {
                             Item { Layout.fillWidth: true }
                             PillActionButton {
                                 text: root.tr("保存图像配置", "Save image settings")
-                                iconSource: icon("nav-arrow-right")
+                                iconSource: icon("circle-spark")
                                 fillColor: accent
                                 hoverFillColor: accentHover
                                 onClicked: if (root.hasToolsService) toolsService.saveConfig({
@@ -2344,7 +2432,7 @@ Item {
                             Item { Layout.fillWidth: true }
                             PillActionButton {
                                 text: root.tr("保存桌面权限", "Save desktop access")
-                                iconSource: icon("nav-arrow-right")
+                                iconSource: icon("circle-spark")
                                 fillColor: accent
                                 hoverFillColor: accentHover
                                 onClicked: if (root.hasToolsService) toolsService.saveConfig({"tools.desktop.enabled": desktopEnabledSwitch.checked})
@@ -2730,15 +2818,15 @@ Item {
                                 outlined: true
                                 fillColor: "transparent"
                                 hoverFillColor: bgCardHover
-                                outlineColor: accent
-                                hoverOutlineColor: accentHover
+                                outlineColor: borderSubtle
+                                hoverOutlineColor: borderDefault
                                 textColor: textPrimary
                                 onClicked: if (root.hasToolsService) toolsService.probeMcpServerPayload(parent.draftPayload())
                             }
 
                             PillActionButton {
                                 text: root.tr("保存服务", "Save server")
-                                iconSource: icon("nav-arrow-right")
+                                iconSource: icon("circle-spark")
                                 fillColor: accent
                                 hoverFillColor: accentHover
                                 onClicked: if (root.hasToolsService) toolsService.saveMcpServer(parent.draftPayload())
@@ -2865,8 +2953,8 @@ Item {
                 outlined: true
                 fillColor: "transparent"
                 hoverFillColor: bgCardHover
-                outlineColor: accent
-                hoverOutlineColor: accentHover
+                outlineColor: borderSubtle
+                hoverOutlineColor: borderDefault
                 textColor: textPrimary
                 onClicked: if (root.hasToolsService) toolsService.probeMcpServerPayload({
                     name: createNameField.text,
@@ -2883,7 +2971,7 @@ Item {
             },
             PillActionButton {
                 text: root.tr("创建服务", "Create server")
-                iconSource: icon("nav-arrow-right")
+                iconSource: icon("circle-spark")
                 fillColor: accent
                 hoverFillColor: accentHover
                 onClicked: {

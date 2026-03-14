@@ -8,7 +8,15 @@ Item {
     property var sessionService: null
     property string activeSessionKey: ""
     property bool showSelection: true
-    property bool gatewayIdle: !hasChatService || chatService.gatewayState === "idle"
+    property bool gatewayIdle: {
+        if (!hasChatService)
+            return true
+        if (typeof chatService.gatewayState === "string" && chatService.gatewayState !== "")
+            return chatService.gatewayState === "idle"
+        if (typeof chatService.state === "string" && chatService.state !== "")
+            return chatService.state === "idle"
+        return true
+    }
     property bool projectionMotionEnabled: false
     property real activeHighlightX: 0.0
     property real activeHighlightY: 0.0
@@ -341,7 +349,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 8
 
-                Image {
+                AppIcon {
                     objectName: "sidebarSessionsTitleIcon"
                     width: 22
                     height: 22
@@ -349,9 +357,6 @@ Item {
                     y: 1
                     source: themedIconSource("sidebar-sessions-title")
                     sourceSize: Qt.size(22, 22)
-                    fillMode: Image.PreserveAspectFit
-                    smooth: true
-                    mipmap: true
                     opacity: 0.98
                 }
 
@@ -662,16 +667,13 @@ Item {
                             border.width: 1
                             border.color: emptyStateHover.containsMouse ? sessionRowActiveBorder : (isDark ? "#38FFFFFF" : chatEmptyIconBorder)
 
-                            Image {
+                            AppIcon {
                                 objectName: "sidebarEmptyChatIcon"
                                 width: 18
                                 height: 18
                                 anchors.centerIn: parent
                                 source: themedIconSource("chat")
                                 sourceSize: Qt.size(18, 18)
-                                fillMode: Image.PreserveAspectFit
-                                smooth: true
-                                mipmap: true
                                 opacity: 0.96
                             }
                         }

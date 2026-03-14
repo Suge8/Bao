@@ -49,6 +49,8 @@ def _build_wrapper(
     entrance_pending: bool = False,
     show_date_divider: bool = False,
     date_divider_text: str = "",
+    attachments_qml: str = "[]",
+    references_qml: str = "({})",
 ) -> str:
     qml_dir = (Path(__file__).resolve().parents[1] / "app" / "qml").as_uri()
     greeting_aura_far = "#22FFD6A1" if dark else "#0EE0BE93"
@@ -71,7 +73,7 @@ import "{qml_dir}"
 
 Item {{
     width: 420
-    height: 160
+    height: 220
 
     property int motionMicro: 120
     property int motionFast: 180
@@ -141,6 +143,8 @@ Item {{
         content: "{content}"
         format: "plain"
         status: "{status}"
+        attachments: {attachments_qml}
+        references: {references_qml}
         entranceStyle: "{entrance_style}"
         entrancePending: {str(entrance_pending).lower()}
         showDateDivider: {str(show_date_divider).lower()}
@@ -203,6 +207,65 @@ def test_message_click_feedback_restored(
         assert float(ripple.property("scale")) > 0.92
         assert float(sheen.property("opacity")) > 0.0
         assert float(sheen.property("progress")) > start_progress
+    finally:
+        root.deleteLater()
+        _process(0)
+
+
+def test_message_bubble_shows_attachment_strip(qapp):
+    engine = QQmlEngine()
+    component = QQmlComponent(engine)
+    component.setData(
+        _build_wrapper(
+            "assistant",
+            "none",
+            content="这里有附件",
+            attachments_qml='[{fileName: "image.png", fileSizeLabel: "12 KB", filePath: "/tmp/image.png", previewUrl: "file:///tmp/image.png", isImage: true, extensionLabel: "PNG"}]',
+        ).encode("utf-8"),
+        QUrl("inline:MessageBubbleAttachmentHarness.qml"),
+    )
+
+    _wait_until_ready(component)
+
+    assert component.status() == QQmlComponent.Ready, component.errors()
+    root = component.create()
+    assert root is not None, component.errors()
+
+    try:
+        strip = root.findChild(QObject, "attachmentStrip")
+        assert strip is not None
+        assert bool(strip.property("visible")) is True
+        assert float(strip.property("width")) > 0
+    finally:
+        root.deleteLater()
+        _process(0)
+
+
+def test_message_bubble_shows_memory_reference_summary(qapp):
+    engine = QQmlEngine()
+    component = QQmlComponent(engine)
+    component.setData(
+        _build_wrapper(
+            "assistant",
+            "none",
+            content="整理好了",
+            references_qml='({longTermCategories: ["project"], relatedMemoryCount: 2, experienceCount: 1})',
+        ).encode("utf-8"),
+        QUrl("inline:MessageBubbleReferenceHarness.qml"),
+    )
+
+    _wait_until_ready(component)
+
+    assert component.status() == QQmlComponent.Ready, component.errors()
+    root = component.create()
+    assert root is not None, component.errors()
+
+    try:
+        reference_text = root.findChild(QObject, "referenceText")
+        assert reference_text is not None
+        assert bool(reference_text.property("visible")) is True
+        assert "2" in str(reference_text.property("text"))
+        assert "1" in str(reference_text.property("text"))
     finally:
         root.deleteLater()
         _process(0)

@@ -147,16 +147,13 @@ Item {
                     radius: width / 2
                     color: modelData ? root.chipSurface : "transparent"
 
-                    Image {
+                    AppIcon {
                         visible: modelData !== null
                         anchors.centerIn: parent
                         width: parent.width - 1
                         height: width
                         source: modelData ? root._iconSource(modelData.channel) : ""
                         sourceSize: Qt.size(width, height)
-                        fillMode: Image.PreserveAspectFit
-                        smooth: true
-                        mipmap: true
                         opacity: 0.96
                     }
 
@@ -312,15 +309,12 @@ Item {
                                 radius: width / 2
                                 color: root.rowIconSurface
 
-                                Image {
+                                AppIcon {
                                     anchors.centerIn: parent
                                     width: 16
                                     height: width
                                     source: modelData ? root._iconSource(modelData.channel) : ""
                                     sourceSize: Qt.size(width, height)
-                                    fillMode: Image.PreserveAspectFit
-                                    smooth: true
-                                    mipmap: true
                                 }
 
                                 Rectangle {

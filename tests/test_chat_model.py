@@ -110,9 +110,41 @@ def test_role_names(qapp):
     m = _new_model()
     names = m.roleNames()
     values = list(names.values())
+    assert b"attachments" in values
     assert b"content" in values
     assert b"role" in values
     assert b"status" in values
+
+
+def test_load_history_preserves_attachment_payloads(qapp):
+    m = _new_model()
+    attachments = [
+        {
+            "fileName": "image.png",
+            "fileSizeLabel": "12 KB",
+            "filePath": "/tmp/image.png",
+            "previewUrl": "file:///tmp/image.png",
+            "isImage": True,
+            "extensionLabel": "PNG",
+        }
+    ]
+    m.load_history([{"role": "assistant", "content": "see attachment", "attachments": attachments}])
+    idx = m.index(0)
+    assert m.data(idx, Qt.UserRole + 10) == attachments
+
+
+def test_load_history_preserves_memory_references_payloads(qapp):
+    m = _new_model()
+    references = {
+        "longTermCategories": ["project"],
+        "relatedMemoryCount": 2,
+        "experienceCount": 1,
+    }
+
+    m.load_history([{"role": "assistant", "content": "已完成", "references": references}])
+
+    idx = m.index(0)
+    assert m.data(idx, Qt.UserRole + 11) == references
 
 
 def test_load_history_source_renders_as_system(qapp):

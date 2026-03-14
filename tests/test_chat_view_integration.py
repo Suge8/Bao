@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
+from typing import cast
 
 pytest = importlib.import_module("pytest")
 
@@ -776,6 +777,8 @@ class DummyCronService(QObject):
     errorChanged = Signal(str)
     noticeChanged = Signal(str, bool)
     filtersChanged = Signal()
+    profileChanged = Signal()
+    executionStateChanged = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -803,6 +806,7 @@ class DummyCronService(QObject):
         self._notice_success = True
         self._filter_query = ""
         self._status_filter = "all"
+        self._current_profile_name = "Work"
 
     def _sync_rows(self) -> None:
         rows = list(self._tasks)
@@ -896,6 +900,18 @@ class DummyCronService(QObject):
     def statusFilter(self) -> str:
         return self._status_filter
 
+    @Property(str, notify=profileChanged)
+    def currentProfileName(self) -> str:
+        return self._current_profile_name
+
+    @Property(bool, notify=executionStateChanged)
+    def canRunSelectedNow(self) -> bool:
+        return True
+
+    @Property(str, notify=executionStateChanged)
+    def runNowBlockedReason(self) -> str:
+        return ""
+
     @Slot()
     def refresh(self) -> None:
         return None
@@ -965,6 +981,82 @@ class DummyCronService(QObject):
     @Slot()
     def openSelectedSession(self) -> None:
         return None
+
+
+class DummyHeartbeatService(QObject):
+    stateChanged = Signal()
+    busyChanged = Signal(bool)
+    noticeChanged = Signal(str, bool)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._busy = False
+        self._notice_text = ""
+        self._notice_success = True
+        self.refresh_calls = 0
+        self.run_calls = 0
+        self.open_calls = 0
+        self.open_file_calls = 0
+
+    @Property(bool, notify=stateChanged)
+    def heartbeatFileExists(self) -> bool:
+        return True
+
+    @Property(str, notify=stateChanged)
+    def heartbeatPreview(self) -> str:
+        return "Review inbox and triage follow-ups"
+
+    @Property(bool, notify=busyChanged)
+    def busy(self) -> bool:
+        return self._busy
+
+    @Property(bool, notify=stateChanged)
+    def canRunNow(self) -> bool:
+        return True
+
+    @Property(str, notify=stateChanged)
+    def intervalText(self) -> str:
+        return "Every 15m"
+
+    @Property(str, notify=stateChanged)
+    def lastCheckedText(self) -> str:
+        return "2026-03-12 11:20"
+
+    @Property(str, notify=stateChanged)
+    def lastDecisionLabel(self) -> str:
+        return "Nothing to do"
+
+    @Property(str, notify=stateChanged)
+    def runNowBlockedReason(self) -> str:
+        return ""
+
+    @Property(str, notify=stateChanged)
+    def lastError(self) -> str:
+        return ""
+
+    @Property(str, notify=noticeChanged)
+    def noticeText(self) -> str:
+        return self._notice_text
+
+    @Property(bool, notify=noticeChanged)
+    def noticeSuccess(self) -> bool:
+        return self._notice_success
+
+    @Slot()
+    def refresh(self) -> None:
+        self.refresh_calls += 1
+
+    @Slot()
+    def runNow(self) -> None:
+        self.run_calls += 1
+
+    @Slot()
+    def openHeartbeatSession(self) -> None:
+        self.open_calls += 1
+
+    @Slot()
+    def openHeartbeatFile(self) -> None:
+        self.open_file_calls += 1
 
 
 class DummyUpdateService(QObject):
@@ -1094,6 +1186,9 @@ def _load_main_window(
     chat_service: DummyChatService | None = None,
     diagnostics_service: QObject | None = None,
     cron_service: QObject | None = None,
+    heartbeat_service: QObject | None = None,
+    memory_service: QObject | None = None,
+    skills_service: QObject | None = None,
     desktop_preferences: DummyDesktopPreferences | None = None,
 ) -> tuple[QQmlApplicationEngine, QObject]:
     messages_model = messages_model or EmptyMessagesModel()
@@ -1104,9 +1199,10 @@ def _load_main_window(
     update_bridge = DummyUpdateBridge()
     diagnostics_service = diagnostics_service or QObject()
     cron_service = cron_service or DummyCronService()
+    heartbeat_service = heartbeat_service or DummyHeartbeatService()
     desktop_preferences = desktop_preferences or DummyDesktopPreferences()
-    memory_service = QObject()
-    skills_service = QObject()
+    memory_service = memory_service or QObject()
+    skills_service = skills_service or QObject()
     tools_service = QObject()
     engine = QQmlApplicationEngine()
     engine._test_refs = {
@@ -1118,6 +1214,7 @@ def _load_main_window(
         "update_bridge": update_bridge,
         "diagnostics_service": diagnostics_service,
         "cron_service": cron_service,
+        "heartbeat_service": heartbeat_service,
         "desktop_preferences": desktop_preferences,
         "memory_service": memory_service,
         "skills_service": skills_service,
@@ -1130,6 +1227,7 @@ def _load_main_window(
         config_service=config_service,
         session_service=session_service,
         cron_service=cron_service,
+        heartbeat_service=heartbeat_service,
         memory_service=memory_service,
         skills_service=skills_service,
         tools_service=tools_service,
@@ -2334,6 +2432,61 @@ def test_sidebar_brand_dock_idle_logo_motion_animates_without_hover(qapp):
         _process(0)
 
 
+def test_sidebar_brand_dock_uses_circular_logo_asset(qapp):
+    _ = qapp
+    engine, root = _load_main_window()
+
+    try:
+        brand_icon = _find_object(root, "sidebarBrandMarkIcon")
+        source = str(brand_icon.property("source"))
+        assert "logo-circle.png" in source, source
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_sidebar_brand_dock_keeps_diagnostics_content_centered(qapp):
+    _ = qapp
+    engine, root = _load_main_window()
+
+    try:
+        pill = _find_object(root, "sidebarDiagnosticsPill")
+        icon_chip = _find_object(root, "sidebarDiagnosticsIconChip")
+        label_stack = _find_object(root, "sidebarDiagnosticsLabelStack")
+
+        pill_center_y = pill.mapToScene(QPointF(0.0, float(pill.property("height")) / 2.0)).y()
+        icon_center_y = icon_chip.mapToScene(
+            QPointF(0.0, float(icon_chip.property("height")) / 2.0)
+        ).y()
+        label_center_y = label_stack.mapToScene(
+            QPointF(0.0, float(label_stack.property("height")) / 2.0)
+        ).y()
+
+        assert abs(icon_center_y - pill_center_y) <= 1.0
+        assert abs(label_center_y - pill_center_y) <= 2.0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_sidebar_brand_dock_uses_compact_diagnostics_metrics(qapp):
+    _ = qapp
+    engine, root = _load_main_window()
+
+    try:
+        pill = _find_object(root, "sidebarDiagnosticsPill")
+        content_row = _find_object(root, "sidebarDiagnosticsContentRow")
+
+        assert int(pill.property("width")) == 104
+        assert int(content_row.property("spacing")) == 14
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
 def test_gateway_detail_bubble_shows_error_without_hover(qapp):
     _ = qapp
 
@@ -2799,6 +2952,364 @@ def test_cron_workspace_hides_existing_selection_for_new_draft(qapp):
         root.deleteLater()
         engine.deleteLater()
         _process(0)
+
+
+def test_cron_workspace_switches_between_tasks_and_checks_tabs(qapp):
+    _ = qapp
+
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            }
+        ]
+    )
+    heartbeat_service = DummyHeartbeatService()
+    engine, root = _load_main_window(
+        session_model=session_model,
+        heartbeat_service=heartbeat_service,
+    )
+
+    try:
+        root.setProperty("activeWorkspace", "cron")
+        _process(120)
+
+        cron_root = _find_object(root, "cronWorkspaceRoot")
+        tasks_panel = _find_object(root, "automationTasksPanel")
+        assert tasks_panel.property("visible") is True
+
+        _process(40)
+        cron_root.setProperty("currentPane", "checks")
+        _wait_until(lambda: cron_root.property("currentPane") == "checks")
+
+        assert cron_root.property("currentPane") == "checks"
+        checks_panel = _find_object(root, "automationChecksPanel")
+        edit_button = _find_object(root, "heartbeatInlineEditButton")
+
+        assert checks_panel is not None
+        assert bool(tasks_panel.property("visible")) is False
+        assert bool(checks_panel.property("visible")) is True
+        assert isinstance(checks_panel, QQuickItem)
+        assert checks_panel.parentItem() is not tasks_panel
+        QTest.mouseClick(root, Qt.LeftButton, Qt.NoModifier, _center_point(edit_button))
+        _process(40)
+        assert heartbeat_service.open_file_calls == 1
+
+        cron_root.setProperty("currentPane", "tasks")
+        _wait_until(lambda: cron_root.property("currentPane") == "tasks")
+
+        assert cron_root.property("currentPane") == "tasks"
+        assert tasks_panel is not None
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_cron_workspace_tabbar_stays_centered_when_switching_tabs(qapp):
+    _ = qapp
+
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            }
+        ]
+    )
+    engine, root = _load_main_window(
+        session_model=session_model,
+        heartbeat_service=DummyHeartbeatService(),
+    )
+
+    try:
+        root.setProperty("activeWorkspace", "cron")
+        _process(120)
+
+        cron_root = _find_object(root, "cronWorkspaceRoot")
+        tab_bar = _find_object(root, "automationTabBar")
+        initial_x = float(tab_bar.property("x"))
+
+        _process(40)
+        cron_root.setProperty("currentPane", "checks")
+        _wait_until(lambda: cron_root.property("currentPane") == "checks")
+        _process(40)
+        checks_x = float(tab_bar.property("x"))
+
+        cron_root.setProperty("currentPane", "tasks")
+        _wait_until(lambda: cron_root.property("currentPane") == "tasks")
+        _process(40)
+        final_x = float(tab_bar.property("x"))
+
+        assert checks_x == pytest.approx(initial_x, abs=0.5)
+        assert final_x == pytest.approx(initial_x, abs=0.5)
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_skills_workspace_loads_from_main_window(qapp):
+    _ = qapp
+
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            }
+        ]
+    )
+    engine, root = _load_main_window(session_model=session_model)
+
+    try:
+        root.setProperty("activeWorkspace", "skills")
+        _wait_until(
+            lambda: any(obj.objectName() == "skillsWorkspaceRoot" for obj in root.findChildren(QObject))
+        )
+
+        skills_root = _find_object(root, "skillsWorkspaceRoot")
+        assert skills_root.property("visible") is True
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_skills_workspace_segmented_tabs_highlight_on_first_paint(qapp):
+    _ = qapp
+
+    session_model = SessionsModel(
+        [
+            {
+                "key": "desktop:local::default",
+                "title": "Default",
+                "updated_at": "2026-03-06T10:00:00",
+                "channel": "desktop",
+                "has_unread": False,
+            }
+        ]
+    )
+    engine, root = _load_main_window(session_model=session_model)
+
+    try:
+        root.setProperty("activeWorkspace", "skills")
+        _wait_until(
+            lambda: any(obj.objectName() == "skillsWorkspaceRoot" for obj in root.findChildren(QObject))
+        )
+
+        def _highlight() -> QObject | None:
+            highlights = [
+                obj for obj in root.findChildren(QObject) if obj.objectName() == "segmentedTabsHighlight"
+            ]
+            return highlights[0] if highlights else None
+
+        _wait_until(
+            lambda: (
+                _highlight() is not None
+                and float(_highlight().property("height")) > 0
+                and float(_highlight().property("width")) > 0
+            )
+        )
+
+        highlight = _highlight()
+        assert highlight is not None
+        assert float(highlight.property("width")) > 0
+        assert float(highlight.property("height")) > 0
+    finally:
+        root.deleteLater()
+        engine.deleteLater()
+        _process(0)
+
+
+def test_skills_workspace_editor_tracks_selected_skill_after_local_edit(qapp, tmp_path):
+    _ = qapp
+
+    from app.backend.asyncio_runner import AsyncioRunner
+    from app.backend.skills import SkillsService
+
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        skills_service = SkillsService(runner, str(tmp_path))
+        skill_ids = {
+            str(item.get("name", "")): str(item.get("id", ""))
+            for item in cast(list[dict[str, object]], cast(object, skills_service.skills))
+        }
+        first_skill_id = skill_ids["agent-browser"]
+        second_skill_id = skill_ids["clawhub"]
+        skills_service.selectSkill(first_skill_id)
+
+        session_model = SessionsModel(
+            [
+                {
+                    "key": "desktop:local::default",
+                    "title": "Default",
+                    "updated_at": "2026-03-06T10:00:00",
+                    "channel": "desktop",
+                    "has_unread": False,
+                }
+            ]
+        )
+        engine, root = _load_main_window(
+            session_model=session_model,
+            skills_service=skills_service,
+        )
+
+        try:
+            root.setProperty("activeWorkspace", "skills")
+            _wait_until(
+                lambda: any(obj.objectName() == "skillsEditor" for obj in root.findChildren(QObject))
+            )
+
+            editor = _find_object(root, "skillsEditor")
+            first_content = str(cast(object, skills_service.selectedContent))
+            assert first_content
+            _wait_until(lambda: str(editor.property("text") or "") == first_content)
+
+            editor.setProperty("text", "stale draft")
+            _process(40)
+
+            skills_service.selectSkill(second_skill_id)
+            second_content = str(cast(object, skills_service.selectedContent))
+            assert second_content
+            assert second_content != first_content
+            _wait_until(lambda: str(editor.property("text") or "") == second_content)
+        finally:
+            root.deleteLater()
+            engine.deleteLater()
+            _process(0)
+    finally:
+        runner.shutdown()
+
+
+def test_memory_workspace_editors_track_selected_category(qapp, tmp_path):
+    _ = qapp
+
+    from app.backend.asyncio_runner import AsyncioRunner
+    from app.backend.memory import MemoryService
+    from bao.agent.memory import MemoryStore
+
+    store = MemoryStore(tmp_path)
+    store.write_long_term("Project fact A\nProject fact B", "project")
+    store.write_long_term("General fact A\nGeneral fact B", "general")
+    store.close()
+
+    runner = AsyncioRunner()
+    runner.start()
+    try:
+        memory_service = MemoryService(runner)
+        memory_service.bootstrapStorageRoot(str(tmp_path))
+        _wait_until(lambda: bool(cast(object, memory_service.ready)))
+
+        session_model = SessionsModel(
+            [
+                {
+                    "key": "desktop:local::default",
+                    "title": "Default",
+                    "updated_at": "2026-03-06T10:00:00",
+                    "channel": "desktop",
+                    "has_unread": False,
+                }
+            ]
+        )
+        engine, root = _load_main_window(
+            session_model=session_model,
+            memory_service=memory_service,
+        )
+
+        try:
+            root.setProperty("activeWorkspace", "memory")
+            _wait_until(
+                lambda: any(obj.objectName() == "memoryCategoryEditor" for obj in root.findChildren(QObject))
+            )
+
+            memory_editor = _find_object(root, "memoryCategoryEditor")
+            fact_editor = _find_object(root, "memoryFactEditor")
+            fact_primary = _find_object(root, "memoryFactPrimaryAction")
+            fact_add = _find_object(root, "memoryFactAddAction")
+
+            memory_service.selectMemoryCategory("general")
+            _wait_until(
+                lambda: str(cast(object, memory_service.selectedMemoryCategory).get("category", "")) == "general"
+            )
+
+            general_detail = cast(dict[str, object], cast(object, memory_service.selectedMemoryCategory))
+            general_content = str(general_detail.get("content", ""))
+            general_facts = cast(list[dict[str, object]], general_detail.get("facts", []))
+            assert general_content
+            assert general_facts
+
+            def _selected_fact() -> dict[str, object]:
+                current_key = str(cast(object, memory_service.selectedMemoryFactKey))
+                facts = cast(
+                    list[dict[str, object]],
+                    cast(object, memory_service.selectedMemoryCategory).get("facts", []),
+                )
+                for fact in facts:
+                    if str(fact.get("key", "")) == current_key:
+                        return fact
+                return facts[0] if facts else {}
+
+            _wait_until(lambda: str(memory_editor.property("text") or "") == general_content)
+            _wait_until(lambda: str(fact_editor.property("text") or "") == str(general_facts[0].get("content", "")))
+            assert bool(fact_editor.property("readOnly")) is True
+
+            initial_fact_key = str(cast(object, memory_service.selectedMemoryFactKey))
+            assert initial_fact_key == str(general_facts[0].get("key", ""))
+
+            assert bool(fact_primary.property("buttonEnabled")) is True
+            assert QMetaObject.invokeMethod(fact_primary, "clicked")
+            _wait_until(lambda: bool(fact_editor.property("readOnly")) is False)
+
+            fact_editor.setProperty("text", "General fact updated")
+            _process(40)
+            assert bool(fact_primary.property("buttonEnabled")) is True
+            assert QMetaObject.invokeMethod(fact_primary, "clicked")
+            _wait_until(lambda: str(_selected_fact().get("content", "")) == "General fact updated")
+            _wait_until(lambda: str(cast(object, memory_service.selectedMemoryFactKey)) == initial_fact_key)
+            _wait_until(lambda: bool(fact_editor.property("readOnly")) is True)
+            _wait_until(lambda: str(fact_editor.property("text") or "") == "General fact updated")
+
+            assert bool(fact_add.property("buttonEnabled")) is True
+            assert QMetaObject.invokeMethod(fact_add, "clicked")
+            _wait_until(lambda: bool(fact_editor.property("readOnly")) is False)
+            _wait_until(lambda: str(fact_editor.property("text") or "") == "")
+
+            fact_editor.setProperty("text", "General fact C")
+            _process(40)
+            assert bool(fact_primary.property("buttonEnabled")) is True
+            assert QMetaObject.invokeMethod(fact_primary, "clicked")
+            _wait_until(
+                lambda: str(
+                    cast(list[dict[str, object]], cast(object, memory_service.selectedMemoryCategory).get("facts", []))[-1].get("content", "")
+                )
+                == "General fact C"
+            )
+            _wait_until(
+                lambda: str(cast(object, memory_service.selectedMemoryFactKey))
+                == str(
+                    cast(list[dict[str, object]], cast(object, memory_service.selectedMemoryCategory).get("facts", []))[-1].get("key", "")
+                )
+            )
+            _wait_until(lambda: bool(fact_editor.property("readOnly")) is True)
+            _wait_until(lambda: str(fact_editor.property("text") or "") == "General fact C")
+        finally:
+            root.deleteLater()
+            engine.deleteLater()
+            _process(0)
+    finally:
+        runner.shutdown()
 
 
 def test_session_highlight_slides_between_selected_sessions(qapp):

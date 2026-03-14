@@ -14,10 +14,18 @@ Item {
     property bool isSecret: false
     property string inputType: "text"
     property string description: ""
+    property bool showLabel: label !== ""
+    property bool showDescription: description !== ""
+    property int fieldHeight: sizeControlHeight
+    property int fieldFontPixelSize: typeButton
+    property alias text: field.text
+    readonly property alias inputItem: field
 
     property var currentValue: _loaded ? fieldValue() : undefined
     property bool _loaded: false
     property bool _dirty: false
+    signal accepted()
+    signal textEdited(string text)
 
     Layout.fillWidth: true
     implicitHeight: col.implicitHeight
@@ -54,6 +62,14 @@ Item {
         _writeText(val, true)
     }
 
+    function forceActiveFocus() {
+        field.forceActiveFocus()
+    }
+
+    function selectAll() {
+        field.selectAll()
+    }
+
     Component.onCompleted: {
         if (configService && dotpath) {
             var v = configService.getValue(dotpath)
@@ -68,9 +84,10 @@ Item {
         id: col
         anchors.left: parent.left
         anchors.right: parent.right
-        spacing: spacingSm
+        spacing: (root.showLabel || root.showDescription) ? spacingSm : 0
 
         Text {
+            visible: root.showLabel
             text: root.label
             color: textSecondary
             font.pixelSize: typeLabel
@@ -78,7 +95,7 @@ Item {
             font.letterSpacing: letterTight
         }
         Text {
-            visible: root.description !== ""
+            visible: root.showDescription
             text: root.description
             color: textTertiary
             font.pixelSize: typeCaption
@@ -89,7 +106,7 @@ Item {
 
         Rectangle {
             width: parent.width
-            height: sizeControlHeight
+            height: root.fieldHeight
             radius: radiusSm
             color: field.activeFocus
                    ? bgInputFocus
@@ -113,12 +130,16 @@ Item {
                 placeholderTextColor: textPlaceholder
                 color: textPrimary
                 background: null
-                font.pixelSize: typeButton
+                font.pixelSize: root.fieldFontPixelSize
                 selectionColor: textSelectionBg
                 selectedTextColor: textSelectionFg
                 echoMode: root.isSecret ? TextInput.Password : TextInput.Normal
                 verticalAlignment: TextInput.AlignVCenter
-                onTextEdited: root._dirty = true
+                onTextEdited: {
+                    root._dirty = true
+                    root.textEdited(text)
+                }
+                onAccepted: root.accepted()
             }
         }
     }

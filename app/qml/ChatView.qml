@@ -25,6 +25,15 @@ Rectangle {
     readonly property bool hasDraftAttachments: chatService ? chatService.draftAttachmentCount > 0 : false
     readonly property bool hasSessionService: sessionService !== null
     readonly property bool activeSessionReadOnly: hasSessionService ? sessionService.activeSessionReadOnly : false
+    readonly property string gatewayStateValue: {
+        if (!chatService)
+            return "idle"
+        if (typeof chatService.gatewayState === "string" && chatService.gatewayState !== "")
+            return chatService.gatewayState
+        if (typeof chatService.state === "string" && chatService.state !== "")
+            return chatService.state
+        return "idle"
+    }
     signal messageCopied()
 
     // Message list and composer share one inset source so content never gets
@@ -63,8 +72,8 @@ Rectangle {
             if (!chatService) return "idle"
             var phase = chatService.viewPhase
             if (phase !== undefined && phase !== null && phase !== "") return phase
-            if (chatService.gatewayState === "error") return "error"
-            if (chatService.historyLoading || chatService.gatewayState === "starting") return "loading"
+            if (root.gatewayStateValue === "error") return "error"
+            if (chatService.historyLoading || root.gatewayStateValue === "starting") return "loading"
             if (chatService.activeSessionReady) return "ready"
             return "idle"
         }
@@ -452,14 +461,16 @@ Rectangle {
             content: model.content ?? ""
             format: model.format ?? "plain"
             status: model.status ?? "done"
+            attachments: model.attachments ?? []
+            references: model.references ?? ({})
             messageId: model.id ?? -1
-                messageRow: index
-                entranceStyle: model.entranceStyle ?? "none"
-                entrancePending: model.entrancePending ?? false
-                showDateDivider: (model.dividerText ?? "") !== ""
-                dateDividerText: model.dividerText ?? ""
-                toastFunc: function() { root.messageCopied() }
-            }
+            messageRow: index
+            entranceStyle: model.entranceStyle ?? "none"
+            entrancePending: model.entrancePending ?? false
+            showDateDivider: (model.dividerText ?? "") !== ""
+            dateDividerText: model.dividerText ?? ""
+            toastFunc: function() { root.messageCopied() }
+        }
 
         // ── Empty state — multi-state onboarding cards ──────────
         Item {
@@ -493,7 +504,7 @@ Rectangle {
 
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: chatService && chatService.gatewayState === "starting"
+                    text: root.gatewayStateValue === "starting"
                           ? strings.empty_starting_hint
                           : strings.chat_loading_history
                     color: textTertiary
@@ -638,7 +649,7 @@ Rectangle {
                     }
                     Text {
                         anchors.horizontalCenter: parent.horizontalCenter
-                        text: chatService && chatService.gatewayState === "running"
+                        text: root.gatewayStateValue === "running"
                               ? strings.empty_chat_hint
                               : strings.empty_chat_idle_hint
                         color: textTertiary
@@ -693,7 +704,7 @@ Rectangle {
     Item {
         id: composerBar
         objectName: "composerBar"
-        readonly property bool active: chatService && chatService.gatewayState === "running" && !root.activeSessionReadOnly
+        readonly property bool active: root.gatewayStateValue === "running" && !root.activeSessionReadOnly
         readonly property real visibleHeight: composerContent.implicitHeight + 20
         readonly property int revealDuration: motionPanel + 40
         // targetListBottomInset is the layout fact; presentedListBottomInset is the animated projection.
@@ -818,7 +829,7 @@ Rectangle {
                         }
                     }
 
-                    delegate: Item {
+                    delegate: AttachmentChip {
                         required property int index
                         required property string fileName
                         required property string fileSizeLabel
@@ -826,186 +837,15 @@ Rectangle {
                         required property bool isImage
                         required property string extensionLabel
 
-                        width: isImage ? 72 : 164
-                        height: 56
-
-                        Rectangle {
-                            anchors.fill: parent
-                            radius: 18
-                            color: isImage ? (isDark ? "#241A12" : "#FFF9F4") : (isDark ? "#1D150F" : "#FFFCF9")
-                            border.width: 1
-                            border.color: chipHover.containsMouse ? accent : borderSubtle
-                            scale: chipHover.containsMouse ? 1.018 : 1.0
-                            Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-                            Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
-
-                            Rectangle {
-                                anchors.fill: parent
-                                radius: parent.radius
-                                color: "transparent"
-                                border.width: 1
-                                border.color: isDark ? "#18FFFFFF" : "#36FFFFFF"
-                                opacity: 0.9
-                            }
-
-                            Rectangle {
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.top: parent.top
-                                height: isImage ? 26 : 20
-                                radius: parent.radius
-                                gradient: Gradient {
-                                    GradientStop { position: 0.0; color: isImage ? "#30FFFFFF" : (isDark ? "#16FFFFFF" : "#26FFFFFF") }
-                                    GradientStop { position: 1.0; color: "#00FFFFFF" }
-                                }
-                            }
-
-                            Item {
-                                anchors.fill: parent
-                                anchors.margins: 4
-                                visible: isImage
-
-                                Rectangle {
-                                    anchors.fill: parent
-                                    radius: 14
-                                    color: bgInput
-                                    clip: true
-
-                                    Image {
-                                        anchors.fill: parent
-                                        source: previewUrl
-                                        fillMode: Image.PreserveAspectCrop
-                                        sourceSize: Qt.size(width * 2, height * 2)
-                                        asynchronous: true
-                                        smooth: true
-                                        mipmap: true
-                                    }
-
-                                    Rectangle {
-                                        anchors.left: parent.left
-                                        anchors.right: parent.right
-                                        anchors.bottom: parent.bottom
-                                        height: 22
-                                        gradient: Gradient {
-                                            GradientStop { position: 0.0; color: "#00000000" }
-                                            GradientStop { position: 1.0; color: "#99000000" }
-                                        }
-                                    }
-
-                                    Rectangle {
-                                        width: 26
-                                        height: 16
-                                        radius: 8
-                                        anchors.left: parent.left
-                                        anchors.bottom: parent.bottom
-                                        anchors.leftMargin: 7
-                                        anchors.bottomMargin: 7
-                                        color: "#B8130F0B"
-                                        border.width: 1
-                                        border.color: "#33FFFFFF"
-
-                                        Text {
-                                            anchors.centerIn: parent
-                                            text: extensionLabel
-                                            color: "#FFF9F3"
-                                            font.pixelSize: typeCaption - 2
-                                            font.weight: weightDemiBold
-                                        }
-                                    }
-                                }
-                            }
-
-                            Row {
-                                anchors.fill: parent
-                                anchors.leftMargin: 10
-                                anchors.rightMargin: 12
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 10
-                                visible: !isImage
-
-                                Rectangle {
-                                    width: 34
-                                    height: 34
-                                    radius: 11
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    color: isDark ? "#2EF38F1A" : "#1CE68A18"
-                                    border.width: 1
-                                    border.color: isDark ? "#2CFFC36B" : "#2AF0AF47"
-
-                                    Text {
-                                        anchors.centerIn: parent
-                                        text: extensionLabel
-                                        color: accent
-                                        font.pixelSize: typeCaption - 1
-                                        font.weight: weightDemiBold
-                                    }
-                                }
-
-                                Column {
-                                    width: parent.width - 44
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    spacing: 1
-
-                                    Text {
-                                        width: parent.width
-                                        text: fileName
-                                        color: textPrimary
-                                        font.pixelSize: typeMeta + 1
-                                        font.weight: weightDemiBold
-                                        elide: Text.ElideMiddle
-                                    }
-
-                                    Text {
-                                        width: parent.width
-                                        text: fileSizeLabel
-                                        color: textTertiary
-                                        font.pixelSize: typeCaption
-                                        elide: Text.ElideRight
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                width: 22
-                                height: 22
-                                radius: 11
-                                anchors.right: parent.right
-                                anchors.top: parent.top
-                                anchors.rightMargin: 6
-                                anchors.topMargin: 6
-                                color: removeArea.containsMouse ? accent : (isDark ? "#F21B120D" : "#F8FFFFFF")
-                                border.width: 1
-                                border.color: removeArea.containsMouse ? accent : borderSubtle
-                                scale: removeArea.containsMouse ? 1.04 : 1.0
-                                Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-                                Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-                                Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
-
-                                Image {
-                                    anchors.centerIn: parent
-                                    source: "../resources/icons/sidebar-close.svg"
-                                    width: 10
-                                    height: 10
-                                    sourceSize: Qt.size(10, 10)
-                                    opacity: 0.9
-                                }
-
-                                MouseArea {
-                                    id: removeArea
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: if (chatService) chatService.removeDraftAttachment(index)
-                                }
-                            }
-
-                            MouseArea {
-                                id: chipHover
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                acceptedButtons: Qt.NoButton
-                                cursorShape: Qt.ArrowCursor
-                            }
+                        fileName: model.fileName ?? ""
+                        fileSizeLabel: model.fileSizeLabel ?? ""
+                        previewUrl: model.previewUrl ?? ""
+                        isImage: Boolean(model.isImage)
+                        extensionLabel: model.extensionLabel ?? "FILE"
+                        removable: true
+                        removeAction: function() {
+                            if (chatService)
+                                chatService.removeDraftAttachment(index)
                         }
                     }
                 }
@@ -1117,7 +957,7 @@ Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
                         property bool canSend: (messageInput.text.trim().length > 0 || root.hasDraftAttachments)
                                               && chatService
-                                              && chatService.gatewayState === "running"
+                                              && root.gatewayStateValue === "running"
                         color: sendHover.containsMouse && canSend
                                ? accentHover
                                : (canSend ? accent : chatComposerSendDisabled)

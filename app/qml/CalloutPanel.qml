@@ -17,17 +17,18 @@ Rectangle {
     property bool accentBlobVisible: false
     property real accentBlobWidthFactor: 0.2
     property real padding: 12
+    readonly property real fallbackRadius: typeof radiusMd !== "undefined" ? radiusMd : 24
 
     Layout.fillWidth: true
     implicitHeight: contentArea.childrenRect.height + root.padding * 2
-    radius: radiusMd
+    radius: root.fallbackRadius
     color: root.panelColor
     border.color: root.panelBorderColor
     border.width: 1
 
     Rectangle {
         anchors.fill: parent
-        radius: parent.radius
+        radius: root.radius
         color: root.overlayColor
         visible: root.overlayVisible
     }

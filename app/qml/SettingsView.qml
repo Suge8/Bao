@@ -1448,7 +1448,7 @@ Rectangle {
                         SettingsField { label: tr("工作目录", "Workspace Folder"); dotpath: "agents.defaults.workspace"; placeholder: "~/.bao/workspace" }
                         SettingsField { label: tr("默认聊天模型", "Primary Model"); dotpath: "agents.defaults.model"; placeholder: "openai/gpt-4o"; description: tr("Bao 平时聊天最常用的模型", "The model Bao uses for normal chats") }
                         SettingsField { label: tr("后台小任务模型", "Background Model"); dotpath: "agents.defaults.utilityModel"; placeholder: "openrouter/google/gemini-flash-1.5"; description: tr("做标题生成、经验整理这类后台任务时更省钱的模型", "A cheaper model for background tasks such as titles and summaries") }
-                        SettingsField { label: tr("经验整理模型", "Learning Model"); dotpath: "agents.defaults.experienceModel"; placeholder: "utility / main / none"; description: tr("utility = 用后台模型 / main = 用主模型 / none = 关闭", "utility = use the background model / main = use the primary model / none = turn it off") }
+                        SettingsField { label: tr("自动学习经验", "Learning Mode"); dotpath: "agents.defaults.memory.learningMode"; placeholder: "utility / main / none"; description: tr("utility = 用后台模型 / main = 用主模型 / none = 关闭自动学习", "utility = use the background model / main = use the primary model / none = turn off automatic learning") }
                         SettingsListField { label: tr("聊天里可切换的模型", "Switchable Models"); dotpath: "agents.defaults.models"; placeholder: "model1, model2"; description: tr("聊天中通过 /model 可以切到这些模型，不填也可以", "Models you can switch to with /model in chat; optional") }
 
                         SettingsCollapsible {
@@ -1462,7 +1462,7 @@ Rectangle {
                                 SettingsField { label: tr("单次回复上限", "Reply Length Limit"); dotpath: "agents.defaults.maxTokens"; placeholder: "8192"; inputType: "number"; description: tr("一条回复最多能输出多少内容", "How much one reply can generate at most") }
                                 SettingsField { label: tr("稳定 / 发散程度", "Stability vs Variety"); dotpath: "agents.defaults.temperature"; placeholder: "0.1"; inputType: "number"; description: tr("越低越稳，越高越发散（0-2）", "Lower is steadier; higher is more varied (0-2)") }
                                 SettingsField { label: tr("单轮最多调用工具次数", "Tool Call Limit Per Turn"); dotpath: "agents.defaults.maxToolIterations"; placeholder: "20"; inputType: "number"; description: tr("一轮对话里最多让 Bao 调多少次工具", "The maximum number of tool calls Bao can make in one turn") }
-                                SettingsField { label: tr("短期记忆长度", "Recent Memory Size"); dotpath: "agents.defaults.memoryWindow"; placeholder: "50"; inputType: "number"; description: tr("保留最近多少条消息作为上下文", "How many recent messages Bao keeps as context") }
+                                SettingsField { label: tr("最近对话上下文", "Recent Context Window"); dotpath: "agents.defaults.memory.recentWindow"; placeholder: "50"; inputType: "number"; description: tr("保留最近多少条消息作为上下文，不会写入长期记忆", "How many recent messages Bao keeps in prompt context; this does not control long-term memory") }
                                 SettingsSelect {
                                     label: tr("长对话管理", "Long Chat Handling")
                                     dotpath: "agents.defaults.contextManagement"

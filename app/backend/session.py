@@ -45,11 +45,13 @@ from app.backend.session_projection import (
     title_by_key,
     visible_session_key,
     visible_session_key_for_channel,
+    visible_sidebar_items,
 )
 from bao.session.manager import SessionChangeEvent
 
 _format_display_title = session_projection.format_display_title
 _format_updated_label = session_projection.format_updated_label
+_visible_sidebar_items = visible_sidebar_items
 
 _DEBUG_SWITCH = os.getenv("BAO_DESKTOP_DEBUG_SWITCH") == "1"
 _ROLE_BASE = int(Qt.ItemDataRole.UserRole)
@@ -552,6 +554,7 @@ class SessionService(QObject):
         self._list_inflight_count = 0
         self._sessions_loading = False
         self._active_commit_seq = 0
+        self._bootstrap_storage_root = ""
         self._session_entry_generation = 0
         self._session_entry_request_seq: dict[str, int] = {}
         self._disposed = False
@@ -599,6 +602,13 @@ class SessionService(QObject):
     def activeSessionReadOnly(self) -> bool:
         return self._active_session_read_only
 
+    def supervisorSessionsSnapshot(self) -> list[dict[str, Any]]:
+        return [
+            dict(item)
+            for item in getattr(self._model, "_sessions", [])
+            if isinstance(item, dict)
+        ]
+
     def initialize(self, session_manager: Any) -> None:
         if self._disposed:
             return
@@ -609,12 +619,23 @@ class SessionService(QObject):
 
     @Slot(str)
     def bootstrapWorkspace(self, workspace_path: str) -> None:
-        if self._disposed or self._session_manager is not None:
+        self.bootstrapStorageRoot(workspace_path)
+
+    @Slot(str)
+    def bootstrapStorageRoot(self, storage_root: str) -> None:
+        if self._disposed:
             return
-        raw_path = workspace_path.strip()
+        raw_path = storage_root.strip()
         if not raw_path:
             return
+        current = getattr(self._session_manager, "workspace", None)
+        if current is not None and str(Path(str(current)).expanduser()) == str(
+            Path(raw_path).expanduser()
+        ):
+            self.refresh()
+            return
         self._set_sessions_loading(True)
+        self._bootstrap_storage_root = str(Path(raw_path).expanduser())
         fut = self._submit_safe(self._create_session_manager(raw_path))
         if fut is None:
             self._set_sessions_loading(False)
@@ -656,12 +677,12 @@ class SessionService(QObject):
             return await self._runner.run_bg_io(fn, *args)
         return await asyncio.to_thread(fn, *args)
 
-    async def _create_session_manager(self, workspace_path: str) -> Any:
+    async def _create_session_manager(self, storage_root: str) -> Any:
         from bao.session.manager import SessionManager
 
-        workspace = Path(workspace_path).expanduser()
-        await self._run_user_io(lambda: workspace.mkdir(parents=True, exist_ok=True))
-        return await self._run_user_io(SessionManager, workspace)
+        root = Path(storage_root).expanduser()
+        await self._run_user_io(lambda: root.mkdir(parents=True, exist_ok=True))
+        return await self._run_user_io(SessionManager, root)
 
     def _on_bootstrap_done(self, future: Any) -> None:
         if future.cancelled():
@@ -693,7 +714,11 @@ class SessionService(QObject):
             self._set_sessions_loading(False)
             logger.debug("Skip early session bootstrap: {}", error)
             return
-        if self._disposed or self._session_manager is not None:
+        if self._disposed:
+            return
+        expected_root = self._bootstrap_storage_root
+        actual_root = str(Path(str(getattr(session_manager, "workspace", ""))).expanduser())
+        if expected_root and actual_root and expected_root != actual_root:
             return
         self.initialize(session_manager)
         self.sessionManagerReady.emit(session_manager)

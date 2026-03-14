@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import mimetypes
-from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import (
@@ -12,9 +10,10 @@ from PySide6.QtCore import (
     QObject,
     QPersistentModelIndex,
     Qt,
-    QUrl,
     Signal,
 )
+
+from bao.utils.attachments import build_attachment_payload
 
 
 class AttachmentDraftModel(QAbstractListModel):
@@ -72,30 +71,13 @@ class AttachmentDraftModel(QAbstractListModel):
         new_items: list[dict[str, Any]] = []
         existing_paths = {str(item.get("filePath", "")) for item in self._items}
         for raw_path in paths:
-            path = Path(raw_path).expanduser()
-            try:
-                resolved = path.resolve()
-            except OSError:
+            item = build_attachment_payload(raw_path)
+            if not isinstance(item, dict):
                 continue
-            resolved_str = str(resolved)
-            if resolved_str in existing_paths or not resolved.is_file():
+            resolved_str = str(item.get("filePath", ""))
+            if resolved_str in existing_paths or not resolved_str:
                 continue
-            try:
-                size_bytes = resolved.stat().st_size
-            except OSError:
-                continue
-            mime, _ = mimetypes.guess_type(resolved_str)
-            suffix = resolved.suffix.lower().lstrip(".")
-            new_items.append(
-                {
-                    "fileName": resolved.name,
-                    "fileSizeLabel": self._format_size(size_bytes),
-                    "filePath": resolved_str,
-                    "previewUrl": QUrl.fromLocalFile(resolved_str).toString(),
-                    "isImage": bool(mime and mime.startswith("image/")),
-                    "extensionLabel": (suffix[:4] or "FILE").upper(),
-                }
-            )
+            new_items.append(item)
             existing_paths.add(resolved_str)
         if not new_items:
             return False
@@ -130,14 +112,3 @@ class AttachmentDraftModel(QAbstractListModel):
 
     def snapshot_names(self) -> list[str]:
         return [str(item.get("fileName", "")) for item in self._items if item.get("fileName")]
-
-    @staticmethod
-    def _format_size(size_bytes: int) -> str:
-        size = float(max(0, size_bytes))
-        for unit in ("B", "KB", "MB", "GB"):
-            if size < 1024 or unit == "GB":
-                if unit == "B":
-                    return f"{int(size)} {unit}"
-                return f"{size:.1f} {unit}"
-            size /= 1024.0
-        return f"{size:.1f} TB"

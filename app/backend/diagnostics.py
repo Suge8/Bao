@@ -14,7 +14,7 @@ class DiagnosticsService(QObject):
     changed: ClassVar[Signal] = Signal()
     _storeUpdated: ClassVar[Signal] = Signal()
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(self, parent: QObject | None = None, *, eager_refresh: bool = True) -> None:
         super().__init__(parent)
         self._store = get_runtime_diagnostics_store()
         self._update_lock = RLock()
@@ -28,7 +28,8 @@ class DiagnosticsService(QObject):
         self._store.add_listener(self._on_store_change)
         _ = self.destroyed.connect(self._detach_store_listener)
         _ = self._storeUpdated.connect(self._drain_store_updates, Qt.ConnectionType.QueuedConnection)
-        self.refresh()
+        if eager_refresh:
+            self.refresh()
 
     def _on_store_change(self) -> None:
         with self._update_lock:

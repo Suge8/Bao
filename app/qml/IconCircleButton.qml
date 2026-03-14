@@ -34,16 +34,13 @@ Rectangle {
     Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
     Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeEmphasis } }
 
-    Image {
+    AppIcon {
         visible: root.iconSource !== ""
         anchors.centerIn: parent
         source: root.iconSource
         sourceSize: Qt.size(root.glyphSize, root.glyphSize)
         width: root.glyphSize
         height: root.glyphSize
-        fillMode: Image.PreserveAspectFit
-        smooth: true
-        mipmap: true
         opacity: root.buttonEnabled ? 1.0 : 0.5
     }
 

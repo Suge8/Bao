@@ -16,7 +16,8 @@ class _FakeFuture:
 
 
 class _FakeRunner:
-    def submit(self, _coro: Coroutine[Any, Any, Any]) -> _FakeFuture:
+    def submit(self, coro: Coroutine[Any, Any, Any]) -> _FakeFuture:
+        coro.close()
         return _FakeFuture()
 
 
@@ -42,3 +43,35 @@ def test_submit_task_allows_non_blocking_refresh_while_busy() -> None:
     service._submit_task("load_memory", _noop())
 
     assert service.blockingBusy is True
+
+
+def test_selected_memory_fact_read_model_tracks_selection_and_fallback() -> None:
+    service = MemoryService(_FakeRunner())
+    detail = {
+        "category": "project",
+        "content": "Fact A\nFact B",
+        "facts": [
+            {"key": "fact-a", "content": "Fact A"},
+            {"key": "fact-b", "content": "Fact B"},
+        ],
+    }
+
+    service._apply_selected_memory_category("project", detail)
+    assert service.selectedMemoryFactKey == "fact-a"
+    assert service.selectedMemoryFact["content"] == "Fact A"
+
+    service.selectMemoryFact("fact-b")
+    assert service.selectedMemoryFactKey == "fact-b"
+    assert service.selectedMemoryFact["content"] == "Fact B"
+
+    service._apply_selected_memory_category(
+        "project",
+        {
+            **detail,
+            "content": "Fact B",
+            "facts": [{"key": "fact-b", "content": "Fact B"}],
+        },
+        "fact-a",
+    )
+    assert service.selectedMemoryFactKey == "fact-b"
+    assert service.selectedMemoryFact["content"] == "Fact B"

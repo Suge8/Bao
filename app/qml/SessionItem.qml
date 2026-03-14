@@ -70,31 +70,25 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             scale: 1.0
 
-            Image {
+            AppIcon {
                 id: iconImage
                 anchors.centerIn: parent
                 source: root.filledIconSource
                 sourceSize: Qt.size(14, 14)
                 width: 14
                 height: 14
-                fillMode: Image.PreserveAspectFit
-                smooth: true
-                mipmap: true
                 opacity: root.isActive ? 1.0 : (hoverArea.containsMouse ? 0.92 : 0.72)
                 visible: !root.useIconTint
 
                 Behavior on opacity { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
             }
 
-            Image {
+            AppIcon {
                 anchors.centerIn: parent
                 width: iconImage.width
                 height: iconImage.height
                 source: root.filledIconSource
                 sourceSize: Qt.size(iconImage.width, iconImage.height)
-                fillMode: Image.PreserveAspectFit
-                smooth: true
-                mipmap: true
                 opacity: root.isActive ? 1.0 : (hoverArea.containsMouse ? 0.92 : 0.72)
                 visible: root.useIconTint
 
@@ -185,16 +179,13 @@ Rectangle {
         Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
         Behavior on scale { NumberAnimation { duration: motionMicro; easing.type: easeStandard } }
 
-        Image {
+        AppIcon {
             objectName: "sessionDeleteIcon"
             anchors.centerIn: parent
             source: root.deleteIconSource
             sourceSize: Qt.size(12, 12)
             width: 12
             height: 12
-            fillMode: Image.PreserveAspectFit
-            smooth: true
-            mipmap: true
             opacity: deleteHover.containsMouse ? 1.0 : 0.92
         }
 

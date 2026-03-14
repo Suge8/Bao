@@ -142,14 +142,14 @@ class AsyncioRunner:
             raise RuntimeError("AsyncioRunner is not running — call start() first")
         return asyncio.run_coroutine_threadsafe(coro, self._loop)
 
-    async def run_user_io(self, fn: Any, *args: Any) -> Any:
+    async def run_user_io(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         loop = asyncio.get_running_loop()
-        call = functools.partial(fn, *args)
+        call = functools.partial(fn, *args, **kwargs)
         return await loop.run_in_executor(self._user_executor, call)
 
-    async def run_bg_io(self, fn: Any, *args: Any) -> Any:
+    async def run_bg_io(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         loop = asyncio.get_running_loop()
-        call = functools.partial(fn, *args)
+        call = functools.partial(fn, *args, **kwargs)
         return await loop.run_in_executor(self._bg_executor, call)
 
     # ------------------------------------------------------------------

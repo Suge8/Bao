@@ -9,7 +9,7 @@ from typing import Any, ClassVar
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from app.backend.asyncio_runner import AsyncioRunner
-from bao.agent.memory import MEMORY_CATEGORIES, MemoryStore
+from bao.agent.memory import MEMORY_CATEGORIES, MemoryChangeEvent, MemoryStore
 
 
 def _parse_updated_at(value: Any) -> datetime | None:
@@ -52,20 +52,21 @@ class MemoryService(QObject):
     memoryCategoriesChanged: ClassVar[Signal] = Signal()
     experienceItemsChanged: ClassVar[Signal] = Signal()
     selectedMemoryCategoryChanged: ClassVar[Signal] = Signal()
+    selectedMemoryFactChanged: ClassVar[Signal] = Signal()
+    selectedMemoryFactKeyChanged: ClassVar[Signal] = Signal()
     selectedExperienceChanged: ClassVar[Signal] = Signal()
     memoryStatsChanged: ClassVar[Signal] = Signal()
     experienceStatsChanged: ClassVar[Signal] = Signal()
     operationFinished: ClassVar[Signal] = Signal(str, bool)
-    appendCommitted: ClassVar[Signal] = Signal()
-
     _runnerResult: ClassVar[Signal] = Signal(str, bool, bool, str, object)
+    _externalChangeRequested: ClassVar[Signal] = Signal(str, str, str)
     _MUTATION_BUSY_MESSAGE = "Another memory operation is already in progress."
 
     def __init__(self, runner: AsyncioRunner, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._runner = runner
         self._store: MemoryStore | None = None
-        self._workspace_path = ""
+        self._storage_root = ""
         self._ready = False
         self._busy = False
         self._busy_count = 0
@@ -75,6 +76,8 @@ class MemoryService(QObject):
         self._memory_categories: list[dict[str, Any]] = []
         self._experience_items: list[dict[str, Any]] = []
         self._selected_memory_category: dict[str, Any] = {}
+        self._selected_memory_fact: dict[str, Any] = {}
+        self._selected_memory_fact_key = ""
         self._selected_experience: dict[str, Any] = {}
         self._memory_stats: dict[str, Any] = {}
         self._experience_stats: dict[str, Any] = {}
@@ -90,7 +93,9 @@ class MemoryService(QObject):
         self._latest_experience_request_seq = 0
         self._experience_detail_request_seq = 0
         self._latest_experience_detail_request_seq = 0
+        self._store_listener = self._on_store_change
         self._runnerResult.connect(self._handle_runner_result)
+        self._externalChangeRequested.connect(self._handle_external_change)
 
     @Property(bool, notify=readyChanged)
     def ready(self) -> bool:
@@ -120,6 +125,14 @@ class MemoryService(QObject):
     def selectedMemoryCategory(self) -> dict[str, Any]:
         return dict(self._selected_memory_category)
 
+    @Property(dict, notify=selectedMemoryFactChanged)
+    def selectedMemoryFact(self) -> dict[str, Any]:
+        return dict(self._selected_memory_fact)
+
+    @Property(str, notify=selectedMemoryFactKeyChanged)
+    def selectedMemoryFactKey(self) -> str:
+        return self._selected_memory_fact_key
+
     @Property(dict, notify=selectedExperienceChanged)
     def selectedExperience(self) -> dict[str, Any]:
         return dict(self._selected_experience)
@@ -134,13 +147,17 @@ class MemoryService(QObject):
 
     @Slot(str)
     def bootstrapWorkspace(self, workspace_path: str) -> None:
-        raw_path = workspace_path.strip()
+        self.bootstrapStorageRoot(workspace_path)
+
+    @Slot(str)
+    def bootstrapStorageRoot(self, storage_root: str) -> None:
+        raw_path = storage_root.strip()
         if not raw_path:
             return
-        if raw_path == self._workspace_path and self._store is not None:
+        if raw_path == self._storage_root and self._store is not None:
             self.refreshAll()
             return
-        self._workspace_path = raw_path
+        self._storage_root = raw_path
         self._submit_task("bootstrap", self._bootstrap_store(raw_path))
 
     @Slot()
@@ -162,10 +179,17 @@ class MemoryService(QObject):
     @Slot(str)
     def selectMemoryCategory(self, category: str) -> None:
         normalized = category if category in MEMORY_CATEGORIES else "project"
-        self._selected_memory_category_name = normalized
-        item = self._memory_category_from_cache(normalized)
-        self._selected_memory_category = item or {}
-        self.selectedMemoryCategoryChanged.emit()
+        self._apply_selected_memory_category(normalized, self._memory_category_from_cache(normalized))
+
+    @Slot(str)
+    def selectMemoryFact(self, key: str) -> None:
+        normalized = key.strip()
+        if not normalized:
+            self._apply_selected_memory_fact({})
+            return
+        selected = self._memory_fact_by_key(self._selected_memory_category, normalized)
+        if selected:
+            self._apply_selected_memory_fact(selected)
 
     @Slot(str, str)
     def saveMemoryCategory(self, category: str, content: str) -> None:
@@ -178,6 +202,14 @@ class MemoryService(QObject):
     @Slot(str)
     def clearMemoryCategory(self, category: str) -> None:
         self._submit_task("clear_memory", self._clear_memory_category(category))
+
+    @Slot(str, str, str)
+    def saveMemoryFact(self, category: str, key: str, content: str) -> None:
+        self._submit_task("save_memory_fact", self._save_memory_fact(category, key, content))
+
+    @Slot(str, str)
+    def deleteMemoryFact(self, category: str, key: str) -> None:
+        self._submit_task("delete_memory_fact", self._delete_memory_fact(category, key))
 
     @Slot(str, str, str, str, int, str)
     def reloadExperiences(
@@ -238,6 +270,7 @@ class MemoryService(QObject):
     def shutdown(self) -> None:
         if self._store is not None:
             try:
+                self._detach_store_listener(self._store)
                 self._store.close()
             except Exception:
                 pass
@@ -271,15 +304,15 @@ class MemoryService(QObject):
             self._set_error("Asyncio runner is not available.")
             return None
 
-    async def _run_user_io(self, fn: Any, *args: Any) -> Any:
+    async def _run_user_io(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         if isinstance(self._runner, AsyncioRunner):
-            return await self._runner.run_user_io(fn, *args)
-        return await asyncio.to_thread(fn, *args)
+            return await self._runner.run_user_io(fn, *args, **kwargs)
+        return await asyncio.to_thread(fn, *args, **kwargs)
 
-    async def _bootstrap_store(self, workspace_path: str) -> dict[str, Any]:
-        workspace = Path(workspace_path).expanduser()
-        await self._run_user_io(lambda: workspace.mkdir(parents=True, exist_ok=True))
-        store = await self._run_user_io(MemoryStore, workspace)
+    async def _bootstrap_store(self, storage_root: str) -> dict[str, Any]:
+        root = Path(storage_root).expanduser()
+        await self._run_user_io(lambda: root.mkdir(parents=True, exist_ok=True))
+        store = await self._run_user_io(MemoryStore, root)
         memory_items = await self._run_user_io(store.list_memory_categories)
         experience_items = await self._run_user_io(store.list_experience_items)
         return {
@@ -311,6 +344,31 @@ class MemoryService(QObject):
     async def _clear_memory_category(self, category: str) -> dict[str, Any]:
         store = self._require_store()
         detail = await self._run_user_io(store.clear_memory_category, category)
+        items = await self._run_user_io(store.list_memory_categories)
+        return {"memory_items": items, "memory_category": category, "memory_detail": detail}
+
+    async def _save_memory_fact(self, category: str, key: str, content: str) -> dict[str, Any]:
+        store = self._require_store()
+        detail = await self._run_user_io(store.upsert_memory_fact, category, content, key=key)
+        if detail is None:
+            raise RuntimeError("Failed to save memory fact")
+        items = await self._run_user_io(store.list_memory_categories)
+        facts = detail.get("facts") if isinstance(detail, dict) else None
+        saved_key = key.strip()
+        if not saved_key and isinstance(facts, list) and facts:
+            saved_key = str(facts[-1].get("key", ""))
+        return {
+            "memory_items": items,
+            "memory_category": category,
+            "memory_detail": detail,
+            "memory_fact_key": saved_key,
+        }
+
+    async def _delete_memory_fact(self, category: str, key: str) -> dict[str, Any]:
+        store = self._require_store()
+        detail = await self._run_user_io(store.delete_memory_fact, category, key)
+        if detail is None:
+            raise RuntimeError("Failed to delete memory fact")
         items = await self._run_user_io(store.list_memory_categories)
         return {"memory_items": items, "memory_category": category, "memory_detail": detail}
 
@@ -361,6 +419,8 @@ class MemoryService(QObject):
             "save_memory",
             "append_memory",
             "clear_memory",
+            "save_memory_fact",
+            "delete_memory_fact",
             "deprecate_experience",
             "delete_experience",
             "promote_experience",
@@ -413,6 +473,10 @@ class MemoryService(QObject):
             store = data.get("store")
             self._store = store if isinstance(store, MemoryStore) else self._store
             if previous is not None and previous is not self._store:
+                self._detach_store_listener(previous)
+            if isinstance(self._store, MemoryStore) and self._store is not previous:
+                self._attach_store_listener(self._store)
+            if previous is not None and previous is not self._store:
                 try:
                     previous.close()
                 except Exception:
@@ -431,20 +495,15 @@ class MemoryService(QObject):
             self._apply_experience_items(data.get("experience_items"))
         if "memory_category" in data:
             category = str(data.get("memory_category") or self._selected_memory_category_name)
-            self._selected_memory_category_name = category
             detail = data.get("memory_detail")
-            if isinstance(detail, dict):
-                self._selected_memory_category = self._decorate_memory_item(detail)
-            else:
-                self._selected_memory_category = self._memory_category_from_cache(category) or {}
-            self.selectedMemoryCategoryChanged.emit()
+            preferred_fact_key = str(data.get("memory_fact_key") or "")
+            self._apply_selected_memory_category(category, detail, preferred_fact_key)
         if kind == "load_memory" and not self._selected_memory_category:
-            self._selected_memory_category = (
+            self._apply_selected_memory_category(
+                self._selected_memory_category_name,
                 self._memory_category_from_cache(self._selected_memory_category_name)
-                or self._memory_category_from_cache("project")
-                or {}
+                or self._memory_category_from_cache("project"),
             )
-            self.selectedMemoryCategoryChanged.emit()
         if "experience_detail" in data:
             detail = data.get("experience_detail")
             if isinstance(detail, dict):
@@ -472,12 +531,12 @@ class MemoryService(QObject):
             "save_memory": "Memory saved",
             "append_memory": "Memory updated",
             "clear_memory": "Memory cleared",
+            "save_memory_fact": "Memory fact saved",
+            "delete_memory_fact": "Memory fact deleted",
             "deprecate_experience": "Experience updated",
             "delete_experience": "Experience deleted",
             "promote_experience": "Experience promoted",
         }
-        if kind == "append_memory":
-            self.appendCommitted.emit()
         if kind in messages:
             self.operationFinished.emit(messages[kind], True)
 
@@ -514,9 +573,52 @@ class MemoryService(QObject):
         self._error = error
         self.errorChanged.emit(error)
 
+    def _attach_store_listener(self, store: MemoryStore) -> None:
+        add_listener = getattr(store, "add_change_listener", None)
+        if callable(add_listener):
+            add_listener(self._store_listener)
+
+    def _detach_store_listener(self, store: MemoryStore) -> None:
+        remove_listener = getattr(store, "remove_change_listener", None)
+        if callable(remove_listener):
+            remove_listener(self._store_listener)
+
+    def _on_store_change(self, event: MemoryChangeEvent) -> None:
+        self._externalChangeRequested.emit(event.scope, event.category, event.operation)
+
+    def _handle_external_change(self, scope: str, category: str, operation: str) -> None:
+        if self._store is None or not self._ready:
+            return
+        if scope == "experience":
+            self.reloadExperiences(
+                self._experience_query,
+                self._experience_category,
+                self._experience_outcome,
+                self._experience_deprecated_mode,
+                self._experience_min_quality,
+                self._experience_sort_by,
+            )
+            if operation == "promote":
+                self.refreshMemoryCategories()
+            return
+        if scope == "long_term":
+            self.refreshMemoryCategories()
+
     def _decorate_memory_item(self, item: dict[str, Any]) -> dict[str, Any]:
         decorated = dict(item)
         decorated["updated_label"] = _format_updated_label(item.get("updated_at"))
+        facts = item.get("facts")
+        if isinstance(facts, list):
+            decorated["facts"] = [
+                {
+                    **dict(fact),
+                    "updated_label": _format_updated_label(
+                        fact.get("last_hit_at") or fact.get("updated_at")
+                    ),
+                }
+                for fact in facts
+                if isinstance(fact, dict)
+            ]
         return decorated
 
     def _decorate_experience_item(self, item: dict[str, Any]) -> dict[str, Any]:
@@ -524,6 +626,7 @@ class MemoryService(QObject):
         uses = int(item.get("uses", 0) or 0)
         successes = int(item.get("successes", 0) or 0)
         decorated["updated_label"] = _format_updated_label(item.get("updated_at"))
+        decorated["last_hit_label"] = _format_updated_label(item.get("last_hit_at"))
         decorated["success_rate"] = round((successes / uses) * 100, 1) if uses > 0 else 0.0
         return decorated
 
@@ -552,6 +655,80 @@ class MemoryService(QObject):
             if str(item.get("category", "")) == category:
                 return dict(item)
         return None
+
+    def _memory_fact_by_key(
+        self,
+        detail: dict[str, Any],
+        key: str,
+    ) -> dict[str, Any]:
+        normalized = key.strip()
+        if not normalized:
+            return {}
+        facts = detail.get("facts")
+        if not isinstance(facts, list):
+            return {}
+        for fact in facts:
+            if not isinstance(fact, dict):
+                continue
+            if str(fact.get("key", "")) == normalized:
+                return dict(fact)
+        return {}
+
+    def _resolve_selected_memory_fact(
+        self,
+        detail: dict[str, Any],
+        preferred_key: str = "",
+    ) -> dict[str, Any]:
+        selected = self._memory_fact_by_key(detail, preferred_key)
+        if selected:
+            return selected
+        facts = detail.get("facts")
+        if not isinstance(facts, list) or not facts:
+            return {}
+        first = facts[0]
+        return dict(first) if isinstance(first, dict) else {}
+
+    def _apply_selected_memory_fact(self, fact: object) -> None:
+        selected = dict(fact) if isinstance(fact, dict) else {}
+        next_fact_key = str(selected.get("key", "")).strip()
+        fact_changed = selected != self._selected_memory_fact
+        key_changed = next_fact_key != self._selected_memory_fact_key
+        self._selected_memory_fact = selected
+        self._selected_memory_fact_key = next_fact_key
+        if fact_changed:
+            self.selectedMemoryFactChanged.emit()
+        if key_changed:
+            self.selectedMemoryFactKeyChanged.emit()
+
+    def _apply_selected_memory_category(
+        self,
+        category: str,
+        detail: object,
+        preferred_fact_key: str = "",
+    ) -> None:
+        normalized_category = category if category in MEMORY_CATEGORIES else "project"
+        if isinstance(detail, dict):
+            selected = self._decorate_memory_item(detail)
+        else:
+            selected = self._memory_category_from_cache(normalized_category) or {}
+        selected_fact = self._resolve_selected_memory_fact(
+            selected,
+            preferred_fact_key or self._selected_memory_fact_key,
+        )
+        category_changed = selected != self._selected_memory_category
+        fact_changed = selected_fact != self._selected_memory_fact
+        next_fact_key = str(selected_fact.get("key", "")).strip()
+        key_changed = next_fact_key != self._selected_memory_fact_key
+        self._selected_memory_category_name = normalized_category
+        self._selected_memory_category = selected
+        self._selected_memory_fact = selected_fact
+        self._selected_memory_fact_key = next_fact_key
+        if category_changed:
+            self.selectedMemoryCategoryChanged.emit()
+        if fact_changed:
+            self.selectedMemoryFactChanged.emit()
+        if key_changed:
+            self.selectedMemoryFactKeyChanged.emit()
 
     def _experience_from_cache(self, key: str) -> dict[str, Any] | None:
         for item in self._experience_items:

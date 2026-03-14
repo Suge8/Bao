@@ -6,21 +6,49 @@ import QtQuick.Layouts 1.15
 
 Item {
     id: root
+    objectName: "skillsWorkspaceRoot"
 
     property bool active: false
     property var skillsService: null
     property string currentMode: "installed"
-    property string draftContent: ""
     property string draftSkillId: ""
     property bool draftDirty: false
     property bool syncingDraft: false
+    property var editorRef: null
     property real revealOpacity: 1.0
     property real revealScale: 1.0
     property real revealShift: 0.0
-    property bool installedTabHovered: false
-    property bool discoverTabHovered: false
 
     readonly property bool hasSkillsService: skillsService !== null
+    readonly property bool hasSkillsSignals: hasSkillsService
+        && typeof skillsService.changed !== "undefined"
+        && typeof skillsService.operationFinished !== "undefined"
+    readonly property var overview: hasSkillsService ? (skillsService.overview || {}) : ({})
+    readonly property var installedSkills: hasSkillsService ? (skillsService.skills || []) : []
+    readonly property var selectedSkill: hasSkillsService ? (skillsService.selectedSkill || {}) : ({})
+    readonly property string selectedSkillId: hasSkillsService ? String(skillsService.selectedSkillId || "") : ""
+    readonly property string selectedContent: hasSkillsService ? String(skillsService.selectedContent || "") : ""
+    readonly property string skillQueryValue: hasSkillsService ? String(skillsService.query || "") : ""
+    readonly property string sourceFilterValue: hasSkillsService ? String(skillsService.sourceFilter || "all") : "all"
+    readonly property bool serviceBusy: hasSkillsService
+        && typeof skillsService.busy !== "undefined"
+        && skillsService.busy
+    readonly property var discoverResults: hasSkillsService ? (skillsService.discoverResults || []) : []
+    readonly property var selectedDiscoverItem: hasSkillsService ? (skillsService.selectedDiscoverItem || {}) : ({})
+    readonly property string selectedDiscoverId: hasSkillsService ? String(skillsService.selectedDiscoverId || "") : ""
+    readonly property string discoverQueryValue: hasSkillsService ? String(skillsService.discoverQuery || "") : ""
+    readonly property string discoverReferenceValue: hasSkillsService ? String(skillsService.discoverReference || "") : ""
+    readonly property var discoverTask: hasSkillsService
+        ? (skillsService.discoverTask || {})
+        : ({ state: "idle", kind: "", message: "", reference: "" })
+    readonly property var installedFilterOptions: [
+        { value: "all", zh: "全部", en: "All" },
+        { value: "ready", zh: "现在可用", en: "Ready now" },
+        { value: "needs_setup", zh: "需设置", en: "Needs setup" },
+        { value: "instruction_only", zh: "仅指导", en: "Instruction only" },
+        { value: "workspace", zh: "工作区", en: "Workspace" },
+        { value: "shadowed", zh: "已覆盖", en: "Overridden" }
+    ]
     readonly property string effectiveUiLanguage: {
         if (typeof uiLanguage === "string" && uiLanguage !== "auto")
             return uiLanguage
@@ -29,37 +57,6 @@ Item {
         return "en"
     }
     readonly property bool isZhLang: effectiveUiLanguage === "zh"
-    readonly property int shadowedCount: {
-        if (!hasSkillsService)
-            return 0
-        var items = skillsService.skills || []
-        return items.filter(function(item) { return !!item.shadowed }).length
-    }
-    readonly property int missingRequirementCount: {
-        if (!hasSkillsService)
-            return 0
-        var items = skillsService.skills || []
-        return items.filter(function(item) { return !!item.missingRequirements }).length
-    }
-    readonly property var builtinSkillLocaleMap: ({
-        "agent-browser": { zhName: "浏览器代理", zhDescription: "用于浏览器自动化、截图、表单填写、网页测试与抓取。" },
-        "clawhub": { zhName: "ClawHub 技能市场", zhDescription: "用于从 ClawHub 查找、安装或更新技能。" },
-        "coding-agent": { zhName: "通用编程代理", zhDescription: "当没有更具体的编程技能时，用于一般编码任务。" },
-        "copywriting": { zhName: "营销文案", zhDescription: "用于营销文案、标题、CTA 与页面改写。" },
-        "cron": { zhName: "定时任务", zhDescription: "用于安排提醒、周期任务或一次性任务。" },
-        "docx": { zhName: "Word 文档", zhDescription: "用于 Word 文档、报告、备忘录、信函、合同或 .docx 文件。" },
-        "find-skills": { zhName: "发现技能", zhDescription: "用于查找、安装、推荐技能或扩展新能力。" },
-        "github": { zhName: "GitHub", zhDescription: "用于 GitHub issue、PR、Actions、发布或仓库查询。" },
-        "image-gen": { zhName: "图像生成", zhDescription: "用于绘图、生成图像、设计视觉内容或插画。" },
-        "memory": { zhName: "记忆", zhDescription: "用于记忆检索、整合、偏好管理或项目上下文。" },
-        "pdf": { zhName: "PDF", zhDescription: "用于 PDF、扫描件、OCR、表单、内容提取、合并或拆分。" },
-        "pptx": { zhName: "演示文稿", zhDescription: "用于幻灯片、演示、路演 deck 或 .pptx 文件。" },
-        "skill-creator": { zhName: "技能创建器", zhDescription: "用于创建、更新、打包或整理技能及其资源。" },
-        "summarize": { zhName: "总结", zhDescription: "用于总结 URL、文件、播客、视频或提取转录内容。" },
-        "tmux": { zhName: "tmux 会话", zhDescription: "用于交互式终端会话、TUI 应用或长生命周期 CLI 工作流。" },
-        "weather": { zhName: "天气", zhDescription: "用于查询当前位置天气、预报或天气相关问题。" },
-        "xlsx": { zhName: "表格", zhDescription: "用于电子表格、Excel、CSV/TSV 清洗、表格处理或 .xlsx 文件。" }
-    })
 
     function tr(zh, en) {
         return isZhLang ? zh : en
@@ -73,63 +70,44 @@ Item {
         return "../resources/icons/vendor/lucide-lab/" + path + ".svg"
     }
 
+    function workspaceString(key, fallbackZh, fallbackEn) {
+        if (typeof strings === "object" && strings !== null) {
+            var value = strings[key]
+            if (value !== undefined && value !== null && String(value))
+                return String(value)
+        }
+        return tr(fallbackZh, fallbackEn)
+    }
+
+    function localizedText(value, fallback) {
+        if (value && typeof value === "object") {
+            var primary = isZhLang ? value.zh : value.en
+            var secondary = isZhLang ? value.en : value.zh
+            if (primary !== undefined && primary !== null && String(primary))
+                return String(primary)
+            if (secondary !== undefined && secondary !== null && String(secondary))
+                return String(secondary)
+        }
+        if (value !== undefined && value !== null && typeof value !== "object" && String(value))
+            return String(value)
+        return String(fallback || "")
+    }
+
     function localizedSkillName(skill) {
-        if (!skill)
-            return ""
-        var rawName = String(skill.name || "")
-        if (!isZhLang)
-            return rawName
-        var localized = builtinSkillLocaleMap[rawName]
-        return localized && localized.zhName ? localized.zhName : rawName
+        return localizedText(skill ? skill.displayName : null, skill && skill.name ? skill.name : "")
     }
 
     function localizedSkillDescription(skill) {
-        if (!skill)
-            return ""
-        var rawName = String(skill.name || "")
-        var rawDescription = String(skill.description || "")
-        if (!isZhLang)
-            return rawDescription
-        var localized = builtinSkillLocaleMap[rawName]
-        return localized && localized.zhDescription ? localized.zhDescription : rawDescription
+        return localizedText(
+            skill ? skill.displaySummary : null,
+            skill && skill.summary ? skill.summary : ""
+        )
     }
 
     function skillIconSource(skill) {
         if (!skill)
-            return icon("book-stack")
-        switch (String(skill.name || "")) {
-        case "agent-browser":
-            return icon("page-search")
-        case "clawhub":
-        case "skill-creator":
             return labIcon("toolbox")
-        case "coding-agent":
-        case "tmux":
-            return icon("computer")
-        case "copywriting":
-        case "summarize":
-            return icon("message-text")
-        case "cron":
-            return icon("calendar-rotate")
-        case "find-skills":
-            return icon("page-search")
-        case "github":
-            return icon("activity")
-        case "image-gen":
-            return icon("circle-spark")
-        case "memory":
-            return icon("brain-electricity")
-        case "pdf":
-        case "docx":
-        case "pptx":
-            return icon("book-stack")
-        case "weather":
-            return icon("activity")
-        case "xlsx":
-            return icon("database-settings")
-        default:
-            return String(skill.source || "") === "workspace" ? labIcon("toolbox") : icon("book-stack")
-        }
+        return String(skill.iconSource || labIcon("toolbox"))
     }
 
     function sourceLabel(skill) {
@@ -139,10 +117,11 @@ Item {
     function primaryStatusLabel(skill) {
         if (!skill)
             return ""
-        if (skill.missingRequirements)
-            return tr("需补依赖", "Missing deps")
         if (skill.shadowed)
-            return tr("重复", "Duplicate")
+            return tr("已覆盖", "Overridden")
+        var statusLabel = localizedText(skill.statusLabel, "")
+        if (statusLabel)
+            return statusLabel
         if (skill.always)
             return tr("常驻", "Always on")
         return ""
@@ -151,19 +130,19 @@ Item {
     function primaryStatusColor(skill) {
         if (!skill)
             return textSecondary
-        if (skill.missingRequirements)
-            return statusError
         if (skill.shadowed)
             return "#F59E0B"
+        if (String(skill.status || "") === "needs_setup")
+            return statusError
+        if (String(skill.status || "") === "instruction_only")
+            return "#8B5CF6"
         if (skill.always)
             return accent
-        return textSecondary
+        return "#22C55E"
     }
 
     function selectedSkillValue(key, fallbackValue) {
-        if (!root.hasSkillsService || !skillsService.selectedSkill)
-            return fallbackValue
-        var value = skillsService.selectedSkill[key]
+        var value = root.selectedSkill[key]
         return (typeof value === "undefined" || value === null) ? fallbackValue : value
     }
 
@@ -172,10 +151,38 @@ Item {
     }
 
     function selectedDiscoverValue(key, fallbackValue) {
-        if (!root.hasSkillsService || !skillsService.selectedDiscoverItem)
-            return fallbackValue
-        var value = skillsService.selectedDiscoverItem[key]
+        var value = root.selectedDiscoverItem[key]
         return (typeof value === "undefined" || value === null) ? fallbackValue : value
+    }
+
+    function discoverTaskTone(state) {
+        switch (String(state || "")) {
+        case "working":
+            return accent
+        case "completed":
+            return "#22C55E"
+        case "failed":
+            return statusError
+        case "cancelled":
+            return "#F59E0B"
+        default:
+            return textSecondary
+        }
+    }
+
+    function discoverTaskLabel(state) {
+        switch (String(state || "")) {
+        case "working":
+            return tr("进行中", "Working")
+        case "completed":
+            return tr("已完成", "Completed")
+        case "failed":
+            return tr("失败", "Failed")
+        case "cancelled":
+            return tr("已取消", "Cancelled")
+        default:
+            return tr("空闲", "Idle")
+        }
     }
 
     function toastMessage(code, ok) {
@@ -183,8 +190,6 @@ Item {
             return code
         if (code === "created")
             return tr("技能已创建", "Skill created")
-        if (code === "forked")
-            return tr("已复制到工作区", "Copied to workspace")
         if (code === "saved")
             return tr("技能已保存", "Skill saved")
         if (code === "deleted")
@@ -203,28 +208,38 @@ Item {
         revealAnimation.restart()
     }
 
+    function headerTitle() {
+        return workspaceString("workspace_skills_title", "技能", "Skills")
+    }
+
+    function currentHeaderCaption() {
+        return workspaceString(
+            "workspace_skills_caption",
+            "管理 AI 拓展技能",
+            "Manage AI extension skills"
+        )
+    }
+
     function syncDraft(force) {
-        if (!hasSkillsService)
+        if (!hasSkillsService || !editorRef)
             return
-        var selectedId = skillsService.selectedSkillId || ""
-        if (!force && draftDirty && draftSkillId === selectedId)
+        var selectedId = root.selectedSkillId
+        if (!force && draftDirty && draftSkillId === selectedId && editorRef.text !== root.selectedContent)
             return
         syncingDraft = true
         draftSkillId = selectedId
-        draftContent = skillsService.selectedContent || ""
+        editorRef.text = root.selectedContent
         draftDirty = false
         syncingDraft = false
     }
 
     onActiveChanged: if (active) playReveal()
+    onSelectedSkillIdChanged: syncDraft(true)
+    onSelectedContentChanged: syncDraft(false)
     Component.onCompleted: syncDraft(true)
 
     Connections {
-        target: root.hasSkillsService ? skillsService : null
-
-        function onChanged() {
-            root.syncDraft(root.draftSkillId !== skillsService.selectedSkillId)
-        }
+        target: root.hasSkillsSignals ? skillsService : null
 
         function onOperationFinished(message, ok) {
             globalToast.show(root.toastMessage(message, ok), ok)
@@ -239,216 +254,154 @@ Item {
         scale: root.revealScale
         transform: Translate { x: root.revealShift }
 
-        ColumnLayout {
+        Rectangle {
             anchors.fill: parent
             anchors.margins: 16
-            spacing: 12
+            radius: 30
+            color: bgCard
+            border.width: 1
+            border.color: isDark ? "#20FFFFFF" : "#146E4B2A"
 
             Rectangle {
-                Layout.fillWidth: true
-                radius: 22
-                color: isDark ? "#14100D" : "#F7F0E7"
-                border.width: 1
-                border.color: isDark ? "#1EFFFFFF" : "#12000000"
-                implicitHeight: 60
+                anchors.fill: parent
+                radius: parent.radius
+                color: isDark ? "#08FFFFFF" : "#0DFFF7EF"
+            }
 
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.margins: 14
-                    spacing: 12
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 22
+                spacing: 18
 
-                    Item {
-                        Layout.fillWidth: true
-                        Layout.alignment: Qt.AlignVCenter
+                CalloutPanel {
+                    Layout.fillWidth: true
+                    panelColor: isDark ? "#15100D" : "#FFF7F0"
+                    panelBorderColor: isDark ? "#22FFFFFF" : "#14000000"
+                    overlayColor: isDark ? "#0BFFFFFF" : "#08FFFFFF"
+                    overlayVisible: true
+                    sideGlowVisible: false
+                    accentBlobVisible: false
+                    padding: 14
 
-                        Text {
-                            anchors.left: parent.left
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: tr("技能", "Skills")
-                            color: textPrimary
-                            font.pixelSize: typeTitle
-                            font.weight: weightBold
-                        }
-                    }
+                    ColumnLayout {
+                        width: parent.width
+                        spacing: 8
 
-                    Item {
-                        Layout.fillWidth: true
-                        Layout.alignment: Qt.AlignVCenter
+                        Item {
+                            Layout.fillWidth: true
+                            implicitHeight: 52
 
-                        Rectangle {
-                            id: modeTabBar
-                            anchors.centerIn: parent
-                            implicitWidth: modeTabRow.implicitWidth + 8
-                            implicitHeight: 46
-                            radius: 23
-                            color: isDark ? "#12FFFFFF" : "#08000000"
-                            border.width: 1
-                            border.color: borderSubtle
+                            Row {
+                                anchors.left: parent.left
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 10
 
-                            Rectangle {
-                                id: modeTabHighlight
-                                y: 6
-                                height: parent.height - 12
-                                radius: height / 2
-                                color: accent
-                                x: 6 + (installedTab.width + 6) * (root.currentMode === "installed" ? 0 : 1)
-                                width: root.currentMode === "installed" ? installedTab.width : discoverTab.width
-
-                                Behavior on x { NumberAnimation { duration: 220; easing.type: easeEmphasis } }
-                                Behavior on width { NumberAnimation { duration: 220; easing.type: easeStandard } }
-                            }
-
-                            RowLayout {
-                                id: modeTabRow
-                                anchors.fill: parent
-                                anchors.margins: 4
-                                spacing: 6
-
-                                Rectangle {
-                                    id: installedTab
-                                    Layout.preferredWidth: installedTabContent.implicitWidth + 22
-                                    Layout.fillHeight: true
-                                    radius: 17
-                                    color: root.installedTabHovered && root.currentMode !== "installed"
-                                           ? (isDark ? "#10FFFFFF" : "#08000000")
-                                           : "transparent"
-
-                                    Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-
-                                    Row {
-                                        id: installedTabContent
-                                        anchors.centerIn: parent
-                                        spacing: 8
-
-                                        Image {
-                                            width: 15
-                                            height: 15
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            source: root.icon("book-stack")
-                                            fillMode: Image.PreserveAspectFit
-                                            smooth: true
-                                            mipmap: true
-                                            opacity: root.currentMode === "installed" ? 1.0 : 0.72
-                                        }
-
-                                        Text {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: root.tr("已安装", "Installed")
-                                            color: root.currentMode === "installed" ? "#FFFFFFFF" : textSecondary
-                                            font.pixelSize: typeLabel
-                                            font.weight: Font.DemiBold
-                                        }
-                                    }
-
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onEntered: root.installedTabHovered = true
-                                        onExited: root.installedTabHovered = false
-                                        onClicked: root.currentMode = "installed"
-                                    }
+                                WorkspaceHeroIcon {
+                                    iconSource: root.icon("book-stack")
                                 }
 
-                                Rectangle {
-                                    id: discoverTab
-                                    Layout.preferredWidth: discoverTabContent.implicitWidth + 22
-                                    Layout.fillHeight: true
-                                    radius: 17
-                                    color: root.discoverTabHovered && root.currentMode !== "discover"
-                                           ? (isDark ? "#10FFFFFF" : "#08000000")
-                                           : "transparent"
+                                Column {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 2
 
-                                    Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-
-                                    Row {
-                                        id: discoverTabContent
-                                        anchors.centerIn: parent
-                                        spacing: 8
-
-                                        Image {
-                                            width: 15
-                                            height: 15
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            source: root.icon("page-search")
-                                            fillMode: Image.PreserveAspectFit
-                                            smooth: true
-                                            mipmap: true
-                                            opacity: root.currentMode === "discover" ? 1.0 : 0.72
-                                        }
-
-                                        Text {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: root.tr("发现", "Discover")
-                                            color: root.currentMode === "discover" ? "#FFFFFFFF" : textSecondary
-                                            font.pixelSize: typeLabel
-                                            font.weight: Font.DemiBold
-                                        }
+                                    Text {
+                                        text: root.headerTitle()
+                                        color: textPrimary
+                                        font.pixelSize: typeTitle - 1
+                                        font.weight: weightBold
                                     }
 
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onEntered: root.discoverTabHovered = true
-                                        onExited: root.discoverTabHovered = false
-                                        onClicked: root.currentMode = "discover"
+                                    Text {
+                                        text: root.currentHeaderCaption()
+                                        color: textSecondary
+                                        font.pixelSize: typeMeta
+                                        maximumLineCount: 1
+                                        elide: Text.ElideRight
                                     }
                                 }
                             }
-                        }
-                    }
 
-                    Item {
-                        Layout.fillWidth: true
-                        Layout.alignment: Qt.AlignVCenter
+                            Item {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: modeTabBar.implicitWidth
+                                height: modeTabBar.implicitHeight
 
-                        RowLayout {
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 8
-
-                            PillActionButton {
-                                text: tr("目录地址", "Folder path")
-                                iconSource: root.labIcon("copy-file-path")
-                                minHeight: 34
-                                horizontalPadding: 18
-                                outlined: true
-                                fillColor: "transparent"
-                                hoverFillColor: bgCardHover
-                                outlineColor: borderSubtle
-                                hoverOutlineColor: borderDefault
-                                textColor: textPrimary
-                                onClicked: if (root.hasSkillsService) skillsService.openWorkspaceFolder()
+                                SegmentedTabs {
+                                    id: modeTabBar
+                                    anchors.centerIn: parent
+                                    currentValue: root.currentMode
+                                    items: [
+                                        {
+                                            value: "installed",
+                                            label: root.tr("已安装", "Installed"),
+                                            icon: root.icon("book-stack")
+                                        },
+                                        {
+                                            value: "discover",
+                                            label: root.tr("发现", "Discover"),
+                                            icon: root.icon("page-search")
+                                        }
+                                    ]
+                                    onSelected: function(value) { root.currentMode = value }
+                                }
                             }
 
-                            PillActionButton {
-                                visible: root.currentMode === "installed"
-                                text: tr("新建技能", "New skill")
-                                iconSource: root.icon("circle-spark")
-                                minHeight: 34
-                                horizontalPadding: 18
-                                fillColor: accent
-                                hoverFillColor: accentHover
-                                onClicked: createSkillModal.open()
+                            Item {
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: rightHeaderActions.implicitWidth
+                                height: rightHeaderActions.implicitHeight
+
+                                RowLayout {
+                                    id: rightHeaderActions
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 8
+
+                                    PillActionButton {
+                                        text: tr("目录地址", "Folder path")
+                                        iconSource: root.labIcon("copy-file-path")
+                                        minHeight: 34
+                                        horizontalPadding: 18
+                                        outlined: true
+                                        fillColor: "transparent"
+                                        hoverFillColor: bgCardHover
+                                        outlineColor: borderSubtle
+                                        hoverOutlineColor: borderDefault
+                                        textColor: textPrimary
+                                        onClicked: if (root.hasSkillsService) skillsService.openWorkspaceFolder()
+                                    }
+
+                                    PillActionButton {
+                                        visible: root.currentMode === "installed"
+                                        text: tr("新建技能", "New skill")
+                                        iconSource: root.icon("circle-spark")
+                                        minHeight: 34
+                                        horizontalPadding: 18
+                                        fillColor: accent
+                                        hoverFillColor: accentHover
+                                        onClicked: createSkillModal.open()
+                                    }
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                radius: 28
-                color: isDark ? "#17120F" : "#FFFDFC"
-                border.width: 1
-                border.color: isDark ? "#18FFFFFF" : "#12000000"
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    radius: 28
+                    color: isDark ? "#17120F" : "#FFFDFC"
+                    border.width: 1
+                    border.color: isDark ? "#18FFFFFF" : "#12000000"
 
-                Loader {
-                    anchors.fill: parent
-                    anchors.margins: 12
-                    sourceComponent: root.currentMode === "installed" ? installedPane : discoverPane
+                    Loader {
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        sourceComponent: root.currentMode === "installed" ? installedPane : discoverPane
+                    }
                 }
             }
         }
@@ -460,26 +413,7 @@ Item {
         SplitView {
             orientation: Qt.Horizontal
             spacing: 10
-            handle: Item {
-                implicitWidth: 10
-                implicitHeight: 10
-
-                Column {
-                    anchors.centerIn: parent
-                    spacing: 6
-
-                    Repeater {
-                        model: 18
-
-                        delegate: Rectangle {
-                            width: 2
-                            height: 4
-                            radius: 1
-                            color: isDark ? "#18FFFFFF" : "#16000000"
-                        }
-                    }
-                }
-            }
+            handle: WorkspaceSplitHandle {}
 
             Rectangle {
                 SplitView.preferredWidth: 152
@@ -524,7 +458,7 @@ Item {
                             selectionColor: textSelectionBg
                             selectedTextColor: textSelectionFg
                             font.pixelSize: typeBody
-                            text: root.hasSkillsService ? skillsService.query : ""
+                            text: root.skillQueryValue
                             onTextEdited: if (root.hasSkillsService) skillsService.setQuery(text)
                         }
                     }
@@ -534,12 +468,7 @@ Item {
                         spacing: 6
 
                         Repeater {
-                            model: [
-                                { value: "all", zh: "全部", en: "All" },
-                                { value: "workspace", zh: "工作区", en: "Workspace" },
-                                { value: "builtin", zh: "内建", en: "Built-in" },
-                                { value: "attention", zh: "重复 / 缺依赖", en: "Duplicate / missing deps" }
-                            ]
+                            model: root.installedFilterOptions
 
                             delegate: PillActionButton {
                                 required property var modelData
@@ -549,10 +478,10 @@ Item {
                                 minHeight: 34
                                 horizontalPadding: 14
                                 outlined: true
-                                fillColor: root.hasSkillsService && skillsService.sourceFilter === modelData.value ? accentMuted : "transparent"
-                                hoverFillColor: root.hasSkillsService && skillsService.sourceFilter === modelData.value ? accentMuted : bgCardHover
-                                outlineColor: root.hasSkillsService && skillsService.sourceFilter === modelData.value ? accent : borderSubtle
-                                hoverOutlineColor: root.hasSkillsService && skillsService.sourceFilter === modelData.value ? accentHover : borderDefault
+                                fillColor: root.sourceFilterValue === modelData.value ? accentMuted : "transparent"
+                                hoverFillColor: root.sourceFilterValue === modelData.value ? accentMuted : bgCardHover
+                                outlineColor: root.sourceFilterValue === modelData.value ? accent : borderSubtle
+                                hoverOutlineColor: root.sourceFilterValue === modelData.value ? accentHover : borderDefault
                                 textColor: textPrimary
                                 onClicked: if (root.hasSkillsService) skillsService.setSourceFilter(modelData.value)
                             }
@@ -597,9 +526,7 @@ Item {
                             Text {
                                 id: listCountLabel
                                 anchors.centerIn: parent
-                                text: root.hasSkillsService
-                                      ? (tr("共 ", "Total ") + String(skillsService.totalCount) + tr(" · 重复 ", " · Duplicate ") + root.shadowedCount + tr(" · 缺依赖 ", " · Missing ") + root.missingRequirementCount)
-                                      : "0"
+                                text: tr("显示 ", "Showing ") + String(root.installedSkills.length) + tr(" · 就绪 ", " · Ready ") + String(root.overview.readyCount || 0) + tr(" · 待设置 ", " · Setup ") + String(root.overview.needsSetupCount || 0)
                                 color: textSecondary
                                 font.pixelSize: typeMeta
                                 font.weight: weightBold
@@ -624,146 +551,167 @@ Item {
                                 color: isDark ? "#28FFFFFF" : "#22000000"
                             }
                         }
-                        model: root.hasSkillsService ? skillsService.skills : []
+                        model: root.installedSkills
 
                         delegate: Item {
                             id: skillDelegateRoot
                             required property var modelData
 
                             width: skillList.width
-                            implicitHeight: 120
-                            property bool selected: root.hasSkillsService && skillsService.selectedSkillId === modelData.id
+                            implicitHeight: skillCard.implicitHeight + (sectionHeader.visible ? sectionHeader.implicitHeight + 8 : 0)
+                            property bool selected: root.selectedSkillId === modelData.id
 
-                            Rectangle {
+                            Column {
                                 anchors.fill: parent
-                                radius: 22
-                                color: skillArea.containsMouse
-                                       ? (skillDelegateRoot.selected ? (isDark ? "#241914" : "#FFF1E2") : bgCardHover)
-                                       : (skillDelegateRoot.selected ? (isDark ? "#201612" : "#FFF7F0") : (isDark ? "#17120F" : "#FFFFFF"))
-                                border.width: skillDelegateRoot.selected ? 1.5 : 1
-                                border.color: skillDelegateRoot.selected ? accent : (isDark ? "#14FFFFFF" : "#10000000")
-                                scale: skillArea.pressed ? 0.99 : (skillArea.containsMouse ? motionHoverScaleSubtle : 1.0)
+                                spacing: 8
 
-                                Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-                                Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-                                Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeEmphasis } }
+                                Item {
+                                    id: sectionHeader
+                                    width: parent.width
+                                    implicitHeight: sectionHeaderText.implicitHeight
+                                    visible: !!skillDelegateRoot.modelData.showSectionHeader
 
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 12
-                                    anchors.bottomMargin: 16
-                                    spacing: 8
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 8
-
-                                        Rectangle {
-                                            Layout.alignment: Qt.AlignTop
-                                            width: 36
-                                            height: 36
-                                            radius: 12
-                                            color: skillDelegateRoot.selected ? (isDark ? "#302015" : "#F1D8BE") : (isDark ? "#211915" : "#F2E6D9")
-                                            border.width: skillDelegateRoot.selected ? 1 : 0
-                                            border.color: skillDelegateRoot.selected ? accent : "transparent"
-
-                                            Image {
-                                                anchors.centerIn: parent
-                                                width: 18
-                                                height: 18
-                                                source: root.skillIconSource(skillDelegateRoot.modelData)
-                                                sourceSize: Qt.size(width, height)
-                                                fillMode: Image.PreserveAspectFit
-                                                smooth: true
-                                                mipmap: true
-                                            }
-                                        }
-
-                                        ColumnLayout {
-                                            Layout.fillWidth: true
-                                            spacing: 2
-
-                                            Text {
-                                                Layout.fillWidth: true
-                                                text: root.localizedSkillName(skillDelegateRoot.modelData)
-                                                color: textPrimary
-                                                font.pixelSize: typeBody
-                                                font.weight: weightBold
-                                                elide: Text.ElideRight
-                                            }
-
-                                            Text {
-                                                Layout.fillWidth: true
-                                                text: root.localizedSkillDescription(skillDelegateRoot.modelData)
-                                                color: isDark ? textSecondary : "#5A4537"
-                                                font.pixelSize: typeMeta
-                                                wrapMode: Text.WordWrap
-                                                maximumLineCount: 2
-                                                elide: Text.ElideRight
-                                            }
-                                        }
-
-                                        IconCircleButton {
-                                            buttonSize: 30
-                                            glyphText: "→"
-                                            glyphSize: typeLabel
-                                            fillColor: "transparent"
-                                            hoverFillColor: bgCardHover
-                                            outlineColor: skillDelegateRoot.selected ? accent : borderSubtle
-                                            glyphColor: skillDelegateRoot.selected ? accent : textSecondary
-                                            onClicked: if (root.hasSkillsService) skillsService.selectSkill(skillDelegateRoot.modelData.id)
-                                        }
+                                    Text {
+                                        id: sectionHeaderText
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        text: root.localizedText(skillDelegateRoot.modelData.sectionTitle, "")
+                                        color: textSecondary
+                                        font.pixelSize: typeMeta
+                                        font.weight: weightBold
                                     }
+                                }
 
-                                    Row {
-                                        width: parent.width
+                                Rectangle {
+                                    id: skillCard
+                                    width: parent.width
+                                    implicitHeight: 120
+                                    radius: 22
+                                    color: skillArea.containsMouse
+                                           ? (skillDelegateRoot.selected ? (isDark ? "#241914" : "#FFF1E2") : bgCardHover)
+                                           : (skillDelegateRoot.selected ? (isDark ? "#201612" : "#FFF7F0") : (isDark ? "#17120F" : "#FFFFFF"))
+                                    border.width: skillDelegateRoot.selected ? 1.5 : 1
+                                    border.color: skillDelegateRoot.selected ? accent : (isDark ? "#14FFFFFF" : "#10000000")
+
+                                    Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                                    Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 12
+                                        anchors.bottomMargin: 16
                                         spacing: 8
-                                        clip: true
 
-                                        Repeater {
-                                            model: [
-                                                { visible: true, text: root.sourceLabel(skillDelegateRoot.modelData), tone: skillDelegateRoot.modelData.source === "workspace" ? "#22C55E" : "#60A5FA" },
-                                                { visible: !!root.primaryStatusLabel(skillDelegateRoot.modelData), text: root.primaryStatusLabel(skillDelegateRoot.modelData), tone: root.primaryStatusColor(skillDelegateRoot.modelData) }
-                                            ]
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 8
 
-                                            delegate: Rectangle {
-                                                required property var modelData
+                                            Rectangle {
+                                                Layout.alignment: Qt.AlignTop
+                                                implicitWidth: 36
+                                                implicitHeight: 36
+                                                Layout.preferredWidth: implicitWidth
+                                                Layout.preferredHeight: implicitHeight
+                                                radius: 12
+                                                color: skillDelegateRoot.selected ? (isDark ? "#302015" : "#F1D8BE") : (isDark ? "#211915" : "#F2E6D9")
+                                                border.width: skillDelegateRoot.selected ? 1 : 0
+                                                border.color: skillDelegateRoot.selected ? accent : "transparent"
 
-                                                visible: modelData.visible
-                                                radius: 11
-                                                height: 22
-                                                color: Qt.rgba(Qt.color(modelData.tone).r, Qt.color(modelData.tone).g, Qt.color(modelData.tone).b, isDark ? 0.18 : 0.10)
-                                                border.width: 1
-                                                border.color: Qt.rgba(Qt.color(modelData.tone).r, Qt.color(modelData.tone).g, Qt.color(modelData.tone).b, isDark ? 0.34 : 0.24)
-                                                width: badgeText.implicitWidth + 16
+                                                AppIcon {
+                                                    anchors.centerIn: parent
+                                                    width: 18
+                                                    height: 18
+                                                    source: root.skillIconSource(skillDelegateRoot.modelData)
+                                                    sourceSize: Qt.size(width, height)
+                                                }
+                                            }
+
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 2
 
                                                 Text {
-                                                    id: badgeText
-                                                    anchors.centerIn: parent
-                                                    text: modelData.text
+                                                    Layout.fillWidth: true
+                                                    text: root.localizedSkillName(skillDelegateRoot.modelData)
                                                     color: textPrimary
-                                                    font.pixelSize: typeCaption
+                                                    font.pixelSize: typeBody
                                                     font.weight: weightBold
+                                                    elide: Text.ElideRight
+                                                }
+
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    text: root.localizedSkillDescription(skillDelegateRoot.modelData)
+                                                    color: isDark ? textSecondary : "#5A4537"
+                                                    font.pixelSize: typeMeta
+                                                    wrapMode: Text.WordWrap
+                                                    maximumLineCount: 2
+                                                    elide: Text.ElideRight
+                                                }
+                                            }
+
+                                            IconCircleButton {
+                                                buttonSize: 30
+                                                glyphText: "→"
+                                                glyphSize: typeLabel
+                                                fillColor: "transparent"
+                                                hoverFillColor: bgCardHover
+                                                outlineColor: skillDelegateRoot.selected ? accent : borderSubtle
+                                                glyphColor: skillDelegateRoot.selected ? accent : textSecondary
+                                                onClicked: if (root.hasSkillsService) skillsService.selectSkill(skillDelegateRoot.modelData.id)
+                                            }
+                                        }
+
+                                        Row {
+                                            Layout.fillWidth: true
+                                            spacing: 8
+                                            clip: true
+
+                                            Repeater {
+                                                model: [
+                                                    { visible: true, text: root.sourceLabel(skillDelegateRoot.modelData), tone: skillDelegateRoot.modelData.source === "workspace" ? "#22C55E" : "#60A5FA" },
+                                                    { visible: !!root.primaryStatusLabel(skillDelegateRoot.modelData), text: root.primaryStatusLabel(skillDelegateRoot.modelData), tone: root.primaryStatusColor(skillDelegateRoot.modelData) }
+                                                ]
+
+                                                delegate: Rectangle {
+                                                    required property var modelData
+
+                                                    visible: modelData.visible
+                                                    radius: 11
+                                                    height: 22
+                                                    color: Qt.rgba(Qt.color(modelData.tone).r, Qt.color(modelData.tone).g, Qt.color(modelData.tone).b, isDark ? 0.18 : 0.10)
+                                                    border.width: 1
+                                                    border.color: Qt.rgba(Qt.color(modelData.tone).r, Qt.color(modelData.tone).g, Qt.color(modelData.tone).b, isDark ? 0.34 : 0.24)
+                                                    width: badgeText.implicitWidth + 16
+
+                                                    Text {
+                                                        id: badgeText
+                                                        anchors.centerIn: parent
+                                                        text: modelData.text
+                                                        color: textPrimary
+                                                        font.pixelSize: typeCaption
+                                                        font.weight: weightBold
+                                                    }
                                                 }
                                             }
                                         }
                                     }
-                                }
 
-                                MouseArea {
-                                    id: skillArea
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    acceptedButtons: Qt.LeftButton
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: if (root.hasSkillsService) skillsService.selectSkill(skillDelegateRoot.modelData.id)
+                                    MouseArea {
+                                        id: skillArea
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        acceptedButtons: Qt.LeftButton
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: if (root.hasSkillsService) skillsService.selectSkill(skillDelegateRoot.modelData.id)
+                                    }
                                 }
                             }
                         }
 
                         footer: Item {
                             width: skillList.width
-                            height: root.hasSkillsService && skillsService.totalCount === 0 ? 180 : 0
+                            height: root.installedSkills.length === 0 ? 180 : 0
 
                             Column {
                                 anchors.centerIn: parent
@@ -808,35 +756,6 @@ Item {
                     anchors.margins: 10
                     spacing: 8
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 10
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 4
-
-                            Text {
-                                Layout.fillWidth: true
-                                text: root.hasSkillsService ? (root.localizedSkillName(skillsService.selectedSkill) || root.tr("选择一个技能", "Choose a skill")) : root.tr("选择一个技能", "Choose a skill")
-                                color: textPrimary
-                                font.pixelSize: typeLabel
-                                font.weight: weightBold
-                                elide: Text.ElideRight
-                            }
-
-                            Text {
-                                Layout.fillWidth: true
-                                text: root.hasSkillsService ? (root.localizedSkillDescription(skillsService.selectedSkill) || root.tr("从中栏选择一个技能后，这里会显示说明、状态和可编辑内容。", "Choose a skill from the list to inspect its summary, status, and editable content.")) : root.tr("从中栏选择一个技能后，这里会显示说明、状态和可编辑内容。", "Choose a skill from the list to inspect its summary, status, and editable content.")
-                                color: textSecondary
-                                font.pixelSize: typeCaption
-                                maximumLineCount: 2
-                                elide: Text.ElideRight
-                                wrapMode: Text.WordWrap
-                            }
-                        }
-                    }
-
                     Rectangle {
                         Layout.fillWidth: true
                         implicitHeight: detailSummaryColumn.implicitHeight + 16
@@ -851,17 +770,38 @@ Item {
                             anchors.right: parent.right
                             anchors.top: parent.top
                             anchors.margins: 10
-                            spacing: 6
+                            spacing: 8
+
+                            Text {
+                                width: parent.width
+                                text: root.localizedSkillName(root.selectedSkill) || root.tr("选择一个技能", "Choose a skill")
+                                color: textPrimary
+                                font.pixelSize: typeLabel
+                                font.weight: weightBold
+                                elide: Text.ElideRight
+                            }
+
+                            Text {
+                                width: parent.width
+                                text: root.selectedSkillId
+                                      ? root.localizedText(root.selectedSkill.displayDetail, root.localizedSkillDescription(root.selectedSkill))
+                                      : root.tr("从中栏选择一个技能后，这里会显示说明、状态和可编辑内容。", "Choose a skill from the list to inspect its summary, status, and editable content.")
+                                color: textSecondary
+                                font.pixelSize: typeCaption
+                                maximumLineCount: 2
+                                elide: Text.ElideRight
+                                wrapMode: Text.WordWrap
+                            }
 
                             Flow {
                                 width: parent.width
                                 spacing: 8
 
                                 Repeater {
-                                    model: root.hasSkillsService ? [
-                                        { visible: root.selectedSkillFlag("name"), text: root.sourceLabel(skillsService.selectedSkill), tone: root.selectedSkillValue("source", "") === "workspace" ? "#22C55E" : "#60A5FA" },
-                                        { visible: !!root.primaryStatusLabel(skillsService.selectedSkill), text: root.primaryStatusLabel(skillsService.selectedSkill), tone: root.primaryStatusColor(skillsService.selectedSkill) }
-                                    ] : []
+                                    model: [
+                                        { visible: root.selectedSkillFlag("name"), text: root.sourceLabel(root.selectedSkill), tone: root.selectedSkillValue("source", "") === "workspace" ? "#22C55E" : "#60A5FA" },
+                                        { visible: !!root.primaryStatusLabel(root.selectedSkill), text: root.primaryStatusLabel(root.selectedSkill), tone: root.primaryStatusColor(root.selectedSkill) }
+                                    ]
 
                                     delegate: Rectangle {
                                         required property var modelData
@@ -888,6 +828,15 @@ Item {
 
                             Text {
                                 width: parent.width
+                                visible: root.selectedSkillFlag("statusDetailDisplay")
+                                text: root.localizedText(root.selectedSkillValue("statusDetailDisplay", ""), "")
+                                color: textSecondary
+                                font.pixelSize: typeCaption
+                                wrapMode: Text.WordWrap
+                            }
+
+                            Text {
+                                width: parent.width
                                 visible: root.selectedSkillFlag("missingRequirements")
                                 text: root.tr("缺失依赖：", "Missing requirements: ") + String(root.selectedSkillValue("missingRequirements", ""))
                                 color: statusError
@@ -903,6 +852,64 @@ Item {
                                 color: textSecondary
                                 font.pixelSize: typeCaption
                                 wrapMode: Text.WrapAnywhere
+                            }
+
+                            Flow {
+                                width: parent.width
+                                spacing: 8
+                                visible: (root.selectedSkillValue("linkedCapabilities", []) || []).length > 0
+
+                                Repeater {
+                                    model: root.selectedSkillValue("linkedCapabilities", [])
+
+                                    delegate: Rectangle {
+                                        required property var modelData
+
+                                        radius: 11
+                                        height: 24
+                                        color: isDark ? "#1D1713" : "#FFFFFF"
+                                        border.width: 1
+                                        border.color: isDark ? "#16FFFFFF" : "#10000000"
+                                        width: capabilityText.implicitWidth + 22
+
+                                        Text {
+                                            id: capabilityText
+                                            anchors.centerIn: parent
+                                            text: root.localizedText(modelData.displayName, "")
+                                            color: textPrimary
+                                            font.pixelSize: typeCaption
+                                            font.weight: weightBold
+                                        }
+                                    }
+                                }
+                            }
+
+                            Column {
+                                width: parent.width
+                                spacing: 4
+                                visible: (root.selectedSkillValue("examplePrompts", []) || []).length > 0
+
+                                Text {
+                                    width: parent.width
+                                    text: root.tr("示例提示词", "Example prompts")
+                                    color: textPrimary
+                                    font.pixelSize: typeMeta
+                                    font.weight: weightBold
+                                }
+
+                                Repeater {
+                                    model: root.selectedSkillValue("examplePrompts", [])
+
+                                    delegate: Text {
+                                        required property string modelData
+
+                                        width: detailSummaryColumn.width
+                                        text: "• " + modelData
+                                        color: textSecondary
+                                        font.pixelSize: typeCaption
+                                        wrapMode: Text.WordWrap
+                                    }
+                                }
                             }
                         }
                     }
@@ -925,7 +932,7 @@ Item {
 
                                 Text {
                                     Layout.fillWidth: true
-                                    text: root.selectedSkillValue("source", "") === "workspace" ? root.tr("编辑技能说明", "Edit skill file") : root.tr("查看技能说明", "View skill file")
+                                    text: root.selectedSkillValue("source", "") === "workspace" ? root.tr("编辑技能文件", "Edit skill file") : root.tr("查看技能文件", "View skill file")
                                     color: textPrimary
                                     font.pixelSize: typeLabel
                                     font.weight: weightBold
@@ -963,9 +970,9 @@ Item {
 
                                 TextArea {
                                     id: editor
+                                    objectName: "skillsEditor"
                                     property bool baoClickAwayEditor: true
                                     readOnly: !root.selectedSkillFlag("canEdit")
-                                    text: root.draftContent
                                     color: textPrimary
                                     placeholderText: root.tr("这里显示技能的 SKILL.md 内容。", "This shows the selected skill's SKILL.md content.")
                                     placeholderTextColor: textPlaceholder
@@ -979,11 +986,15 @@ Item {
                                     selectionColor: textSelectionBg
                                     selectedTextColor: textSelectionFg
 
+                                    Component.onCompleted: {
+                                        root.editorRef = editor
+                                        root.syncDraft(true)
+                                    }
+
                                     onTextChanged: {
                                         if (root.syncingDraft)
                                             return
-                                        root.draftContent = text
-                                        root.draftDirty = root.draftSkillId !== "" && text !== (root.hasSkillsService ? skillsService.selectedContent : "")
+                                        root.draftDirty = root.draftSkillId !== "" && text !== root.selectedContent
                                     }
                                 }
                             }
@@ -1029,7 +1040,7 @@ Item {
                                     fillColor: accent
                                     hoverFillColor: accentHover
                                     buttonEnabled: root.draftDirty
-                                    onClicked: skillsService.saveSelectedContent(root.draftContent)
+                                    onClicked: skillsService.saveSelectedContent(editor.text)
                                 }
                             }
                         }
@@ -1045,26 +1056,7 @@ Item {
         SplitView {
             orientation: Qt.Horizontal
             spacing: 10
-            handle: Item {
-                implicitWidth: 10
-                implicitHeight: 10
-
-                Column {
-                    anchors.centerIn: parent
-                    spacing: 6
-
-                    Repeater {
-                        model: 18
-
-                        delegate: Rectangle {
-                            width: 2
-                            height: 4
-                            radius: 1
-                            color: isDark ? "#18FFFFFF" : "#16000000"
-                        }
-                    }
-                }
-            }
+            handle: WorkspaceSplitHandle {}
 
             Rectangle {
                 SplitView.preferredWidth: 520
@@ -1108,7 +1100,7 @@ Item {
                                 selectionColor: textSelectionBg
                                 selectedTextColor: textSelectionFg
                                 font.pixelSize: typeBody
-                                text: root.hasSkillsService ? skillsService.discoverQuery : ""
+                                text: root.discoverQueryValue
                                 onTextEdited: if (root.hasSkillsService) skillsService.setDiscoverQuery(text)
                             }
 
@@ -1117,8 +1109,8 @@ Item {
                                 iconSource: root.icon("page-search")
                                 minHeight: 32
                                 horizontalPadding: 16
-                                busy: root.hasSkillsService && skillsService.busy
-                                buttonEnabled: root.hasSkillsService && (skillsService.discoverQuery || "").trim().length > 0
+                                busy: root.serviceBusy
+                                buttonEnabled: root.discoverQueryValue.trim().length > 0
                                 onClicked: skillsService.searchRemote()
                             }
                         }
@@ -1152,7 +1144,7 @@ Item {
                                 selectionColor: textSelectionBg
                                 selectedTextColor: textSelectionFg
                                 font.pixelSize: typeBody
-                                text: root.hasSkillsService ? skillsService.discoverReference : ""
+                                text: root.discoverReferenceValue
                                 onTextEdited: if (root.hasSkillsService) skillsService.setDiscoverReference(text)
                             }
 
@@ -1161,8 +1153,8 @@ Item {
                                 iconSource: root.icon("circle-spark")
                                 minHeight: 32
                                 horizontalPadding: 16
-                                busy: root.hasSkillsService && skillsService.busy
-                                buttonEnabled: root.hasSkillsService && (skillsService.discoverReference || "").trim().length > 0
+                                busy: root.serviceBusy
+                                buttonEnabled: root.discoverReferenceValue.trim().length > 0
                                 onClicked: skillsService.installDiscoverReference()
                             }
 
@@ -1199,7 +1191,7 @@ Item {
                             Text {
                                 id: discoverCountLabel
                                 anchors.centerIn: parent
-                                text: root.hasSkillsService ? String(skillsService.discoverResults.length) : "0"
+                                text: String(root.discoverResults.length)
                                 color: textSecondary
                                 font.pixelSize: typeMeta
                                 font.weight: weightBold
@@ -1224,7 +1216,7 @@ Item {
                                 color: isDark ? "#28FFFFFF" : "#22000000"
                             }
                         }
-                        model: root.hasSkillsService ? skillsService.discoverResults : []
+                        model: root.discoverResults
 
                         delegate: Item {
                             id: discoverDelegateRoot
@@ -1232,7 +1224,7 @@ Item {
 
                             width: discoverList.width
                             implicitHeight: 112
-                            property bool selected: root.hasSkillsService && skillsService.selectedDiscoverId === modelData.id
+                            property bool selected: root.selectedDiscoverId === modelData.id
 
                             Rectangle {
                                 anchors.fill: parent
@@ -1242,11 +1234,9 @@ Item {
                                        : (discoverDelegateRoot.selected ? (isDark ? "#201612" : "#FFF7F0") : (isDark ? "#17120F" : "#FFFFFF"))
                                 border.width: discoverDelegateRoot.selected ? 1.5 : 1
                                 border.color: discoverDelegateRoot.selected ? accent : (isDark ? "#14FFFFFF" : "#10000000")
-                                scale: discoverArea.pressed ? 0.99 : (discoverArea.containsMouse ? motionHoverScaleSubtle : 1.0)
 
                                 Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
                                 Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-                                Behavior on scale { NumberAnimation { duration: motionFast; easing.type: easeEmphasis } }
 
                                 ColumnLayout {
                                     anchors.fill: parent
@@ -1260,22 +1250,21 @@ Item {
 
                                         Rectangle {
                                             Layout.alignment: Qt.AlignTop
-                                            width: 36
-                                            height: 36
+                                            implicitWidth: 36
+                                            implicitHeight: 36
+                                            Layout.preferredWidth: implicitWidth
+                                            Layout.preferredHeight: implicitHeight
                                             radius: 12
                                             color: discoverDelegateRoot.selected ? (isDark ? "#302015" : "#F1D8BE") : (isDark ? "#211915" : "#F2E6D9")
                                             border.width: discoverDelegateRoot.selected ? 1 : 0
                                             border.color: discoverDelegateRoot.selected ? accent : "transparent"
 
-                                            Image {
+                                            AppIcon {
                                                 anchors.centerIn: parent
                                                 width: 18
                                                 height: 18
                                                 source: root.icon("circle-spark")
                                                 sourceSize: Qt.size(width, height)
-                                                fillMode: Image.PreserveAspectFit
-                                                smooth: true
-                                                mipmap: true
                                             }
                                         }
 
@@ -1285,7 +1274,7 @@ Item {
 
                                             Text {
                                                 Layout.fillWidth: true
-                                                text: discoverDelegateRoot.modelData.name
+                                                text: String(discoverDelegateRoot.modelData.title || discoverDelegateRoot.modelData.name || "")
                                                 color: textPrimary
                                                 font.pixelSize: typeBody
                                                 font.weight: weightBold
@@ -1315,8 +1304,26 @@ Item {
                                         }
                                     }
 
+                                    Row {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+
+                                        Text {
+                                            text: {
+                                                var publisher = String(discoverDelegateRoot.modelData.publisher || "")
+                                                var version = String(discoverDelegateRoot.modelData.version || "")
+                                                if (publisher && version)
+                                                    return publisher + " · " + version
+                                                return publisher || version
+                                            }
+                                            color: textSecondary
+                                            font.pixelSize: typeMeta
+                                            visible: text.length > 0
+                                        }
+                                    }
+
                                     Text {
-                                        width: parent.width
+                                        Layout.fillWidth: true
                                         text: discoverDelegateRoot.modelData.reference
                                         color: accent
                                         font.pixelSize: typeMeta
@@ -1337,7 +1344,7 @@ Item {
 
                         footer: Item {
                             width: discoverList.width
-                            height: root.hasSkillsService && skillsService.discoverResults.length === 0 ? 180 : 0
+                            height: root.discoverResults.length === 0 ? 180 : 0
 
                             Column {
                                 anchors.centerIn: parent
@@ -1382,35 +1389,6 @@ Item {
                     anchors.margins: 10
                     spacing: 8
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 10
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 4
-
-                            Text {
-                                Layout.fillWidth: true
-                                text: String(root.selectedDiscoverValue("name", root.tr("选择一个候选技能", "Choose a candidate skill")))
-                                color: textPrimary
-                                font.pixelSize: typeLabel
-                                font.weight: weightBold
-                                elide: Text.ElideRight
-                            }
-
-                            Text {
-                                Layout.fillWidth: true
-                                text: String(root.selectedDiscoverValue("summary", root.tr("从中栏选择一个候选技能后，这里会显示引用与导入动作。", "Choose a candidate from the list to inspect its reference and import action.")))
-                                color: textSecondary
-                                font.pixelSize: typeCaption
-                                maximumLineCount: 2
-                                elide: Text.ElideRight
-                                wrapMode: Text.WordWrap
-                            }
-                        }
-                    }
-
                     Rectangle {
                         Layout.fillWidth: true
                         implicitHeight: discoverSummaryColumn.implicitHeight + 16
@@ -1425,11 +1403,73 @@ Item {
                             anchors.right: parent.right
                             anchors.top: parent.top
                             anchors.margins: 10
-                            spacing: 6
+                            spacing: 8
 
                             Text {
                                 width: parent.width
-                                text: String(root.selectedDiscoverValue("reference", root.hasSkillsService ? (skillsService.discoverReference || "") : ""))
+                                text: String(root.selectedDiscoverValue("title", root.selectedDiscoverValue("name", root.tr("选择一个候选技能", "Choose a candidate skill"))))
+                                color: textPrimary
+                                font.pixelSize: typeLabel
+                                font.weight: weightBold
+                                elide: Text.ElideRight
+                            }
+
+                            Text {
+                                width: parent.width
+                                text: String(root.selectedDiscoverValue("summary", root.tr("从中栏选择一个候选技能后，这里会显示引用、信任信息与导入动作。", "Choose a candidate from the list to inspect its reference, trust notes, and import action.")))
+                                color: textSecondary
+                                font.pixelSize: typeCaption
+                                maximumLineCount: 2
+                                elide: Text.ElideRight
+                                wrapMode: Text.WordWrap
+                            }
+
+                            Flow {
+                                width: parent.width
+                                spacing: 8
+
+                                Rectangle {
+                                    radius: 10
+                                    height: 22
+                                    color: isDark ? "#1D1713" : "#FFFFFF"
+                                    border.width: 1
+                                    border.color: isDark ? "#16FFFFFF" : "#10000000"
+                                    width: publisherBadge.implicitWidth + 14
+                                    visible: publisherBadge.text.length > 0
+
+                                    Text {
+                                        id: publisherBadge
+                                        anchors.centerIn: parent
+                                        text: String(root.selectedDiscoverValue("publisher", ""))
+                                        color: textPrimary
+                                        font.pixelSize: 11
+                                        font.weight: weightBold
+                                    }
+                                }
+
+                                Rectangle {
+                                    radius: 10
+                                    height: 22
+                                    color: isDark ? "#1D1713" : "#FFFFFF"
+                                    border.width: 1
+                                    border.color: isDark ? "#16FFFFFF" : "#10000000"
+                                    width: installStateBadge.implicitWidth + 14
+                                    visible: installStateBadge.text.length > 0
+
+                                    Text {
+                                        id: installStateBadge
+                                        anchors.centerIn: parent
+                                        text: root.localizedText(root.selectedDiscoverValue("installStateLabel", ""), "")
+                                        color: textPrimary
+                                        font.pixelSize: 11
+                                        font.weight: weightBold
+                                    }
+                                }
+                            }
+
+                            Text {
+                                width: parent.width
+                                text: String(root.selectedDiscoverValue("reference", root.discoverReferenceValue))
                                 color: accent
                                 font.pixelSize: typeCaption
                                 wrapMode: Text.WrapAnywhere
@@ -1437,10 +1477,100 @@ Item {
 
                             Text {
                                 width: parent.width
-                                text: root.hasSkillsService && skillsService.lastError ? skillsService.lastError : root.tr("选择结果后，直接导入到当前工作区。", "Select a result and import it into the current workspace.")
-                                color: root.hasSkillsService && skillsService.lastError ? statusError : textSecondary
+                                text: root.localizedText(root.selectedDiscoverValue("trustNote", ""), root.tr("选择结果后，直接导入到当前工作区。", "Select a result and import it into the current workspace."))
+                                color: textSecondary
                                 font.pixelSize: typeCaption
                                 wrapMode: Text.WordWrap
+                            }
+
+                            Text {
+                                width: parent.width
+                                visible: (root.selectedDiscoverValue("requires", []) || []).length > 0
+                                text: root.tr("导入前提：", "Import prerequisites: ") + String((root.selectedDiscoverValue("requires", []) || []).join(", "))
+                                color: textSecondary
+                                font.pixelSize: typeCaption
+                                wrapMode: Text.WordWrap
+                            }
+
+                            Text {
+                                width: parent.width
+                                text: root.localizedText(root.selectedDiscoverValue("installStateDetail", ""), "")
+                                color: textSecondary
+                                font.pixelSize: typeCaption
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: taskSummaryColumn.implicitHeight + 16
+                        radius: 16
+                        color: isDark ? "#181310" : "#FFF9F3"
+                        border.width: 1
+                        border.color: isDark ? "#12FFFFFF" : "#10000000"
+
+                        Column {
+                            id: taskSummaryColumn
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 10
+                            spacing: 6
+
+                            Row {
+                                width: parent.width
+                                spacing: 8
+
+                                Rectangle {
+                                    radius: 10
+                                    height: 22
+                                    width: taskStateLabel.implicitWidth + 14
+                                    color: Qt.rgba(Qt.color(root.discoverTaskTone(root.discoverTask.state)).r,
+                                                   Qt.color(root.discoverTaskTone(root.discoverTask.state)).g,
+                                                   Qt.color(root.discoverTaskTone(root.discoverTask.state)).b,
+                                                   isDark ? 0.18 : 0.10)
+                                    border.width: 1
+                                    border.color: Qt.rgba(Qt.color(root.discoverTaskTone(root.discoverTask.state)).r,
+                                                          Qt.color(root.discoverTaskTone(root.discoverTask.state)).g,
+                                                          Qt.color(root.discoverTaskTone(root.discoverTask.state)).b,
+                                                          isDark ? 0.34 : 0.24)
+
+                                    Text {
+                                        id: taskStateLabel
+                                        anchors.centerIn: parent
+                                        text: root.discoverTaskLabel(root.discoverTask.state)
+                                        color: textPrimary
+                                        font.pixelSize: 11
+                                        font.weight: weightBold
+                                    }
+                                }
+
+                                Text {
+                                    text: root.discoverTask.kind === "install" ? root.tr("导入任务", "Import task") : root.tr("搜索任务", "Search task")
+                                    color: textSecondary
+                                    font.pixelSize: typeCaption
+                                    visible: root.discoverTask.state !== "idle"
+                                }
+                            }
+
+                            Text {
+                                width: parent.width
+                                text: root.discoverTask.message
+                                      ? root.discoverTask.message
+                                      : root.tr("搜索或导入时，这里会显示当前任务状态。", "Current search/import status will appear here.")
+                                color: root.discoverTask.state === "failed" ? statusError : textSecondary
+                                font.pixelSize: typeCaption
+                                wrapMode: Text.WordWrap
+                            }
+
+                            Text {
+                                width: parent.width
+                                visible: (root.discoverTask.reference || "").length > 0
+                                text: root.discoverTask.reference || ""
+                                color: accent
+                                font.pixelSize: typeCaption
+                                wrapMode: Text.WrapAnywhere
                             }
                         }
                     }

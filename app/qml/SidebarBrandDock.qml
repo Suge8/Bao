@@ -13,8 +13,6 @@ Item {
     property var bubbleMessages: []
 
     property color accent: "#FFB33D"
-    property color textPrimary: "#FFF6EA"
-    property color textSecondary: "#C8B09A"
     property int typeMeta: 12
     property int weightMedium: Font.Medium
     property int weightDemiBold: Font.DemiBold
@@ -26,7 +24,6 @@ Item {
     property int easeStandard: Easing.OutCubic
     property int easeEmphasis: Easing.OutBack
     property int easeSoft: Easing.InOutSine
-    property real motionHoverScaleSubtle: 1.02
     property real motionPressScaleStrong: 0.94
     property real motionSelectionScaleActive: 1.015
 
@@ -34,27 +31,58 @@ Item {
     signal diagnosticsRequested()
 
     implicitWidth: 188
-    implicitHeight: 88
+    implicitHeight: 72
 
     readonly property bool iconHovered: appIconArea.containsMouse
     readonly property bool diagnosticsHovered: diagnosticsArea.containsMouse
     readonly property int visibleDiagnosticsCount: Math.max(0, diagnosticsCount)
     readonly property bool bubbleVisible: iconHovered && currentBubbleText.length > 0
+    readonly property color primaryInk: isDark ? "#F7EFE7" : "#261A12"
+    readonly property color secondaryInk: isDark ? "#C5AF9E" : "#6B5649"
+    readonly property url brandImageSource: "../resources/logo-circle.png"
+    property string currentBubbleText: ""
+    readonly property real appIconRestScale: root.iconHovered ? 1.015 : 1.0
+    readonly property real appIconInteractiveScale: root.active
+                                                    ? motionSelectionScaleActive
+                                                    : root.appIconRestScale
     readonly property real appIconScale: appIconArea.pressed
                                          ? motionPressScaleStrong
-                                         : (root.active
-                                            ? motionSelectionScaleActive
-                                            : (root.iconHovered ? 1.015 : 1.0))
-    readonly property url brandImageSource: isDark
-                                            ? "../resources/logo-bun-dark.png"
-                                            : "../resources/logo-bun-light.png"
-    property string currentBubbleText: ""
+                                         : root.appIconInteractiveScale
     readonly property int idleMotionDuration: 860
     readonly property real idleLiftTravel: 3.6
     readonly property real idleScalePeak: 1.055
-    readonly property real hoverLiftTravel: 4.6
-    readonly property real hoverTiltAngle: -5.5
-    readonly property real hoverScalePeak: 1.115
+    readonly property real hoverLiftTravel: 5.2
+    readonly property real hoverTiltAngle: -6.5
+    readonly property real hoverScalePeak: 1.14
+    readonly property real brandAuraRestOpacity: root.iconHovered ? 0.26 : 0.10
+    readonly property real brandAuraOpacity: root.active ? 0.34 : root.brandAuraRestOpacity
+    readonly property real brandAuraRestScale: root.active ? 1.02 : 0.94
+    readonly property real brandAuraScale: root.iconHovered ? 1.08 : root.brandAuraRestScale
+    readonly property real brandPlateOpacity: root.iconHovered ? 0.92 : 0.76
+    readonly property real brandPlateScale: root.iconHovered ? 1.02 : 0.98
+    readonly property real diagnosticsHoverScale: root.diagnosticsHovered ? 1.03 : 1.0
+    readonly property color diagnosticsBorderColor: root.diagnosticsHovered
+                                                    ? (isDark ? "#C29C6A" : "#D8A66A")
+                                                    : (isDark ? "#2AFFFFFF" : "#DCC4A7")
+    readonly property color diagnosticsFillColor: root.diagnosticsHovered
+                                                  ? (isDark ? "#221712" : "#F6EBDD")
+                                                  : (isDark ? "#16110E" : "#FCF6F0")
+    readonly property color diagnosticsOverlayColor: root.diagnosticsHovered
+                                                     ? (isDark ? "#12FFFFFF" : "#16FFFFFF")
+                                                     : (isDark ? "#07FFFFFF" : "#0CFFFFFF")
+    readonly property real diagnosticsIconScale: root.diagnosticsHovered ? 1.06 : 1.0
+    readonly property real diagnosticsIconOpacity: root.diagnosticsHovered ? 1.0 : 0.88
+    readonly property real diagnosticsLabelOpacity: root.diagnosticsHovered ? 1.0 : 0.94
+    readonly property color diagnosticsHintColor: root.diagnosticsHovered
+                                                  ? root.primaryInk
+                                                  : root.secondaryInk
+    readonly property int diagnosticsHintWeight: root.diagnosticsHovered
+                                                 ? weightDemiBold
+                                                 : weightMedium
+    readonly property real diagnosticsBadgeScale: root.diagnosticsHovered ? 1.04 : 1.0
+    readonly property string diagnosticsCountLabel: root.visibleDiagnosticsCount > 9
+                                                    ? "9+"
+                                                    : String(root.visibleDiagnosticsCount)
 
     function pickBubbleText() {
         if (!bubbleMessages || bubbleMessages.length === 0)
@@ -98,6 +126,41 @@ Item {
             NumberAnimation { duration: motionUi; easing.type: easeEmphasis }
         }
 
+        Rectangle {
+            id: brandAura
+            anchors.centerIn: parent
+            width: 78
+            height: 78
+            radius: width / 2
+            color: isDark ? "#26F4BF6A" : "#2FE4A45D"
+            opacity: root.brandAuraOpacity
+            scale: root.brandAuraScale
+
+            Behavior on opacity {
+                NumberAnimation { duration: motionUi; easing.type: easeSoft }
+            }
+            Behavior on scale {
+                NumberAnimation { duration: motionPanel; easing.type: easeEmphasis }
+            }
+        }
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: 66
+            height: 66
+            radius: width / 2
+            color: isDark ? "#12000000" : "#120A0603"
+            opacity: root.brandPlateOpacity
+            scale: root.brandPlateScale
+
+            Behavior on opacity {
+                NumberAnimation { duration: motionFast; easing.type: easeStandard }
+            }
+            Behavior on scale {
+                NumberAnimation { duration: motionUi; easing.type: easeEmphasis }
+            }
+        }
+
         Item {
             id: brandMarkMotion
             objectName: "sidebarBrandMarkMotion"
@@ -117,6 +180,7 @@ Item {
                     PropertyChanges {
                         brandMarkMotion.y: brandMarkMotion.restY - root.hoverLiftTravel
                         brandMarkMotion.rotation: root.hoverTiltAngle
+                        brandMarkMotion.x: (appIconBtn.width - brandMarkMotion.width) / 2 - 0.6
                         brandMarkMotion.scale: appIconArea.pressed ? 0.965 : root.hoverScalePeak
                     }
                 },
@@ -126,6 +190,7 @@ Item {
                     PropertyChanges {
                         brandMarkMotion.y: brandMarkMotion.restY - 1.2
                         brandMarkMotion.rotation: 0
+                        brandMarkMotion.x: (appIconBtn.width - brandMarkMotion.width) / 2
                         brandMarkMotion.scale: 1.04
                     }
                 }
@@ -134,7 +199,7 @@ Item {
             transitions: [
                 Transition {
                     NumberAnimation {
-                        properties: "y,rotation,scale"
+                        properties: "x,y,rotation,scale"
                         duration: motionPanel
                         easing.type: easeSoft
                     }
@@ -171,13 +236,29 @@ Item {
                 }
             }
 
-            Image {
+            AppIcon {
+                id: brandMarkIcon
+                objectName: "sidebarBrandMarkIcon"
                 anchors.fill: parent
                 source: root.brandImageSource
                 sourceSize: Qt.size(116, 116)
-                fillMode: Image.PreserveAspectFit
-                smooth: true
-                mipmap: true
+            }
+
+            Rectangle {
+                width: 22
+                height: 9
+                radius: 4.5
+                anchors.top: parent.top
+                anchors.topMargin: 8
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.horizontalCenterOffset: -8
+                rotation: -18
+                color: "#24FFFFFF"
+                opacity: root.iconHovered ? 0.42 : 0.20
+
+                Behavior on opacity {
+                    NumberAnimation { duration: motionFast; easing.type: easeStandard }
+                }
             }
         }
 
@@ -194,21 +275,17 @@ Item {
     Rectangle {
         id: diagnosticsPill
         objectName: "sidebarDiagnosticsPill"
-        width: 108
-        height: 38
-        radius: 19
+        width: 104
+        height: 42
+        radius: 21
         anchors.left: appIconBtn.right
         anchors.leftMargin: 16
         anchors.verticalCenter: appIconBtn.verticalCenter
         antialiasing: true
         border.width: 1
-        border.color: root.diagnosticsHovered
-                      ? (isDark ? "#22FFFFFF" : "#22D3B089")
-                      : (isDark ? "#18FFFFFF" : "#18D9C2A9")
-        scale: diagnosticsArea.pressed
-               ? motionPressScaleStrong
-               : (root.diagnosticsHovered ? motionHoverScaleSubtle : 1.0)
-        color: isDark ? "#16110E" : "#FCF6F0"
+        border.color: root.diagnosticsBorderColor
+        scale: diagnosticsArea.pressed ? motionPressScaleStrong : root.diagnosticsHoverScale
+        color: root.diagnosticsFillColor
 
         Behavior on border.color {
             ColorAnimation { duration: motionUi; easing.type: easeStandard }
@@ -220,41 +297,67 @@ Item {
             NumberAnimation { duration: motionUi; easing.type: easeEmphasis }
         }
 
-        Row {
-            anchors.centerIn: parent
-            spacing: 7
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: 1
+            radius: parent.radius - 1
+            color: root.diagnosticsOverlayColor
+        }
 
-            Image {
-                width: 18
-                height: 18
+        Row {
+            id: diagnosticsContentRow
+            objectName: "sidebarDiagnosticsContentRow"
+            anchors.fill: parent
+            anchors.leftMargin: 11
+            anchors.rightMargin: 10
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 14
+
+            Item {
+                id: diagnosticsIconChip
+                objectName: "sidebarDiagnosticsIconChip"
+                width: 20
+                height: 20
                 anchors.verticalCenter: parent.verticalCenter
-                source: isDark
-                        ? "../resources/icons/sidebar-diagnostics-dark.svg"
-                        : "../resources/icons/sidebar-diagnostics-light.svg"
-                sourceSize: Qt.size(18, 18)
-                fillMode: Image.PreserveAspectFit
-                smooth: true
-                mipmap: true
-                opacity: root.diagnosticsHovered ? 1.0 : 0.86
+                scale: root.diagnosticsIconScale
+
+                Behavior on scale {
+                    NumberAnimation { duration: motionFast; easing.type: easeStandard }
+                }
+
+                AppIcon {
+                    width: 20
+                    height: 20
+                    anchors.centerIn: parent
+                    source: isDark
+                            ? "../resources/icons/sidebar-diagnostics-dark.svg"
+                            : "../resources/icons/sidebar-diagnostics-light.svg"
+                    sourceSize: Qt.size(20, 20)
+                    opacity: root.diagnosticsIconOpacity
+                }
             }
 
             Column {
+                id: diagnosticsLabelStack
+                objectName: "sidebarDiagnosticsLabelStack"
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 0
+                width: parent.width - diagnosticsIconChip.width - parent.spacing
 
                 Text {
                     text: root.diagnosticsLabel
-                    color: textPrimary
+                    color: root.primaryInk
                     font.pixelSize: typeMeta + 1
                     font.weight: weightBold
                     renderType: Text.NativeRendering
+                    opacity: root.diagnosticsLabelOpacity
                 }
 
                 Text {
                     text: root.diagnosticsHint
-                    color: textSecondary
+                    color: root.diagnosticsHintColor
                     font.pixelSize: typeMeta - 1
-                    font.weight: weightMedium
+                    font.weight: root.diagnosticsHintWeight
                     renderType: Text.NativeRendering
                 }
             }
@@ -270,7 +373,7 @@ Item {
             anchors.rightMargin: -3
             anchors.topMargin: -3
             color: accent
-            scale: root.diagnosticsHovered ? 1.04 : 1.0
+            scale: root.diagnosticsBadgeScale
 
             Behavior on scale {
                 NumberAnimation { duration: motionFast; easing.type: easeStandard }
@@ -278,7 +381,7 @@ Item {
 
             Text {
                 anchors.centerIn: parent
-                text: root.visibleDiagnosticsCount > 9 ? "9+" : String(root.visibleDiagnosticsCount)
+                text: root.diagnosticsCountLabel
                 color: isDark ? "#241106" : "#FFFFFF"
                 font.pixelSize: 8
                 font.weight: weightBold

@@ -1,5 +1,6 @@
 import QtQuick 2.15
 import QtQuick.Layouts 1.15
+import QtQuick.Effects
 
 Rectangle {
     id: root
@@ -22,6 +23,7 @@ Rectangle {
     property real minHeight: 30
     property real hoverScale: motionHoverScaleSubtle
     property real pressedScale: 0.988
+    readonly property color resolvedTextColor: root.buttonEnabled ? root.textColor : root.disabledTextColor
     signal clicked()
 
     implicitWidth: contentRow.implicitWidth + root.horizontalPadding
@@ -44,29 +46,32 @@ Rectangle {
         anchors.centerIn: parent
         spacing: (root.leadingText !== "" || root.iconSource !== "") ? 7 : 0
 
-        Image {
+        AppIcon {
+            id: iconGlyph
             visible: root.iconSource !== ""
             source: root.iconSource
             width: root.iconSize
             height: root.iconSize
             sourceSize: Qt.size(root.iconSize, root.iconSize)
-            fillMode: Image.PreserveAspectFit
-            smooth: true
-            mipmap: true
             opacity: root.buttonEnabled ? 1.0 : 0.6
+            layer.enabled: visible
+            layer.effect: MultiEffect {
+                colorization: 1.0
+                colorizationColor: root.resolvedTextColor
+            }
         }
 
         Text {
             visible: root.leadingText !== ""
             text: root.leadingText
-            color: root.buttonEnabled ? root.textColor : root.disabledTextColor
+            color: root.resolvedTextColor
             font.pixelSize: typeMeta
             font.weight: weightBold
         }
 
         Text {
             text: root.text
-            color: root.buttonEnabled ? root.textColor : root.disabledTextColor
+            color: root.resolvedTextColor
             font.pixelSize: typeLabel
             font.weight: weightDemiBold
         }

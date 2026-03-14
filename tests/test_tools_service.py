@@ -8,6 +8,7 @@ from typing import cast
 from unittest.mock import patch
 
 from app.backend.asyncio_runner import AsyncioRunner
+from bao.agent.tool_probe_cache import load_probe_results
 
 pytest = importlib.import_module("pytest")
 pytestmark = [pytest.mark.integration, pytest.mark.gui]
@@ -175,3 +176,49 @@ def test_tools_service_preserves_none_slim_schema(runner: AsyncioRunner, config_
     assert ok is True
     saved = cast(dict[str, object], config_service.get("tools.mcpServers.inherit-demo", {}))
     assert saved["slimSchema"] is None
+
+
+def test_tools_service_save_mcp_server_schedules_probe(runner: AsyncioRunner, config_service) -> None:
+    from app.backend.tools import ToolsService
+
+    service = ToolsService(runner, config_service)
+    scheduled: list[str] = []
+
+    def _capture(kind: str, coro) -> None:
+        scheduled.append(kind)
+        coro.close()
+
+    setattr(service, "_submit_task", _capture)
+
+    ok = service.saveMcpServer({"name": "probe-demo", "transport": "stdio", "command": "uvx"})
+
+    assert ok is True
+    assert scheduled == ["probe_server"]
+
+
+def test_tools_service_restores_probe_cache(runner: AsyncioRunner, config_service) -> None:
+    from app.backend.tools import ToolsService
+
+    assert config_service.save({"tools.mcpServers.demo.command": "uvx"}) is True
+    service = ToolsService(runner, config_service)
+    service.setConfigData(config_service.exportData())
+    service._handle_runner_result(
+        "probe_server",
+        True,
+        "",
+        {
+            "serverName": "demo",
+            "canConnect": True,
+            "toolNames": ["ping"],
+            "error": "",
+        },
+    )
+
+    cache = load_probe_results(Path(config_service.getConfigFilePath()).parent)
+    assert cache["demo"]["canConnect"] is True
+    assert isinstance(cache["demo"]["probedAt"], str)
+
+    reloaded = ToolsService(runner, config_service)
+    reloaded.setConfigData(config_service.exportData())
+    demo = next(item for item in reloaded.items if item["id"] == "mcp:demo")
+    assert demo["status"] == "healthy"

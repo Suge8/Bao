@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Coroutine
+from pathlib import Path
 from typing import Any, ClassVar
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
@@ -10,8 +11,10 @@ from app.backend.asyncio_runner import AsyncioRunner
 from app.backend.config import ConfigService
 from bao.agent.capability_registry import build_capability_registry_snapshot
 from bao.agent.tool_catalog import ToolCatalog
+from bao.agent.tool_probe_cache import delete_probe_result, load_probe_results, save_probe_result
 from bao.agent.tools.mcp import probe_mcp_server
 from bao.config.schema import MCPServerConfig
+from bao.runtime_diagnostics import get_runtime_diagnostics_store
 
 
 def _as_dict(value: object) -> dict[str, object] | None:
@@ -44,6 +47,8 @@ class ToolsService(QObject):
         self._runner = runner
         self._config_service = config_service
         self._catalog = ToolCatalog()
+        self._runtime_diagnostics = get_runtime_diagnostics_store()
+        self._probe_cache_dir = self._resolve_probe_cache_dir()
         self._config_data: dict[str, object] = {}
         self._query = ""
         self._source_filter = "all"
@@ -54,7 +59,7 @@ class ToolsService(QObject):
         self._selected_id = ""
         self._selected_item: dict[str, object] = {}
         self._overview: dict[str, object] = {}
-        self._probe_results: dict[str, dict[str, object]] = {}
+        self._probe_results: dict[str, dict[str, object]] = load_probe_results(self._probe_cache_dir)
         _ = self._runnerResult.connect(self._handle_runner_result)
 
     @Property(str, notify=changed)
@@ -93,6 +98,7 @@ class ToolsService(QObject):
     def setConfigData(self, data: object) -> None:
         next_data = _as_dict(data) or {}
         self._config_data = dict(next_data)
+        self._reload_probe_cache()
         self._refresh()
 
     @Slot(str)
@@ -148,11 +154,16 @@ class ToolsService(QObject):
             current_servers.pop(previous_name, None)
             self._probe_results.pop(previous_name, None)
         current_servers[next_name] = server_value
-        return self._save_patch(
+        if not self._save_patch(
             {"tools.mcpServers": current_servers},
             success_code="saved",
             failure_code="Save failed",
-        )
+        ):
+            return False
+        if previous_name and previous_name != next_name:
+            delete_probe_result(self._probe_cache_dir, previous_name)
+        self._schedule_probe(next_name, server_value)
+        return True
 
     @Slot(str, result=bool)
     def deleteMcpServer(self, name: str) -> bool:
@@ -164,6 +175,7 @@ class ToolsService(QObject):
             return False
         current_servers.pop(target, None)
         self._probe_results.pop(target, None)
+        delete_probe_result(self._probe_cache_dir, target)
         return self._save_patch(
             {"tools.mcpServers": current_servers},
             success_code="deleted",
@@ -209,6 +221,7 @@ class ToolsService(QObject):
             query=self._query.lower(),
             source_filter=self._source_filter,
             selected_id=self._selected_id,
+            diagnostics_snapshot=self._runtime_diagnostics.snapshot(max_events=0, max_log_lines=0),
         )
         self._overview = dict(snapshot.overview)
         self._items = [dict(item) for item in snapshot.items]
@@ -262,7 +275,9 @@ class ToolsService(QObject):
         result = _as_dict(payload) or {}
         name = _as_str(result.get("serverName", ""))
         if name:
-            self._probe_results[name] = dict(result)
+            self._probe_results[name] = dict(
+                save_probe_result(self._probe_cache_dir, name, dict(result))
+            )
         self._refresh()
         self.operationFinished.emit(
             "probe_ok"
@@ -274,6 +289,9 @@ class ToolsService(QObject):
     async def _probe_server(self, name: str, config_value: dict[str, object]) -> dict[str, object]:
         cfg = MCPServerConfig.model_validate(config_value)
         return await probe_mcp_server(name, cfg)
+
+    def _schedule_probe(self, name: str, config_value: dict[str, object]) -> None:
+        self._submit_task("probe_server", self._probe_server(name, config_value))
 
     def _normalize_server_payload(
         self, payload: dict[str, object]
@@ -348,6 +366,18 @@ class ToolsService(QObject):
     def _normalize_optional_int(self, value: object) -> int | None:
         coerced = self._coerce_int(value, 0)
         return coerced if coerced > 0 else None
+
+    def _resolve_probe_cache_dir(self) -> Path:
+        config_path = self._config_service.getConfigFilePath()
+        return Path(config_path).expanduser().resolve().parent if config_path else Path.home() / ".bao"
+
+    def _reload_probe_cache(self) -> None:
+        self._probe_cache_dir = self._resolve_probe_cache_dir()
+        cached = load_probe_results(self._probe_cache_dir)
+        current_servers = set(self._current_mcp_servers())
+        self._probe_results = {
+            name: dict(result) for name, result in cached.items() if not current_servers or name in current_servers
+        }
 
     def _set_busy(self, active: bool) -> None:
         self._busy_count = max(0, self._busy_count + (1 if active else -1))

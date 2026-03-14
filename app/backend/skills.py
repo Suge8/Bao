@@ -5,6 +5,7 @@ import concurrent.futures
 import re
 import shutil
 from collections.abc import Coroutine
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -13,8 +14,106 @@ from PySide6.QtGui import QDesktopServices
 
 from app.backend.asyncio_runner import AsyncioRunner
 from bao.agent.skill_catalog import SkillCatalog
+from bao.agent.skill_registry import build_skill_workspace_snapshot
 
 _SKILL_REF_RE = re.compile(r"([A-Za-z0-9._-]+/[A-Za-z0-9._-]+@[A-Za-z0-9._-]+)")
+
+
+def _as_dict(value: object) -> dict[str, object] | None:
+    if isinstance(value, dict):
+        return value
+    return None
+
+
+class SkillDiscoveryProvider:
+    async def search(self, query: str) -> dict[str, object]:
+        raise NotImplementedError
+
+    async def install(self, *, reference: str, workspace_path: Path) -> dict[str, object]:
+        raise NotImplementedError
+
+
+class NpxSkillDiscoveryProvider(SkillDiscoveryProvider):
+    async def search(self, query: str) -> dict[str, object]:
+        process = await asyncio.create_subprocess_exec(
+            "npx",
+            "--yes",
+            "skills",
+            "find",
+            query,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            raise RuntimeError(
+                (stderr or stdout).decode("utf-8", errors="replace").strip() or "skills find failed"
+            )
+        output = stdout.decode("utf-8", errors="replace")
+        items = SkillsService.parse_search_output(output)
+        return {"items": items, "raw": output}
+
+    async def install(self, *, reference: str, workspace_path: Path) -> dict[str, object]:
+        workspace_root = workspace_path / "skills"
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        source_root = workspace_path / ".agents" / "skills"
+        before_names = SkillsService._snapshot_skill_names(source_root)
+        process = await asyncio.create_subprocess_exec(
+            "npx",
+            "--yes",
+            "skills",
+            "add",
+            reference,
+            "--agent",
+            "codex",
+            "--copy",
+            "-y",
+            cwd=str(workspace_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            raise RuntimeError(
+                (stderr or stdout).decode("utf-8", errors="replace").strip() or "skills add failed"
+            )
+
+        after_names = SkillsService._snapshot_skill_names(source_root)
+        target_names = sorted(after_names - before_names)
+        if not target_names:
+            reference_name = SkillsService._extract_reference_name(reference)
+            if reference_name and reference_name in after_names:
+                target_names = [reference_name]
+        imported_ids = SkillsService._copy_installed_skills(
+            workspace_path=workspace_path,
+            source_root=source_root,
+            target_names=target_names or None,
+        )
+        if not imported_ids:
+            raise RuntimeError("No installed skills were produced by skills add.")
+        preferred_id = imported_ids[0]
+        reference_name = SkillsService._extract_reference_name(reference)
+        if reference_name:
+            candidate_id = f"workspace:{reference_name}"
+            if candidate_id in imported_ids:
+                preferred_id = candidate_id
+        return {"preferredId": preferred_id, "importedIds": imported_ids}
+
+
+@dataclass(frozen=True)
+class DiscoveryTaskState:
+    state: str = "idle"
+    kind: str = ""
+    message: str = ""
+    reference: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "state": self.state,
+            "kind": self.kind,
+            "message": self.message,
+            "reference": self.reference,
+        }
 
 
 class SkillsService(QObject):
@@ -29,12 +128,17 @@ class SkillsService(QObject):
         self,
         runner: AsyncioRunner,
         workspace_path: str,
+        discovery_provider: SkillDiscoveryProvider | None = None,
+        eager_refresh: bool = True,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._runner: AsyncioRunner = runner
         self._workspace_path: Path = Path(workspace_path).expanduser()
         self._catalog: SkillCatalog = SkillCatalog(self._workspace_path)
+        self._config_data: dict[str, object] = {}
+        self._overview: dict[str, object] = {}
+        self._discovery_provider = discovery_provider or NpxSkillDiscoveryProvider()
         self._query: str = ""
         self._source_filter: str = "all"
         self._busy: bool = False
@@ -51,9 +155,12 @@ class SkillsService(QObject):
         self._discover_results: list[dict[str, object]] = []
         self._selected_discover_id: str = ""
         self._selected_discover_item: dict[str, object] = {}
+        self._discover_task: DiscoveryTaskState = DiscoveryTaskState()
+        self._hydrated = False
 
         self._runnerResult.connect(self._handle_runner_result)
-        self._refresh()
+        if eager_refresh:
+            self._refresh()
 
     @Property(str, notify=changed)
     def workspacePath(self) -> str:
@@ -66,6 +173,10 @@ class SkillsService(QObject):
     @Property(str, notify=changed)
     def sourceFilter(self) -> str:
         return self._source_filter
+
+    @Property(dict, notify=changed)
+    def overview(self) -> dict[str, object]:
+        return dict(self._overview)
 
     @Property(bool, notify=busyChanged)
     def busy(self) -> bool:
@@ -105,11 +216,7 @@ class SkillsService(QObject):
 
     @Property(int, notify=changed)
     def attentionCount(self) -> int:
-        return sum(
-            1
-            for item in self._skills
-            if not bool(item.get("available")) or bool(item.get("shadowed"))
-        )
+        return sum(1 for item in self._skills if bool(item.get("needsAttention")))
 
     @Property(str, notify=changed)
     def discoverQuery(self) -> str:
@@ -131,9 +238,39 @@ class SkillsService(QObject):
     def selectedDiscoverId(self) -> str:
         return self._selected_discover_id
 
+    @Property(dict, notify=changed)
+    def discoverTask(self) -> dict[str, str]:
+        return self._discover_task.to_dict()
+
+    @Property(str, notify=changed)
+    def discoverTaskState(self) -> str:
+        return self._discover_task.state
+
+    @Property(str, notify=changed)
+    def discoverTaskMessage(self) -> str:
+        return self._discover_task.message
+
+    @Property(str, notify=changed)
+    def discoverTaskKind(self) -> str:
+        return self._discover_task.kind
+
+    @Property(str, notify=changed)
+    def discoverTaskReference(self) -> str:
+        return self._discover_task.reference
+
     @Slot()
     def refresh(self) -> None:
         self._refresh()
+
+    @Slot()
+    def hydrateIfNeeded(self) -> None:
+        self._refresh_if_hydrated(force=not self._hydrated)
+
+    @Slot("QVariant")
+    def setConfigData(self, data: object) -> None:
+        next_data = _as_dict(data) or {}
+        self._config_data = dict(next_data)
+        self._refresh_if_hydrated()
 
     @Slot(str)
     def setQuery(self, value: str) -> None:
@@ -145,7 +282,11 @@ class SkillsService(QObject):
 
     @Slot(str)
     def setSourceFilter(self, value: str) -> None:
-        next_value = value if value in {"all", "workspace", "builtin", "attention"} else "all"
+        next_value = (
+            value
+            if value in {"all", "workspace", "ready", "needs_setup", "instruction_only", "shadowed"}
+            else "all"
+        )
         if next_value == self._source_filter:
             return
         self._source_filter = next_value
@@ -186,6 +327,12 @@ class SkillsService(QObject):
             self._set_error("Search query is required.")
             self.operationFinished.emit("Search query is required.", False)
             return
+        self._set_discover_task(
+            state="working",
+            kind="search",
+            message=f"Searching for '{query}'",
+            reference=query,
+        )
         self._submit_task("search_remote", self._search_remote(query))
 
     @Slot(result=bool)
@@ -195,6 +342,12 @@ class SkillsService(QObject):
             self._set_error("Skill reference is required.")
             self.operationFinished.emit("Skill reference is required.", False)
             return False
+        self._set_discover_task(
+            state="working",
+            kind="install",
+            message=f"Importing {reference}",
+            reference=reference,
+        )
         self._submit_task("install_reference", self._install_reference(reference))
         return True
 
@@ -207,21 +360,6 @@ class SkillsService(QObject):
             return False
         self._refresh(preferred_skill_id=str(record.get("id") or ""))
         self.operationFinished.emit("created", True)
-        return True
-
-    @Slot(result=bool)
-    def forkSelectedSkill(self) -> bool:
-        skill = self._selected_skill
-        if skill.get("source") != "builtin":
-            self.operationFinished.emit("Only built-in skills can be forked.", False)
-            return False
-        try:
-            record = self._catalog.fork_builtin_skill(str(skill.get("name") or ""))
-        except Exception as exc:
-            self.operationFinished.emit(str(exc), False)
-            return False
-        self._refresh(preferred_skill_id=str(record.get("id") or ""))
-        self.operationFinished.emit("forked", True)
         return True
 
     @Slot(str, result=bool)
@@ -282,38 +420,33 @@ class SkillsService(QObject):
             return
         self._workspace_path = next_path
         self._catalog = SkillCatalog(self._workspace_path)
+        self._refresh_if_hydrated()
+
+    def _refresh_if_hydrated(self, *, force: bool = False) -> None:
+        if not force and not self._hydrated:
+            return
         self._refresh()
 
     def _refresh(self, *, preferred_skill_id: str | None = None) -> None:
-        records = self._catalog.list_records()
-        filtered = [item for item in records if self._matches_filters(item)]
-        self._skills = filtered
-        selected_id = preferred_skill_id or self._selected_skill_id
-        if selected_id and any(item.get("id") == selected_id for item in filtered):
-            self._set_selected(selected_id, emit=False)
-        elif filtered:
-            self._set_selected(str(filtered[0].get("id") or ""), emit=False)
+        snapshot = build_skill_workspace_snapshot(
+            catalog=self._catalog,
+            config_data=self._config_data,
+            query=self._query.lower(),
+            source_filter=self._source_filter,
+            selected_id=preferred_skill_id or self._selected_skill_id,
+        )
+        self._hydrated = True
+        self._skills = [dict(item) for item in snapshot.items]
+        self._overview = dict(snapshot.overview)
+        self._selected_skill_id = snapshot.selected_id
+        self._selected_skill = dict(snapshot.selected_item)
+        if self._selected_skill_id:
+            source = str(self._selected_skill.get("source") or "")
+            name = str(self._selected_skill.get("name") or "")
+            self._selected_content = self._catalog.read_content(name, source)
         else:
-            self._selected_skill_id = ""
-            self._selected_skill = {}
             self._selected_content = ""
         self.changed.emit()
-
-    def _matches_filters(self, item: dict[str, object]) -> bool:
-        if self._source_filter == "workspace" and item.get("source") != "workspace":
-            return False
-        if self._source_filter == "builtin" and item.get("source") != "builtin":
-            return False
-        if self._source_filter == "attention":
-            if bool(item.get("available")) and not bool(item.get("shadowed")):
-                return False
-        if not self._query:
-            return True
-        haystack = " ".join(
-            str(item.get(field) or "")
-            for field in ("name", "description", "source", "missingRequirements")
-        ).lower()
-        return self._query.lower() in haystack
 
     def _set_selected(self, skill_id: str, *, emit: bool = True) -> None:
         target = next((item for item in self._skills if item.get("id") == skill_id), None)
@@ -351,6 +484,13 @@ class SkillsService(QObject):
         self._set_busy(False)
         if not ok:
             self._set_error(message)
+            task_kind = self._task_kind_for_operation(kind)
+            self._set_discover_task(
+                state="cancelled" if message == "cancelled" else "failed",
+                kind=task_kind,
+                message=message or self._cancel_message(task_kind),
+                reference=self._discover_task.reference,
+            )
             self.operationFinished.emit(message, False)
             return
 
@@ -360,6 +500,13 @@ class SkillsService(QObject):
             result = payload if isinstance(payload, dict) else {}
             items = result.get("items", []) if isinstance(result, dict) else []
             self._set_discover_results(items)
+            count = len(self._discover_results)
+            self._set_discover_task(
+                state="completed",
+                kind="search",
+                message=f"Found {count} candidate skills" if count else "No matching skills found",
+                reference=self._discover_query.strip(),
+            )
             self.changed.emit()
             self.operationFinished.emit("search_ok", True)
             return
@@ -368,76 +515,45 @@ class SkillsService(QObject):
             result = payload if isinstance(payload, dict) else {}
             preferred_id = str(result.get("preferredId") or "")
             self._refresh(preferred_skill_id=preferred_id)
+            imported_ids = [str(item) for item in (result.get("importedIds", []) if isinstance(result, dict) else [])]
+            self._mark_discover_installed(imported_ids)
+            self._set_discover_task(
+                state="completed",
+                kind="install",
+                message=f"Imported {len(imported_ids) or 1} skill into the workspace",
+                reference=self._discover_reference.strip(),
+            )
             self.operationFinished.emit("installed", True)
 
     async def _search_remote(self, query: str) -> dict[str, object]:
-        process = await asyncio.create_subprocess_exec(
-            "npx",
-            "--yes",
-            "skills",
-            "find",
-            query,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await process.communicate()
-        if process.returncode != 0:
-            raise RuntimeError(
-                (stderr or stdout).decode("utf-8", errors="replace").strip() or "skills find failed"
-            )
-        output = stdout.decode("utf-8", errors="replace")
-        items = self.parse_search_output(output)
-        return {"items": items, "raw": output}
+        return await self._discovery_provider.search(query)
 
     async def _install_reference(self, reference: str) -> dict[str, object]:
-        workspace_root = self._workspace_path / "skills"
-        workspace_root.mkdir(parents=True, exist_ok=True)
-        source_root = self._workspace_path / ".agents" / "skills"
-        before_names = self._snapshot_skill_names(source_root)
-        process = await asyncio.create_subprocess_exec(
-            "npx",
-            "--yes",
-            "skills",
-            "add",
-            reference,
-            "--agent",
-            "codex",
-            "--copy",
-            "-y",
-            cwd=str(self._workspace_path),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        return await self._discovery_provider.install(
+            reference=reference,
+            workspace_path=self._workspace_path,
         )
-        stdout, stderr = await process.communicate()
-        if process.returncode != 0:
-            raise RuntimeError(
-                (stderr or stdout).decode("utf-8", errors="replace").strip() or "skills add failed"
-            )
-
-        after_names = self._snapshot_skill_names(source_root)
-        target_names = sorted(after_names - before_names)
-        if not target_names:
-            reference_name = self._extract_reference_name(reference)
-            if reference_name and reference_name in after_names:
-                target_names = [reference_name]
-        imported_ids = self._import_installed_skills(source_root, target_names=target_names or None)
-        if not imported_ids:
-            raise RuntimeError("No installed skills were produced by skills add.")
-        preferred_id = imported_ids[0]
-        reference_name = self._extract_reference_name(reference)
-        if reference_name:
-            candidate_id = f"workspace:{reference_name}"
-            if candidate_id in imported_ids:
-                preferred_id = candidate_id
-        return {"preferredId": preferred_id, "importedIds": imported_ids}
 
     def _import_installed_skills(
         self, source_root: Path, *, target_names: list[str] | None = None
     ) -> list[str]:
+        return self._copy_installed_skills(
+            workspace_path=self._workspace_path,
+            source_root=source_root,
+            target_names=target_names,
+        )
+
+    @staticmethod
+    def _copy_installed_skills(
+        *,
+        workspace_path: Path,
+        source_root: Path,
+        target_names: list[str] | None = None,
+    ) -> list[str]:
         if not source_root.exists():
             return []
         imported_ids: list[str] = []
-        destination_root = self._workspace_path / "skills"
+        destination_root = workspace_path / "skills"
         destination_root.mkdir(parents=True, exist_ok=True)
         allowed_names = set(target_names or [])
         for skill_dir in sorted(source_root.iterdir(), key=lambda item: item.name.lower()):
@@ -468,6 +584,65 @@ class SkillsService(QObject):
         if reference:
             self._discover_reference = reference
 
+    def _mark_discover_installed(self, imported_ids: list[str]) -> None:
+        if not imported_ids:
+            return
+        imported_names = {
+            item.split(":", 1)[1]
+            for item in imported_ids
+            if ":" in item
+        }
+        next_results: list[dict[str, object]] = []
+        next_selected = self._selected_discover_item
+        for item in self._discover_results:
+            next_item = dict(item)
+            if str(next_item.get("name") or "") in imported_names:
+                next_item["installState"] = "installed"
+                next_item["installStateLabel"] = {"zh": "已导入", "en": "Installed"}
+                next_item["installStateDetail"] = {
+                    "zh": "该技能已经导入到当前工作区。",
+                    "en": "This skill has been imported into the current workspace.",
+                }
+            next_results.append(next_item)
+            if str(next_item.get("id") or "") == self._selected_discover_id:
+                next_selected = next_item
+        self._discover_results = next_results
+        self._selected_discover_item = dict(next_selected)
+
+    def _set_discover_task(
+        self,
+        *,
+        state: str,
+        kind: str,
+        message: str,
+        reference: str,
+    ) -> None:
+        next_task = DiscoveryTaskState(
+            state=state,
+            kind=kind,
+            message=message,
+            reference=reference,
+        )
+        if next_task != self._discover_task:
+            self._discover_task = next_task
+            self.changed.emit()
+
+    @staticmethod
+    def _task_kind_for_operation(kind: str) -> str:
+        if kind == "search_remote":
+            return "search"
+        if kind == "install_reference":
+            return "install"
+        return ""
+
+    @staticmethod
+    def _cancel_message(kind: str) -> str:
+        if kind == "search":
+            return "Search cancelled"
+        if kind == "install":
+            return "Import cancelled"
+        return ""
+
     @staticmethod
     def _snapshot_skill_names(source_root: Path) -> set[str]:
         if not source_root.exists():
@@ -489,14 +664,31 @@ class SkillsService(QObject):
         items: list[dict[str, object]] = []
         for ref in refs:
             repo, _sep, skill_name = ref.partition("@")
+            owner, _slash, repo_name = repo.partition("/")
+            title = skill_name.replace("-", " ").replace("_", " ").strip().title() or ref
             items.append(
                 {
                     "id": ref,
                     "reference": ref,
                     "name": skill_name or ref,
+                    "title": title,
                     "repo": repo,
-                    "summary": f"Install with npx skills add {ref}",
-                    "searchText": f"{ref} {skill_name} {repo}".lower(),
+                    "publisher": owner,
+                    "repoName": repo_name,
+                    "version": "latest",
+                    "summary": f"Import {title} from {repo}",
+                    "trustNote": {
+                        "zh": "来自公开 skills registry；导入前请检查来源和说明。",
+                        "en": "Listed in the public skills registry; review the source and instructions before importing.",
+                    },
+                    "requires": ["npx skills"],
+                    "installState": "available",
+                    "installStateLabel": {"zh": "可导入", "en": "Ready to import"},
+                    "installStateDetail": {
+                        "zh": "可直接导入到当前工作区。",
+                        "en": "Ready to import into the current workspace.",
+                    },
+                    "searchText": f"{ref} {skill_name} {repo} {title} {owner} {repo_name}".lower(),
                 }
             )
         return items

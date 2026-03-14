@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <defs>
+    <linearGradient id="tower-frame" x1="3" y1="4" x2="21" y2="20" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFC869"/>
+      <stop offset="1" stop-color="#F08C2E"/>
+    </linearGradient>
+    <linearGradient id="tower-screen" x1="5" y1="6" x2="19" y2="17" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF7EA"/>
+      <stop offset="1" stop-color="#FBE3BE"/>
+    </linearGradient>
+  </defs>
+  <rect x="3" y="4" width="18" height="16" rx="5" fill="url(#tower-frame)"/>
+  <rect x="4.4" y="5.4" width="15.2" height="13.2" rx="3.8" fill="url(#tower-screen)"/>
+  <rect x="6" y="7" width="5.1" height="3.1" rx="1.35" fill="#6E4124"/>
+  <circle cx="7.45" cy="8.55" r="0.68" fill="#51D2A3"/>
+  <circle cx="9.58" cy="8.55" r="0.68" fill="#FFD15E"/>
+  <rect x="12.2" y="7" width="5.8" height="1.55" rx="0.775" fill="#FFBF54"/>
+  <rect x="12.2" y="8.95" width="4.6" height="1.55" rx="0.775" fill="#FF915F"/>
+  <rect x="6" y="11.3" width="8.75" height="4.2" rx="1.55" fill="#56CDA7"/>
+  <path d="M7.2 13.75L8.35 12.65L9.45 13.5L10.45 12.2L11.5 13.25L12.35 12.55L13.55 13.75" fill="none" stroke="#F9FBF5" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="15.45" y="11.3" width="2.55" height="1.8" rx="0.9" fill="#6E4124"/>
+  <rect x="15.45" y="13.7" width="2.55" height="1.8" rx="0.9" fill="#F4A24A"/>
+  <rect x="6" y="16.45" width="12" height="1.45" rx="0.725" fill="#E9B15A"/>
+  <circle cx="18.3" cy="6.55" r="1.25" fill="#FFF4DE"/>
+  <path d="M18.3 5.45L18.6 6.05L19.2 6.35L18.6 6.65L18.3 7.25L18 6.65L17.4 6.35L18 6.05L18.3 5.45Z" fill="#FF9B3D"/>
+</svg>

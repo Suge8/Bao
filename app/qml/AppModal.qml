@@ -12,6 +12,19 @@ Popup {
     property bool darkMode: true
     property bool showDefaultCloseAction: true
     property bool bodyScrollable: true
+    property int motionFast: 160
+    property int motionUi: 220
+    property int easeStandard: Easing.OutCubic
+    property int easeEmphasis: Easing.OutQuint
+    property real radiusLg: 24
+    property color bgElevated: darkMode ? "#171210" : "#FFFBF6"
+    property color borderDefault: darkMode ? "#2D221C" : "#E8D7C5"
+    property color textPrimary: darkMode ? "#FFF8F2" : "#22160E"
+    property color textSecondary: darkMode ? "#C7B7A8" : "#69574A"
+    property color bgCardHover: darkMode ? "#221815" : "#F4E7D8"
+    property color borderSubtle: darkMode ? "#3B2D24" : "#E5D2BD"
+    property int typeTitle: 20
+    property int typeLabel: 14
     default property alias body: modalBody.data
     property alias footer: customFooterRow.data
 

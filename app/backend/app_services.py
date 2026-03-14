@@ -9,8 +9,11 @@ class AppServices(QObject):
         *,
         chat_service: QObject,
         config_service: QObject,
+        profile_service: QObject | None = None,
         session_service: QObject,
         cron_service: QObject,
+        heartbeat_service: QObject | None = None,
+        profile_supervisor_service: QObject | None = None,
         memory_service: QObject,
         skills_service: QObject,
         tools_service: QObject,
@@ -25,8 +28,11 @@ class AppServices(QObject):
         super().__init__(parent)
         self._chat_service = chat_service
         self._config_service = config_service
+        self._profile_service = profile_service or QObject(self)
         self._session_service = session_service
         self._cron_service = cron_service
+        self._heartbeat_service = heartbeat_service or QObject(self)
+        self._profile_supervisor_service = profile_supervisor_service or QObject(self)
         self._memory_service = memory_service
         self._skills_service = skills_service
         self._tools_service = tools_service
@@ -46,12 +52,24 @@ class AppServices(QObject):
         return self._config_service
 
     @Property(QObject, constant=True)
+    def profileService(self) -> QObject:
+        return self._profile_service
+
+    @Property(QObject, constant=True)
     def sessionService(self) -> QObject:
         return self._session_service
 
     @Property(QObject, constant=True)
     def cronService(self) -> QObject:
         return self._cron_service
+
+    @Property(QObject, constant=True)
+    def heartbeatService(self) -> QObject:
+        return self._heartbeat_service
+
+    @Property(QObject, constant=True)
+    def profileSupervisorService(self) -> QObject:
+        return self._profile_supervisor_service
 
     @Property(QObject, constant=True)
     def memoryService(self) -> QObject:

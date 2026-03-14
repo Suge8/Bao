@@ -18,9 +18,9 @@ import threading
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from loguru import logger
 from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
@@ -30,7 +30,9 @@ from app.backend.asyncio_runner import AsyncioRunner
 from app.backend.attachment import AttachmentDraftModel
 from app.backend.chat import ChatMessageModel
 from bao.gateway.builder import DesktopStartupMessage
+from bao.profile import ProfileContext, profile_context_from_mapping
 from bao.session.manager import SessionChangeEvent
+from bao.utils.attachments import normalize_attachment_records
 from bao.utils.helpers import get_media_path, safe_filename
 
 _DEBUG_SWITCH = os.getenv("BAO_DESKTOP_DEBUG_SWITCH") == "1"
@@ -57,6 +59,10 @@ _CHANNEL_ERROR_LABELS = {
 }
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _normalize_gateway_channels(channels: list[str]) -> list[str]:
     seen: set[str] = set()
     ordered: list[str] = []
@@ -69,6 +75,19 @@ def _normalize_gateway_channels(channels: list[str]) -> list[str]:
             ordered.append(name)
             seen.add(name)
     return ordered
+
+
+def _session_manager_root(session_manager: object) -> Path | None:
+    workspace = getattr(session_manager, "workspace", None)
+    if workspace is None:
+        return None
+    return Path(str(workspace)).expanduser()
+
+
+def _target_session_root(config: Any, profile_context: ProfileContext | None) -> Path:
+    if profile_context is not None:
+        return profile_context.state_root
+    return Path(str(config.workspace_path)).expanduser()
 
 
 @dataclass(frozen=True)
@@ -124,6 +143,7 @@ class ChatService(QObject):
     gatewayDetailChanged = Signal(str)
     gatewayChannelsChanged = Signal()
     cronServiceChanged = Signal(object)
+    heartbeatServiceChanged = Signal(object)
     messageAppended = Signal(int)
     contentUpdated = Signal(int, str)
     statusUpdated = Signal(int, str)
@@ -134,6 +154,7 @@ class ChatService(QObject):
     sessionViewApplied = Signal(str)
     sessionViewportReady = Signal(str)
     draftAttachmentCountChanged = Signal()
+    startupActivityChanged = Signal()
 
     # Internal signals: asyncio thread → Qt main thread marshaling
     _initResult = Signal(int, bool, str, object, list)
@@ -143,6 +164,7 @@ class ChatService(QObject):
     _toolHintUpdate = Signal(str)
     _systemResponse = Signal(str, str)
     _startupMessage = Signal(object)
+    _startupActivityUpdate = Signal(object)
     _controlPlaneError = Signal(str)
     _sessionChange = Signal(object)
 
@@ -167,6 +189,7 @@ class ChatService(QObject):
         self._committed_session_key = self._session_key
         self._startup_target_key = ""
         self._startup_pending: list[_QueuedUiMessage] = []
+        self._startup_activity: dict[str, Any] = {}
         self._history_initialized = False
         self._history_fingerprint: tuple[int, str] | None = None
         self._history_cache: OrderedDict[str, _HistorySnapshot] = OrderedDict()
@@ -186,6 +209,7 @@ class ChatService(QObject):
         self._cron_status: dict[str, Any] = {}
         self._session_manager: Any = None
         self._config_data: dict[str, Any] | None = None
+        self._profile_context_data: dict[str, Any] | None = None
         self._pending_notifications: list[_QueuedUiMessage] = []
         self._active_streaming_row: int = -1
         self._active_streaming_session_key: str | None = None
@@ -205,6 +229,7 @@ class ChatService(QObject):
         self._toolHintUpdate.connect(self._handle_tool_hint_update)
         self._systemResponse.connect(self._handle_system_response)
         self._startupMessage.connect(self._handle_startup_message)
+        self._startupActivityUpdate.connect(self._handle_startup_activity_update)
         self._controlPlaneError.connect(self._handle_control_plane_error)
         self._sessionChange.connect(self._handle_session_change)
 
@@ -231,6 +256,10 @@ class ChatService(QObject):
     @Property(str, notify=gatewayDetailChanged)
     def gatewayDetail(self) -> str:
         return self._gateway_detail
+
+    @Property(dict, notify=startupActivityChanged)
+    def startupActivity(self) -> dict[str, Any]:
+        return dict(self._startup_activity)
 
     @Property(list, notify=gatewayChannelsChanged)
     def gatewayChannels(self) -> list[dict[str, Any]]:
@@ -264,6 +293,16 @@ class ChatService(QObject):
     def draftAttachmentCount(self) -> int:
         return self._draft_attachments.rowCount()
 
+    def supervisorGatewaySnapshot(self) -> dict[str, Any]:
+        return {
+            "state": self.gatewayState,
+            "detail": self.gatewayDetail,
+            "error": self.lastError,
+            "detail_is_error": self.gatewayDetailIsError,
+            "channels": self.gatewayChannels,
+            "startup_activity": self.startupActivity,
+        }
+
     # ------------------------------------------------------------------
     # Public slots
     # ------------------------------------------------------------------
@@ -291,12 +330,33 @@ class ChatService(QObject):
     def setConfigData(self, data: object) -> None:
         self._config_data = copy.deepcopy(data) if isinstance(data, dict) else None
 
+    @Slot("QVariant")
+    def setProfileContext(self, data: object) -> None:
+        next_data = copy.deepcopy(data) if isinstance(data, dict) else None
+        if self._profile_context_data == next_data:
+            return
+        self._profile_context_data = next_data
+        self._startup_pending = []
+        self._startup_target_key = ""
+        self._clear_startup_activity()
+
     @Slot()
     def start(self) -> None:
         if self._state in ("starting", "running"):
             return
         self._channel_errors.clear()
         self._clear_gateway_detail()
+        self._set_startup_activity(
+            {
+                "kind": "startup_greeting",
+                "status": "running",
+                "sessionKey": self._default_startup_session_key(),
+                "sessionKeys": [],
+                "channelKeys": [],
+                "content": "",
+                "error": "",
+            }
+        )
         self._set_state("starting")
         self._refresh_gateway_channels()
         self._runner.start()
@@ -313,9 +373,13 @@ class ChatService(QObject):
         self._channel_errors.clear()
         self._enabled_gateway_channels = []
         self._clear_gateway_detail()
+        self._clear_running_startup_activity()
         if self._cron is not None:
             self._cron = None
             self.cronServiceChanged.emit(None)
+        if self._heartbeat is not None:
+            self._heartbeat = None
+            self.heartbeatServiceChanged.emit(None)
         self._lifecycle_request_id += 1
         self._set_state("stopped")
         self._refresh_gateway_channels()
@@ -451,6 +515,7 @@ class ChatService(QObject):
         if not key:
             return
         self._startup_target_key = key
+        self._set_startup_activity({"sessionKey": key})
         self._drain_startup_pending()
 
     def _drain_startup_pending(self) -> None:
@@ -465,10 +530,33 @@ class ChatService(QObject):
         if not isinstance(message, DesktopStartupMessage) or not message.content:
             return
         key = self._default_startup_session_key()
+        self._set_startup_activity(
+            {
+                "kind": "startup_greeting",
+                "status": "completed",
+                "sessionKey": key,
+                "sessionKeys": [key] if key else [],
+                "channelKeys": ["desktop"],
+                "content": message.content,
+                "error": "",
+            }
+        )
         if not key:
             self._startup_pending.append(_QueuedUiMessage.from_startup(message))
             return
         self._queue_or_show_ui_message(_QueuedUiMessage.from_startup(message, session_key=key))
+
+    def _handle_startup_activity_update(self, payload: object) -> None:
+        if payload is None:
+            self._clear_startup_activity()
+            return
+        if not isinstance(payload, dict):
+            return
+        if bool(payload.get("_clear", False)):
+            self._clear_startup_activity()
+            return
+        patch = {str(key): value for key, value in payload.items() if key != "_clear"}
+        self._set_startup_activity(patch)
 
     def _default_startup_session_key(self) -> str:
         if self._startup_target_key:
@@ -681,6 +769,7 @@ class ChatService(QObject):
             raw_messages = [dict(message) for message in raw_messages_override]
         else:
             raw_messages = await self._run_user_io(_read_raw_messages)
+        raw_messages = await self._run_user_io(self._hydrate_history_attachments, raw_messages)
         t1 = time.perf_counter() if _PROFILE else 0
         if _PROFILE:
             logger.debug("📊 History load: read_raw={:.3f}s", t1 - t0)
@@ -690,6 +779,19 @@ class ChatService(QObject):
         if _PROFILE:
             logger.debug("📊 History prepare: {:.3f}s", t_end - t1)
         return key, nav_id, fingerprint, prepared_messages, bool(raw_messages)
+
+    def _hydrate_history_attachments(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        session_manager = self._session_manager
+        workspace = getattr(session_manager, "workspace", None)
+        hydrated: list[dict[str, Any]] = []
+        for message in messages:
+            item = dict(message)
+            item["attachments"] = normalize_attachment_records(
+                cast(list[dict[str, Any]] | None, item.get("attachments")),
+                workspace=workspace,
+            )
+            hydrated.append(item)
+        return hydrated
 
     def _on_history_done(self, future: Any) -> None:
         """Runs on asyncio thread — only emits signal."""
@@ -862,7 +964,7 @@ class ChatService(QObject):
         """Initialize full gateway stack. Returns (session_manager, enabled_channels)."""
         from bao.config.loader import ensure_first_run, get_config_path, load_config
         from bao.config.schema import Config
-        from bao.gateway.builder import build_gateway_stack, send_startup_greeting
+        from bao.gateway.builder import build_gateway_stack
         from bao.providers import make_provider
 
         # --- config ---
@@ -875,25 +977,22 @@ class ChatService(QObject):
                 config = load_config(config_path)
             except SystemExit as exc:
                 raise RuntimeError(f"Config unavailable at {config_path}") from exc
+        profile_context = profile_context_from_mapping(self._profile_context_data)
 
         # --- build shared gateway stack ---
         provider = make_provider(config)
-        reuse_sm = None
-        try:
-            existing = self._session_manager
-            if existing is not None:
-                existing_ws = getattr(existing, "workspace", None)
-                if existing_ws and str(Path(str(existing_ws)).expanduser()) == str(
-                    Path(str(config.workspace_path)).expanduser()
-                ):
-                    reuse_sm = existing
-        except Exception:
-            reuse_sm = None
+        expected_root = _target_session_root(config, profile_context)
+        reuse_sm = (
+            self._session_manager
+            if _session_manager_root(self._session_manager) == expected_root
+            else None
+        )
         stack = build_gateway_stack(
             config,
             provider,
             reuse_sm,
             on_channel_error=self._handle_channel_error,
+            profile_context=profile_context,
         )
 
         # Store references for shutdown
@@ -911,18 +1010,45 @@ class ChatService(QObject):
             loop.create_task(stack.agent.run()),
             loop.create_task(stack.channels.start_all()),
             loop.create_task(
-                send_startup_greeting(
-                    stack.agent,
-                    stack.bus,
-                    stack.config,
-                    on_desktop_startup_message=lambda msg: self._startupMessage.emit(msg),
-                    channels=stack.channels,
-                    session_manager=stack.session_manager,
+                self._run_startup_greeting(
+                    stack,
+                    profile_context=profile_context,
                 )
             ),
         ]
 
         return stack.session_manager, stack.channels.enabled_channels
+
+    async def _run_startup_greeting(
+        self,
+        stack: Any,
+        *,
+        profile_context: ProfileContext | None,
+    ) -> None:
+        from bao.gateway.builder import send_startup_greeting
+
+        try:
+            await send_startup_greeting(
+                stack.agent,
+                stack.bus,
+                stack.config,
+                on_desktop_startup_message=lambda msg: self._startupMessage.emit(msg),
+                on_startup_activity=lambda payload: self._startupActivityUpdate.emit(payload),
+                channels=stack.channels,
+                session_manager=stack.session_manager,
+                profile_context=profile_context,
+            )
+        except Exception as exc:
+            self._startupActivityUpdate.emit(
+                {
+                    "kind": "startup_greeting",
+                    "status": "error",
+                    "error": str(exc),
+                }
+            )
+            logger.warning("Desktop startup greeting failed: {}", exc)
+            return
+        self._startupActivityUpdate.emit({"status": "completed"})
 
     def _handle_channel_error(self, stage: str, name: str, detail: str) -> None:
         error_message = self._format_channel_error(stage, name, detail)
@@ -955,6 +1081,7 @@ class ChatService(QObject):
         if request_id != self._lifecycle_request_id:
             return
         if not ok:
+            self._clear_running_startup_activity()
             self._set_error(error_msg)
             return
         self._set_state("running")
@@ -970,12 +1097,19 @@ class ChatService(QObject):
         if cron_jobs > 0:
             lbl = "定时任务" if is_zh else "cron"
             parts.append(f"{lbl}: {cron_jobs} {'个' if is_zh else 'jobs'}")
-        hb = "心跳: 每 30 分钟" if is_zh else "heartbeat: every 30m"
+        interval_s = int(getattr(self._heartbeat, "interval_s", 30 * 60) or 30 * 60)
+        minutes = max(1, interval_s // 60)
+        hb = (
+            f"心跳: 每 {minutes} 分钟"
+            if is_zh
+            else f"heartbeat: every {minutes}m"
+        )
         parts.append(hb)
         self.setSessionManager(session_manager)
         if not self._last_error:
             self._set_gateway_summary(" — ".join(parts))
         self.cronServiceChanged.emit(self._cron)
+        self.heartbeatServiceChanged.emit(self._heartbeat)
         self.gatewayReady.emit(session_manager, channels)
         self._drain_queue()
 
@@ -1813,6 +1947,75 @@ class ChatService(QObject):
         msg = msg.strip()
         self._set_gateway_detail(msg, error=msg)
         self._set_state("error")
+
+    def _set_startup_activity(self, patch: dict[str, Any]) -> None:
+        next_patch = {str(key): value for key, value in patch.items() if str(key)}
+        if not next_patch:
+            return
+        current = dict(self._startup_activity)
+        current_channel_keys = [
+            str(value).strip()
+            for value in current.get("channelKeys", [])
+            if str(value).strip()
+        ]
+        current_session_keys = [
+            str(value).strip()
+            for value in current.get("sessionKeys", [])
+            if str(value).strip()
+        ]
+        next_value = dict(current)
+        changed = False
+        for key, value in next_patch.items():
+            if next_value.get(key) == value:
+                continue
+            next_value[key] = value
+            changed = True
+        if not changed:
+            return
+        status = str(next_value.get("status", "") or "").strip()
+        if not status:
+            self._clear_startup_activity()
+            return
+        channel_keys = list(current_channel_keys)
+        for key in next_patch.get("channelKeys", []) or []:
+            text = str(key).strip()
+            if text and text not in channel_keys:
+                channel_keys.append(text)
+        channel_key = str(next_patch.get("channelKey", "") or "").strip()
+        if channel_key and channel_key not in channel_keys:
+            channel_keys.append(channel_key)
+        session_keys = list(current_session_keys)
+        for key in next_patch.get("sessionKeys", []) or []:
+            text = str(key).strip()
+            if text and text not in session_keys:
+                session_keys.append(text)
+        session_key = str(next_value.get("sessionKey", "") or "").strip()
+        if session_key and session_key not in session_keys:
+            session_keys.append(session_key)
+        next_value["kind"] = str(next_value.get("kind", "") or "startup_greeting")
+        next_value["status"] = status
+        next_value["sessionKey"] = session_key
+        next_value["sessionKeys"] = session_keys
+        next_value["channelKeys"] = channel_keys
+        next_value["content"] = str(next_value.get("content", "") or "")
+        next_value["error"] = str(next_value.get("error", "") or "")
+        next_value.pop("channelKey", None)
+        next_value["updatedAt"] = _now_iso()
+        if self._startup_activity == next_value:
+            return
+        self._startup_activity = next_value
+        self.startupActivityChanged.emit()
+
+    def _clear_startup_activity(self) -> None:
+        if not self._startup_activity:
+            return
+        self._startup_activity = {}
+        self.startupActivityChanged.emit()
+
+    def _clear_running_startup_activity(self) -> None:
+        if str(self._startup_activity.get("status", "") or "") != "running":
+            return
+        self._clear_startup_activity()
 
     def _set_gateway_detail(self, detail: str, *, error: str = "") -> None:
         detail = detail.strip()

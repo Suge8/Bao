@@ -74,3 +74,11 @@ def test_submit_before_start_raises():
     with pytest.raises(RuntimeError):
         r.submit(coro)
     coro.close()
+
+
+def test_run_user_io_supports_kwargs(runner):
+    async def call():
+        return await runner.run_user_io(lambda *, value: value, value="ok")
+
+    fut = runner.submit(call())
+    assert fut.result(timeout=3) == "ok"
