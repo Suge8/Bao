@@ -2,7 +2,7 @@
 
 import asyncio
 
-from bao.bus.events import InboundMessage, OutboundMessage
+from bao.bus.events import ControlEvent, InboundMessage, OutboundMessage
 
 
 class MessageBus:
@@ -16,6 +16,7 @@ class MessageBus:
     def __init__(self):
         self.inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self.outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue()
+        self.control: asyncio.Queue[ControlEvent] = asyncio.Queue()
 
     async def publish_inbound(self, msg: InboundMessage) -> None:
         """Publish a message from a channel to the agent."""
@@ -33,6 +34,14 @@ class MessageBus:
         """Consume the next outbound message (blocks until available)."""
         return await self.outbound.get()
 
+    async def publish_control(self, event: ControlEvent) -> None:
+        """Publish an internal control-plane event."""
+        await self.control.put(event)
+
+    async def consume_control(self) -> ControlEvent:
+        """Consume the next internal control-plane event (blocks until available)."""
+        return await self.control.get()
+
     @property
     def inbound_size(self) -> int:
         """Number of pending inbound messages."""
@@ -42,3 +51,8 @@ class MessageBus:
     def outbound_size(self) -> int:
         """Number of pending outbound messages."""
         return self.outbound.qsize()
+
+    @property
+    def control_size(self) -> int:
+        """Number of pending internal control-plane events."""
+        return self.control.qsize()

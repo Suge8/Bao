@@ -15,12 +15,13 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from loguru import logger
 
 from bao.agent.tool_result import ToolResultValue, maybe_temp_text_result
 from bao.agent.tools.base import Tool
+from bao.agent.tools.coding_session_store import CodingSessionEvent, CodingSessionStore
 
 # ---------------------------------------------------------------------------
 # Detail cache — per-instance, shared between a CodingAgentTool and its
@@ -29,7 +30,6 @@ from bao.agent.tools.base import Tool
 
 _DETAIL_CACHE_LIMIT = 128
 _DETAIL_CACHE_TEXT_MAX = 120_000
-_SESSION_CACHE_LIMIT = 256
 _MIN_TOOL_TIMEOUT_SECONDS = 30
 _MAX_TOOL_TIMEOUT_SECONDS = 1800
 
@@ -171,6 +171,7 @@ class BaseCodingAgentTool(Tool, ABC):
         default_timeout_seconds: int = 1800,
         *,
         detail_cache: DetailCache | None = None,
+        session_store: CodingSessionStore | None = None,
     ):
         self.workspace: Path = Path(workspace).resolve()
         self.allowed_dir: Path | None = Path(allowed_dir).resolve() if allowed_dir else None
@@ -182,10 +183,9 @@ class BaseCodingAgentTool(Tool, ABC):
         self._context_key: ContextVar[str] = ContextVar(
             "coding_context_key", default="gateway:direct"
         )
-        self._session_by_context: dict[str, str] = {}
-        self._lock: asyncio.Lock = asyncio.Lock()
         self.detail_cache: DetailCache = detail_cache or DetailCache()
         self._progress_callback: Callable[[str], Awaitable[None] | None] | None = None
+        self._session_store = session_store
 
     def set_context(self, channel: str, chat_id: str, session_key: str | None = None) -> None:
         self._channel.set(channel)
@@ -196,6 +196,10 @@ class BaseCodingAgentTool(Tool, ABC):
         self, callback: Callable[[str], Awaitable[None] | None] | None
     ) -> None:
         self._progress_callback = callback
+
+    @property
+    def session_backend(self) -> str:
+        return self.name
 
     # -- abstract properties (subclass MUST override) --
 
@@ -261,6 +265,11 @@ class BaseCodingAgentTool(Tool, ABC):
         """Classify error type from output."""
         return "execution_failed"
 
+    def _classify_error_type(self, stdout_text: str, stderr_text: str) -> str:
+        if self._is_stale_session_error(stdout_text, stderr_text):
+            return "stale_session"
+        return self._error_type_impl(stdout_text, stderr_text)
+
     def _build_failure_hints(self, stdout_text: str, stderr_text: str) -> list[str]:
         """Build actionable hints for failure output."""
         return []
@@ -311,6 +320,41 @@ class BaseCodingAgentTool(Tool, ABC):
     def _is_stale_session_error(self, stdout_text: str, stderr_text: str) -> bool:
         lowered = f"{stdout_text}\n{stderr_text}".lower()
         return any(m in lowered for m in self._STALE_SESSION_MARKERS)
+
+    async def _resolve_stored_session_id(self, context_key: str) -> str | None:
+        if self._session_store is None:
+            return None
+        try:
+            maybe = await self._session_store.load(
+                context_key=context_key,
+                backend=self.session_backend,
+            )
+        except Exception as exc:
+            logger.debug("{} session lookup failed: {}", self._tool_label, exc)
+            return None
+        return maybe.strip() if isinstance(maybe, str) and maybe.strip() else None
+
+    async def _publish_session_event(
+        self,
+        *,
+        context_key: str,
+        session_id: str | None,
+        action: Literal["active", "cleared"],
+        reason: str | None = None,
+    ) -> None:
+        if self._session_store is None:
+            return
+        event = CodingSessionEvent(
+            backend=self.session_backend,
+            context_key=context_key,
+            session_id=session_id.strip() if isinstance(session_id, str) and session_id.strip() else None,
+            action=action,
+            reason=reason,
+        )
+        try:
+            await self._session_store.publish(event)
+        except Exception as exc:
+            logger.debug("{} session event failed: {}", self._tool_label, exc)
 
     def _parse_execute_options(
         self, kwargs: dict[str, Any]
@@ -380,70 +424,42 @@ class BaseCodingAgentTool(Tool, ABC):
         explicit_session_id: str | None,
         continue_session: bool,
         context_key: str,
-    ) -> tuple[str | None, bool]:
+    ) -> tuple[str | None, str]:
         resolved_session = explicit_session_id
+        source = "explicit" if resolved_session else "none"
         if not resolved_session and continue_session:
-            async with self._lock:
-                resolved_session = self._session_by_context.get(context_key)
-                if resolved_session:
-                    self._session_by_context.pop(context_key, None)
-                    self._session_by_context[context_key] = resolved_session
-        session_from_cache = bool(resolved_session and not explicit_session_id)
-        return resolved_session, session_from_cache
+            resolved_session = await self._resolve_stored_session_id(context_key)
+            if resolved_session:
+                source = "stored"
+        return resolved_session, source
 
-    async def _run_with_retry(
+    async def _run_command_once(
         self,
         *,
         cmd: list[str],
         cwd: Path,
         timeout: int,
-        max_retries: int,
     ) -> tuple[_RunResult, int, int]:
-        attempts = 0
         start = time.monotonic()
-        result: _RunResult | None = None
-        while attempts <= max_retries:
-            attempts += 1
-            try:
-                result = await self._run_command(
-                    cmd=cmd,
-                    cwd=cwd,
-                    timeout_seconds=timeout,
-                    on_stdout_line=self._progress_callback,
-                )
-            except TypeError as exc:
-                if "on_stdout_line" not in str(exc):
-                    raise
-                result = await self._run_command(
-                    cmd=cmd,
-                    cwd=cwd,
-                    timeout_seconds=timeout,
-                )
-            if result["timed_out"]:
-                break
-            if result["returncode"] == 0:
-                break
-            if attempts > max_retries:
-                break
-            if not self._is_transient_failure(result["stdout"], result["stderr"]):
-                break
-
-        if result is None:
-            result = {"timed_out": True, "returncode": None, "stdout": "", "stderr": ""}
+        attempts = 1
+        try:
+            result = await self._run_command(
+                cmd=cmd,
+                cwd=cwd,
+                timeout_seconds=timeout,
+                on_stdout_line=self._progress_callback,
+            )
+        except TypeError as exc:
+            if "on_stdout_line" not in str(exc):
+                raise
+            result = await self._run_command(
+                cmd=cmd,
+                cwd=cwd,
+                timeout_seconds=timeout,
+            )
 
         duration_ms = int((time.monotonic() - start) * 1000)
         return result, attempts, duration_ms
-
-    async def _cache_active_session(self, *, context_key: str, active_session: str | None) -> None:
-        if not active_session:
-            return
-        async with self._lock:
-            if context_key in self._session_by_context:
-                self._session_by_context.pop(context_key, None)
-            elif len(self._session_by_context) >= _SESSION_CACHE_LIMIT:
-                lru_victim_context = next(iter(self._session_by_context))
-                self._session_by_context.pop(lru_victim_context, None)
-            self._session_by_context[context_key] = active_session
 
     def _success_response(
         self,
@@ -528,8 +544,6 @@ class BaseCodingAgentTool(Tool, ABC):
     # -- main execute (template method) --
 
     async def execute(self, **kwargs: Any) -> ToolResultValue:
-        _session_retry = kwargs.pop("__session_retry", False)
-        _original_kwargs = dict(kwargs)
         options, option_error = self._parse_execute_options(kwargs)
         if option_error:
             return option_error
@@ -543,7 +557,6 @@ class BaseCodingAgentTool(Tool, ABC):
         model = options["model"]
         timeout_raw = options["timeout_raw"]
         response_format = options["response_format"]
-        max_retries = options["max_retries"]
         max_output_chars = options["max_output_chars"]
         include_details = options["include_details"]
         extra_params = options["extra_params"]
@@ -615,7 +628,7 @@ class BaseCodingAgentTool(Tool, ABC):
             extra_params=extra_params,
         )
 
-        resolved_session, session_from_cache = await self._resolve_session_for_execute(
+        resolved_session, session_source = await self._resolve_session_for_execute(
             explicit_session_id=session_id,
             continue_session=continue_session,
             context_key=context_key,
@@ -635,11 +648,10 @@ class BaseCodingAgentTool(Tool, ABC):
             )
             command_preview = self._build_command_preview(cmd, prompt_text)
 
-            result, attempts, duration_ms = await self._run_with_retry(
+            result, attempts, duration_ms = await self._run_command_once(
                 cmd=cmd,
                 cwd=cwd,
                 timeout=timeout,
-                max_retries=max_retries,
             )
 
             # 8. Timeout
@@ -684,20 +696,15 @@ class BaseCodingAgentTool(Tool, ABC):
 
             # 10. Failure
             if return_code is None or return_code != 0:
-                # Stale session auto-recovery: clear cache and retry once
-                if (
-                    not _session_retry
-                    and session_from_cache
-                    and self._is_stale_session_error(stdout_text, stderr_text)
-                ):
-                    async with self._lock:
-                        self._session_by_context.pop(context_key, None)
-                    logger.debug(
-                        "{}: stale session {}, retrying fresh",
-                        self._tool_label,
-                        resolved_session,
+                # Stored stale sessions are cleared explicitly; callers retry on a fresh turn.
+                stale_session = self._is_stale_session_error(stdout_text, stderr_text)
+                if stale_session and session_source == "stored":
+                    await self._publish_session_event(
+                        context_key=context_key,
+                        session_id=resolved_session,
+                        action="cleared",
+                        reason="stale_session",
                     )
-                    return await self.execute(**_original_kwargs, __session_retry=True)
                 return self._failure_response(
                     return_code=int(return_code or -1),
                     final_output=final_output,
@@ -718,6 +725,7 @@ class BaseCodingAgentTool(Tool, ABC):
                     response_format=response_format,
                     extra_params=extra_params,
                     stdout_for_cache=detail_stdout,
+                    stale_session_cleared=stale_session and session_source == "stored",
                 )
 
             # 11. Success — resolve session (subclass hook)
@@ -728,7 +736,11 @@ class BaseCodingAgentTool(Tool, ABC):
                 exec_state=exec_state,
                 timeout=timeout,
             )
-            await self._cache_active_session(context_key=context_key, active_session=active_session)
+            await self._publish_session_event(
+                context_key=context_key,
+                session_id=active_session,
+                action="active",
+            )
             return self._success_response(
                 final_output=final_output,
                 stderr_text=stderr_text,
@@ -861,10 +873,17 @@ class BaseCodingAgentTool(Tool, ABC):
         response_format: str,
         extra_params: dict[str, Any],
         stdout_for_cache: str,
+        stale_session_cleared: bool = False,
     ) -> str:
         out = stdout_text.strip()
         err = stderr_text.strip()
         hints = self._build_failure_hints(out, err)
+        error_type = "stale_session" if stale_session_cleared else self._classify_error_type(out, err)
+        if stale_session_cleared:
+            hints.insert(
+                0,
+                f"Stored {self._tool_label} session expired and was cleared. Retry once to start a fresh session.",
+            )
         if not hints and self._is_transient_failure(out, err):
             hints.append(self._transient_retry_hint(timeout_seconds))
         summary = self._summarize_output(final_output, err)
@@ -896,7 +915,7 @@ class BaseCodingAgentTool(Tool, ABC):
             "details_available": details_available,
             "details_hint": details_hint,
             "hints": hints,
-            "error_type": self._error_type_impl(out, err),
+            "error_type": error_type,
             "command_preview": command_preview,
         }
         self.detail_cache.build_detail_record(

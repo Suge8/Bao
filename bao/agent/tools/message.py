@@ -1,10 +1,10 @@
 """Message tool for sending messages to users."""
 
 import asyncio
-from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from bao.agent.reply_route import TurnContextStore
 from bao.agent.tools.base import Tool
 from bao.bus.events import OutboundMessage
 
@@ -27,18 +27,14 @@ class MessageTool(Tool):
         default_message_id: str | None = None,
     ):
         self._send_callback = send_callback
-        self._default_channel_ctx: ContextVar[str] = ContextVar(
-            "message_default_channel", default=default_channel
+        self._route = TurnContextStore(
+            "message_route",
+            channel=default_channel,
+            chat_id=default_chat_id,
+            message_id=default_message_id,
         )
-        self._default_chat_id_ctx: ContextVar[str] = ContextVar(
-            "message_default_chat_id", default=default_chat_id
-        )
-        self._default_message_id_ctx: ContextVar[str | None] = ContextVar(
-            "message_default_message_id", default=default_message_id
-        )
-        self._reply_metadata_ctx: ContextVar[dict[str, Any]] = ContextVar(
-            "message_reply_metadata", default={}
-        )
+        from contextvars import ContextVar
+
         self._turn_state_ctx: ContextVar[_TurnState | None] = ContextVar(
             "message_turn_state", default=None
         )
@@ -66,26 +62,12 @@ class MessageTool(Tool):
         reply_metadata: dict[str, Any] | None = None,
     ) -> None:
         """Set the current message context."""
-        self._default_channel_ctx.set(channel)
-        self._default_chat_id_ctx.set(chat_id)
-        self._default_message_id_ctx.set(message_id)
-        self._reply_metadata_ctx.set(self._normalize_reply_metadata(reply_metadata))
-
-    @staticmethod
-    def _normalize_reply_metadata(reply_metadata: dict[str, Any] | None) -> dict[str, Any]:
-        if not isinstance(reply_metadata, dict):
-            return {}
-        slack_meta = reply_metadata.get("slack")
-        if not isinstance(slack_meta, dict):
-            return {}
-        thread_ts = slack_meta.get("thread_ts")
-        if not isinstance(thread_ts, str) or not thread_ts.strip():
-            return {}
-        normalized_slack: dict[str, Any] = {"thread_ts": thread_ts}
-        channel_type = slack_meta.get("channel_type")
-        if isinstance(channel_type, str) and channel_type.strip():
-            normalized_slack["channel_type"] = channel_type
-        return {"slack": normalized_slack}
+        self._route.set(
+            channel=channel,
+            chat_id=chat_id,
+            message_id=message_id,
+            reply_metadata=reply_metadata,
+        )
 
     def set_send_callback(self, callback: Callable[[OutboundMessage], Awaitable[None]]) -> None:
         """Set the callback for sending messages."""
@@ -148,21 +130,18 @@ class MessageTool(Tool):
         if media is not None and not isinstance(media, list):
             return "Error: media must be a list of file paths"
 
-        default_channel = self._default_channel_ctx.get()
-        default_chat_id = self._default_chat_id_ctx.get()
-        default_message_id = self._default_message_id_ctx.get()
-        reply_metadata = self._reply_metadata_ctx.get()
+        route = self._route.get()
+        default_channel = route.channel
+        default_chat_id = route.chat_id
+        default_message_id = route.message_id
+        reply_metadata = route.reply_metadata
 
         channel = channel or default_channel
         chat_id = chat_id or default_chat_id
         if isinstance(channel, str):
             channel = channel.strip().lower()
-        if isinstance(default_channel, str):
-            default_channel = default_channel.strip().lower()
         if isinstance(chat_id, str):
             chat_id = chat_id.strip()
-        if isinstance(default_chat_id, str):
-            default_chat_id = default_chat_id.strip()
         message_id = message_id or default_message_id
         if not isinstance(message_id, str):
             message_id = None

@@ -74,6 +74,8 @@ _JSONC_TEMPLATE = """\
   //  ⚠️  请至少启用一个 | Enable at least one
   //  名称随意，type 决定 SDK | Name freely, type determines SDK
   //  type: "openai" | "anthropic" | "gemini" | "openai_codex"
+  //  注意：openai_codex 这里是“聊天模型 Provider”，不是 coding_agent 里的 Codex CLI 工具
+  //  Note: openai_codex here is the chat-model provider, not the Codex CLI backend used by coding_agent
   // ───────────────────────────────────────────────────────────────
   "providers": {
     // ── 示例 | Example ─────────────────────────
@@ -220,6 +222,11 @@ _JSONC_TEMPLATE = """\
   //  🔧 工具配置 | Tool Settings
   // ───────────────────────────────────────────────────────────────
   "tools": {
+    // 编程代理 `coding_agent(agent="codex")` / `opencode` / `claudecode`
+    // 不在这里额外配置；只需本机安装对应 CLI 并完成登录
+    // `codex` 会按 Bao 会话自动续接并持久化 session；若外部 session 失效，会清理后提示你重试一次
+    // Coding agents are not configured here; install the CLI locally and authenticate first.
+    // `codex` sessions auto-resume per Bao chat and are persisted; stale sessions are cleared with an explicit retry hint.
     // 网页搜索：填 Tavily / Brave / Exa API Key 启用 | Web search: fill Tavily / Brave / Exa API Key to enable
     "web": {
       "search": {
@@ -227,6 +234,11 @@ _JSONC_TEMPLATE = """\
         "tavilyApiKey": "",
         "braveApiKey": "",
         "exaApiKey": ""
+      },
+      // 浏览器自动化：桌面版优先使用内置托管 runtime，按需启动
+      // Browser automation: Desktop builds prefer the bundled managed runtime and launch on demand
+      "browser": {
+        "enabled": true
       }
     },
     "exec": {

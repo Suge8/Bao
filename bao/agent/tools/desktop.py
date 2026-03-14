@@ -1,6 +1,8 @@
 """Desktop automation tools — screenshot, click, type, scroll, drag, key press, screen info.
 
-Dependencies (mss, pyautogui, pillow) are included in the default install.
+Dependencies (mss, pyautogui, pillow) are loaded lazily. Install
+`bao-ai[desktop]` for the desktop app, or `bao-ai[desktop-automation]`
+when you only need local UI control tools.
 
 Coordinate convention
 ---------------------

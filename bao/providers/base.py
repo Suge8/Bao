@@ -15,16 +15,21 @@ class ToolCallRequest:
     id: str
     name: str
     arguments: dict[str, Any]
+    raw_arguments: str | None = None
+    argument_parse_error: str | None = None
     provider_specific_fields: dict[str, Any] | None = None
     function_provider_specific_fields: dict[str, Any] | None = None
 
     def to_openai_tool_call(self) -> dict[str, Any]:
+        serialized_arguments = json.dumps(self.arguments, ensure_ascii=False)
+        if self.argument_parse_error and isinstance(self.raw_arguments, str):
+            serialized_arguments = self.raw_arguments
         tool_call = {
             "id": self.id,
             "type": "function",
             "function": {
                 "name": self.name,
-                "arguments": json.dumps(self.arguments, ensure_ascii=False),
+                "arguments": serialized_arguments,
             },
         }
         if self.provider_specific_fields:
@@ -55,40 +60,67 @@ def normalize_tool_calls(message: Any) -> list[ToolCallRequest]:
     """Extract tool calls from any LLM response format (OpenAI/Legacy/Anthropic)."""
     tool_calls: list[ToolCallRequest] = []
 
-    def parse_args(value: Any) -> dict[str, Any]:
+    def _append_tool_call(
+        *,
+        id_: str,
+        name: str,
+        arguments_value: Any,
+    ) -> None:
+        args, raw_arguments, parse_error = parse_args(arguments_value)
+        tool_calls.append(
+            ToolCallRequest(
+                id=id_,
+                name=name,
+                arguments=args,
+                raw_arguments=raw_arguments,
+                argument_parse_error=parse_error,
+            )
+        )
+
+    def _serialize_raw_arguments(value: Any) -> str | None:
+        if isinstance(value, str):
+            return value
+        if value is None:
+            return None
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value)
+
+    def parse_args(value: Any) -> tuple[dict[str, Any], str | None, str | None]:
+        if isinstance(value, dict):
+            return value, None, None
+        raw_arguments = _serialize_raw_arguments(value)
         if isinstance(value, str):
             try:
                 parsed = json_repair.loads(value)
-                value = parsed if isinstance(parsed, dict) else {}
-            except Exception:
-                return {}
-        return value if isinstance(value, dict) else {}
+            except Exception as exc:
+                return {}, raw_arguments, str(exc)
+            if isinstance(parsed, dict):
+                return parsed, raw_arguments, None
+            return {}, raw_arguments, "tool arguments must decode to a JSON object"
+        if value is None:
+            return {}, None, None
+        return {}, raw_arguments, "tool arguments must be a JSON object"
 
     if hasattr(message, "tool_calls") and message.tool_calls:
         for tc in message.tool_calls:
-            args = parse_args(tc.function.arguments)
-            tool_calls.append(ToolCallRequest(id=tc.id, name=tc.function.name, arguments=args))
+            _append_tool_call(id_=tc.id, name=tc.function.name, arguments_value=tc.function.arguments)
         return tool_calls
 
     if hasattr(message, "function_call") and message.function_call:
         fc = message.function_call
-        args = parse_args(fc.arguments)
-        tool_calls.append(ToolCallRequest(id="fc_0", name=fc.name, arguments=args))
+        _append_tool_call(id_="fc_0", name=fc.name, arguments_value=fc.arguments)
         return tool_calls
 
     content = getattr(message, "content", None)
     if content and isinstance(content, list):
         for i, block in enumerate(content):
             if isinstance(block, dict) and block.get("type") == "tool_use":
-                input_args = block.get("input", {})
-                if not isinstance(input_args, dict):
-                    input_args = {}
-                tool_calls.append(
-                    ToolCallRequest(
-                        id=block.get("id", f"tu_{i}"),
-                        name=block.get("name", "unknown"),
-                        arguments=input_args,
-                    )
+                _append_tool_call(
+                    id_=block.get("id", f"tu_{i}"),
+                    name=block.get("name", "unknown"),
+                    arguments_value=block.get("input", {}),
                 )
 
     return tool_calls

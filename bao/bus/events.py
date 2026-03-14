@@ -1,5 +1,6 @@
 """Event types for the message bus."""
 
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -38,3 +39,17 @@ class OutboundMessage:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ControlEvent:
+    """Internal typed event for agent/runtime coordination."""
+
+    kind: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    session_key: str = ""
+    origin_channel: str = "gateway"
+    origin_chat_id: str = "direct"
+    source: str = "system"
+    schema_version: int = 1
+    event_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    timestamp: datetime = field(default_factory=datetime.now)

@@ -48,7 +48,7 @@ class IMessageChannel(BaseChannel):
             logger.error("❌ iMessage 数据库缺失 / db missing: need Full Disk Access")
             self.mark_ready()
             return
-        self._running = True
+        self._start_lifecycle()
         self._last_rowid = self._get_max_rowid()
         self.mark_ready()
         if self._last_rowid == 0:
@@ -62,12 +62,14 @@ class IMessageChannel(BaseChannel):
                 await self._poll()
             except Exception as e:
                 logger.error("❌ iMessage 轮询异常 / poll error: {}", e)
-            await asyncio.sleep(self._poll_interval)
+            if await self._wait_stop_or_timeout(self._poll_interval):
+                break
 
     async def stop(self) -> None:
         self._clear_progress()
-        self._running = False
+        self._stop_lifecycle()
         self.mark_not_ready()
+        self._reset_lifecycle()
 
     async def send(self, msg: OutboundMessage) -> None:
         await self._dispatch_progress_text(msg, flush_progress=False)

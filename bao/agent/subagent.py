@@ -3,10 +3,10 @@
 import asyncio
 import json
 import re
-import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -14,14 +14,18 @@ from loguru import logger
 
 from bao.agent import shared
 from bao.agent.artifacts import ArtifactStore, apply_tool_output_budget
+from bao.agent.capability_registry import build_available_tool_lines
 from bao.agent.protocol import ToolErrorCategory
-from bao.agent.tool_result import tool_result_excerpt
+from bao.agent.run_artifacts import build_run_artifact_payload
+from bao.agent.run_controller import RunLoopState, apply_pre_iteration_checks, build_error_feedback
+from bao.agent.tool_exposure import ToolExposureSnapshot
+from bao.agent.tool_result import tool_result_payload
 from bao.agent.tools.diagnostics import RuntimeDiagnosticsTool
 from bao.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from bao.agent.tools.registry import ToolRegistry
 from bao.agent.tools.shell import ExecTool
 from bao.agent.tools.web import WebFetchTool, WebSearchTool
-from bao.bus.events import InboundMessage, OutboundMessage
+from bao.bus.events import ControlEvent, OutboundMessage
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider
 from bao.runtime_diagnostics import get_runtime_diagnostics_store
@@ -169,6 +173,7 @@ class SubagentManager:
         memory_store: Any | None = None,
         image_generation_config: Any | None = None,
         desktop_config: Any | None = None,
+        browser_enabled: bool = True,
         sessions: "SessionManager | None" = None,
         utility_provider: LLMProvider | None = None,
         utility_model: str | None = None,
@@ -189,6 +194,7 @@ class SubagentManager:
         self.restrict_to_workspace = restrict_to_workspace
         self.image_generation_config = image_generation_config
         self.desktop_config = desktop_config
+        self.browser_enabled = browser_enabled
         self.sessions = sessions
         self.max_iterations = max(1, int(max_iterations))
         self._ctx_mgmt = context_management
@@ -438,18 +444,20 @@ class SubagentManager:
         if self.sessions is None:
             return
         session = self.sessions.get_or_create(child_session_key)
-        session.metadata.update(
-            {
-                "title": label,
-                "session_kind": "subagent_child",
-                "read_only": True,
-                "parent_session_key": parent_session_key,
-                "task_label": label,
-            }
-        )
+        session.metadata.update(self._child_session_metadata(parent_session_key, label))
         session.add_message("user", task)
         self.sessions.save(session)
         self.sessions.set_child_running(child_session_key, task_id)
+
+    @staticmethod
+    def _child_session_metadata(parent_session_key: str, label: str) -> dict[str, Any]:
+        return {
+            "title": label,
+            "session_kind": "subagent_child",
+            "read_only": True,
+            "parent_session_key": parent_session_key,
+            "task_label": label,
+        }
 
     def _persist_child_result(
         self,
@@ -464,15 +472,11 @@ class SubagentManager:
         if self.sessions is None:
             return
         session = self.sessions.get_or_create(child_session_key)
+        self.sessions.clear_child_running(child_session_key, emit_change=False)
         session.metadata.update(
-            {
-                "title": label,
-                "session_kind": "subagent_child",
-                "read_only": True,
-                "parent_session_key": parent_session_key,
-                "task_label": label,
+            self._child_session_metadata(parent_session_key, label)
+            | {
                 "child_status": status,
-                "active_task_id": "",
                 "last_result_summary": self._sanitize_visible(result),
             }
         )
@@ -638,13 +642,7 @@ class SubagentManager:
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
-        if not text:
-            return None
-        return re.sub(r"<think>[\s\S]*?</think>", "", text).strip() or None
-
-    @staticmethod
-    def _parse_llm_json(content: str | None) -> dict[str, Any] | None:
-        return shared.parse_llm_json(content)
+        return shared.strip_think_tags(text)
 
     async def _call_experience_llm(self, system: str, prompt: str) -> dict[str, Any] | None:
         return await shared.call_experience_llm(
@@ -658,11 +656,11 @@ class SubagentManager:
         )
 
     @staticmethod
-    def _has_tool_error(tool_name: str, result: str) -> bool:
+    def _has_tool_error(tool_name: str, result: object) -> bool:
         return shared.has_tool_error(tool_name, result, _SUBAGENT_ERROR_KEYWORDS)
 
     @staticmethod
-    def _parse_tool_error(tool_name: str, result: str):
+    def _parse_tool_error(tool_name: str, result: object):
         return shared.parse_tool_error(tool_name, result, _SUBAGENT_ERROR_KEYWORDS)
 
     async def _compress_state(
@@ -727,14 +725,14 @@ class SubagentManager:
     async def _get_related_memory(self, task: str) -> tuple[list[str], list[str]]:
         if self._memory is None:
             return [], []
-        related_mem, related_exp = await asyncio.gather(
-            asyncio.to_thread(self._memory.search_memory, task, 3),
-            asyncio.to_thread(self._memory.search_experience, task, 3),
-            return_exceptions=True,
+        bundle = await asyncio.to_thread(
+            self._memory.recall,
+            task,
+            related_limit=3,
+            experience_limit=3,
+            include_long_term=False,
         )
-        mem = related_mem if isinstance(related_mem, list) else []
-        exp = related_exp if isinstance(related_exp, list) else []
-        return mem, exp
+        return list(bundle.related_memory), list(bundle.related_experience)
 
     def _setup_subagent_tools(
         self, task_id: str, origin: dict[str, str]
@@ -833,15 +831,20 @@ class SubagentManager:
         web_fetch_tool = WebFetchTool(
             proxy=self.web_proxy,
             workspace=self.workspace,
+            browser_enabled=self.browser_enabled,
             allowed_dir=allowed_dir,
         )
         web_fetch_tool.set_context(channel, chat_id, session_key=origin.get("session_key"))
         tools.register(web_fetch_tool)
-        browser_tool = AgentBrowserTool(workspace=self.workspace, allowed_dir=allowed_dir)
-        if browser_tool.available:
+        browser_tool = AgentBrowserTool(
+            workspace=self.workspace,
+            enabled=self.browser_enabled,
+            allowed_dir=allowed_dir,
+        )
+        if self.browser_enabled:
             browser_tool.set_context(channel, chat_id, session_key=origin.get("session_key"))
             tools.register(browser_tool)
-            has_browser = True
+            has_browser = browser_tool.available
 
         return tools, coding_tool, coding_tools, has_search, has_browser
 
@@ -900,6 +903,87 @@ class SubagentManager:
             return None
         return ArtifactStore(self.workspace, f"subagent_{task_id}", self._artifact_retention_days)
 
+    def _build_subagent_tool_exposure_snapshot(
+        self,
+        *,
+        task: str,
+        tools: ToolRegistry,
+        force_final_response: bool,
+    ) -> ToolExposureSnapshot:
+        tool_definitions, slim_schema = tools.get_budgeted_definitions(
+            names=None if not force_final_response else set()
+        )
+        ordered_tool_names = () if force_final_response else tuple(tools.tool_names)
+        return ToolExposureSnapshot(
+            mode="subagent",
+            exposure_level=0,
+            force_final_response=force_final_response,
+            route_text=task,
+            ordered_tool_names=ordered_tool_names,
+            available_tool_lines=tuple(
+                build_available_tool_lines(
+                    registry=tools,
+                    selected_tool_names=list(ordered_tool_names),
+                )
+            ),
+            tool_definitions=tuple(tool_definitions),
+            slim_schema=slim_schema,
+        )
+
+    def _archive_subagent_run_artifact(
+        self,
+        *,
+        task_id: str,
+        task: str,
+        artifact_store: ArtifactStore | None,
+        started_at: str,
+        finished_at: str,
+        state: RunLoopState,
+        tool_trace: list[str],
+        tools_used: list[str],
+        reasoning_snippets: list[str],
+        tool_exposure_history: list[ToolExposureSnapshot],
+        provider_finish_reason: str,
+        exit_reason: str,
+    ) -> None:
+        try:
+            diagnostics_snapshot = self._runtime_diagnostics.snapshot(
+                max_events=12,
+                max_log_lines=0,
+                allowed_sources=["subagent"],
+                allowed_session_keys=[task_id],
+            )
+            run_artifact = build_run_artifact_payload(
+                run_kind="subagent",
+                session_key=task_id,
+                model=self.model,
+                started_at=started_at,
+                finished_at=finished_at,
+                user_request=task,
+                tool_signal_text=None,
+                final_content=state.final_content,
+                exit_reason=exit_reason,
+                provider_finish_reason=provider_finish_reason,
+                provider_error=state.provider_error,
+                interrupted=state.interrupted,
+                total_errors=state.total_errors,
+                tools_used=tools_used,
+                tool_trace=tool_trace,
+                reasoning_snippets=reasoning_snippets,
+                last_state_text=state.last_state_text,
+                tool_exposure_history=tool_exposure_history,
+                tool_observability={},
+                diagnostics_snapshot=diagnostics_snapshot,
+            )
+            store = artifact_store or ArtifactStore(
+                self.workspace,
+                f"subagent_{task_id}",
+                self._artifact_retention_days,
+            )
+            _ = store.archive_json("trajectory", "subagent_run", run_artifact)
+        except Exception as exc:
+            logger.debug("subagent run artifact archive failed: {}", exc)
+
     async def _run_iteration_prechecks(
         self,
         *,
@@ -911,70 +995,23 @@ class SubagentManager:
         sufficiency_trace: list[str],
         reasoning_snippets: list[str],
         failed_directions: list[str],
-        last_state_attempt_at: int,
-        last_state_text: str | None,
-        consecutive_errors: int,
-        tool_step: int,
-        next_sufficiency_at: int,
-        force_final_response: bool,
-    ) -> tuple[list[dict[str, Any]], int, str | None, int, int, bool]:
-        steps_since_attempt = len(tool_trace) - last_state_attempt_at
-        if steps_since_attempt >= 5 and len(tool_trace) >= 5:
-            state = await self._compress_state(
-                tool_trace, reasoning_snippets, failed_directions, last_state_text
-            )
-            last_state_attempt_at = len(tool_trace)
-            if state:
-                steps_before_reset = len(tool_trace)
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            f"[State after {steps_before_reset} steps]\n{state}\n\n"
-                            "Use this state freely — adopt useful parts, ignore irrelevant ones, and "
-                            "prioritize unexplored branches."
-                        ),
-                    }
-                )
-                last_state_text = state
-                tool_trace.clear()
-                reasoning_snippets.clear()
-                failed_directions.clear()
-                consecutive_errors = 0
-                last_state_attempt_at = 0
-
-        if tool_step >= next_sufficiency_at:
-            if await self._check_sufficiency(task, sufficiency_trace, last_state_text):
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": "You now have sufficient information. Provide your final answer.",
-                    }
-                )
-                force_final_response = True
-            while next_sufficiency_at <= tool_step:
-                next_sufficiency_at += 4
-
-        if self._ctx_mgmt in ("auto", "aggressive"):
-            try:
-                approx_bytes = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
-            except Exception:
-                approx_bytes = 0
-            if approx_bytes >= self._compact_bytes:
-                messages = self._compact_messages(
-                    messages=messages,
-                    initial_messages=initial_messages,
-                    last_state_text=last_state_text,
-                    artifact_store=artifact_store,
-                )
-
-        return (
-            messages,
-            last_state_attempt_at,
-            last_state_text,
-            consecutive_errors,
-            next_sufficiency_at,
-            force_final_response,
+        state: RunLoopState,
+    ) -> list[dict[str, Any]]:
+        return await apply_pre_iteration_checks(
+            messages=messages,
+            initial_messages=initial_messages,
+            user_request=task,
+            artifact_store=artifact_store,
+            state=state,
+            tool_trace=tool_trace,
+            reasoning_snippets=reasoning_snippets,
+            failed_directions=failed_directions,
+            sufficiency_trace=sufficiency_trace,
+            ctx_mgmt=self._ctx_mgmt,
+            compact_bytes=self._compact_bytes,
+            compress_state=self._compress_state,
+            check_sufficiency=self._check_sufficiency,
+            compact_messages=self._compact_messages,
         )
 
     async def _chat_subagent(
@@ -984,24 +1021,18 @@ class SubagentManager:
         *,
         force_final_response: bool,
     ) -> Any:
-        repaired = shared.patch_dangling_tool_results(messages)
-        if repaired:
-            logger.warning(
-                "Subagent repaired {} dangling tool_call(s) before provider chat",
-                repaired,
-            )
-        try:
-            return await self.provider.chat(
-                messages=messages,
-                tools=[] if force_final_response else tools.get_definitions(),
-                model=self.model,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                reasoning_effort=self.reasoning_effort,
-            )
-        finally:
-            for _m in messages:
-                _m.pop("_image", None)
+        current_tools = [] if force_final_response else tools.get_budgeted_definitions()[0]
+        return await shared.call_provider_chat(
+            provider=self.provider,
+            messages=messages,
+            tools=current_tools,
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            reasoning_effort=self.reasoning_effort,
+            source="subagent",
+            patched_log_label="Subagent repaired",
+        )
 
     def _setup_coding_progress_callback(
         self,
@@ -1035,51 +1066,13 @@ class SubagentManager:
         return progress_backend
 
     def _handle_screenshot_marker(self, tool_name: str, result: str) -> tuple[str, str | None]:
-        screenshot_image_b64: str | None = None
-        if (
-            tool_name != "screenshot"
-            or not isinstance(result, str)
-            or not result.startswith("__SCREENSHOT__:")
-        ):
-            return result, screenshot_image_b64
-
-        marker = result
-        result = "[screenshot unavailable]"
-        ss_path = marker[len("__SCREENSHOT__:") :].strip()
-        ss_file = Path(ss_path).expanduser()
-        tmp_dir = Path(tempfile.gettempdir()).resolve()
-        try:
-            resolved_parent = ss_file.resolve(strict=False).parent
-        except Exception:
-            resolved_parent = None
-
-        safe_marker = ss_file.name.startswith("bao_screenshot_") and resolved_parent == tmp_dir
-        if safe_marker:
-            try:
-                import base64 as b64mod
-
-                with ss_file.open("rb") as sf:
-                    screenshot_image_b64 = b64mod.b64encode(sf.read()).decode()
-                result = "[screenshot captured]"
-            except Exception as ss_err:
-                logger.warning(
-                    "⚠️ 子代截图失败 / screenshot read failed: {}: {}",
-                    ss_file,
-                    ss_err,
-                )
-            finally:
-                try:
-                    if ss_file.exists():
-                        ss_file.unlink()
-                except Exception:
-                    pass
-        else:
-            logger.warning(
-                "⚠️ 子代忽略非安全截图路径 / ignored unsafe screenshot path: {}",
-                ss_file,
-            )
-
-        return result, screenshot_image_b64
+        result_text, screenshot_image_b64 = shared.handle_screenshot_marker(
+            tool_name,
+            result,
+            read_error_label="子代截图失败 / screenshot read failed",
+            unsafe_path_label="子代忽略非安全截图路径 / ignored unsafe screenshot path",
+        )
+        return str(result_text), screenshot_image_b64
 
     async def _execute_tool_call_block(
         self,
@@ -1093,9 +1086,8 @@ class SubagentManager:
         tool_trace: list[str],
         sufficiency_trace: list[str],
         failed_directions: list[str],
-        tool_step: int,
-        consecutive_errors: int,
-    ) -> tuple[int, int]:
+        state: RunLoopState,
+    ) -> None:
         action_preview = shared.summarize_tool_args_for_trace(
             tool_call.name,
             tool_call.arguments,
@@ -1105,7 +1097,7 @@ class SubagentManager:
         self._update_status(
             task_id,
             phase=f"tool:{tool_call.name}",
-            tool_steps=tool_step + 1,
+            tool_steps=state.total_tool_steps_for_sufficiency + 1,
             action=action_summary,
         )
 
@@ -1125,20 +1117,24 @@ class SubagentManager:
             task_id,
             tool_call,
             coding_tool,
-            tool_step=tool_step,
+            tool_step=state.total_tool_steps_for_sufficiency,
+        )
+        execute_kwargs = shared.build_tool_execute_kwargs(
+            tools.execute,
+            raw_arguments=tool_call.raw_arguments,
+            argument_parse_error=tool_call.argument_parse_error,
         )
         try:
-            raw_result = await tools.execute(tool_call.name, tool_call.arguments)
+            raw_result = await tools.execute(tool_call.name, tool_call.arguments, **execute_kwargs)
         finally:
             if progress_backend and hasattr(progress_backend, "set_progress_callback"):
                 progress_backend.set_progress_callback(None)
 
-        result_text = tool_result_excerpt(raw_result)
         result, budget_event = apply_tool_output_budget(
             store=artifact_store,
             tool_name=tool_call.name,
             tool_call_id=tool_call.id,
-            result=raw_result,
+            result=tool_result_payload(raw_result),
             offload_chars=self._tool_offload_chars,
             preview_chars=self._tool_preview_chars,
             hard_chars=self._tool_hard_chars,
@@ -1161,8 +1157,7 @@ class SubagentManager:
             tool_msg["_image"] = screenshot_image_b64
         messages.append(tool_msg)
 
-        tool_step += 1
-        _tool_err_info = self._parse_tool_error(tool_call.name, result_text)
+        _tool_err_info = self._parse_tool_error(tool_call.name, raw_result)
         has_error = bool(_tool_err_info and _tool_err_info.is_error)
         trace_idx = len(tool_trace) + 1
         trace_entry = shared.build_tool_trace_entry(
@@ -1176,9 +1171,11 @@ class SubagentManager:
         sufficiency_trace.append(trace_entry)
         if len(sufficiency_trace) > 32:
             del sufficiency_trace[:-32]
+        state.total_tool_steps_for_sufficiency += 1
 
         if has_error:
-            consecutive_errors += 1
+            state.total_errors += 1
+            state.consecutive_errors += 1
             failed_preview = shared.summarize_tool_args_for_trace(
                 tool_call.name,
                 tool_call.arguments,
@@ -1210,11 +1207,9 @@ class SubagentManager:
                     },
                 )
         elif _tool_err_info and _tool_err_info.category == ToolErrorCategory.INTERRUPTED:
-            consecutive_errors = 0
+            state.consecutive_errors = 0
         else:
-            consecutive_errors = 0
-
-        return tool_step, consecutive_errors
+            state.consecutive_errors = 0
 
     async def _finalize_subagent_success(
         self,
@@ -1313,6 +1308,17 @@ class SubagentManager:
         context_from: str | None = None,
     ) -> None:
         logger.info("🚀 子代启动 / subagent start: [{}]: {}", task_id, label)
+        started_at = datetime.now().isoformat(timespec="seconds")
+        state = RunLoopState()
+        artifact_store: ArtifactStore | None = None
+        tool_trace: list[str] = []
+        reasoning_snippets: list[str] = []
+        sufficiency_trace: list[str] = []
+        failed_directions: list[str] = []
+        tool_exposure_history: list[ToolExposureSnapshot] = []
+        tools_used: list[str] = []
+        provider_finish_reason = ""
+        exit_reason = "failed"
         try:
             child_session_key = origin.get("child_session_key")
             parent_session_key = origin.get("session_key")
@@ -1345,30 +1351,9 @@ class SubagentManager:
             artifact_store = self._create_subagent_artifact_store(task_id)
 
             max_iterations = self.max_iterations
-            iteration = 0
-            final_result: str | None = None
-            failed_directions: list[str] = []
-            consecutive_errors = 0
-            tool_step = 0
-            next_sufficiency_at = 8
-            force_final_response = False
-            force_final_backoff_used = False
-            tool_trace: list[str] = []
-            sufficiency_trace: list[str] = []
-            reasoning_snippets: list[str] = []
-            last_state_attempt_at = 0
-            last_state_text: str | None = None
-
-            while iteration < max_iterations:
-                iteration += 1
-                (
-                    messages,
-                    last_state_attempt_at,
-                    last_state_text,
-                    consecutive_errors,
-                    next_sufficiency_at,
-                    force_final_response,
-                ) = await self._run_iteration_prechecks(
+            while state.iteration < max_iterations:
+                state.iteration += 1
+                messages = await self._run_iteration_prechecks(
                     task=task,
                     messages=messages,
                     initial_messages=initial_messages,
@@ -1377,20 +1362,30 @@ class SubagentManager:
                     sufficiency_trace=sufficiency_trace,
                     reasoning_snippets=reasoning_snippets,
                     failed_directions=failed_directions,
-                    last_state_attempt_at=last_state_attempt_at,
-                    last_state_text=last_state_text,
-                    consecutive_errors=consecutive_errors,
-                    tool_step=tool_step,
-                    next_sufficiency_at=next_sufficiency_at,
-                    force_final_response=force_final_response,
+                    state=state,
                 )
+                if state.interrupted:
+                    exit_reason = "interrupted"
+                    break
 
-                self._update_status(task_id, iteration=iteration, phase="thinking")
+                self._update_status(task_id, iteration=state.iteration, phase="thinking")
+                tool_exposure_history.append(
+                    self._build_subagent_tool_exposure_snapshot(
+                        task=task,
+                        tools=tools,
+                        force_final_response=state.force_final_response,
+                    )
+                )
                 response = await self._chat_subagent(
                     messages,
                     tools,
-                    force_final_response=force_final_response,
+                    force_final_response=state.force_final_response,
                 )
+                provider_finish_reason = str(response.finish_reason or "")
+                if response.finish_reason == "interrupted":
+                    state.interrupted = True
+                    exit_reason = "interrupted"
+                    break
 
                 if response.has_tool_calls:
                     clean = self._strip_think(response.content)
@@ -1412,7 +1407,8 @@ class SubagentManager:
                     )
 
                     for tool_call in response.tool_calls:
-                        tool_step, consecutive_errors = await self._execute_tool_call_block(
+                        tools_used.append(tool_call.name)
+                        await self._execute_tool_call_block(
                             task_id=task_id,
                             tool_call=tool_call,
                             tools=tools,
@@ -1422,70 +1418,83 @@ class SubagentManager:
                             tool_trace=tool_trace,
                             sufficiency_trace=sufficiency_trace,
                             failed_directions=failed_directions,
-                            tool_step=tool_step,
-                            consecutive_errors=consecutive_errors,
+                            state=state,
                         )
 
-                    if consecutive_errors >= 3:
+                    error_feedback = build_error_feedback(
+                        state.consecutive_errors,
+                        failed_directions,
+                    )
+                    if error_feedback:
+                        messages.append({"role": "user", "content": error_feedback})
+                    elif (
+                        state.total_tool_steps_for_sufficiency >= 8
+                        and state.total_tool_steps_for_sufficiency % 4 == 0
+                    ):
                         messages.append(
                             {
                                 "role": "user",
                                 "content": (
-                                    f"Already tried and failed: {'; '.join(failed_directions[-3:])}."
-                                    " Try a different approach."
-                                ),
-                            }
-                        )
-                    elif tool_step >= 8 and tool_step % 4 == 0:
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    f"[Progress: {tool_step} steps completed]"
+                                    f"[Progress: {state.total_tool_steps_for_sufficiency} steps completed]"
                                     " Focus on completing the task efficiently."
                                 ),
                             }
                         )
 
-                    if iteration % self._PROGRESS_INTERVAL == 0:
+                    if state.iteration % self._PROGRESS_INTERVAL == 0:
                         await self._push_milestone(
                             task_id,
                             label,
-                            iteration,
+                            state.iteration,
                             max_iterations,
                             origin,
                         )
                     continue
 
                 clean_final = self._strip_think(response.content)
-                if force_final_response and not force_final_backoff_used and not clean_final:
-                    force_final_response = False
-                    force_final_backoff_used = True
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "Your previous final response was empty. "
-                                "If more evidence is needed, use tools briefly and then provide a "
-                                "complete final answer."
-                            ),
-                        }
+                if response.finish_reason == "error":
+                    state.provider_error = True
+                    state.final_content = clean_final or "Error calling the AI model."
+                    exit_reason = "provider_error"
+                    break
+                state.force_final_response, state.force_final_backoff_used, retry_prompt = (
+                    shared.maybe_backoff_empty_final(
+                        force_final_response=state.force_final_response,
+                        force_final_backoff_used=state.force_final_backoff_used,
+                        clean_final=clean_final,
                     )
+                )
+                if retry_prompt is not None:
+                    messages.append(retry_prompt)
                     continue
-                final_result = clean_final
+                state.final_content = clean_final
+                exit_reason = "completed" if clean_final is not None else "max_iterations"
                 break
 
-            await self._finalize_subagent_success(
-                task_id=task_id,
-                label=label,
-                task=task,
-                final_result=final_result,
-                origin=origin,
-                iteration=iteration,
-                tool_step=tool_step,
-            )
+            if exit_reason == "provider_error":
+                await self._finalize_subagent_failure(
+                    task_id=task_id,
+                    label=label,
+                    task=task,
+                    origin=origin,
+                    error=RuntimeError(state.final_content or "Error calling the AI model."),
+                )
+            elif exit_reason == "interrupted":
+                self._update_status(task_id, status="cancelled", phase="cancelled")
+            else:
+                await self._finalize_subagent_success(
+                    task_id=task_id,
+                    label=label,
+                    task=task,
+                    final_result=state.final_content,
+                    origin=origin,
+                    iteration=state.iteration,
+                    tool_step=state.total_tool_steps_for_sufficiency,
+                )
 
         except asyncio.CancelledError:
+            state.interrupted = True
+            exit_reason = "cancelled"
             self._update_status(task_id, status="cancelled", phase="cancelled")
             child_session_key = origin.get("child_session_key")
             parent_session_key = origin.get("session_key")
@@ -1501,12 +1510,28 @@ class SubagentManager:
             logger.info("👋 子代终止 / subagent stopped: [{}]", task_id)
 
         except Exception as e:
+            exit_reason = "failed"
             await self._finalize_subagent_failure(
                 task_id=task_id,
                 label=label,
                 task=task,
                 origin=origin,
                 error=e,
+            )
+        finally:
+            self._archive_subagent_run_artifact(
+                task_id=task_id,
+                task=task,
+                artifact_store=artifact_store,
+                started_at=started_at,
+                finished_at=datetime.now().isoformat(timespec="seconds"),
+                state=state,
+                tool_trace=tool_trace,
+                tools_used=tools_used,
+                reasoning_snippets=reasoning_snippets,
+                tool_exposure_history=tool_exposure_history,
+                provider_finish_reason=provider_finish_reason,
+                exit_reason=exit_reason,
             )
 
     async def _announce_result_non_fatal(
@@ -1537,27 +1562,21 @@ class SubagentManager:
         safe_label = self._sanitize_visible(label)
         safe_task = self._sanitize_visible(task)
         safe_result = self._sanitize_visible(result)
-        metadata: dict[str, Any] = {
-            "system_event": shared.build_subagent_result_event(
+        event = ControlEvent(
+            kind=shared.SUBAGENT_RESULT_EVENT_TYPE,
+            payload=shared.build_subagent_result_event(
                 task_id=task_id,
                 label=safe_label,
                 task=safe_task,
                 status=status,
                 result=safe_result,
-            )
-        }
-        if isinstance(origin.get("session_key"), str):
-            metadata["session_key"] = origin["session_key"]
-
-        msg = InboundMessage(
-            channel="system",
-            sender_id="subagent",
-            chat_id=f"{origin['channel']}:{origin['chat_id']}",
-            content="",
-            metadata=metadata,
+            ),
+            session_key=origin.get("session_key", ""),
+            origin_channel=origin["channel"],
+            origin_chat_id=origin["chat_id"],
+            source="subagent",
         )
-
-        await self.bus.publish_inbound(msg)
+        await self.bus.publish_control(event)
         logger.debug(
             "Subagent [{}] announced result to {}:{}", task_id, origin["channel"], origin["chat_id"]
         )
@@ -1583,7 +1602,6 @@ class SubagentManager:
             format_current_time,
         )
 
-        search_capability = "\n- Search the web and fetch web pages" if has_search else ""
         search_capability = "\n- Search the web and fetch web pages" if has_search else ""
         browser_capability = (
             "\n- Control a browser for interactive pages, forms, screenshots, and DOM snapshots"

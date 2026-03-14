@@ -26,12 +26,10 @@ from bao.providers.retry import (
     DEFAULT_MAX_RETRIES,
     ProgressCallbackError,
     StreamInterruptedError,
-    compute_retry_delay,
     emit_progress,
     emit_progress_reset,
     run_with_retries,
     safe_error_text,
-    should_retry_exception,
 )
 
 _ALLOWED_MSG_KEYS = frozenset({"role", "content", "tool_calls", "tool_call_id", "name"})
@@ -635,13 +633,25 @@ class OpenAICompatibleProvider(LLMProvider):
         body["stream"] = True
         url = f"{self._effective_base.rstrip('/')}/responses"
         headers = self._build_responses_headers()
+        retry_count = 0
 
-        last_err: Exception | None = None
-        for attempt in range(_MAX_RETRIES + 1):
+        async def _on_retry(exc: BaseException, attempt: int, delay: float) -> None:
+            nonlocal retry_count
+            retry_count = attempt + 1
+            logger.warning(
+                "⚠️ 接口重试中 / retrying: [{}] Responses transient error (attempt {}/{}), in {:.1f}s: {}",
+                source,
+                attempt + 1,
+                _MAX_RETRIES + 1,
+                delay,
+                safe_error_text(exc),
+            )
+
+        async def _run_once() -> LLMResponse:
             try:
                 await emit_progress_reset(on_progress)
-            except ProgressCallbackError as exc:
-                return self._progress_callback_error_response(exc)
+            except ProgressCallbackError:
+                raise
             try:
                 async with httpx.AsyncClient(timeout=120.0) as client:
                     async with client.stream("POST", url, headers=headers, json=body) as resp:
@@ -664,7 +674,6 @@ class OpenAICompatibleProvider(LLMProvider):
                             return result
 
                         status_err = _ResponsesHTTPStatusError(resp)
-                        last_err = status_err
                         if resp.status_code in _PROBE_FALLBACK_CODES and allow_fallback:
                             logger.debug(
                                 "🤖 响应不支持 / unsupported: [{}] status {}, falling back to Chat Completions",
@@ -682,93 +691,49 @@ class OpenAICompatibleProvider(LLMProvider):
                                 source,
                                 reasoning_effort,
                             )
-
-                        if should_retry_exception(status_err) and attempt < _MAX_RETRIES:
-                            delay = compute_retry_delay(status_err, attempt, base_delay=_BASE_DELAY)
-                            logger.warning(
-                                "⚠️ HTTP 重试中 / retrying: [{}] transient HTTP {} (attempt {}/{}), in {:.1f}s",
-                                source,
-                                resp.status_code,
-                                attempt + 1,
-                                _MAX_RETRIES + 1,
-                                delay,
-                            )
-                            await asyncio.sleep(delay)
-                            continue
-
-                        if allow_fallback:
-                            logger.debug(
-                                "🤖 回退补全 / fallback: [{}] Responses returned {} model={} base={}, trying Chat Completions",
-                                source,
-                                resp.status_code,
-                                model,
-                                self._effective_base,
-                            )
-                            return await self._chat_completions(
-                                model,
-                                messages,
-                                tools,
-                                max_tokens,
-                                temperature,
-                                on_progress,
-                                source,
-                                reasoning_effort,
-                            )
-
-                        return LLMResponse(
-                            content=f"Error calling Responses API: {safe_error_text(status_err)}",
-                            finish_reason="error",
-                        )
+                        raise status_err
             except asyncio.CancelledError:
                 raise
-            except ProgressCallbackError as exc:
-                return self._progress_callback_error_response(exc)
-            except Exception as exc:
-                last_err = exc
-                if should_retry_exception(exc) and attempt < _MAX_RETRIES:
-                    delay = compute_retry_delay(exc, attempt, base_delay=_BASE_DELAY)
-                    logger.warning(
-                        "⚠️ 接口重试中 / retrying: [{}] Responses transient error (attempt {}/{}), in {:.1f}s: {}",
-                        source,
-                        attempt + 1,
-                        _MAX_RETRIES + 1,
-                        delay,
-                        safe_error_text(exc),
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-
-                if allow_fallback:
-                    logger.debug(
-                        "🤖 回退补全 / fallback: [{}] request failed model={} base={} ({}), trying Chat Completions",
-                        source,
-                        model,
-                        self._effective_base,
-                        safe_error_text(exc),
-                    )
-                    return await self._chat_completions(
-                        model,
-                        messages,
-                        tools,
-                        max_tokens,
-                        temperature,
-                        on_progress,
-                        source,
-                        reasoning_effort,
-                    )
-
-                return LLMResponse(
-                    content=f"Error calling Responses API: {safe_error_text(exc)}",
-                    finish_reason="error",
+        try:
+            return await run_with_retries(
+                _run_once,
+                max_retries=_MAX_RETRIES,
+                base_delay=_BASE_DELAY,
+                on_retry=_on_retry,
+            )
+        except asyncio.CancelledError:
+            raise
+        except ProgressCallbackError as exc:
+            return self._progress_callback_error_response(exc)
+        except Exception as exc:
+            if allow_fallback:
+                logger.debug(
+                    "🤖 回退补全 / fallback: [{}] request failed model={} base={} ({}), trying Chat Completions",
+                    source,
+                    model,
+                    self._effective_base,
+                    safe_error_text(exc),
                 )
-
-        return LLMResponse(
-            content=(
-                "Error calling Responses API: "
-                f"{safe_error_text(last_err or RuntimeError('unknown error'))}"
-            ),
-            finish_reason="error",
-        )
+                return await self._chat_completions(
+                    model,
+                    messages,
+                    tools,
+                    max_tokens,
+                    temperature,
+                    on_progress,
+                    source,
+                    reasoning_effort,
+                )
+            if retry_count > 0:
+                logger.error(
+                    "❌ Responses 最终失败 / final failure: after {} attempts: {}",
+                    retry_count + 1,
+                    safe_error_text(exc),
+                )
+            return LLMResponse(
+                content=f"Error calling Responses API: {safe_error_text(exc)}",
+                finish_reason="error",
+            )
 
     async def _chat_with_probe(
         self,

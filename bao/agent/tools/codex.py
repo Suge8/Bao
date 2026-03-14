@@ -10,9 +10,14 @@ from bao.agent.tools.coding_agent_base import (
     BaseCodingDetailsTool,
     DetailCache,
 )
+from bao.agent.tools.coding_session_store import CodingSessionStore
 
 # Shared cache between CodexTool and CodexDetailsTool
 _codex_cache = DetailCache()
+_CODEX_MODE_OPTION_SUPPORT: dict[str, frozenset[str]] = {
+    "start": frozenset({"model", "sandbox", "full_auto"}),
+    "resume": frozenset({"model", "full_auto"}),
+}
 
 
 class CodexTool(BaseCodingAgentTool):
@@ -23,12 +28,14 @@ class CodexTool(BaseCodingAgentTool):
         workspace: Path,
         allowed_dir: Path | None = None,
         default_timeout_seconds: int = 1800,
+        session_store: CodingSessionStore | None = None,
     ):
         super().__init__(
             workspace=workspace,
             allowed_dir=allowed_dir,
             default_timeout_seconds=default_timeout_seconds,
             detail_cache=_codex_cache,
+            session_store=session_store,
         )
 
     # -- identity --
@@ -106,7 +113,7 @@ class CodexTool(BaseCodingAgentTool):
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 2,
-                    "description": "Retry attempts on transient failures",
+                    "description": "Reserved compatibility field; hidden automatic retries are disabled",
                 },
                 "max_output_chars": {
                     "type": "integer",
@@ -165,27 +172,23 @@ class CodexTool(BaseCodingAgentTool):
         tmp = tempfile.NamedTemporaryFile(prefix="bao_codex_last_", suffix=".txt", delete=False)
         output_file = tmp.name
         tmp.close()
-
-        if resolved_session:
-            cmd = ["codex", "exec", "resume", "--json", "-o", output_file]
-            if model:
-                cmd.extend(["-m", model])
-            if sandbox:
-                cmd.extend(["-s", sandbox])
-            if full_auto:
-                cmd.append("--full-auto")
-            cmd.extend([resolved_session, prompt])
-            return cmd, {"output_file": output_file}
-
-        cmd = ["codex", "exec", "--json", "-o", output_file]
-        if model:
+        mode = "resume" if resolved_session else "start"
+        cmd = ["codex", "exec"]
+        if mode == "resume":
+            cmd.append("resume")
+        cmd.extend(["--json", "-o", output_file])
+        supported = _CODEX_MODE_OPTION_SUPPORT[mode]
+        if model and "model" in supported:
             cmd.extend(["-m", model])
-        if sandbox:
+        if sandbox and "sandbox" in supported:
             cmd.extend(["-s", sandbox])
-        if full_auto:
+        if full_auto and "full_auto" in supported:
             cmd.append("--full-auto")
-        cmd.append(prompt)
-        return cmd, {"output_file": output_file}
+        if resolved_session:
+            cmd.extend([resolved_session, prompt])
+        else:
+            cmd.append(prompt)
+        return cmd, {"output_file": output_file, "mode": mode}
 
     async def _extract_output(self, *, stdout_text: str, exec_state: dict[str, Any]) -> str:
         """On success: file > JSONL > raw. On failure: JSONL > raw > file."""

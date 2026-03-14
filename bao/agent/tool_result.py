@@ -5,9 +5,11 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 INLINE_TOOL_RESULT_CHARS = 8000
 DEFAULT_RESULT_EXCERPT_CHARS = 2000
+SOFT_INTERRUPT_MESSAGE = "Cancelled by soft interrupt."
 
 
 @dataclass(slots=True)
@@ -19,14 +21,67 @@ class ToolTextResult:
 
 
 ToolResultValue = str | ToolTextResult
+ToolExecutionStatus = Literal["ok", "error", "interrupted"]
 
 
-def tool_result_excerpt(result: ToolResultValue | object) -> str:
+@dataclass(slots=True)
+class ToolExecutionResult:
+    status: ToolExecutionStatus
+    value: ToolResultValue | None = None
+    code: str | None = None
+    message: str = ""
+
+    @classmethod
+    def ok(
+        cls,
+        value: ToolResultValue,
+        *,
+        code: str | None = None,
+        message: str = "",
+    ) -> "ToolExecutionResult":
+        return cls(status="ok", value=value, code=code, message=message)
+
+    @classmethod
+    def error(
+        cls,
+        *,
+        message: str,
+        value: ToolResultValue | None = None,
+        code: str | None = None,
+    ) -> "ToolExecutionResult":
+        return cls(status="error", value=value, code=code, message=message)
+
+    @classmethod
+    def interrupted(
+        cls,
+        *,
+        value: ToolResultValue | None = None,
+        code: str | None = "soft_interrupt",
+        message: str = SOFT_INTERRUPT_MESSAGE,
+    ) -> "ToolExecutionResult":
+        return cls(status="interrupted", value=value, code=code, message=message)
+
+
+ToolExecutionOutput = ToolResultValue | ToolExecutionResult
+
+
+def tool_result_payload(result: ToolExecutionOutput | object) -> ToolResultValue | str:
+    if isinstance(result, ToolExecutionResult):
+        if result.value is not None:
+            return result.value
+        return result.message
     if isinstance(result, ToolTextResult):
-        return result.excerpt
+        return result
     if isinstance(result, str):
         return result
     return str(result)
+
+
+def tool_result_excerpt(result: ToolExecutionOutput | object) -> str:
+    payload = tool_result_payload(result)
+    if isinstance(payload, ToolTextResult):
+        return payload.excerpt
+    return payload
 
 
 def read_head_chars(path: Path, max_chars: int) -> str:

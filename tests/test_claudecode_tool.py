@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from bao.agent.loop import AgentLoop
 from bao.agent.tools.claudecode import ClaudeCodeDetailsTool, ClaudeCodeTool
+from bao.agent.tools.coding_session_store import CodingSessionEvent
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider, LLMResponse
 
@@ -31,6 +32,23 @@ class _DummyProvider(LLMProvider):
 
 def _run(coro: Any) -> Any:
     return asyncio.run(coro)
+
+
+class _FakeSessionStore:
+    def __init__(self) -> None:
+        self.sessions: dict[tuple[str, str], str] = {}
+        self.events: list[CodingSessionEvent] = []
+
+    async def load(self, *, context_key: str, backend: str) -> str | None:
+        return self.sessions.get((context_key, backend))
+
+    async def publish(self, event: CodingSessionEvent) -> None:
+        self.events.append(event)
+        key = (event.context_key, event.backend)
+        if event.action == "active" and event.session_id:
+            self.sessions[key] = event.session_id
+        elif event.action == "cleared":
+            self.sessions.pop(key, None)
 
 
 def test_claudecode_tool_missing_binary() -> None:
@@ -74,6 +92,7 @@ def test_claudecode_tool_success_with_generated_session() -> None:
 def test_claudecode_tool_continue_uses_context_session() -> None:
     with tempfile.TemporaryDirectory() as d:
         calls: list[list[str]] = []
+        store = _FakeSessionStore()
 
         async def _fake_run(cmd: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:
             del cwd, timeout_seconds
@@ -85,7 +104,7 @@ def test_claudecode_tool_continue_uses_context_session() -> None:
                 "stderr": "",
             }
 
-        tool = ClaudeCodeTool(workspace=Path(d))
+        tool = ClaudeCodeTool(workspace=Path(d), session_store=store)
         tool.set_context("telegram", "alice")
         with patch(
             "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/claude"
@@ -99,6 +118,7 @@ def test_claudecode_tool_continue_uses_context_session() -> None:
     idx = calls[0].index("--resume")
     assert calls[0][idx + 1] == "sess-real-a"
     assert "--session-id" not in calls[0]
+    assert store.sessions[("telegram:alice", "claudecode")] == "sess-real-a"
 
 
 def test_claudecode_tool_explicit_session_id_takes_priority() -> None:
@@ -131,6 +151,7 @@ def test_claudecode_tool_explicit_session_id_takes_priority() -> None:
 def test_claudecode_tool_continue_uses_canonical_session_from_stdout() -> None:
     with tempfile.TemporaryDirectory() as d:
         calls: list[list[str]] = []
+        store = _FakeSessionStore()
 
         async def _fake_run(cmd: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:
             del cwd, timeout_seconds
@@ -149,7 +170,7 @@ def test_claudecode_tool_continue_uses_canonical_session_from_stdout() -> None:
                 "stderr": "",
             }
 
-        tool = ClaudeCodeTool(workspace=Path(d))
+        tool = ClaudeCodeTool(workspace=Path(d), session_store=store)
         tool.set_context("telegram", "alice")
         with patch(
             "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/claude"
@@ -162,6 +183,41 @@ def test_claudecode_tool_continue_uses_canonical_session_from_stdout() -> None:
     assert calls and "--resume" in calls[0]
     idx = calls[0].index("--resume")
     assert calls[0][idx + 1] == "sess-canonical-1"
+    assert store.sessions[("telegram:alice", "claudecode")] == "sess-canonical-1"
+
+
+def test_claudecode_tool_clears_stale_stored_session_without_hidden_retry() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        calls: list[list[str]] = []
+        store = _FakeSessionStore()
+        store.sessions[("telegram:alice", "claudecode")] = "sess-stale"
+
+        async def _fake_run(cmd: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:
+            del cwd, timeout_seconds
+            calls.append(cmd)
+            return {
+                "timed_out": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "session not found",
+            }
+
+        tool = ClaudeCodeTool(workspace=Path(d), session_store=store)
+        tool.set_context("telegram", "alice")
+        with patch(
+            "bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/claude"
+        ):
+            with patch.object(ClaudeCodeTool, "_run_command", staticmethod(_fake_run)):
+                result = _run(tool.execute(prompt="retry stale", response_format="json"))
+
+    payload = json.loads(result)
+    assert payload["status"] == "error"
+    assert payload["error_type"] == "stale_session"
+    assert len(calls) == 1
+    assert "--resume" in calls[0]
+    idx = calls[0].index("--resume")
+    assert calls[0][idx + 1] == "sess-stale"
+    assert ("telegram:alice", "claudecode") not in store.sessions
 
 
 def test_claudecode_tool_uses_result_from_previous_json_object() -> None:

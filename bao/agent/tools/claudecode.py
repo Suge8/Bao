@@ -10,6 +10,7 @@ from bao.agent.tools.coding_agent_base import (
     BaseCodingDetailsTool,
     DetailCache,
 )
+from bao.agent.tools.coding_session_store import CodingSessionStore
 
 _claudecode_cache = DetailCache()
 
@@ -22,12 +23,14 @@ class ClaudeCodeTool(BaseCodingAgentTool):
         workspace: Path,
         allowed_dir: Path | None = None,
         default_timeout_seconds: int = 1800,
+        session_store: CodingSessionStore | None = None,
     ):
         super().__init__(
             workspace=workspace,
             allowed_dir=allowed_dir,
             default_timeout_seconds=default_timeout_seconds,
             detail_cache=_claudecode_cache,
+            session_store=session_store,
         )
 
     @property
@@ -94,7 +97,7 @@ class ClaudeCodeTool(BaseCodingAgentTool):
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 2,
-                    "description": "Retry attempts on transient failures",
+                    "description": "Reserved compatibility field; hidden automatic retries are disabled",
                 },
                 "max_output_chars": {
                     "type": "integer",

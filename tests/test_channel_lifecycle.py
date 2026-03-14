@@ -11,9 +11,17 @@ from bao.bus.events import OutboundMessage
 from bao.bus.queue import MessageBus
 from bao.channels.base import BaseChannel
 from bao.channels.discord import DiscordChannel
+from bao.channels.email import EmailChannel
+from bao.channels.imessage import IMessageChannel
 from bao.channels.mochat import MochatChannel
 from bao.channels.whatsapp import WhatsAppChannel
-from bao.config.schema import DiscordConfig, IMessageConfig, MochatConfig, WhatsAppConfig
+from bao.config.schema import (
+    DiscordConfig,
+    EmailConfig,
+    IMessageConfig,
+    MochatConfig,
+    WhatsAppConfig,
+)
 
 
 class _DummyChannel(BaseChannel):
@@ -60,6 +68,36 @@ class _AsyncWsContext:
 
     async def __aexit__(self, exc_type, exc, tb) -> bool:
         return False
+
+
+def _email_config() -> EmailConfig:
+    return EmailConfig(
+        enabled=True,
+        consent_granted=True,
+        imap_host="imap.example.com",
+        imap_port=993,
+        imap_username="bot@example.com",
+        imap_password="secret",
+        smtp_host="smtp.example.com",
+        smtp_port=587,
+        smtp_username="bot@example.com",
+        smtp_password="secret",
+    )
+
+
+def _new_mochat_channel() -> MochatChannel:
+    return MochatChannel(
+        MochatConfig(enabled=True, claw_token=SecretStr("tok")),
+        MagicMock(),
+    )
+
+
+def _install_waiting_mochat_workers(channel: MochatChannel, gate: asyncio.Event) -> None:
+    async def _wait_for_gate(_target_id: str) -> None:
+        await gate.wait()
+
+    channel._session_watch_worker = _wait_for_gate  # type: ignore[method-assign]
+    channel._panel_poll_worker = _wait_for_gate  # type: ignore[method-assign]
 
 
 @pytest.mark.asyncio
@@ -156,14 +194,11 @@ async def test_whatsapp_start_waits_until_stop(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_mochat_start_waits_until_stop() -> None:
-    channel = MochatChannel(
-        MochatConfig(enabled=True, claw_token=SecretStr("tok")),
-        MagicMock(),
-    )
+    channel = _new_mochat_channel()
     channel._load_session_cursors = AsyncMock()
     channel._refresh_targets = AsyncMock()
-    channel._ensure_fallback_workers = AsyncMock()
     channel._start_socket_client = AsyncMock(return_value=False)
+    channel._reconcile_transport_mode = AsyncMock()
 
     start_task = asyncio.create_task(channel.start())
     await asyncio.sleep(0.05)
@@ -171,3 +206,122 @@ async def test_mochat_start_waits_until_stop() -> None:
 
     await channel.stop()
     await asyncio.wait_for(start_task, timeout=0.5)
+
+
+@pytest.mark.asyncio
+async def test_mochat_transport_mode_reuses_and_clears_fallback_workers() -> None:
+    channel = _new_mochat_channel()
+    channel._running = True
+    channel._session_set = {"s1"}
+    channel._panel_set = {"p1"}
+
+    gate = asyncio.Event()
+    _install_waiting_mochat_workers(channel, gate)
+
+    await channel._reconcile_transport_mode("fallback")
+    session_task = channel._session_fallback_tasks["s1"]
+    panel_task = channel._panel_fallback_tasks["p1"]
+
+    await channel._reconcile_transport_mode("fallback")
+
+    assert channel._session_fallback_tasks["s1"] is session_task
+    assert channel._panel_fallback_tasks["p1"] is panel_task
+
+    await channel._reconcile_transport_mode("socket")
+
+    assert channel._session_fallback_tasks == {}
+    assert channel._panel_fallback_tasks == {}
+
+    gate.set()
+    await asyncio.gather(session_task, panel_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_email_start_waits_until_stop(monkeypatch) -> None:
+    channel = EmailChannel(_email_config(), MagicMock())
+    monkeypatch.setattr(channel, "_validate_config", lambda: True)
+    monkeypatch.setattr(channel, "_fetch_new_messages", lambda: [])
+
+    start_task = asyncio.create_task(channel.start())
+    await asyncio.sleep(0.05)
+    assert not start_task.done()
+
+    await channel.stop()
+    await asyncio.wait_for(start_task, timeout=0.5)
+
+
+@pytest.mark.asyncio
+async def test_imessage_start_waits_until_stop(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "chat.db"
+    db_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr("bao.channels.imessage.CHAT_DB", db_path)
+
+    channel = IMessageChannel(IMessageConfig(enabled=True), MagicMock())
+    monkeypatch.setattr(channel, "_get_max_rowid", lambda: 1)
+    channel._poll = AsyncMock()
+
+    start_task = asyncio.create_task(channel.start())
+    await asyncio.sleep(0.05)
+    assert not start_task.done()
+
+    await channel.stop()
+    await asyncio.wait_for(start_task, timeout=0.5)
+
+
+@pytest.mark.asyncio
+async def test_mochat_reconcile_transport_mode_syncs_workers() -> None:
+    channel = _new_mochat_channel()
+    channel._running = True
+    channel._session_set = {"s1"}
+    channel._panel_set = {"p1"}
+    session_task = asyncio.create_task(asyncio.sleep(60))
+    panel_task = asyncio.create_task(asyncio.sleep(60))
+    stale_task = asyncio.create_task(asyncio.sleep(60))
+    channel._session_fallback_tasks = {"s1": session_task, "stale": stale_task}
+    channel._panel_fallback_tasks = {"p1": panel_task}
+
+    created_sessions: list[str] = []
+    created_panels: list[str] = []
+
+    async def _session_watch_worker(session_id: str) -> None:
+        created_sessions.append(session_id)
+        await asyncio.sleep(60)
+
+    async def _panel_poll_worker(panel_id: str) -> None:
+        created_panels.append(panel_id)
+        await asyncio.sleep(60)
+
+    channel._session_watch_worker = _session_watch_worker
+    channel._panel_poll_worker = _panel_poll_worker
+
+    try:
+        await channel._reconcile_transport_mode("fallback")
+        await asyncio.sleep(0)
+
+        assert channel._transport_mode == "fallback"
+        assert list(channel._session_fallback_tasks) == ["s1"]
+        assert list(channel._panel_fallback_tasks) == ["p1"]
+        assert created_sessions == []
+        assert created_panels == []
+        assert stale_task.cancelled()
+
+        channel._session_set.add("s2")
+        channel._panel_set.add("p2")
+        await channel._reconcile_transport_mode("fallback")
+        await asyncio.sleep(0)
+
+        assert set(channel._session_fallback_tasks) == {"s1", "s2"}
+        assert set(channel._panel_fallback_tasks) == {"p1", "p2"}
+        assert created_sessions == ["s2"]
+        assert created_panels == ["p2"]
+
+        await channel._reconcile_transport_mode("socket")
+        await asyncio.sleep(0)
+
+        assert channel._transport_mode == "socket"
+        assert channel._session_fallback_tasks == {}
+        assert channel._panel_fallback_tasks == {}
+    finally:
+        for task in [session_task, panel_task, stale_task]:
+            task.cancel()
+        await asyncio.gather(session_task, panel_task, stale_task, return_exceptions=True)

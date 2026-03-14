@@ -9,6 +9,7 @@ import time
 import uuid
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
+from bao.agent.run_controller import RunLoopState
 from bao.agent.subagent import SpawnResult, SubagentManager, TaskStatus
 from bao.agent.tools.registry import ToolRegistry
 from bao.agent.tools.task_status import (
@@ -18,7 +19,7 @@ from bao.agent.tools.task_status import (
     _format_brief,
     _format_detailed,
 )
-from bao.bus.events import OutboundMessage
+from bao.bus.events import ControlEvent, OutboundMessage
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMResponse, ToolCallRequest
 from bao.session.manager import SessionManager
@@ -79,6 +80,31 @@ def test_task_status_defaults():
     assert st.clipped_chars == 0
     assert st.started_at > 0
     assert st.updated_at > 0
+
+
+@pytest.mark.asyncio
+async def test_get_related_memory_uses_single_recall_path(manager) -> None:
+    class _FakeMemory:
+        def recall(self, query: str, **kwargs):
+            assert query == "do work"
+            assert kwargs["related_limit"] == 3
+            assert kwargs["experience_limit"] == 3
+            assert kwargs["include_long_term"] is False
+            return type(
+                "_Bundle",
+                (),
+                {
+                    "related_memory": ("mem-1",),
+                    "related_experience": ("exp-1",),
+                },
+            )()
+
+    manager._memory = _FakeMemory()
+
+    mem, exp = await manager._get_related_memory("do work")
+
+    assert mem == ["mem-1"]
+    assert exp == ["exp-1"]
 
 
 @pytest.mark.asyncio
@@ -293,7 +319,8 @@ async def test_execute_tool_call_block_interrupted_resets_consecutive_errors(man
 
     tools.execute = _fake_execute
 
-    tool_step, consecutive_errors = await manager._execute_tool_call_block(
+    state = RunLoopState(consecutive_errors=2)
+    await manager._execute_tool_call_block(
         task_id="t1",
         tool_call=ToolCallRequest(id="tc_interrupt", name="exec", arguments={"command": "echo 1"}),
         tools=tools,
@@ -303,16 +330,50 @@ async def test_execute_tool_call_block_interrupted_resets_consecutive_errors(man
         tool_trace=[],
         sufficiency_trace=[],
         failed_directions=[],
-        tool_step=0,
-        consecutive_errors=2,
+        state=state,
     )
 
-    assert tool_step == 1
-    assert consecutive_errors == 0
+    assert state.total_tool_steps_for_sufficiency == 1
+    assert state.consecutive_errors == 0
     st = manager.get_task_status("t1")
     assert st is not None
     assert st.last_error_category is None
     assert st.last_error_code is None
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_archives_run_artifact(bus, tmp_path):
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    async def fake_chat(*, messages, **kwargs):
+        del messages, kwargs
+        return LLMResponse(content="done")
+
+    provider.chat = fake_chat
+    manager = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=bus,
+        model="test-model",
+    )
+    manager._task_statuses["t1"] = TaskStatus(
+        task_id="t1",
+        label="artifact",
+        task_description="archive artifact",
+        origin={"channel": "tg", "chat_id": "1"},
+    )
+
+    await manager._run_subagent("t1", "archive artifact", "artifact", {"channel": "tg", "chat_id": "1"})
+
+    trajectory_dir = tmp_path / ".bao" / "context" / "subagent_t1" / "trajectory"
+    files = sorted(trajectory_dir.glob("subagent_run_*.json"))
+    assert len(files) == 1
+    payload = json.loads(files[0].read_text(encoding="utf-8"))
+    assert payload["run_kind"] == "subagent"
+    assert payload["result"]["exit_reason"] == "completed"
+    st = manager.get_task_status("t1")
+    assert st is not None
     assert st.last_error_message is None
 
 
@@ -1409,10 +1470,10 @@ def test_format_status_no_recent_actions_for_running():
 # on_system_response callback in AgentLoop.run()
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_on_system_response_fires_for_system_messages():
-    """on_system_response callback should fire when run() processes a system message."""
+async def test_on_system_response_fires_for_control_events():
+    """on_system_response callback should fire when run() processes a control event."""
     from bao.agent.loop import AgentLoop
-    from bao.bus.events import InboundMessage, OutboundMessage
+    from bao.bus.events import OutboundMessage
 
     loop_bus = MessageBus()
     provider = MagicMock()
@@ -1433,40 +1494,28 @@ async def test_on_system_response_fires_for_system_messages():
 
         loop.on_system_response = fake_callback
 
-        # Mock _process_message to return a response for system messages
         fake_response = OutboundMessage(
             channel="tg", chat_id="1", content="Subagent finished the research task."
         )
 
-        async def fake_process(
-            msg,
-            session_key=None,
-            on_progress=None,
-            on_event=None,
-            expected_generation=None,
-            expected_generation_key=None,
-        ):
-            del (
-                msg,
-                session_key,
-                on_progress,
-                on_event,
-                expected_generation,
-                expected_generation_key,
-            )
+        async def fake_process(event):
+            del event
             return fake_response
 
-        loop._process_message = fake_process
+        loop._process_control_event = fake_process
 
         async def _noop_mcp():
             pass
 
         loop._connect_mcp = _noop_mcp
 
-        # Publish a system inbound message
-        await loop_bus.publish_inbound(
-            InboundMessage(
-                channel="system", sender_id="subagent", chat_id="tg:1", content="task done"
+        await loop_bus.publish_control(
+            ControlEvent(
+                kind="subagent_result",
+                payload={"type": "subagent_result"},
+                origin_channel="tg",
+                origin_chat_id="1",
+                source="subagent",
             )
         )
 
@@ -1486,9 +1535,9 @@ async def test_on_system_response_fires_for_system_messages():
 
 
 @pytest.mark.asyncio
-async def test_system_response_preserves_session_key_metadata():
+async def test_control_response_preserves_session_key_metadata():
     from bao.agent.loop import AgentLoop
-    from bao.bus.events import InboundMessage, OutboundMessage
+    from bao.bus.events import OutboundMessage
 
     loop_bus = MessageBus()
     provider = MagicMock()
@@ -1531,23 +1580,21 @@ async def test_system_response_preserves_session_key_metadata():
 
         loop._connect_mcp = _noop_mcp
 
-        await loop_bus.publish_inbound(
-            InboundMessage(
-                channel="system",
-                sender_id="subagent",
-                chat_id="tg:1",
-                content="",
-                metadata={
-                    "session_key": "tg:1::s2",
-                    "origin": "test",
-                    "system_event": {
-                        "type": "subagent_result",
-                        "task_id": "task-1",
-                        "label": "research",
-                        "task": "research topic",
-                        "status": "ok",
-                        "result": "done",
-                    },
+        await loop_bus.publish_control(
+            ControlEvent(
+                kind="subagent_result",
+                session_key="tg:1::s2",
+                origin_channel="tg",
+                origin_chat_id="1",
+                source="subagent",
+                metadata={"origin": "test"},
+                payload={
+                    "type": "subagent_result",
+                    "task_id": "task-1",
+                    "label": "research",
+                    "task": "research topic",
+                    "status": "ok",
+                    "result": "done",
                 },
             )
         )
@@ -1564,12 +1611,64 @@ async def test_system_response_preserves_session_key_metadata():
         assert len(captured) == 1
         assert captured[0].metadata.get("session_key") == "tg:1::s2"
         assert captured[0].metadata.get("origin") == "test"
+        assert "control_event" not in captured[0].metadata
         assert "system_event" not in captured[0].metadata
 
 
 @pytest.mark.asyncio
-async def test_announce_result_publishes_structured_system_event(manager):
-    manager.bus.publish_inbound = AsyncMock()
+async def test_process_control_event_uses_structured_path_without_system_message(tmp_path):
+    from bao.agent.loop import AgentLoop
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        model="test-model",
+    )
+
+    async def _fail_system(*args, **kwargs):
+        raise AssertionError("control event should not fallback to _process_system_message")
+
+    async def _fake_run_agent_loop(initial_messages, **kwargs):
+        del kwargs
+        user_messages = [m for m in initial_messages if m.get("role") == "user"]
+        assert user_messages
+        assert "[Background task completed successfully]" in user_messages[-1]["content"]
+        return "structured ok", [], [], 0, [], False, False, []
+
+    loop._process_system_message = _fail_system
+    loop._run_agent_loop = _fake_run_agent_loop
+
+    result = await loop._process_control_event(
+        ControlEvent(
+            kind="subagent_result",
+            session_key="desktop:local",
+            origin_channel="desktop",
+            origin_chat_id="local",
+            source="subagent",
+            metadata={"origin": "structured"},
+            payload={
+                "type": "subagent_result",
+                "task_id": "task-1",
+                "label": "research",
+                "task": "inspect runtime flow",
+                "status": "ok",
+                "result": "done",
+            },
+        )
+    )
+
+    assert result is not None
+    assert result.content == "structured ok"
+    assert result.metadata["session_key"] == "desktop:local"
+    assert result.metadata["origin"] == "structured"
+
+
+@pytest.mark.asyncio
+async def test_announce_result_publishes_structured_control_event(manager):
+    manager.bus.publish_control = AsyncMock()
 
     await manager._announce_result(
         "task123",
@@ -1580,15 +1679,16 @@ async def test_announce_result_publishes_structured_system_event(manager):
         "ok",
     )
 
-    manager.bus.publish_inbound.assert_awaited_once()
-    await_args = manager.bus.publish_inbound.await_args
+    manager.bus.publish_control.assert_awaited_once()
+    await_args = manager.bus.publish_control.await_args
     assert await_args is not None
-    inbound = await_args.args[0]
-    assert inbound.channel == "system"
-    assert inbound.sender_id == "subagent"
-    assert inbound.content == ""
-    assert inbound.metadata["session_key"] == "desktop:local"
-    assert inbound.metadata["system_event"] == {
+    event = await_args.args[0]
+    assert event.kind == "subagent_result"
+    assert event.source == "subagent"
+    assert event.origin_channel == "desktop"
+    assert event.origin_chat_id == "local"
+    assert event.session_key == "desktop:local"
+    assert event.payload == {
         "type": "subagent_result",
         "task_id": "task123",
         "label": "research",
@@ -1619,6 +1719,39 @@ def test_shared_subagent_result_event_helpers_normalize_contract():
     }
     parsed = shared.parse_subagent_result_event({"system_event": event})
     assert parsed == event
+    parsed_control = shared.parse_subagent_result_event({"control_event": event})
+    assert parsed_control == event
+
+
+def test_persist_child_result_clears_runtime_overlay_but_keeps_stable_status(manager, tmp_path):
+    session_manager = SessionManager(tmp_path)
+    manager.sessions = session_manager
+    child_key = "desktop:local::child"
+
+    manager._persist_child_user_turn(
+        child_key,
+        parent_session_key="desktop:local",
+        label="research",
+        task_id="task-1",
+        task="inspect runtime",
+    )
+
+    session_before = session_manager.get_or_create(child_key)
+    assert session_before.metadata.get("child_status") == "running"
+    assert session_before.metadata.get("active_task_id") == "task-1"
+
+    manager._persist_child_result(
+        child_key,
+        parent_session_key="desktop:local",
+        label="research",
+        task_id="task-1",
+        result="done",
+        status="completed",
+    )
+
+    session_after = session_manager.get_or_create(child_key)
+    assert session_after.metadata.get("child_status") == "completed"
+    assert session_after.metadata.get("active_task_id") in ("", None)
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,6 @@ import inspect
 import json
 import re
 import shlex
-import tempfile
 import uuid
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -19,11 +18,20 @@ from loguru import logger
 
 from bao.agent import commands, experience, shared
 from bao.agent import plan as plan_state
+from bao.agent.capability_registry import build_available_tool_lines
 from bao.agent.context import ContextBuilder
 from bao.agent.memory import MEMORY_CATEGORIES, MEMORY_CATEGORY_CAPS
 from bao.agent.protocol import StreamEvent, StreamEventType
+from bao.agent.reply_route import normalize_reply_metadata
+from bao.agent.run_artifacts import build_run_artifact_payload
+from bao.agent.run_controller import (
+    RunLoopState,
+    apply_pre_iteration_checks,
+    build_error_feedback,
+)
 from bao.agent.subagent import SubagentManager
-from bao.agent.tool_result import tool_result_excerpt
+from bao.agent.tool_exposure import ToolExposureSnapshot
+from bao.agent.tool_result import ToolExecutionResult, tool_result_payload
 from bao.agent.tools.agent_browser import AgentBrowserTool
 from bao.agent.tools.base import Tool
 from bao.agent.tools.cron import CronTool
@@ -37,7 +45,7 @@ from bao.agent.tools.shell import ExecTool
 from bao.agent.tools.spawn import SpawnTool
 from bao.agent.tools.task_status import CancelTaskTool, CheckTasksJsonTool, CheckTasksTool
 from bao.agent.tools.web import WebFetchTool, WebSearchTool
-from bao.bus.events import InboundMessage, OutboundMessage
+from bao.bus.events import ControlEvent, InboundMessage, OutboundMessage
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider
 from bao.providers.retry import PROGRESS_RESET
@@ -53,8 +61,6 @@ if TYPE_CHECKING:
 
 _ERROR_KEYWORDS = ("error:", "traceback", "failed", "exception", "permission denied")
 _TOOL_OBS_LAST_KEY = "_tool_observability_last"
-_TOOL_OBS_RECENT_KEY = "_tool_observability_recent"
-_TOOL_OBS_RECENT_LIMIT = 20
 _TOOL_BUNDLE_CORE = "core"
 _TOOL_BUNDLE_WEB = "web"
 _TOOL_BUNDLE_DESKTOP = "desktop"
@@ -66,7 +72,7 @@ _TOOL_ROUTE_TOPK_TIER0 = 8
 _TOOL_ROUTE_TOPK_TIER1 = 16
 _TOOL_ROUTE_MAX_ESCALATIONS = 2
 _TOOL_ROUTE_INTENT_THRESHOLD = 0.65
-_ROUTE_CODE_ESSENTIAL_TOOLS = frozenset({"read_file"})
+_ROUTE_CODE_ESSENTIAL_TOOLS = frozenset({"read_file", "edit_file"})
 _ROUTE_RESCUE_TOOLS = frozenset(
     {
         "message",
@@ -88,9 +94,6 @@ _WEB_SIGNAL_TOKENS = (
     "链接",
     "url",
     "搜索",
-    "搜",
-    "查",
-    "找",
     "search",
     "crawl",
     "fetch",
@@ -102,13 +105,15 @@ _DESKTOP_SIGNAL_TOKENS = (
     "desktop",
     "screen",
     "screenshot",
+    "桌面",
     "click",
     "type",
     "drag",
     "scroll",
-    "键盘",
     "屏幕",
     "截图",
+    "截屏",
+    "截个屏",
     "点击",
     "输入",
 )
@@ -119,10 +124,6 @@ _CODE_SIGNAL_TOKENS = (
     "test",
     "debug",
     "refactor",
-    "python",
-    "javascript",
-    "typescript",
-    "bash",
     "文件",
     "代码",
     "脚本",
@@ -266,22 +267,6 @@ _GREETING_WORDS = frozenset(
 
 
 @dataclass
-class _RunLoopState:
-    iteration: int = 0
-    final_content: str | None = None
-    provider_error: bool = False
-    interrupted: bool = False
-    consecutive_errors: int = 0
-    total_errors: int = 0
-    total_tool_steps_for_sufficiency: int = 0
-    next_sufficiency_at: int = 8
-    force_final_response: bool = False
-    force_final_backoff_used: bool = False
-    last_state_attempt_at: int = 0
-    last_state_text: str | None = None
-
-
-@dataclass
 class _ToolObservabilityCounters:
     schema_samples: int = 0
     schema_tool_count_last: int = 0
@@ -393,6 +378,11 @@ class AgentLoop:
             getattr(_tools_cfg, "image_generation", None) if _tools_cfg else None
         )
         self._desktop_config = getattr(_tools_cfg, "desktop", None) if _tools_cfg else None
+        _web_cfg = getattr(_tools_cfg, "web", None) if _tools_cfg else None
+        _web_browser_cfg = getattr(_web_cfg, "browser", None) if _web_cfg else None
+        self._web_browser_enabled = (
+            getattr(_web_browser_cfg, "enabled", True) if _web_browser_cfg else True
+        )
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -416,6 +406,7 @@ class AgentLoop:
             memory_store=self.context.memory,
             image_generation_config=self._image_generation_config,
             desktop_config=self._desktop_config,
+            browser_enabled=self._web_browser_enabled,
             sessions=self.sessions,
         )
 
@@ -487,7 +478,7 @@ class AgentLoop:
             experience_mode=self._experience_mode,
         )
 
-        # Callback for system message responses (subagent completion, etc.)
+        # Callback for internal notification responses (subagent completion, etc.)
         # Desktop/CLI can register this to receive async notifications.
         self.on_system_response: Callable[[OutboundMessage], Awaitable[None]] | None = None
 
@@ -589,8 +580,13 @@ class AgentLoop:
             keyword_aliases=("command", "terminal", "bash", "run", "执行", "命令"),
         )
         from bao.agent.tools.coding_agent import CodingAgentDetailsTool, CodingAgentTool
+        from bao.agent.tools.coding_session_store import SessionMetadataCodingSessionStore
 
-        coding_tool = CodingAgentTool(workspace=self.workspace, allowed_dir=allowed_dir)
+        coding_tool = CodingAgentTool(
+            workspace=self.workspace,
+            allowed_dir=allowed_dir,
+            session_store=SessionMetadataCodingSessionStore(self.sessions),
+        )
         if coding_tool.available_backends:
             self._register_tool(
                 coding_tool,
@@ -672,14 +668,23 @@ class AgentLoop:
                 ),
             )
         self._register_tool(
-            WebFetchTool(proxy=self.web_proxy, workspace=self.workspace, allowed_dir=allowed_dir),
+            WebFetchTool(
+                proxy=self.web_proxy,
+                workspace=self.workspace,
+                browser_enabled=self._web_browser_enabled,
+                allowed_dir=allowed_dir,
+            ),
             bundle=_TOOL_BUNDLE_WEB,
             short_hint="Fetch a known URL and extract readable content.",
             aliases=("web fetch", "open url", "打开网页", "抓网页"),
             keyword_aliases=("url", "link", "fetch", "网页", "链接", "官网"),
         )
-        browser_tool = AgentBrowserTool(workspace=self.workspace, allowed_dir=allowed_dir)
-        if browser_tool.available:
+        browser_tool = AgentBrowserTool(
+            workspace=self.workspace,
+            enabled=self._web_browser_enabled,
+            allowed_dir=allowed_dir,
+        )
+        if self._web_browser_enabled:
             self._register_tool(
                 browser_tool,
                 bundle=_TOOL_BUNDLE_WEB,
@@ -920,13 +925,14 @@ class AgentLoop:
             if isinstance(lang, str)
             else self._resolve_user_language()
         )
+        reply_metadata = normalize_reply_metadata(metadata)
 
         if (t := self.tools.get("message")) and isinstance(t, MessageTool):
             t.set_context(
                 channel,
                 chat_id,
                 normalized_message_id,
-                reply_metadata=self._plan_reply_metadata(metadata),
+                reply_metadata=reply_metadata,
             )
         if (t := self.tools.get("spawn")) and isinstance(t, SpawnTool):
             t.set_context(
@@ -934,7 +940,7 @@ class AgentLoop:
                 chat_id,
                 session_key=session_key,
                 lang=preferred_lang,
-                reply_metadata=self._plan_reply_metadata(metadata),
+                reply_metadata=reply_metadata,
             )
         if (t := self.tools.get("cron")) and isinstance(t, CronTool):
             t.set_context(channel, chat_id)
@@ -954,7 +960,7 @@ class AgentLoop:
                     chat_id,
                     session_key=session_key,
                     lang=preferred_lang,
-                    reply_metadata=self._plan_reply_metadata(metadata),
+                    reply_metadata=reply_metadata,
                 )
 
         for name in ("coding_agent", "coding_agent_details"):
@@ -977,22 +983,6 @@ class AgentLoop:
             return plan_state.normalize_language(infer_language(self.workspace))
         except Exception:
             return "en"
-
-    @staticmethod
-    def _plan_reply_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
-        if not isinstance(metadata, dict):
-            return {}
-        slack_meta = metadata.get("slack")
-        if not isinstance(slack_meta, dict):
-            return {}
-        thread_ts = slack_meta.get("thread_ts")
-        if not isinstance(thread_ts, str) or not thread_ts.strip():
-            return {}
-        slim_slack: dict[str, Any] = {"thread_ts": thread_ts}
-        channel_type = slack_meta.get("channel_type")
-        if isinstance(channel_type, str) and channel_type.strip():
-            slim_slack["channel_type"] = channel_type
-        return {"slack": slim_slack}
 
     @staticmethod
     def _detect_message_language(text: str | None) -> str | None:
@@ -1100,13 +1090,39 @@ class AgentLoop:
         meta = self.tools.get_metadata(name)
         return meta.bundle if meta is not None else None
 
+    @staticmethod
+    def _has_code_path_signal(user_text: str) -> bool:
+        if not user_text:
+            return False
+        return bool(
+            re.search(
+                r"(?:^|[\s'\"`(])[\w./-]+\.(?:py|js|ts|tsx|jsx|sh|json|ya?ml|toml|qml|md)(?:$|[\s'\"`),])",
+                user_text,
+            )
+        )
+
     def _auto_route_bundles(self, user_text: str) -> set[str]:
         bundles = {_TOOL_BUNDLE_CORE}
-        if any(token in user_text for token in _WEB_SIGNAL_TOKENS):
+        route_tokens = self._route_tokens(user_text)
+        has_web = self._has_route_signal(user_text, _WEB_SIGNAL_TOKENS, route_tokens=route_tokens)
+        has_desktop = self._has_route_signal(
+            user_text, _DESKTOP_SIGNAL_TOKENS, route_tokens=route_tokens
+        )
+        has_code = self._has_route_signal(
+            user_text, _CODE_SIGNAL_TOKENS, route_tokens=route_tokens
+        ) or self._has_code_path_signal(user_text)
+        browser_context = any(
+            token in user_text
+            for token in ("browser", "浏览器", "网站", "网页", "web", "http://", "https://", "url")
+        )
+        explicit_screen_context = any(
+            token in user_text for token in ("screen", "screenshot", "截图", "截屏", "屏幕", "桌面")
+        )
+        if has_web:
             bundles.add(_TOOL_BUNDLE_WEB)
-        if any(token in user_text for token in _DESKTOP_SIGNAL_TOKENS):
+        if has_desktop and (explicit_screen_context or not browser_context):
             bundles.add(_TOOL_BUNDLE_DESKTOP)
-        if any(token in user_text for token in _CODE_SIGNAL_TOKENS):
+        if has_code:
             bundles.add(_TOOL_BUNDLE_CODE)
         return bundles
 
@@ -1125,17 +1141,35 @@ class AgentLoop:
         )
         return {tok for tok in tokens if tok}
 
+    @classmethod
+    def _has_route_signal(
+        cls, user_text: str, signals: tuple[str, ...], *, route_tokens: set[str] | None = None
+    ) -> bool:
+        tokens = route_tokens if route_tokens is not None else cls._route_tokens(user_text)
+        for signal in signals:
+            normalized = signal.lower()
+            if normalized.isascii() and normalized.replace("_", "").isalnum():
+                if normalized in tokens:
+                    return True
+                continue
+            if normalized in user_text:
+                return True
+        return False
+
     def _tool_intent_score(self, user_text: str) -> float:
         if not user_text:
             return 0.0
         score = 0.0
+        route_tokens = self._route_tokens(user_text)
         if "http://" in user_text or "https://" in user_text:
             score += 0.35
-        if any(token in user_text for token in _WEB_SIGNAL_TOKENS):
+        if self._has_route_signal(user_text, _WEB_SIGNAL_TOKENS, route_tokens=route_tokens):
             score += 0.25
-        if any(token in user_text for token in _CODE_SIGNAL_TOKENS):
+        if self._has_route_signal(user_text, _CODE_SIGNAL_TOKENS, route_tokens=route_tokens):
             score += 0.25
-        if any(token in user_text for token in _DESKTOP_SIGNAL_TOKENS):
+        if self._has_code_path_signal(user_text):
+            score += 0.25
+        if self._has_route_signal(user_text, _DESKTOP_SIGNAL_TOKENS, route_tokens=route_tokens):
             score += 0.2
         if any(token in user_text for token in ("读取", "修改", "执行", "run", "command", "命令")):
             score += 0.2
@@ -1150,12 +1184,17 @@ class AgentLoop:
         score = 0.0
         if bundle == _TOOL_BUNDLE_CORE:
             score += 0.15
-        if bundle == _TOOL_BUNDLE_WEB and any(token in user_text for token in _WEB_SIGNAL_TOKENS):
+        if bundle == _TOOL_BUNDLE_WEB and self._has_route_signal(
+            user_text, _WEB_SIGNAL_TOKENS, route_tokens=user_tokens
+        ):
             score += 0.9
-        if bundle == _TOOL_BUNDLE_CODE and any(token in user_text for token in _CODE_SIGNAL_TOKENS):
+        if bundle == _TOOL_BUNDLE_CODE and (
+            self._has_route_signal(user_text, _CODE_SIGNAL_TOKENS, route_tokens=user_tokens)
+            or self._has_code_path_signal(user_text)
+        ):
             score += 0.9
-        if bundle == _TOOL_BUNDLE_DESKTOP and any(
-            token in user_text for token in _DESKTOP_SIGNAL_TOKENS
+        if bundle == _TOOL_BUNDLE_DESKTOP and self._has_route_signal(
+            user_text, _DESKTOP_SIGNAL_TOKENS, route_tokens=user_tokens
         ):
             score += 0.9
 
@@ -1205,11 +1244,8 @@ class AgentLoop:
             return None
         if exposure_level >= _TOOL_ROUTE_MAX_ESCALATIONS:
             return None
-        enabled_bundles = self._tool_exposure_bundles
         user_text = self._build_tool_route_text(initial_messages, extra_signal_text)
-        selected_bundles = self._auto_route_bundles(user_text) & enabled_bundles
-        if not selected_bundles:
-            selected_bundles = {_TOOL_BUNDLE_CORE} & enabled_bundles
+        selected_bundles = self._selected_bundles_for_route_text(user_text)
         scored: list[tuple[float, str]] = []
         user_tokens = self._route_tokens(user_text)
         for name in self.tools.tool_names:
@@ -1243,6 +1279,13 @@ class AgentLoop:
             }
         return selected_names
 
+    def _selected_bundles_for_route_text(self, user_text: str) -> set[str]:
+        enabled_bundles = self._tool_exposure_bundles
+        selected_bundles = self._auto_route_bundles(user_text) & enabled_bundles
+        if not selected_bundles:
+            selected_bundles = {_TOOL_BUNDLE_CORE} & enabled_bundles
+        return selected_bundles
+
     def _order_selected_tool_names(
         self, selected_tool_names: set[str] | None, user_text: str
     ) -> list[str]:
@@ -1255,22 +1298,6 @@ class AgentLoop:
         ]
         scored.sort(key=lambda item: (-item[0], item[1]))
         return [name for _, name in scored]
-
-    def _build_available_tool_lines(self, selected_tool_names: list[str]) -> list[str]:
-        metadata_map = self.tools.get_metadata_map(names=set(selected_tool_names))
-        if not metadata_map:
-            return []
-        max_lines = 12
-        visible_names = selected_tool_names[:max_lines]
-        lines = []
-        for name in visible_names:
-            meta = metadata_map[name]
-            hint = meta.short_hint or meta.summary or name
-            lines.append(f"- {name}: {hint}")
-        overflow = len(selected_tool_names) - len(visible_names)
-        if overflow > 0:
-            lines.append(f"- plus {overflow} more tools already exposed this turn")
-        return lines
 
     def _apply_available_tools_to_messages(
         self, messages: list[dict[str, Any]], selected_tool_names: list[str]
@@ -1285,15 +1312,67 @@ class AgentLoop:
             return messages
         first["content"] = self.context.apply_available_tools_block(
             content,
-            self._build_available_tool_lines(selected_tool_names),
+            build_available_tool_lines(
+                registry=self.tools,
+                selected_tool_names=selected_tool_names,
+            ),
         )
         return messages
 
+    def _build_tool_exposure_snapshot(
+        self,
+        *,
+        initial_messages: list[dict[str, Any]],
+        tool_signal_text: str | None,
+        exposure_level: int,
+        force_final_response: bool,
+    ) -> ToolExposureSnapshot:
+        route_text = self._build_tool_route_text(initial_messages, tool_signal_text)
+        enabled_bundles = tuple(sorted(self._tool_exposure_bundles))
+        selected_bundles = tuple(sorted(self._selected_bundles_for_route_text(route_text)))
+
+        if force_final_response:
+            return ToolExposureSnapshot(
+                mode=self._tool_exposure_mode,
+                exposure_level=exposure_level,
+                force_final_response=True,
+                route_text=route_text,
+                enabled_bundles=enabled_bundles,
+                selected_bundles=selected_bundles,
+            )
+
+        selected_tool_names = self._select_tool_names_for_turn(
+            initial_messages,
+            extra_signal_text=tool_signal_text,
+            exposure_level=exposure_level,
+        )
+        ordered_tool_names = tuple(
+            self._order_selected_tool_names(selected_tool_names, route_text)
+        )
+        tool_definitions, slim_schema = self.tools.get_budgeted_definitions(names=selected_tool_names)
+        available_lines = tuple(
+            build_available_tool_lines(
+                registry=self.tools,
+                selected_tool_names=list(ordered_tool_names),
+            )
+        )
+        return ToolExposureSnapshot(
+            mode=self._tool_exposure_mode,
+            exposure_level=exposure_level,
+            force_final_response=False,
+            route_text=route_text,
+            enabled_bundles=enabled_bundles,
+            selected_bundles=selected_bundles,
+            ordered_tool_names=ordered_tool_names,
+            available_tool_lines=available_lines,
+            tool_definitions=tuple(tool_definitions),
+            full_exposure=selected_tool_names is None,
+            slim_schema=slim_schema,
+        )
+
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
-        if not text:
-            return None
-        return re.sub(r"<think>[\s\S]*?</think>", "", text).strip() or None
+        return shared.strip_think_tags(text)
 
     @staticmethod
     def _short_hint_arg(value: str, max_len: int = 72) -> str:
@@ -1490,13 +1569,12 @@ class AgentLoop:
 
     _TOOL_INTERRUPT_POLL = 0.2
     _TOOL_CANCEL_TIMEOUT = 5.0  # max seconds to wait for tool cleanup after cancel
-    _TOOL_CANCELLED_MSG = "Cancelled by soft interrupt."
 
     async def _await_tool_with_interrupt(
         self,
-        tool_task: asyncio.Task[str],
+        tool_task: asyncio.Task[object],
         current_task_ref: asyncio.Task[None] | None,
-    ) -> str:
+    ) -> object:
         """Await tool task with periodic soft-interrupt checks."""
         if current_task_ref is None:
             return await tool_task
@@ -1520,7 +1598,7 @@ class AgentLoop:
                             return tool_task.result()
                         except Exception:
                             pass
-                    return self._TOOL_CANCELLED_MSG
+                    return ToolExecutionResult.interrupted()
                 try:
                     return await asyncio.wait_for(
                         asyncio.shield(tool_task), timeout=self._TOOL_INTERRUPT_POLL
@@ -1579,12 +1657,6 @@ class AgentLoop:
             **self._last_tool_observability,
         }
         session.metadata[_TOOL_OBS_LAST_KEY] = entry
-        raw_recent = session.metadata.get(_TOOL_OBS_RECENT_KEY)
-        recent = raw_recent if isinstance(raw_recent, list) else []
-        recent.append(entry)
-        if len(recent) > _TOOL_OBS_RECENT_LIMIT:
-            del recent[:-_TOOL_OBS_RECENT_LIMIT]
-        session.metadata[_TOOL_OBS_RECENT_KEY] = recent
 
     def _record_runtime_diagnostic(
         self,
@@ -1620,72 +1692,29 @@ class AgentLoop:
         current_task_ref: asyncio.Task[None] | None,
         user_request: str,
         artifact_store: "ArtifactStore | None",
-        state: _RunLoopState,
+        state: RunLoopState,
         tool_trace: list[str],
         reasoning_snippets: list[str],
         failed_directions: list[str],
         sufficiency_trace: list[str],
     ) -> list[dict[str, Any]]:
-        if self._is_soft_interrupted(current_task_ref):
-            state.interrupted = True
-            return messages
-
-        steps_since_attempt = len(tool_trace) - state.last_state_attempt_at
-        if steps_since_attempt >= 5 and len(tool_trace) >= 5:
-            compressed_state = await self._compress_state(
-                tool_trace,
-                reasoning_snippets,
-                failed_directions,
-                state.last_state_text,
-            )
-            state.last_state_attempt_at = len(tool_trace)
-            if compressed_state:
-                steps_before_reset = len(tool_trace)
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            f"[State after {steps_before_reset} steps]\n{compressed_state}\n\n"
-                            "Use this state freely — adopt useful parts, ignore irrelevant "
-                            "ones, and prioritize unexplored branches."
-                        ),
-                    }
-                )
-                state.last_state_text = compressed_state
-                # RE-TRAC reset: state becomes the new starting point
-                tool_trace.clear()
-                reasoning_snippets.clear()
-                failed_directions.clear()
-                state.consecutive_errors = 0
-                state.last_state_attempt_at = 0
-
-        if state.total_tool_steps_for_sufficiency >= state.next_sufficiency_at:
-            if await self._check_sufficiency(
-                user_request, sufficiency_trace, state.last_state_text
-            ):
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": "You now have sufficient information. Provide your final answer.",
-                    }
-                )
-                state.force_final_response = True
-            while state.next_sufficiency_at <= state.total_tool_steps_for_sufficiency:
-                state.next_sufficiency_at += 4
-
-        if self._ctx_mgmt in ("auto", "aggressive"):
-            try:
-                approx_bytes = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
-            except Exception:
-                approx_bytes = 0
-            if approx_bytes >= self._compact_bytes:
-                messages = self._compact_messages(
-                    messages=messages,
-                    initial_messages=initial_messages,
-                    last_state_text=state.last_state_text,
-                    artifact_store=artifact_store,
-                )
-        return messages
+        return await apply_pre_iteration_checks(
+            messages=messages,
+            initial_messages=initial_messages,
+            user_request=user_request,
+            artifact_store=artifact_store,
+            state=state,
+            tool_trace=tool_trace,
+            reasoning_snippets=reasoning_snippets,
+            failed_directions=failed_directions,
+            sufficiency_trace=sufficiency_trace,
+            ctx_mgmt=self._ctx_mgmt,
+            compact_bytes=self._compact_bytes,
+            compress_state=self._compress_state,
+            check_sufficiency=self._check_sufficiency,
+            compact_messages=self._compact_messages,
+            is_interrupted=lambda: self._is_soft_interrupted(current_task_ref),
+        )
 
     def _sample_tool_schema_if_needed(
         self,
@@ -1727,7 +1756,7 @@ class AgentLoop:
         counters: _ToolObservabilityCounters,
         on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
         exposure_level: int = 0,
-    ) -> tuple[Any, set[str] | None]:
+    ) -> tuple[Any, ToolExposureSnapshot]:
         if iteration > 1:
             if on_progress:
                 await on_progress(PROGRESS_RESET)
@@ -1756,113 +1785,58 @@ class AgentLoop:
 
             stream_progress = _interruptable_progress
 
-        selected_tool_names = self._select_tool_names_for_turn(
-            initial_messages,
-            extra_signal_text=tool_signal_text,
+        tool_exposure = self._build_tool_exposure_snapshot(
+            initial_messages=initial_messages,
+            tool_signal_text=tool_signal_text,
             exposure_level=exposure_level,
+            force_final_response=force_final_response,
         )
-        route_text = self._build_tool_route_text(initial_messages, tool_signal_text)
-        current_tools = (
-            [] if force_final_response else self.tools.get_definitions(names=selected_tool_names)
+        current_tools = list(tool_exposure.tool_definitions)
+        messages = self._apply_available_tools_to_messages(
+            messages, list(tool_exposure.ordered_tool_names)
         )
-        ordered_selected_tool_names = (
-            []
-            if force_final_response
-            else self._order_selected_tool_names(selected_tool_names, route_text)
-        )
-        messages = self._apply_available_tools_to_messages(messages, ordered_selected_tool_names)
         self._sample_tool_schema_if_needed(
             current_tools=current_tools,
             iteration=iteration,
             counters=counters,
         )
 
-        repaired = shared.patch_dangling_tool_results(messages)
-        if repaired:
-            logger.warning(
-                "Patched {} dangling tool_call(s) before provider chat",
-                repaired,
-            )
-
-        try:
-            response = await self.provider.chat(
-                messages=messages,
-                tools=current_tools,
-                model=self.model,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                reasoning_effort=self.reasoning_effort,
-                on_progress=stream_progress,
-                source="main",
-            )
-            if force_final_response:
-                return response, set()
-            return response, selected_tool_names
-        finally:
-            for msg in messages:
-                msg.pop("_image", None)
+        response = await shared.call_provider_chat(
+            provider=self.provider,
+            messages=messages,
+            tools=current_tools,
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            reasoning_effort=self.reasoning_effort,
+            on_progress=stream_progress,
+            source="main",
+            patched_log_label="Patched",
+        )
+        return response, tool_exposure
 
     def _handle_screenshot_marker(
         self, tool_name: str, result: str | Any
     ) -> tuple[str | Any, str | None]:
-        if (
-            tool_name != "screenshot"
-            or not isinstance(result, str)
-            or not result.startswith("__SCREENSHOT__:")
-        ):
-            return result, None
-
-        image_base64: str | None = None
-        marker = result
-        result = "[screenshot unavailable]"
-        screenshot_path = marker[len("__SCREENSHOT__:") :].strip()
-        screenshot_file = Path(screenshot_path).expanduser()
-        tmp_dir = Path(tempfile.gettempdir()).resolve()
-        try:
-            resolved_parent = screenshot_file.resolve(strict=False).parent
-        except Exception:
-            resolved_parent = None
-        safe_marker = (
-            screenshot_file.name.startswith("bao_screenshot_") and resolved_parent == tmp_dir
+        return shared.handle_screenshot_marker(
+            tool_name,
+            result,
+            read_error_label="截图读取失败 / screenshot read failed",
+            unsafe_path_label="忽略非安全截图路径 / ignored unsafe screenshot path",
         )
-        if safe_marker:
-            try:
-                import base64 as _base64
-
-                with screenshot_file.open("rb") as screenshot_stream:
-                    image_base64 = _base64.b64encode(screenshot_stream.read()).decode()
-                result = "[screenshot captured]"
-            except Exception as screenshot_err:
-                logger.warning(
-                    "⚠️ 截图读取失败 / screenshot read failed: {}: {}",
-                    screenshot_file,
-                    screenshot_err,
-                )
-            finally:
-                try:
-                    if screenshot_file.exists():
-                        screenshot_file.unlink()
-                except Exception:
-                    pass
-        else:
-            logger.warning(
-                "⚠️ 忽略非安全截图路径 / ignored unsafe screenshot path: {}",
-                screenshot_file,
-            )
-        return result, image_base64
 
     async def _handle_tool_call_iteration(
         self,
         *,
         response: Any,
         messages: list[dict[str, Any]],
-        allowed_tool_names: set[str] | None,
+        tool_exposure: ToolExposureSnapshot,
         on_tool_hint: Callable[[str], Awaitable[None]] | None,
         current_task_ref: asyncio.Task[None] | None,
         artifact_session_key: str | None,
         artifact_store: "ArtifactStore | None",
         apply_tool_output_budget: Callable[..., tuple[Any, Any]],
-        state: _RunLoopState,
+        state: RunLoopState,
         counters: _ToolObservabilityCounters,
         tools_used: list[str],
         tool_trace: list[str],
@@ -1876,6 +1850,7 @@ class AgentLoop:
         tool_hint_lang: str | None = None,
     ) -> list[dict[str, Any]]:
         iter_completed: list[dict[str, Any]] = []
+        allowed_tool_names = tool_exposure.allowed_tool_names()
         clean = self._strip_think(response.content)
         if clean:
             reasoning_snippets.append(clean[:200])
@@ -1941,17 +1916,25 @@ class AgentLoop:
                     allowed = f"{preview}, ... (+{overflow} more)" if overflow > 0 else preview
                 else:
                     allowed = "none"
-                result_text = (
-                    f"Error: Tool '{tool_call.name}' not found. Available tools: {allowed}."
-                    "\n\n[Analyze the error above and try a different approach.]"
+                raw_result = ToolExecutionResult.error(
+                    code="tool_not_found",
+                    message="Tool not found",
+                    value=(
+                        f"Error: Tool '{tool_call.name}' not found. Available tools: {allowed}."
+                        "\n\n[Analyze the error above and try a different approach.]"
+                    ),
                 )
             else:
+                execute_kwargs = shared.build_tool_execute_kwargs(
+                    self.tools.execute,
+                    raw_arguments=tool_call.raw_arguments,
+                    argument_parse_error=tool_call.argument_parse_error,
+                )
                 tool_task = asyncio.create_task(
-                    self.tools.execute(tool_call.name, tool_call.arguments)
+                    self.tools.execute(tool_call.name, tool_call.arguments, **execute_kwargs)
                 )
                 raw_result = await self._await_tool_with_interrupt(tool_task, current_task_ref)
-                result_text = tool_result_excerpt(raw_result)
-            _tool_err = shared.parse_tool_error(tool_call.name, result_text, _ERROR_KEYWORDS)
+            _tool_err = shared.parse_tool_error(tool_call.name, raw_result, _ERROR_KEYWORDS)
             if _tool_err:
                 if _tool_err.category == "invalid_params":
                     counters.invalid_parameter_errors += 1
@@ -1979,7 +1962,7 @@ class AgentLoop:
                 store=artifact_store,
                 tool_name=tool_call.name,
                 tool_call_id=tool_call.id,
-                result=raw_result,
+                result=tool_result_payload(raw_result),
                 offload_chars=self._tool_offload_chars,
                 preview_chars=self._tool_preview_chars,
                 hard_chars=self._tool_hard_chars,
@@ -2062,22 +2045,7 @@ class AgentLoop:
                 state.interrupted = True
                 break
 
-        if state.consecutive_errors >= 3:
-            error_feedback = (
-                "Multiple tool errors occurred. STOP retrying the same approach.\n"
-                f"Failed directions so far: {'; '.join(failed_directions[-5:])}\n"
-                "Try a completely different strategy."
-            )
-        elif state.consecutive_errors > 0:
-            failed_hint = (
-                f"\nAlready tried and failed: {'; '.join(failed_directions[-3:])}"
-                if len(failed_directions) > 1
-                else ""
-            )
-            error_feedback = (
-                "The tool returned an error. Analyze what went wrong and try a different "
-                f"approach.{failed_hint}"
-            )
+        error_feedback = build_error_feedback(state.consecutive_errors, failed_directions)
         if error_feedback:
             messages.append({"role": "user", "content": error_feedback})
         if iter_completed and not state.interrupted:
@@ -2094,7 +2062,7 @@ class AgentLoop:
         messages: list[dict[str, Any]],
         current_task_ref: asyncio.Task[None] | None,
         artifact_session_key: str | None,
-        state: _RunLoopState,
+        state: RunLoopState,
     ) -> tuple[list[dict[str, Any]], bool]:
         if self._is_soft_interrupted(current_task_ref):
             state.interrupted = True
@@ -2117,19 +2085,17 @@ class AgentLoop:
             state.provider_error = True
             return messages, False
 
-        if state.force_final_response and not state.force_final_backoff_used and not clean_final:
-            state.force_final_response = False
-            state.force_final_backoff_used = True
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "Your previous final response was empty. "
-                        "If more evidence is needed, use tools briefly and then provide a "
-                        "complete final answer."
-                    ),
-                }
-            )
+        (
+            state.force_final_response,
+            state.force_final_backoff_used,
+            retry_prompt,
+        ) = shared.maybe_backoff_empty_final(
+            force_final_response=state.force_final_response,
+            force_final_backoff_used=state.force_final_backoff_used,
+            clean_final=clean_final,
+        )
+        if retry_prompt is not None:
+            messages.append(retry_prompt)
             return messages, True
 
         state.final_content = clean_final
@@ -2151,6 +2117,7 @@ class AgentLoop:
         routing_tier: int = 0,
         escalation_count: int = 0,
         escalation_reasons: list[str] | None = None,
+        last_tool_exposure: ToolExposureSnapshot | None = None,
     ) -> None:
         self._last_tool_budget = tool_budget
         total_tool_calls = len(tools_used)
@@ -2193,6 +2160,8 @@ class AgentLoop:
             "routing_escalation_reasons": escalation_reasons or [],
             "routing_full_exposure": routing_tier >= _TOOL_ROUTE_MAX_ESCALATIONS,
         }
+        if last_tool_exposure is not None:
+            self._last_tool_observability["tool_exposure"] = last_tool_exposure.as_record()
         self._runtime_diagnostics.set_tool_observability(self._last_tool_observability)
         logger.debug("Tool observability summary: {}", self._last_tool_observability)
 
@@ -2258,7 +2227,7 @@ class AgentLoop:
         ]
     ):
         messages = list(initial_messages)
-        state = _RunLoopState()
+        state = RunLoopState()
         tools_used: list[str] = []
         tool_trace: list[str] = []
         reasoning_snippets: list[str] = []
@@ -2267,6 +2236,7 @@ class AgentLoop:
         sufficiency_trace: list[str] = []
         current_task = asyncio.current_task()
         current_task_ref: asyncio.Task[None] | None = current_task
+        started_at = datetime.now().isoformat(timespec="seconds")
         user_request = next(
             (
                 m["content"]
@@ -2298,6 +2268,9 @@ class AgentLoop:
         _exposure_level = 0
         _escalation_count = 0
         _escalation_reasons: list[str] = []
+        _tool_exposure_history: list[ToolExposureSnapshot] = []
+        _last_tool_exposure: ToolExposureSnapshot | None = None
+        _provider_finish_reason = ""
 
         while state.iteration < self.max_iterations:
             state.iteration += 1
@@ -2316,7 +2289,7 @@ class AgentLoop:
             if state.interrupted:
                 break
 
-            response, allowed_tool_names = await self._chat_once_with_selected_tools(
+            response, tool_exposure = await self._chat_once_with_selected_tools(
                 messages=messages,
                 initial_messages=initial_messages,
                 iteration=state.iteration,
@@ -2328,6 +2301,9 @@ class AgentLoop:
                 on_event=on_event,
                 exposure_level=_exposure_level,
             )
+            _last_tool_exposure = tool_exposure
+            _tool_exposure_history.append(tool_exposure)
+            _provider_finish_reason = str(response.finish_reason or "")
             logger.debug(
                 "LLM response: model={}, has_tool_calls={}, tool_count={}, finish_reason={}",
                 self.model,
@@ -2343,7 +2319,7 @@ class AgentLoop:
                 messages = await self._handle_tool_call_iteration(
                     response=response,
                     messages=messages,
-                    allowed_tool_names=allowed_tool_names,
+                    tool_exposure=tool_exposure,
                     on_tool_hint=on_tool_hint,
                     current_task_ref=current_task_ref,
                     artifact_session_key=artifact_session_key,
@@ -2404,7 +2380,57 @@ class AgentLoop:
             routing_tier=_exposure_level,
             escalation_count=_escalation_count,
             escalation_reasons=_escalation_reasons,
+            last_tool_exposure=_last_tool_exposure,
         )
+        finished_at = datetime.now().isoformat(timespec="seconds")
+        if state.interrupted:
+            exit_reason = "interrupted"
+        elif state.provider_error:
+            exit_reason = "provider_error"
+        elif state.final_content is not None:
+            exit_reason = "completed"
+        else:
+            exit_reason = "max_iterations"
+        try:
+            diagnostics_snapshot = self._runtime_diagnostics.snapshot(
+                max_events=12,
+                max_log_lines=0,
+                allowed_session_keys=[artifact_session_key] if artifact_session_key else None,
+            )
+            run_artifact = build_run_artifact_payload(
+                run_kind="agent_loop",
+                session_key=artifact_session_key or "",
+                model=self.model,
+                started_at=started_at,
+                finished_at=finished_at,
+                user_request=user_request,
+                tool_signal_text=tool_signal_text,
+                final_content=state.final_content,
+                exit_reason=exit_reason,
+                provider_finish_reason=_provider_finish_reason,
+                provider_error=state.provider_error,
+                interrupted=state.interrupted,
+                total_errors=state.total_errors,
+                tools_used=tools_used,
+                tool_trace=tool_trace,
+                reasoning_snippets=reasoning_snippets,
+                last_state_text=state.last_state_text,
+                tool_exposure_history=_tool_exposure_history,
+                tool_observability=self._last_tool_observability,
+                diagnostics_snapshot=diagnostics_snapshot,
+            )
+            artifact_store_for_run = _artifact_store or ArtifactStore(
+                self.workspace,
+                artifact_session_key or "main_loop",
+                self._artifact_retention_days,
+            )
+            run_ref = artifact_store_for_run.archive_json("trajectory", "agent_run", run_artifact)
+            self._last_tool_observability["run_artifact_ref"] = artifact_store_for_run._workspace_relative(
+                run_ref.path
+            )
+            self._runtime_diagnostics.set_tool_observability(self._last_tool_observability)
+        except Exception as exc:
+            logger.debug("run artifact archive failed: {}", exc)
         if return_interrupt:
             return (
                 state.final_content,
@@ -2430,6 +2456,61 @@ class AgentLoop:
             return f"gateway:{msg.chat_id}"
         return msg.session_key
 
+    @staticmethod
+    def _dispatch_control_session_key(event: ControlEvent) -> str:
+        session_key = event.session_key.strip()
+        if session_key:
+            return session_key
+        channel = event.origin_channel.strip() or "gateway"
+        chat_id = event.origin_chat_id.strip() or "direct"
+        return f"{channel}:{chat_id}"
+
+    async def _consume_next_bus_item(self) -> tuple[str, InboundMessage | ControlEvent]:
+        inbound_task = asyncio.create_task(self.bus.consume_inbound())
+        control_task = asyncio.create_task(self.bus.consume_control())
+        try:
+            done, pending = await asyncio.wait(
+                {inbound_task, control_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            for task in (inbound_task, control_task):
+                task.cancel()
+            await asyncio.gather(inbound_task, control_task, return_exceptions=True)
+            raise
+
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        if inbound_task in done:
+            return "inbound", inbound_task.result()
+        return "control", control_task.result()
+
+    def _schedule_session_task(self, dispatch_key: str, coro: Awaitable[None]) -> None:
+        task = asyncio.create_task(coro)
+        self._active_tasks.setdefault(dispatch_key, []).append(task)
+        self._session_locks.setdefault(dispatch_key, asyncio.Lock())
+
+        def _on_done(t: asyncio.Task[None], k: str = dispatch_key) -> None:
+            task_list = self._active_tasks.get(k)
+            if not task_list:
+                self._interrupted_tasks.discard(t)
+                return
+            try:
+                task_list.remove(t)
+            except ValueError:
+                self._interrupted_tasks.discard(t)
+                return
+            self._interrupted_tasks.discard(t)
+            if not task_list:
+                self._active_tasks.pop(k, None)
+                self._session_locks.pop(k, None)
+                self._session_running_task.pop(k, None)
+
+        task.add_done_callback(_on_done)
+
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
@@ -2440,11 +2521,22 @@ class AgentLoop:
         try:
             while self._running:
                 try:
-                    msg = await self.bus.consume_inbound()
+                    item_kind, item = await self._consume_next_bus_item()
                 except asyncio.CancelledError:
                     if self._running:
                         raise
                     break
+
+                if item_kind == "control":
+                    control_event = cast(ControlEvent, item)
+                    session_key = self._dispatch_control_session_key(control_event)
+                    self._schedule_session_task(
+                        session_key,
+                        self._dispatch_control(control_event, dispatch_key=session_key),
+                    )
+                    continue
+
+                msg = cast(InboundMessage, item)
 
                 if (msg.content or "").strip().lower() == "/stop":
                     natural_key = self._dispatch_session_key(msg)
@@ -2503,29 +2595,10 @@ class AgentLoop:
                         logger.debug("Soft interrupt requested for busy session {}", session_key)
 
                     task_gen = self._session_generations.get(session_key, 0)
-                    task = asyncio.create_task(
-                        self._dispatch(msg, task_generation=task_gen, dispatch_key=session_key)
+                    self._schedule_session_task(
+                        session_key,
+                        self._dispatch(msg, task_generation=task_gen, dispatch_key=session_key),
                     )
-                    self._active_tasks.setdefault(session_key, []).append(task)
-                    self._session_locks.setdefault(session_key, asyncio.Lock())
-
-                    def _on_done(t: asyncio.Task[None], k: str = session_key) -> None:
-                        task_list = self._active_tasks.get(k)
-                        if not task_list:
-                            self._interrupted_tasks.discard(t)
-                            return
-                        try:
-                            task_list.remove(t)
-                        except ValueError:
-                            self._interrupted_tasks.discard(t)
-                            return
-                        self._interrupted_tasks.discard(t)
-                        if not task_list:
-                            self._active_tasks.pop(k, None)
-                            self._session_locks.pop(k, None)
-                            self._session_running_task.pop(k, None)
-
-                    task.add_done_callback(_on_done)
         finally:
             if self._run_task is asyncio.current_task():
                 self._run_task = None
@@ -2624,6 +2697,41 @@ class AgentLoop:
                         chat_id=msg.chat_id,
                         content=f"Sorry, I encountered an error: {str(e)}",
                     )
+                )
+            finally:
+                if current_task:
+                    self._interrupted_tasks.discard(current_task)
+                    if self._session_running_task.get(dispatch_key) is current_task:
+                        self._session_running_task.pop(dispatch_key, None)
+
+    async def _dispatch_control(self, event: ControlEvent, *, dispatch_key: str) -> None:
+        lock = self._session_locks.setdefault(dispatch_key, asyncio.Lock())
+        async with lock:
+            current_task = asyncio.current_task()
+            if current_task:
+                self._session_running_task[dispatch_key] = current_task
+            try:
+                response = await self._process_control_event(event)
+                if response:
+                    if self.on_system_response:
+                        try:
+                            await self.on_system_response(response)
+                        except Exception as cb_err:
+                            logger.debug("on_system_response callback failed: {}", cb_err)
+                    await self.bus.publish_outbound(response)
+            except asyncio.CancelledError:
+                logger.debug("Control event cancelled for session {}", dispatch_key)
+                raise
+            except Exception as e:
+                logger.error("❌ 控制事件处理失败 / control event error: {}", e)
+                self._record_runtime_diagnostic(
+                    source="agent_loop",
+                    stage="control_dispatch",
+                    message=str(e),
+                    code="control_event_error",
+                    retryable=False,
+                    session_key=dispatch_key,
+                    details={"kind": event.kind, "source": event.source},
                 )
             finally:
                 if current_task:
@@ -2981,19 +3089,53 @@ class AgentLoop:
             return True
         return bool(getattr(defaults, "send_tool_hints", True))
 
-    def _build_user_outbound_message(
-        self, msg: InboundMessage, final_content: str
-    ) -> OutboundMessage:
-        out_meta = dict(msg.metadata or {})
+    def _prepare_outbound_metadata(
+        self,
+        metadata: dict[str, Any] | None = None,
+        *,
+        session_key: str | None = None,
+    ) -> tuple[dict[str, Any], str | None]:
+        out_meta = dict(metadata or {})
+        out_meta.pop("control_event", None)
+        out_meta.pop("system_event", None)
+        if session_key:
+            out_meta["session_key"] = session_key
         reply_to = out_meta.get("reply_to") if isinstance(out_meta.get("reply_to"), str) else None
         if any(self._last_tool_budget.values()):
             out_meta["_tool_budget"] = dict(self._last_tool_budget)
         if self._last_tool_observability:
             out_meta["_tool_observability"] = dict(self._last_tool_observability)
+        return out_meta, reply_to
+
+    def _build_user_outbound_message(
+        self, msg: InboundMessage, final_content: str
+    ) -> OutboundMessage:
+        out_meta, reply_to = self._prepare_outbound_metadata(msg.metadata)
 
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
+            content=final_content,
+            reply_to=reply_to,
+            metadata=out_meta,
+        )
+
+    def _build_control_outbound_message(
+        self,
+        *,
+        channel: str,
+        chat_id: str,
+        session_key: str,
+        final_content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> OutboundMessage:
+        out_meta, reply_to = self._prepare_outbound_metadata(
+            metadata,
+            session_key=session_key,
+        )
+        return OutboundMessage(
+            channel=channel,
+            chat_id=chat_id,
             content=final_content,
             reply_to=reply_to,
             metadata=out_meta,
@@ -3380,11 +3522,33 @@ class AgentLoop:
             if track_running:
                 await self._set_session_running_metadata(session.key, False)
 
+    async def _process_control_event(self, event: ControlEvent) -> OutboundMessage | None:
+        if event.kind != shared.SUBAGENT_RESULT_EVENT_TYPE:
+            logger.debug("Ignoring unsupported control event kind {}", event.kind)
+            return None
+        parsed_event = shared.parse_subagent_result_payload(event.payload)
+        if parsed_event is None:
+            logger.debug("Ignoring malformed control event payload {}", event.kind)
+            return None
+        return await self._process_subagent_result_payload(
+            parsed_event,
+            session_key=self._dispatch_control_session_key(event),
+            origin_channel=event.origin_channel.strip() or "gateway",
+            origin_chat_id=event.origin_chat_id.strip() or "direct",
+            metadata=dict(event.metadata or {}),
+        )
+
     @staticmethod
     def _resolve_system_message_inputs(msg: InboundMessage) -> tuple[str, str]:
         event = shared.parse_subagent_result_event(msg.metadata)
         if not event:
             return msg.content, msg.content
+        return AgentLoop._resolve_subagent_result_inputs(event)
+
+    @staticmethod
+    def _resolve_subagent_result_inputs(
+        event: shared.SubagentResultEvent,
+    ) -> tuple[str, str]:
         status_text = "completed successfully" if event["status"] == "ok" else "failed"
         parts = [f"[Background task {status_text}]"]
         if event["label"]:
@@ -3401,6 +3565,131 @@ class AgentLoop:
         )
         return "\n\n".join(parts), event["task"]
 
+    def _background_turn_fallback_text(self, session_lang: str) -> str:
+        return "后台任务已完成。" if session_lang != "en" else "Background task completed."
+
+    def _finalize_background_turn(
+        self,
+        *,
+        session: Session,
+        session_key: str,
+        origin_channel: str,
+        search_query: str,
+        system_prompt_text: str,
+        final_content: str,
+        parsed_result: _ProcessMessageRunResult,
+    ) -> bool:
+        assistant_status = "error" if parsed_result.provider_error else "done"
+        self._maybe_learn_experience(
+            session=session,
+            user_request=search_query or system_prompt_text,
+            final_response=final_content,
+            tools_used=parsed_result.tools_used,
+            tool_trace=parsed_result.tool_trace,
+            total_errors=parsed_result.total_errors,
+            reasoning_snippets=parsed_result.reasoning_snippets,
+        )
+        self._persist_tool_observability(
+            session,
+            channel=origin_channel,
+            session_key=session_key,
+        )
+        message_tool = self.tools.get("message")
+        sent_in_turn = isinstance(message_tool, MessageTool) and message_tool._sent_in_turn
+        persisted_content = (
+            message_tool.last_sent_summary or final_content
+            if sent_in_turn
+            else final_content
+        )
+        if persisted_content or parsed_result.tools_used:
+            session.add_message(
+                "assistant",
+                persisted_content,
+                tools_used=parsed_result.tools_used if parsed_result.tools_used else None,
+                status=assistant_status,
+            )
+        self.sessions.save(session)
+        return sent_in_turn
+
+    async def _process_subagent_result_payload(
+        self,
+        event_payload: shared.SubagentResultEvent,
+        *,
+        session_key: str,
+        origin_channel: str,
+        origin_chat_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> OutboundMessage | None:
+        session = self.sessions.get_or_create(session_key)
+        session_lang, lang_changed = self._resolve_session_language(session)
+        if lang_changed:
+            await asyncio.to_thread(self.sessions.save, session)
+        self._set_tool_context(
+            origin_channel,
+            origin_chat_id,
+            session_key=session_key,
+            lang=session_lang,
+            metadata=metadata,
+        )
+        if (t := self.tools.get("message")) and isinstance(t, MessageTool):
+            t.start_turn()
+        system_prompt_text, search_query = self._resolve_subagent_result_inputs(event_payload)
+        recall = await self._recall_context_for_query(search_query)
+        initial_messages = self.context.build_messages(
+            history=session.get_history(max_messages=self.memory_window),
+            current_message=system_prompt_text,
+            channel=origin_channel,
+            chat_id=origin_chat_id,
+            long_term_memory=str(recall.get("long_term_memory") or ""),
+            related_memory=cast(list[Any], recall.get("related_memory") or None),
+            related_experience=cast(list[Any], recall.get("related_experience") or None),
+            model=self.model,
+            plan_state=session.metadata.get(plan_state.PLAN_STATE_KEY),
+        )
+        parsed_result = self._unpack_process_message_run_result(
+            cast(
+                tuple[Any, ...],
+                await self._run_agent_loop(
+                    initial_messages,
+                    artifact_session_key=session.key,
+                    return_interrupt=True,
+                    tool_signal_text=plan_state.plan_signal_text(
+                        session.metadata.get(plan_state.PLAN_STATE_KEY)
+                    ),
+                    tool_hint_lang=session_lang,
+                ),
+            )
+        )
+        if parsed_result.interrupted:
+            return None
+        final_content = parsed_result.final_content
+        if not isinstance(final_content, str) or not final_content.strip():
+            final_content = self._background_turn_fallback_text(session_lang)
+        sent_in_turn = self._finalize_background_turn(
+            session=session,
+            session_key=session_key,
+            origin_channel=origin_channel,
+            search_query=search_query,
+            system_prompt_text=system_prompt_text,
+            final_content=final_content,
+            parsed_result=parsed_result,
+        )
+        out_meta, _ = self._prepare_outbound_metadata(metadata, session_key=session_key)
+        if sent_in_turn:
+            await self._clear_progress_buffer(
+                channel=origin_channel,
+                chat_id=origin_chat_id,
+                metadata=out_meta,
+            )
+            return None
+        return self._build_control_outbound_message(
+            channel=origin_channel,
+            chat_id=origin_chat_id,
+            session_key=session_key,
+            final_content=final_content,
+            metadata=out_meta,
+        )
+
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
         logger.info("📨 收到系统 / system in: {}", msg.sender_id)
 
@@ -3408,6 +3697,16 @@ class AgentLoop:
             origin_channel, origin_chat_id = msg.chat_id.split(":", 1)
         else:
             origin_channel, origin_chat_id = "gateway", msg.chat_id
+
+        parsed_event = shared.parse_subagent_result_event(msg.metadata)
+        if parsed_event is not None:
+            return await self._process_subagent_result_payload(
+                parsed_event,
+                session_key=self._dispatch_session_key(msg),
+                origin_channel=origin_channel,
+                origin_chat_id=origin_chat_id,
+                metadata=dict(msg.metadata or {}),
+            )
 
         session_key = self._dispatch_session_key(msg)
         session = self.sessions.get_or_create(session_key)
@@ -3447,70 +3746,23 @@ class AgentLoop:
             tool_signal_text=tool_signal_text,
             tool_hint_lang=session_lang,
         )
-        result_parts = cast(tuple[Any, ...], run_result)
+        parsed_result = self._unpack_process_message_run_result(cast(tuple[Any, ...], run_result))
 
-        provider_error = False
-        if len(result_parts) == 8:
-            final_content = cast(str | None, result_parts[0])
-            tools_used = cast(list[str], result_parts[1])
-            tool_trace = cast(list[str], result_parts[2])
-            total_errors = cast(int, result_parts[3])
-            reasoning_snippets = cast(list[str], result_parts[4])
-            provider_error = bool(result_parts[5])
-        elif len(result_parts) == 5:
-            final_content = cast(str | None, result_parts[0])
-            tools_used = cast(list[str], result_parts[1])
-            tool_trace = cast(list[str], result_parts[2])
-            total_errors = cast(int, result_parts[3])
-            reasoning_snippets = cast(list[str], result_parts[4])
-        else:
-            raise ValueError(f"Unexpected _run_agent_loop result length: {len(result_parts)}")
-
+        final_content = parsed_result.final_content
         if not isinstance(final_content, str) or not final_content.strip():
-            final_content = (
-                "后台任务已完成。" if session_lang != "en" else "Background task completed."
-            )
+            final_content = self._background_turn_fallback_text(session_lang)
 
-        assistant_status = "error" if provider_error else "done"
-
-        self._maybe_learn_experience(
+        out_meta, _ = self._prepare_outbound_metadata(msg.metadata, session_key=session_key)
+        sent_in_turn = self._finalize_background_turn(
             session=session,
-            user_request=search_query or system_prompt_text,
-            final_response=final_content,
-            tools_used=tools_used,
-            tool_trace=tool_trace,
-            total_errors=total_errors,
-            reasoning_snippets=reasoning_snippets,
-        )
-        self._persist_tool_observability(
-            session,
-            channel=origin_channel,
             session_key=session_key,
+            origin_channel=origin_channel,
+            search_query=search_query,
+            system_prompt_text=system_prompt_text,
+            final_content=final_content,
+            parsed_result=parsed_result,
         )
-
-        persisted_content = final_content
-        if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
-            persisted_content = t.last_sent_summary or final_content
-        if persisted_content or tools_used:
-            session.add_message(
-                "assistant",
-                persisted_content,
-                tools_used=tools_used if tools_used else None,
-                status=assistant_status,
-            )
-        self.sessions.save(session)
-
-        out_meta: dict[str, Any] = dict(msg.metadata or {})
-        out_meta.pop("system_event", None)
-        out_meta["session_key"] = session_key
-        reply_to = out_meta.get("reply_to") if isinstance(out_meta.get("reply_to"), str) else None
-        if any(self._last_tool_budget.values()):
-            out_meta["_tool_budget"] = dict(self._last_tool_budget)
-        if self._last_tool_observability:
-            out_meta["_tool_observability"] = dict(self._last_tool_observability)
-
-        # If message tool already sent content, suppress duplicate outbound
-        if (t := self.tools.get("message")) and isinstance(t, MessageTool) and t._sent_in_turn:
+        if sent_in_turn:
             await self._clear_progress_buffer(
                 channel=origin_channel,
                 chat_id=origin_chat_id,
@@ -3518,11 +3770,11 @@ class AgentLoop:
             )
             return None
 
-        return OutboundMessage(
+        return self._build_control_outbound_message(
             channel=origin_channel,
             chat_id=origin_chat_id,
-            content=final_content,
-            reply_to=reply_to,
+            session_key=session_key,
+            final_content=final_content,
             metadata=out_meta,
         )
 
@@ -3905,10 +4157,6 @@ Respond with ONLY valid JSON, no markdown fences."""
         except Exception as e:
             logger.error("❌ 记忆整合失败 / consolidation failed: {}", e)
 
-    @staticmethod
-    def _parse_llm_json(content: str | None) -> dict[str, Any] | None:
-        return shared.parse_llm_json(content)
-
     async def _call_utility_llm(self, system: str, prompt: str) -> dict[str, Any] | None:
         if self._utility_provider is not None and self._utility_model:
             provider = self._utility_provider
@@ -3926,7 +4174,7 @@ Respond with ONLY valid JSON, no markdown fences."""
             max_tokens=512,
             source="utility",
         )
-        return self._parse_llm_json(response.content)
+        return shared.parse_llm_json(response.content)
 
     async def _generate_session_title(self, session: Session) -> None:
         if session.metadata.get("title"):
