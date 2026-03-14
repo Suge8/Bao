@@ -85,6 +85,9 @@ uv run python -c "import PySide6" 2>/dev/null || {
 if [[ -n "${BAO_BROWSER_RUNTIME_SOURCE_DIR:-}" ]]; then
     echo "▸ Syncing managed browser runtime from $BAO_BROWSER_RUNTIME_SOURCE_DIR ..."
     uv run python app/scripts/sync_browser_runtime.py --source "$BAO_BROWSER_RUNTIME_SOURCE_DIR"
+else
+    echo "▸ Refreshing managed browser runtime for current platform ..."
+    uv run python app/scripts/update_agent_browser_runtime.py
 fi
 
 echo "▸ Verifying managed browser runtime ..."

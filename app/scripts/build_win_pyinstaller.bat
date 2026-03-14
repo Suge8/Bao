@@ -30,6 +30,14 @@ if defined BAO_BROWSER_RUNTIME_SOURCE_DIR (
         popd
         exit /b 1
     )
+) else (
+    echo [INFO] Refreshing managed browser runtime for current platform ...
+    uv run python app\scripts\update_agent_browser_runtime.py
+    if errorlevel 1 (
+        echo [ERROR] Failed to refresh managed browser runtime.
+        popd
+        exit /b 1
+    )
 )
 
 echo [INFO] Verifying managed browser runtime ...
