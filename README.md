@@ -196,6 +196,8 @@ uv run bao
 - OpenAI 兼容端点自动探测 Responses / Chat Completions
 - `apiBase` 自动补全版本段，避免重复拼接
 - 推理强度支持：`off` / `low` / `medium` / `high`
+- 支持 `serviceTier`：`priority` / `flex`（适用于支持该参数的 OpenAI / Codex / 兼容中转）
+  - `reasoningEffort=off` 在 OpenAI / Codex 会映射为官方 `reasoning.effort=none`
 
 **Codex Provider 与 Codex 工具是两条独立能力线**：
 - `providers.*.type = "openai_codex"`：把 Codex OAuth 当作 Bao 的主聊天模型。
@@ -488,6 +490,8 @@ Simple 4-type config, covers all mainstream models.
 - OpenAI-compatible endpoints auto-detect Responses / Chat Completions
 - `apiBase` auto-completes version segments, avoids duplicate concatenation
 - Reasoning effort support: `off` / `low` / `medium` / `high`
+- Supports `serviceTier`: `priority` / `flex` on OpenAI / Codex / compatible relays that accept it
+  - `reasoningEffort=off` maps to official OpenAI / Codex `reasoning.effort=none`
 
 **Codex provider and Codex tool are separate capabilities**:
 - `providers.*.type = "openai_codex"` uses Codex OAuth as Bao's chat model.
