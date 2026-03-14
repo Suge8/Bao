@@ -6,6 +6,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.29] - 2026-03-15
+
+### Added
+
+- **Bao 现支持多 profile 运行边界** — core 新增 profile registry 与 profile-scoped prompt/state roots，Desktop 可切换、创建、重命名和删除 profile，同时保持 providers、tools 与共享 workspace 配置不变。
+- **Desktop 新增 Control Tower 与 profile-aware 自动化视图** — 指挥舱现可统一查看分身回复、子代理、近期完成项、自动任务与待处理事项；cron/heartbeat 也会跟随当前 profile 切换到同一条 read-model。
+- **显式外发通知与附件展示现已收口为单一路径** — `notify` 取代旧 `message` 工具用于跨渠道外发；assistant 回复附件、草稿附件与消息气泡附件复用同一套 payload/visual 组件，记忆 recall 摘要也会透传到桌面聊天气泡。
+
+### Changed
+
+- **Skills / Tools / Memory / Automation 工作台改为统一消费 core snapshot/read-model** — capability/tool catalog、skill registry、memory fact 读模型与 workspace chrome 现在都由 core/backend 统一产出，QML 不再维护第二套筛选、状态和选中逻辑。
+- **记忆与上下文预算现在由 `MemoryPolicy` 单一路径驱动** — recent window、自动学习模式、related memory/experience 预算与 recall 摘要统一由 memory policy 和 fact-level API 管理，减少旧 `memoryWindow` / `experienceModel` 的分叉语义。
+- **Desktop 启动与工作区切换边界进一步收口** — `appServices` 成为唯一 backend service 注入入口，profile 切换、close-to-tray、workspace chrome、icon 渲染与启动后 deferred hydration 都改走更明确的单一路径。
+
+### Fixed
+
+- **桌面打包态 QML 入口改为单个 `desktop_qml.rcc` 资源包** — PyInstaller 构建现在先 stage 资源，再生成 `.rcc` 并在 frozen 运行时强制注册，缺失时直接失败，不再静默回退散落的 `app/qml/` 文件。
+- **首次生成配置模板与迁移语义已对齐新 memory 配置结构** — `agents.defaults.memory` 与 `reasoningEffort` 模板输出现在保持合法 JSONC，并与 v4 配置迁移后的 schema 保持一致。
+
 ## [0.3.28] - 2026-03-14
 
 ### Added
