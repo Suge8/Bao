@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 import html
+import shutil
 import subprocess
+import sys
+import sysconfig
 import tempfile
 from pathlib import Path
 
@@ -42,13 +45,33 @@ def parse_args() -> argparse.Namespace:
 
 
 def _qt_tool_path(name: str) -> Path:
-    libexec = Path(PySide6.__file__).resolve().parent / "Qt" / "libexec"
-    candidates = [libexec / name]
-    if not name.endswith(".exe"):
-        candidates.append(libexec / f"{name}.exe")
+    pyside_root = Path(PySide6.__file__).resolve().parent
+    executable_dir = Path(sys.executable).resolve().parent
+    scripts_dir = Path(sysconfig.get_path("scripts") or executable_dir)
+    tool_names = [name]
+    if not name.startswith("pyside6-"):
+        tool_names.append(f"pyside6-{name}")
+    suffixes = ("", ".exe", ".bat", ".cmd")
+    candidates: list[Path] = []
+    for base_dir in (
+        pyside_root / "Qt" / "libexec",
+        pyside_root / "Qt" / "bin",
+        scripts_dir,
+        executable_dir,
+        pyside_root / "scripts",
+    ):
+        for tool_name in tool_names:
+            for suffix in suffixes:
+                candidate = base_dir / f"{tool_name}{suffix}"
+                if candidate not in candidates:
+                    candidates.append(candidate)
     for candidate in candidates:
         if candidate.exists():
             return candidate
+    for tool_name in tool_names:
+        resolved = shutil.which(tool_name)
+        if resolved:
+            return Path(resolved)
     raise FileNotFoundError(f"Qt tool not found: {name}")
 
 

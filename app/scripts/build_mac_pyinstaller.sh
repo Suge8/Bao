@@ -104,15 +104,18 @@ echo "▸ Staging desktop resources..."
 uv run python app/scripts/stage_desktop_resources.py --destination "$STAGED_RESOURCES_DIR"
 
 echo "▸ Building desktop QML resource bundle..."
-QML_RCC_ARGS=()
 if [[ "${BAO_DESKTOP_WITH_QML_CACHE:-0}" == "1" ]]; then
-    QML_RCC_ARGS+=(--with-qml-cache)
+    uv run python app/scripts/build_qml_rcc.py \
+        --qml-root "$PROJECT_ROOT/app/qml" \
+        --resources-root "$STAGED_RESOURCES_DIR" \
+        --output-rcc "$STAGED_RESOURCES_DIR/desktop_qml.rcc" \
+        --with-qml-cache
+else
+    uv run python app/scripts/build_qml_rcc.py \
+        --qml-root "$PROJECT_ROOT/app/qml" \
+        --resources-root "$STAGED_RESOURCES_DIR" \
+        --output-rcc "$STAGED_RESOURCES_DIR/desktop_qml.rcc"
 fi
-uv run python app/scripts/build_qml_rcc.py \
-    --qml-root "$PROJECT_ROOT/app/qml" \
-    --resources-root "$STAGED_RESOURCES_DIR" \
-    --output-rcc "$STAGED_RESOURCES_DIR/desktop_qml.rcc" \
-    "${QML_RCC_ARGS[@]}"
 
 START_TS=$(python3 -c 'import time; print(int(time.time()))')
 
