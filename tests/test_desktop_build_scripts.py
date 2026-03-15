@@ -52,9 +52,12 @@ def test_build_mac_pyinstaller_script_includes_desktop_resources() -> None:
     text = _read("app/scripts/build_mac_pyinstaller.sh")
 
     assert "uv sync --extra desktop-build-pyinstaller" in _read("app/README.md")
-    assert '--add-data "$PROJECT_ROOT/app/qml:app/qml"' in text
     assert 'app/scripts/stage_desktop_resources.py --destination "$STAGED_RESOURCES_DIR"' in text
+    assert "uv run python app/scripts/build_qml_rcc.py" in text
+    assert '--qml-root "$PROJECT_ROOT/app/qml"' in text
+    assert '--output-rcc "$STAGED_RESOURCES_DIR/desktop_qml.rcc"' in text
     assert '--add-data "$STAGED_RESOURCES_DIR:app/resources"' in text
+    assert '--add-data "$PROJECT_ROOT/app/qml:app/qml"' not in text
     assert '--add-data "$PROJECT_ROOT/assets:assets"' in text
     assert '--add-data "$PROJECT_ROOT/bao/skills:bao/skills"' in text
     assert '--add-data "$PROJECT_ROOT/bao/templates/workspace:bao/templates/workspace"' in text
@@ -109,9 +112,12 @@ def test_desktop_packaging_doc_covers_mac_imessage_permissions() -> None:
 def test_build_win_pyinstaller_script_includes_desktop_resources() -> None:
     text = _read("app/scripts/build_win_pyinstaller.bat")
 
-    assert '--add-data "%PROJECT_ROOT%\\app\\qml;app\\qml"' in text
     assert 'app\\scripts\\stage_desktop_resources.py --destination "%STAGED_RESOURCES_DIR%"' in text
+    assert "uv run python app\\scripts\\build_qml_rcc.py" in text
+    assert '--qml-root "%PROJECT_ROOT%\\app\\qml"' in text
+    assert '--output-rcc "%STAGED_RESOURCES_DIR%\\desktop_qml.rcc"' in text
     assert '--add-data "%STAGED_RESOURCES_DIR%;app\\resources"' in text
+    assert '--add-data "%PROJECT_ROOT%\\app\\qml;app\\qml"' not in text
     assert '--add-data "%PROJECT_ROOT%\\assets;assets"' in text
     assert (
         '--add-data "%PROJECT_ROOT%\\bao\\templates\\workspace;bao\\templates\\workspace"' in text
