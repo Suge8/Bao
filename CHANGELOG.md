@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.3.30] - 2026-03-15
+
+### Fixed
+
+- **Desktop Release 护栏测试已对齐新的 QML `.rcc` 打包契约** — `tests/test_desktop_build_scripts.py` 现改为校验 `build_qml_rcc.py` / `desktop_qml.rcc` 路径，并明确禁止旧的 `--add-data app/qml` 散文件打包断言，避免 `validate-version` 继续按旧契约误判失败。
+
 ## [0.3.29] - 2026-03-15
 
 ### Added
