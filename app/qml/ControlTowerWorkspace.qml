@@ -12,11 +12,16 @@ Item {
 
     readonly property bool hasSupervisorService: supervisorService !== null
     readonly property var overview: hasSupervisorService ? (supervisorService.overview || {}) : ({})
-    readonly property var profiles: hasSupervisorService ? (supervisorService.profiles || []) : []
-    readonly property var workingItems: hasSupervisorService ? (supervisorService.workingItems || []) : []
-    readonly property var completedItems: hasSupervisorService ? (supervisorService.completedItems || []) : []
-    readonly property var automationItems: hasSupervisorService ? (supervisorService.automationItems || []) : []
-    readonly property var attentionItems: hasSupervisorService ? (supervisorService.attentionItems || []) : []
+    readonly property var profilesModel: hasSupervisorService ? supervisorService.profilesModel : null
+    readonly property var workingModel: hasSupervisorService ? supervisorService.workingModel : null
+    readonly property var completedModel: hasSupervisorService ? supervisorService.completedModel : null
+    readonly property var automationModel: hasSupervisorService ? supervisorService.automationModel : null
+    readonly property var attentionModel: hasSupervisorService ? supervisorService.attentionModel : null
+    readonly property int profileCount: hasSupervisorService ? Number(supervisorService.profileCount || 0) : 0
+    readonly property int workingCount: hasSupervisorService ? Number(supervisorService.workingCount || 0) : 0
+    readonly property int completedCount: hasSupervisorService ? Number(supervisorService.completedCount || 0) : 0
+    readonly property int automationCount: hasSupervisorService ? Number(supervisorService.automationCount || 0) : 0
+    readonly property int attentionCount: hasSupervisorService ? Number(supervisorService.attentionCount || 0) : 0
     readonly property var selectedProfile: hasSupervisorService ? (supervisorService.selectedProfile || {}) : ({})
     readonly property bool hasSelectedProfile: Object.keys(selectedProfile).length > 0
     readonly property bool isChinese: typeof effectiveLang === "string" ? effectiveLang === "zh" : uiLanguage === "zh"
@@ -27,9 +32,11 @@ Item {
     readonly property color tileFill: isDark ? "#17110D" : "#FFFAF5"
     readonly property color tileHover: isDark ? "#1E1511" : "#FFF3E8"
     readonly property color tileActive: isDark ? "#241913" : "#FFEEDC"
-    function refreshIfNeeded() {
-        if (active && hasSupervisorService)
-            supervisorService.refresh()
+    function hydrateIfNeeded() {
+        if (!active || !hasSupervisorService)
+            return
+        if (supervisorService.hydrateIfNeeded)
+            supervisorService.hydrateIfNeeded()
     }
 
     function accentColor(key) {
@@ -166,12 +173,22 @@ Item {
 
     function sectionItems(kind) {
         if (kind === "working")
-            return workingItems
+            return workingModel
         if (kind === "completed")
-            return completedItems
+            return completedModel
         if (kind === "automation")
-            return automationItems
-        return attentionItems
+            return automationModel
+        return attentionModel
+    }
+
+    function sectionCount(kind) {
+        if (kind === "working")
+            return workingCount
+        if (kind === "completed")
+            return completedCount
+        if (kind === "automation")
+            return automationCount
+        return attentionCount
     }
 
     function profileIsCurrent(profile) {
@@ -207,17 +224,8 @@ Item {
         return isChinese ? "切换" : "Switch"
     }
 
-    function liveProfile() {
-        var liveId = String(overview.liveProfileId || "")
-        for (var index = 0; index < profiles.length; index += 1) {
-            if (String(profiles[index].id || "") === liveId)
-                return profiles[index]
-        }
-        return ({})
-    }
-
     function sharedGatewayLive() {
-        return Boolean((liveProfile() || {}).isGatewayLive)
+        return Boolean(overview.liveGatewayLive)
     }
 
     function scopeTitle() {
@@ -235,17 +243,14 @@ Item {
     function totalSessionCount() {
         if (hasSelectedProfile)
             return Number(selectedProfile.totalSessionCount || 0)
-        var total = 0
-        for (var index = 0; index < profiles.length; index += 1)
-            total += Number(profiles[index].totalSessionCount || 0)
-        return total
+        return Number(overview.totalSessionCount || 0)
     }
 
     function scopeMetricCards() {
         return [
             {
                 "label": isChinese ? "分身" : "Profiles",
-                "value": hasSelectedProfile ? 1 : Number(profiles.length || 0),
+                "value": hasSelectedProfile ? 1 : profileCount,
                 "accentKey": "system",
                 "iconSource": root.solidIcon("sidebar-profiles-solid")
             },
@@ -257,13 +262,13 @@ Item {
             },
             {
                 "label": isChinese ? "工作中" : "Working",
-                "value": Number(workingItems.length || 0),
+                "value": workingCount,
                 "accentKey": "subagent",
                 "iconSource": root.solidIcon("sidebar-monitor-solid")
             },
             {
                 "label": isChinese ? "自动化" : "Automation",
-                "value": Number(automationItems.length || 0),
+                "value": automationCount,
                 "accentKey": "cron",
                 "iconSource": root.solidIcon("sidebar-cron-solid")
             }
@@ -272,6 +277,12 @@ Item {
 
     function itemTimeLabel(item) {
         return String((item || {}).updatedLabel || (item || {}).relativeLabel || "")
+    }
+
+    function loaderItemHeight(item) {
+        if (!item)
+            return 0
+        return Number(item.contentHeight || item.implicitHeight || item.height || 0)
     }
 
     function itemGlyphSources(item) {
@@ -320,7 +331,7 @@ Item {
         supervisorService.openSelectedTarget()
     }
 
-    onActiveChanged: refreshIfNeeded()
+    onActiveChanged: hydrateIfNeeded()
 
     Rectangle {
         anchors.fill: parent
@@ -402,7 +413,7 @@ Item {
                         outlined: true
                         minHeight: 34
                         horizontalPadding: 18
-                        onClicked: root.refreshIfNeeded()
+                        onClicked: if (root.hasSupervisorService) root.supervisorService.refresh()
                     }
                 }
 
@@ -511,8 +522,8 @@ Item {
                                 id: profileCountText
                                 anchors.centerIn: parent
                                 text: isChinese
-                                      ? Number(profiles.length || 0) + " 个分身"
-                                      : Number(profiles.length || 0) + " profiles"
+                                      ? root.profileCount + " 个分身"
+                                      : root.profileCount + " profiles"
                                 color: textSecondary
                                 font.pixelSize: typeCaption
                                 font.weight: weightMedium
@@ -520,25 +531,23 @@ Item {
                         }
                     }
 
-                    ScrollView {
-                        id: profileScroll
+                    ListView {
+                        id: profileList
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         clip: true
-                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                        spacing: 14
+                        reuseItems: true
+                        cacheBuffer: 960
+                        model: profilesModel
+                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-                        Column {
-                            width: profileScroll.availableWidth
-                            spacing: 14
-
-                            Repeater {
-                                model: profiles
-
-                                delegate: Rectangle {
+                        delegate: Rectangle {
                                     required property var modelData
                                     objectName: "profileCard_" + String(modelData.id || "")
 
-                                    width: parent.width
+                                    width: ListView.view ? ListView.view.width : 0
+                                    height: implicitHeight
                                     implicitHeight: 160
                                     radius: 22
                                     color: root.profileIsSelected(modelData)
@@ -793,8 +802,6 @@ Item {
                                         }
                                     }
                                 }
-                            }
-                        }
                     }
                 }
             }
@@ -803,238 +810,260 @@ Item {
                 SplitView.fillWidth: true
                 SplitView.fillHeight: true
 
-                ScrollView {
+                Flickable {
                     id: overviewScroll
+                    objectName: "controlTowerOverviewScroll"
                     anchors.fill: parent
                     clip: true
-                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                    contentWidth: width
+                    contentHeight: overviewGrid.implicitHeight
+                    interactive: contentHeight > height
+                    boundsBehavior: Flickable.StopAtBounds
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-                    ColumnLayout {
-                        width: overviewScroll.availableWidth
-                        spacing: 16
+                    GridLayout {
+                    id: overviewGrid
+                    width: overviewScroll.width
+                    columns: width >= 860 ? 2 : 1
+                    rowSpacing: 14
+                    columnSpacing: 14
 
-                        Repeater {
-                            model: ["working", "completed", "attention", "automation"]
+                    Repeater {
+                        model: ["working", "completed", "attention", "automation"]
 
-                            delegate: Rectangle {
-                                required property string modelData
-                                readonly property string sectionKind: modelData
-                                readonly property var laneItems: root.sectionItems(sectionKind)
+                        delegate: Rectangle {
+                            id: lanePanel
+                            required property var modelData
+                            readonly property string sectionKind: String(modelData || "")
+                            readonly property var sectionModel: root.sectionItems(sectionKind)
+                            readonly property int sectionItemCount: root.sectionCount(sectionKind)
+                            objectName: "controlTowerLane_" + sectionKind
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: implicitHeight
+                            radius: 24
+                            color: sectionFill
+                            border.width: 1
+                            border.color: sectionBorder
+                            implicitHeight: Math.max(220, lanePanelContent.implicitHeight + 28)
 
-                                Layout.fillWidth: true
-                                implicitHeight: laneItems.length === 0 ? 112 : laneHeader.implicitHeight + laneGrid.implicitHeight + 34
-                                radius: 24
-                                color: tileFill
-                                border.width: 1
-                                border.color: isDark ? "#14FFFFFF" : "#12000000"
+                            ColumnLayout {
+                                id: lanePanelContent
+                                anchors.fill: parent
+                                anchors.margins: 14
+                                spacing: 12
 
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 16
-                                    spacing: 14
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
 
-                                    RowLayout {
-                                        id: laneHeader
-                                        Layout.fillWidth: true
-                                        spacing: 12
-
-                                        ColumnLayout {
-                                            Layout.fillWidth: true
-                                            spacing: 4
-
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                spacing: 8
-
-                                                Text {
-                                                    text: root.sectionTitle(sectionKind)
-                                                    color: textPrimary
-                                                    font.pixelSize: typeBody
-                                                    font.weight: weightBold
-                                                }
-
-                                                Rectangle {
-                                                    implicitWidth: laneCountText.implicitWidth + 14
-                                                    implicitHeight: 24
-                                                    radius: 12
-                                                    color: isDark ? "#18120E" : "#FFF5EA"
-                                                    border.width: 1
-                                                    border.color: root.accentColor(root.sectionAccentKey(sectionKind))
-
-                                                    Text {
-                                                        id: laneCountText
-                                                        anchors.centerIn: parent
-                                                        text: Number(laneItems.length || 0)
-                                                        color: textPrimary
-                                                        font.pixelSize: typeCaption
-                                                        font.weight: weightBold
-                                                    }
-                                                }
-                                            }
-
-                                        }
-
-                                        Item { Layout.fillWidth: true }
+                                    Text {
+                                        text: root.sectionTitle(lanePanel.sectionKind)
+                                        color: textPrimary
+                                        font.pixelSize: typeBody
+                                        font.weight: weightBold
                                     }
 
                                     Rectangle {
-                                        visible: laneItems.length === 0
-                                        Layout.fillWidth: true
-                                        implicitHeight: 56
-                                        radius: 16
-                                        color: isDark ? "#140E0B" : "#FFF8F2"
+                                        implicitWidth: laneCountText.implicitWidth + 14
+                                        implicitHeight: 24
+                                        radius: 12
+                                        color: isDark ? "#18120E" : "#FFF5EA"
                                         border.width: 1
-                                        border.color: isDark ? "#14FFFFFF" : "#12000000"
+                                        border.color: root.accentColor(root.sectionAccentKey(lanePanel.sectionKind))
 
-                                        Column {
+                                        Text {
+                                            id: laneCountText
                                             anchors.centerIn: parent
-                                            spacing: 0
-
-                                            Text {
-                                                anchors.horizontalCenter: parent.horizontalCenter
-                                                text: root.emptyTitle(sectionKind)
-                                                color: textPrimary
-                                                font.pixelSize: typeLabel
-                                                font.weight: weightBold
-                                            }
-
+                                            text: lanePanel.sectionItemCount
+                                            color: textPrimary
+                                            font.pixelSize: typeCaption
+                                            font.weight: weightBold
                                         }
                                     }
 
-                                    GridLayout {
-                                        id: laneGrid
-                                        visible: laneItems.length > 0
-                                        Layout.fillWidth: true
-                                        columns: Math.max(1, Math.min(4, Math.floor((width + columnSpacing) / 176)))
-                                        columnSpacing: 14
-                                        rowSpacing: 12
+                                    Item { Layout.fillWidth: true }
+                                }
 
-                                        Repeater {
-                                            model: laneItems
-
-                                            delegate: Rectangle {
-                                                required property var modelData
-                                                Layout.fillWidth: true
-                                                Layout.preferredWidth: laneGrid.columns > 1
-                                                                       ? (laneGrid.width - laneGrid.columnSpacing * (laneGrid.columns - 1)) / laneGrid.columns
-                                                                       : laneGrid.width
-                                                implicitHeight: 62
-                                                radius: 16
-                                                color: laneItemMouse.containsMouse && Boolean(modelData.canOpen)
-                                                       ? tileActive
-                                                       : tileHover
-                                                border.width: 1
-                                                border.color: Boolean(modelData.canOpen)
-                                                              ? Qt.rgba(root.accentColor(String(modelData.accentKey || modelData.visualChannel || "system")).r,
-                                                                        root.accentColor(String(modelData.accentKey || modelData.visualChannel || "system")).g,
-                                                                        root.accentColor(String(modelData.accentKey || modelData.visualChannel || "system")).b,
-                                                                        isDark ? 0.28 : 0.18)
-                                                              : (isDark ? "#14FFFFFF" : "#12000000")
-
-                                                Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-                                                Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
-
-                                                GridLayout {
-                                                    anchors.fill: parent
-                                                    anchors.margins: 7
-                                                    columns: 3
-                                                    rows: 2
-                                                    columnSpacing: 8
-                                                    rowSpacing: 0
-
-                                                    WorkerToken {
-                                                        Layout.row: 0
-                                                        Layout.column: 0
-                                                        Layout.rowSpan: 2
-                                                        Layout.alignment: Qt.AlignTop
-                                                        avatarSource: String(modelData.avatarSource || "")
-                                                        variant: "mini"
-                                                        ringColor: root.accentColor(String(modelData.accentKey || modelData.visualChannel || "system"))
-                                                        glyphSources: root.itemGlyphSources(modelData)
-                                                        glyphSource: String(modelData.glyphSource || "")
-                                                        statusKey: String(modelData.statusKey || "idle")
-                                                        active: laneItemMouse.containsMouse && Boolean(modelData.canOpen)
-                                                    }
-
-                                                    Text {
-                                                        Layout.row: 0
-                                                        Layout.column: 1
-                                                        Layout.fillWidth: true
-                                                        text: String(modelData.title || "")
-                                                        color: textPrimary
-                                                        font.pixelSize: typeMeta
-                                                        font.weight: weightBold
-                                                        elide: Text.ElideRight
-                                                        verticalAlignment: Text.AlignBottom
-                                                    }
-
-                                                    Rectangle {
-                                                        Layout.row: 0
-                                                        Layout.column: 2
-                                                        Layout.alignment: Qt.AlignTop | Qt.AlignRight
-                                                        implicitWidth: laneStatusText.implicitWidth + 12
-                                                        implicitHeight: 20
-                                                        radius: 11
-                                                        color: isDark ? "#18120E" : "#FFF5EA"
-                                                        border.width: 1
-                                                        border.color: root.accentColor(String(modelData.accentKey || modelData.visualChannel || "system"))
-
-                                                        Text {
-                                                            id: laneStatusText
-                                                            anchors.centerIn: parent
-                                                            text: String(modelData.statusLabel || "")
-                                                            color: textSecondary
-                                                            font.pixelSize: typeMeta
-                                                            font.weight: weightMedium
-                                                        }
-                                                    }
-
-                                                    Text {
-                                                        Layout.row: 1
-                                                        Layout.column: 1
-                                                        Layout.fillWidth: true
-                                                        Layout.alignment: Qt.AlignTop
-                                                        text: String(modelData.summary || "")
-                                                        color: textSecondary
-                                                        font.pixelSize: typeMeta
-                                                        font.weight: weightMedium
-                                                        elide: Text.ElideRight
-                                                    }
-
-                                                    Text {
-                                                        Layout.row: 1
-                                                        Layout.column: 2
-                                                        Layout.alignment: Qt.AlignTop | Qt.AlignRight
-                                                        text: root.itemTimeLabel(modelData)
-                                                        visible: text !== ""
-                                                        color: textTertiary
-                                                        font.pixelSize: typeMeta
-                                                        font.weight: weightMedium
-                                                        elide: Text.ElideRight
-                                                        horizontalAlignment: Text.AlignRight
-                                                    }
-                                                }
-
-                                                MouseArea {
-                                                    id: laneItemMouse
-                                                    anchors.fill: parent
-                                                    hoverEnabled: true
-                                                    enabled: Boolean(modelData.canOpen)
-                                                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                                    onClicked: root.openItem(modelData)
-                                                }
-                                            }
-                                        }
+                                Loader {
+                                    id: lanePanelLoader
+                                    property real loadedHeight: root.loaderItemHeight(item)
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: loadedHeight
+                                    active: true
+                                    sourceComponent: lanePanel.sectionItemCount > 0
+                                                     ? laneListComponent
+                                                     : laneEmptyStateComponent
+                                    onLoaded: {
+                                        if (!item)
+                                            return
+                                        item.sectionKind = lanePanel.sectionKind
+                                        item.sectionModel = lanePanel.sectionModel
                                     }
                                 }
                             }
                         }
+                    }
+                }
+                }
+            }
+        }
+    }
 
-                        Item {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 4
+    Component {
+        id: laneEmptyStateComponent
+
+        Item {
+            id: emptyState
+            property string sectionKind: ""
+            property var sectionModel: null
+            implicitHeight: 160
+
+            Rectangle {
+                id: emptyStateCard
+                anchors.fill: parent
+                radius: 16
+                color: isDark ? "#140E0B" : "#FFF8F2"
+                border.width: 1
+                border.color: isDark ? "#14FFFFFF" : "#12000000"
+
+                Text {
+                    anchors.centerIn: parent
+                    width: parent.width - 28
+                    text: root.emptyTitle(emptyState.sectionKind)
+                    color: textPrimary
+                    font.pixelSize: typeLabel
+                    font.weight: weightBold
+                    wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                }
+            }
+        }
+    }
+
+    Component {
+        id: laneListComponent
+
+        ListView {
+            property string sectionKind: ""
+            property var sectionModel: null
+            objectName: "controlTowerLaneList_" + sectionKind
+            implicitHeight: Math.max(76, Math.min(contentHeight, 360))
+            height: implicitHeight
+            clip: true
+            spacing: 10
+            reuseItems: true
+            cacheBuffer: 720
+            model: sectionModel
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+            delegate: Rectangle {
+                required property var modelData
+                objectName: "laneItemCard_" + String(modelData.id || "")
+                width: ListView.view ? ListView.view.width : 0
+                implicitHeight: 76
+                height: implicitHeight
+
+                radius: 16
+                color: laneItemMouse.containsMouse && Boolean(modelData.canOpen) ? tileActive : tileHover
+                border.width: 1
+                border.color: Boolean(modelData.canOpen)
+                              ? Qt.rgba(root.accentColor(String(modelData.accentKey || modelData.visualChannel || "system")).r,
+                                        root.accentColor(String(modelData.accentKey || modelData.visualChannel || "system")).g,
+                                        root.accentColor(String(modelData.accentKey || modelData.visualChannel || "system")).b,
+                                        isDark ? 0.28 : 0.18)
+                              : (isDark ? "#14FFFFFF" : "#12000000")
+
+                Behavior on color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+                Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+
+                GridLayout {
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    columns: 3
+                    rows: 2
+                    columnSpacing: 8
+                    rowSpacing: 0
+
+                    WorkerToken {
+                        Layout.row: 0
+                        Layout.column: 0
+                        Layout.rowSpan: 2
+                        Layout.alignment: Qt.AlignTop
+                        avatarSource: String(modelData.avatarSource || "")
+                        variant: "mini"
+                        ringColor: root.accentColor(String(modelData.accentKey || modelData.visualChannel || "system"))
+                        glyphSources: root.itemGlyphSources(modelData)
+                        glyphSource: String(modelData.glyphSource || "")
+                        statusKey: String(modelData.statusKey || "idle")
+                        active: laneItemMouse.containsMouse && Boolean(modelData.canOpen)
+                    }
+
+                    Text {
+                        Layout.row: 0
+                        Layout.column: 1
+                        Layout.fillWidth: true
+                        text: String(modelData.title || "")
+                        color: textPrimary
+                        font.pixelSize: typeMeta
+                        font.weight: weightBold
+                        elide: Text.ElideRight
+                        verticalAlignment: Text.AlignBottom
+                    }
+
+                    Rectangle {
+                        Layout.row: 0
+                        Layout.column: 2
+                        Layout.alignment: Qt.AlignTop | Qt.AlignRight
+                        implicitWidth: laneStatusText.implicitWidth + 12
+                        implicitHeight: 20
+                        radius: 11
+                        color: isDark ? "#18120E" : "#FFF5EA"
+                        border.width: 1
+                        border.color: root.accentColor(String(modelData.accentKey || modelData.visualChannel || "system"))
+
+                        Text {
+                            id: laneStatusText
+                            anchors.centerIn: parent
+                            text: String(modelData.statusLabel || "")
+                            color: textSecondary
+                            font.pixelSize: typeMeta
+                            font.weight: weightMedium
                         }
                     }
+
+                    Text {
+                        Layout.row: 1
+                        Layout.column: 1
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignTop
+                        text: String(modelData.summary || "")
+                        color: textSecondary
+                        font.pixelSize: typeMeta
+                        font.weight: weightMedium
+                        elide: Text.ElideRight
+                    }
+
+                    Text {
+                        Layout.row: 1
+                        Layout.column: 2
+                        Layout.alignment: Qt.AlignTop | Qt.AlignRight
+                        text: root.itemTimeLabel(modelData)
+                        visible: text !== ""
+                        color: textTertiary
+                        font.pixelSize: typeMeta
+                        font.weight: weightMedium
+                        elide: Text.ElideRight
+                        horizontalAlignment: Text.AlignRight
+                    }
+                }
+
+                MouseArea {
+                    id: laneItemMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    enabled: Boolean(modelData.canOpen)
+                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: root.openItem(modelData)
                 }
             }
         }

@@ -8,15 +8,18 @@ import pytest
 
 from bao.config.loader import ensure_first_run, get_config_path, load_config
 from bao.config.migrations import CURRENT_VERSION
+from bao.config.paths import set_runtime_config_path
 from bao.utils.helpers import get_media_path
 
 
 @pytest.fixture()
 def fake_home(tmp_path, monkeypatch):
     """Redirect Path.home() + HOME env to tmp_path."""
+    set_runtime_config_path(None)
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
-    return tmp_path
+    yield tmp_path
+    set_runtime_config_path(None)
 
 
 def test_ensure_first_run_creates_files(fake_home):

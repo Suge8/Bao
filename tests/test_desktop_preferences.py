@@ -21,7 +21,7 @@ def _ini_settings(tmp_path):
     return QSettings(str(tmp_path / "desktop-prefs.ini"), QSettings.Format.IniFormat)
 
 
-def test_desktop_preferences_loads_legacy_language_when_local_pref_missing(tmp_path, monkeypatch):
+def test_desktop_preferences_defaults_to_auto_when_local_pref_missing(tmp_path, monkeypatch):
     from app.backend.preferences import DesktopPreferences
 
     monkeypatch.setattr(DesktopPreferences, "_system_is_dark", lambda self: False)
@@ -29,41 +29,14 @@ def test_desktop_preferences_loads_legacy_language_when_local_pref_missing(tmp_p
 
     prefs = DesktopPreferences(
         system_ui_language="en",
-        legacy_ui_language="zh",
         settings=settings,
     )
 
-    assert prefs.uiLanguage == "zh"
-    assert prefs.effectiveLanguage == "zh"
+    assert prefs.uiLanguage == "auto"
+    assert prefs.effectiveLanguage == "en"
     assert prefs.themeMode == "system"
     assert prefs.isDark is False
-    assert settings.value("ui/language") == "zh"
-
-
-def test_desktop_preferences_keeps_migrated_legacy_language_after_config_cleanup(
-    tmp_path, monkeypatch
-):
-    from app.backend.preferences import DesktopPreferences
-
-    monkeypatch.setattr(DesktopPreferences, "_system_is_dark", lambda self: False)
-    settings = _ini_settings(tmp_path)
-
-    prefs = DesktopPreferences(
-        system_ui_language="en",
-        legacy_ui_language="zh",
-        settings=settings,
-    )
-
-    assert prefs.uiLanguage == "zh"
-
-    reloaded = DesktopPreferences(
-        system_ui_language="en",
-        legacy_ui_language=None,
-        settings=settings,
-    )
-
-    assert reloaded.uiLanguage == "zh"
-    assert reloaded.effectiveLanguage == "zh"
+    assert settings.contains("ui/language") is False
 
 
 def test_desktop_preferences_persists_language_and_theme_locally(tmp_path, monkeypatch):

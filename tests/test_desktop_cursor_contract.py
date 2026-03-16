@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import importlib
 import re
 from pathlib import Path
+
+pytest = importlib.import_module("pytest")
+pytestmark = [pytest.mark.desktop_ui_smoke]
 
 QML_DIR = Path(__file__).resolve().parents[1] / "app" / "qml"
 _MOUSE_AREA_START = re.compile(r"MouseArea\s*\{", re.M)
@@ -143,23 +147,20 @@ def test_sidebar_guards_injected_services_at_root() -> None:
 def test_main_guards_injected_services_at_root() -> None:
     text = _read_qml("Main.qml")
 
-    assert (
-        'readonly property bool hasAppServices: typeof appServices !== "undefined" && appServices !== null'
-        in text
-    )
-    assert (
-        'readonly property var desktopPreferences: hasAppServices ? appServices.desktopPreferences : null'
-        in text
-    )
-    assert 'readonly property var configService: hasAppServices ? appServices.configService : null' in text
-    assert 'readonly property var sessionService: hasAppServices ? appServices.sessionService : null' in text
-    assert 'readonly property var chatService: hasAppServices ? appServices.chatService : null' in text
-    assert (
-        'readonly property var profileSupervisorService: hasAppServices ? appServices.profileSupervisorService : null'
-        in text
-    )
-    assert (
-        'readonly property var diagnosticsService: hasAppServices ? appServices.diagnosticsService : null'
-        in text
-    )
+    assert 'required property var chatService' in text
+    assert 'required property var configService' in text
+    assert 'required property var sessionService' in text
+    assert 'required property var profileSupervisorService' in text
+    assert 'required property var diagnosticsService' in text
+    assert 'required property var desktopPreferences' in text
     assert 'readonly property var workspaceOrder: ["sessions", "control_tower", "memory", "skills", "tools", "cron"]' in text
+
+
+def test_control_tower_workspace_uses_hydrate_only_entrypoint() -> None:
+    text = _read_qml("ControlTowerWorkspace.qml")
+    start = text.index("function hydrateIfNeeded()")
+    end = text.index("function accentColor(")
+    hydrate_block = text[start:end]
+
+    assert "supervisorService.hydrateIfNeeded()" in hydrate_block
+    assert "supervisorService.refresh()" not in hydrate_block

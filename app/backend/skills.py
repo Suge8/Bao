@@ -13,6 +13,7 @@ from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
 from app.backend.asyncio_runner import AsyncioRunner
+from app.backend.list_model import KeyValueListModel, build_selection_projection
 from bao.agent.skill_catalog import SkillCatalog
 from bao.agent.skill_registry import build_skill_workspace_snapshot
 
@@ -146,15 +147,15 @@ class SkillsService(QObject):
         self._error: str = ""
 
         self._skills: list[dict[str, object]] = []
+        self._skills_model = KeyValueListModel(self)
         self._selected_skill_id: str = ""
-        self._selected_skill: dict[str, object] = {}
         self._selected_content: str = ""
 
         self._discover_query: str = ""
         self._discover_reference: str = ""
         self._discover_results: list[dict[str, object]] = []
+        self._discover_results_model = KeyValueListModel(self)
         self._selected_discover_id: str = ""
-        self._selected_discover_item: dict[str, object] = {}
         self._discover_task: DiscoveryTaskState = DiscoveryTaskState()
         self._hydrated = False
 
@@ -186,13 +187,17 @@ class SkillsService(QObject):
     def lastError(self) -> str:
         return self._error
 
+    @Property(QObject, constant=True)
+    def skillsModel(self) -> QObject:
+        return self._skills_model
+
     @Property(list, notify=changed)
     def skills(self) -> list[dict[str, object]]:
-        return list(self._skills)
+        return [dict(item) for item in self._skills]
 
     @Property(dict, notify=changed)
     def selectedSkill(self) -> dict[str, object]:
-        return dict(self._selected_skill)
+        return self._selected_skill()
 
     @Property(str, notify=changed)
     def selectedSkillId(self) -> str:
@@ -226,13 +231,17 @@ class SkillsService(QObject):
     def discoverReference(self) -> str:
         return self._discover_reference
 
-    @Property(list, notify=changed)
-    def discoverResults(self) -> list[dict[str, object]]:
-        return list(self._discover_results)
+    @Property(QObject, constant=True)
+    def discoverResultsModel(self) -> QObject:
+        return self._discover_results_model
+
+    @Property(int, notify=changed)
+    def discoverResultCount(self) -> int:
+        return len(self._discover_results)
 
     @Property(dict, notify=changed)
     def selectedDiscoverItem(self) -> dict[str, object]:
-        return dict(self._selected_discover_item)
+        return self._selected_discover_item()
 
     @Property(str, notify=changed)
     def selectedDiscoverId(self) -> str:
@@ -364,7 +373,7 @@ class SkillsService(QObject):
 
     @Slot(str, result=bool)
     def saveSelectedContent(self, content: str) -> bool:
-        skill = self._selected_skill
+        skill = self._selected_skill()
         if skill.get("source") != "workspace":
             self.operationFinished.emit("Only workspace skills can be edited.", False)
             return False
@@ -379,7 +388,7 @@ class SkillsService(QObject):
 
     @Slot(result=bool)
     def deleteSelectedSkill(self) -> bool:
-        skill = self._selected_skill
+        skill = self._selected_skill()
         if skill.get("source") != "workspace":
             self.operationFinished.emit("Only workspace skills can be deleted.", False)
             return False
@@ -395,7 +404,7 @@ class SkillsService(QObject):
 
     @Slot(result=bool)
     def openSelectedFolder(self) -> bool:
-        target = self._selected_skill.get("path")
+        target = self._selected_skill().get("path")
         if not isinstance(target, str) or not target:
             return False
         skill_file = Path(target)
@@ -436,14 +445,35 @@ class SkillsService(QObject):
             selected_id=preferred_skill_id or self._selected_skill_id,
         )
         self._hydrated = True
-        self._skills = [dict(item) for item in snapshot.items]
-        self._overview = dict(snapshot.overview)
-        self._selected_skill_id = snapshot.selected_id
-        self._selected_skill = dict(snapshot.selected_item)
+        selection = build_selection_projection(
+            [dict(item) for item in snapshot.items],
+            preferred_id=snapshot.selected_id or self._selected_skill_id,
+        )
+        next_skills = selection.items
+        next_overview = dict(snapshot.overview)
+        next_selected_id = selection.selected_id
+        current_selected_content = self._selected_content
+        next_selected_content = ""
+        if next_selected_id:
+            selected_skill = self._skills_model.item_by_id(next_selected_id)
+            if not selected_skill:
+                selected_skill = selection.selected_item
+            source = str(selected_skill.get("source") or "")
+            name = str(selected_skill.get("name") or "")
+            next_selected_content = self._catalog.read_content(name, source)
+        if (
+            next_skills == self._skills
+            and next_overview == self._overview
+            and next_selected_id == self._selected_skill_id
+            and next_selected_content == current_selected_content
+        ):
+            return
+        self._skills = next_skills
+        self._skills_model.sync_items(self._skills)
+        self._overview = next_overview
+        self._selected_skill_id = next_selected_id
         if self._selected_skill_id:
-            source = str(self._selected_skill.get("source") or "")
-            name = str(self._selected_skill.get("name") or "")
-            self._selected_content = self._catalog.read_content(name, source)
+            self._selected_content = next_selected_content
         else:
             self._selected_content = ""
         self.changed.emit()
@@ -453,7 +483,6 @@ class SkillsService(QObject):
         if target is None:
             return
         self._selected_skill_id = skill_id
-        self._selected_skill = dict(target)
         source = str(target.get("source") or "")
         name = str(target.get("name") or "")
         self._selected_content = self._catalog.read_content(name, source)
@@ -569,16 +598,20 @@ class SkillsService(QObject):
         return imported_ids
 
     def _set_discover_results(self, items: object) -> None:
-        raw_items = items if isinstance(items, list) else []
-        self._discover_results = [dict(item) for item in raw_items if isinstance(item, dict)]
-        if not self._discover_results:
-            self._selected_discover_id = ""
-            self._selected_discover_item = {}
+        raw_items = [dict(item) for item in (items if isinstance(items, list) else []) if isinstance(item, dict)]
+        selection = build_selection_projection(
+            raw_items,
+            preferred_id=self._selected_discover_id,
+        )
+        self._discover_results = selection.items
+        self._discover_results_model.sync_items(self._discover_results)
+        self._selected_discover_id = selection.selected_id
+        if selection.selected_item:
+            self._set_selected_discover_item(selection.selected_item)
             return
-        self._set_selected_discover_item(dict(self._discover_results[0]))
+        self._discover_reference = ""
 
     def _set_selected_discover_item(self, item: dict[str, object]) -> None:
-        self._selected_discover_item = dict(item)
         self._selected_discover_id = str(item.get("id") or "")
         reference = str(item.get("reference") or "")
         if reference:
@@ -593,7 +626,7 @@ class SkillsService(QObject):
             if ":" in item
         }
         next_results: list[dict[str, object]] = []
-        next_selected = self._selected_discover_item
+        next_selected = self._selected_discover_item()
         for item in self._discover_results:
             next_item = dict(item)
             if str(next_item.get("name") or "") in imported_names:
@@ -607,7 +640,9 @@ class SkillsService(QObject):
             if str(next_item.get("id") or "") == self._selected_discover_id:
                 next_selected = next_item
         self._discover_results = next_results
-        self._selected_discover_item = dict(next_selected)
+        self._discover_results_model.sync_items(self._discover_results)
+        if next_selected:
+            self._selected_discover_id = str(next_selected.get("id") or "")
 
     def _set_discover_task(
         self,
@@ -706,3 +741,9 @@ class SkillsService(QObject):
             return
         self._error = message
         self.errorChanged.emit(message)
+
+    def _selected_skill(self) -> dict[str, object]:
+        return self._skills_model.item_by_id(self._selected_skill_id)
+
+    def _selected_discover_item(self) -> dict[str, object]:
+        return self._discover_results_model.item_by_id(self._selected_discover_id)

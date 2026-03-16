@@ -50,19 +50,19 @@ Item {
     readonly property var selectedMemoryFact: hasMemoryService ? memoryService.selectedMemoryFact : ({})
     readonly property string selectedMemoryFactKey: hasMemoryService ? String(memoryService.selectedMemoryFactKey || "") : ""
     readonly property var selectedExperience: hasMemoryService ? memoryService.selectedExperience : ({})
+    readonly property var memoryCategoryModel: hasMemoryService && typeof memoryService.memoryCategoryModel !== "undefined"
+        ? memoryService.memoryCategoryModel
+        : null
+    readonly property int memoryCategoryCount: hasMemoryService && typeof memoryService.memoryCategoryCount !== "undefined"
+        ? Number(memoryService.memoryCategoryCount || 0)
+        : 0
+    readonly property var experienceModel: hasMemoryService && typeof memoryService.experienceModel !== "undefined"
+        ? memoryService.experienceModel
+        : null
+    readonly property int experienceCount: hasMemoryService && typeof memoryService.experienceCount !== "undefined"
+        ? Number(memoryService.experienceCount || 0)
+        : 0
     readonly property bool canMutate: hasMemoryService && memoryService.ready && !memoryService.blockingBusy
-    readonly property var filteredMemoryCategories: {
-        if (!hasMemoryService)
-            return []
-        var items = memoryService.memoryCategories || []
-        var query = normalizeQuery(root.memorySearchQuery)
-        if (!query)
-            return items
-        return items.filter(function(item) {
-            var haystack = [item.category || "", item.content || "", item.preview || ""].join(" ").toLowerCase()
-            return haystack.indexOf(query) !== -1
-        })
-    }
 
     function langCode() {
         if (typeof effectiveLang === "string" && (effectiveLang === "zh" || effectiveLang === "en"))
@@ -85,6 +85,11 @@ Item {
 
     function normalizeQuery(value) {
         return String(value || "").trim().toLowerCase()
+    }
+
+    onMemorySearchQueryChanged: {
+        if (hasMemoryService && memoryService.setMemoryQuery)
+            memoryService.setMemoryQuery(memorySearchQuery)
     }
 
     function currentHeaderTitle() {
@@ -340,10 +345,7 @@ Item {
     onSelectedMemoryFactChanged: root.syncFactEditorFromSelection()
     onSelectedMemoryFactKeyChanged: root.syncFactEditorFromSelection()
 
-    Component.onCompleted: {
-        playReveal()
-        onReadyIfNeeded()
-    }
+    Component.onCompleted: onReadyIfNeeded()
 
     Connections {
         target: hasMemoryService ? memoryService : null
@@ -1030,7 +1032,7 @@ Item {
 
             Text {
                 Layout.fillWidth: true
-                text: root.tr("结果数 ", "Results ") + (root.hasMemoryService ? (memoryService.experienceItems || []).length : 0)
+                text: root.tr("结果数 ", "Results ") + root.experienceCount
                 color: textSecondary
                 font.pixelSize: typeMeta
             }
@@ -1056,7 +1058,7 @@ Item {
         Item {
             ListView {
                 anchors.fill: parent
-                model: root.filteredMemoryCategories
+                model: root.memoryCategoryModel
                 spacing: 10
                 clip: true
 
@@ -1177,7 +1179,7 @@ Item {
 
             Item {
                 anchors.fill: parent
-                visible: root.filteredMemoryCategories.length === 0
+                visible: root.memoryCategoryCount === 0
 
                 Column {
                     anchors.centerIn: parent
@@ -1231,7 +1233,7 @@ Item {
         Item {
             ListView {
                 anchors.fill: parent
-                model: hasMemoryService ? (memoryService.experienceItems || []) : []
+                model: root.experienceModel
                 spacing: 10
                 clip: true
 
@@ -1370,7 +1372,7 @@ Item {
 
             Item {
                 anchors.fill: parent
-                visible: root.hasMemoryService && (memoryService.experienceItems || []).length === 0
+                visible: root.hasMemoryService && root.experienceCount === 0
 
                 Column {
                     anchors.centerIn: parent

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, ClassVar
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from app.backend.asyncio_runner import AsyncioRunner
 from bao.profile import (
     ProfileContext,
     ProfileRegistry,
@@ -22,14 +26,22 @@ class ProfileService(QObject):
     profilesChanged: ClassVar[Signal] = Signal()
     activeProfileChanged: ClassVar[Signal] = Signal()
     errorChanged: ClassVar[Signal] = Signal()
+    _refreshResult: ClassVar[Signal] = Signal(int, bool, str, object)
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        runner: AsyncioRunner | None = None,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._runner = runner
         self._shared_workspace_path = ""
         self._registry: ProfileRegistry | None = None
         self._active_context: ProfileContext | None = None
         self._profile_rows: list[dict[str, Any]] = []
         self._last_error = ""
+        self._refresh_generation = 0
+        self._refreshResult.connect(self._handle_refresh_result)
 
     @Property(list, notify=profilesChanged)
     def profiles(self) -> list[dict[str, Any]]:
@@ -55,6 +67,18 @@ class ProfileService(QObject):
     @Property(str, notify=errorChanged)
     def lastError(self) -> str:
         return self._last_error
+
+    @Property(dict, notify=profilesChanged)
+    def registrySnapshot(self) -> dict[str, Any]:
+        registry = self._registry
+        if registry is None:
+            return {}
+        return {
+            "version": registry.version,
+            "defaultProfileId": registry.default_profile_id,
+            "activeProfileId": registry.active_profile_id,
+            "profiles": [asdict(spec) for spec in registry.profiles],
+        }
 
     def _shared_workspace(self) -> Path:
         return Path(self._shared_workspace_path).expanduser()
@@ -84,10 +108,15 @@ class ProfileService(QObject):
         raw = workspace_path.strip()
         if not raw:
             return
-        self._run_action(
-            Path(raw).expanduser(),
-            lambda shared_workspace: load_active_profile_snapshot(shared_workspace=shared_workspace),
-        )
+        shared_workspace = Path(raw).expanduser()
+        if self._runner is None:
+            self._run_action(
+                shared_workspace,
+                lambda workspace: load_active_profile_snapshot(shared_workspace=workspace),
+            )
+            return
+        self._shared_workspace_path = str(shared_workspace)
+        self._submit_refresh(self._next_refresh_generation(), shared_workspace)
 
     @Slot(str)
     def activateProfile(self, profile_id: str) -> None:
@@ -180,6 +209,7 @@ class ProfileService(QObject):
         shared_workspace: Path,
         action: Callable[[Path], tuple[ProfileRegistry, ProfileContext]],
     ) -> None:
+        self._invalidate_pending_refresh()
         try:
             registry, context = action(shared_workspace)
         except Exception as exc:
@@ -187,6 +217,77 @@ class ProfileService(QObject):
             return
         self._set_error("")
         self._apply_state(registry, context, shared_workspace=shared_workspace)
+
+    def _invalidate_pending_refresh(self) -> None:
+        self._next_refresh_generation()
+
+    def _next_refresh_generation(self) -> int:
+        self._refresh_generation += 1
+        return self._refresh_generation
+
+    def _submit_refresh(self, request_seq: int, shared_workspace: Path) -> None:
+        runner = self._runner
+        if runner is None:
+            return
+        coro = self._load_snapshot(shared_workspace)
+        try:
+            future = runner.submit(coro)
+        except RuntimeError:
+            coro.close()
+            self._set_error("Asyncio runner is not available.")
+            return
+        future.add_done_callback(
+            lambda future, seq=request_seq: self._emit_refresh_result(seq, future)
+        )
+
+    async def _load_snapshot(
+        self,
+        shared_workspace: Path,
+    ) -> tuple[str, ProfileRegistry, ProfileContext]:
+        runner = self._runner
+        if runner is None:
+            raise RuntimeError("Asyncio runner is not available.")
+        registry, context = await runner.run_user_io(
+            load_active_profile_snapshot,
+            shared_workspace=shared_workspace,
+        )
+        return str(shared_workspace), registry, context
+
+    def _emit_refresh_result(self, request_seq: int, future: Any) -> None:
+        try:
+            payload = future.result()
+            self._refreshResult.emit(request_seq, True, "", payload)
+        except (asyncio.CancelledError, concurrent.futures.CancelledError):
+            self._refreshResult.emit(request_seq, False, "cancelled", None)
+        except Exception as exc:
+            self._refreshResult.emit(request_seq, False, str(exc), None)
+
+    @Slot(int, bool, str, object)
+    def _handle_refresh_result(
+        self,
+        request_seq: int,
+        ok: bool,
+        message: str,
+        payload: object,
+    ) -> None:
+        if request_seq != self._refresh_generation:
+            return
+        if not ok:
+            self._set_error(message)
+            return
+        if not isinstance(payload, tuple) or len(payload) != 3:
+            self._set_error("Profile refresh returned invalid payload.")
+            return
+        workspace_raw, registry, context = payload
+        if not isinstance(registry, ProfileRegistry) or not isinstance(context, ProfileContext):
+            self._set_error("Profile refresh returned invalid payload.")
+            return
+        self._set_error("")
+        self._apply_state(
+            registry,
+            context,
+            shared_workspace=Path(str(workspace_raw)).expanduser(),
+        )
 
     def _apply_state(
         self,

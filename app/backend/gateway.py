@@ -144,15 +144,16 @@ class ChatService(QObject):
     gatewayChannelsChanged = Signal()
     cronServiceChanged = Signal(object)
     heartbeatServiceChanged = Signal(object)
-    messageAppended = Signal(int)
-    contentUpdated = Signal(int, str)
-    statusUpdated = Signal(int, str)
     gatewayReady = Signal(object, list)  # session_manager, enabled_channels
     historyLoadingChanged = Signal(bool)
     activeSessionStateChanged = Signal()
     viewPhaseChanged = Signal(str)
     sessionViewApplied = Signal(str)
-    sessionViewportReady = Signal(str)
+    sessionSwitchedApplied = Signal(str)
+    historyReady = Signal(str)
+    appendAtBottom = Signal(int)
+    incrementalContent = Signal(int)
+    statusSettled = Signal(int, str)
     draftAttachmentCountChanged = Signal()
     startupActivityChanged = Signal()
 
@@ -431,7 +432,7 @@ class ChatService(QObject):
         )
         row = self._model.append_user(display_text, status="pending", client_token=client_token)
         self._draft_attachments.clear()
-        self.messageAppended.emit(row)
+        self.appendAtBottom.emit(row)
         self._enqueue(
             _QueuedSendRequest(
                 session_key=self._session_key,
@@ -919,6 +920,7 @@ class ChatService(QObject):
         if not switched_session:
             return
         self.sessionViewApplied.emit(key)
+        self.sessionSwitchedApplied.emit(key)
 
     def _compute_view_phase(self) -> str:
         if self._state == "error":
@@ -936,7 +938,7 @@ class ChatService(QObject):
     def _emit_session_viewport_ready(self, key: str) -> None:
         if not key:
             return
-        self.sessionViewportReady.emit(key)
+        self.historyReady.emit(key)
 
     def _cache_history_snapshot(
         self,
@@ -1193,7 +1195,7 @@ class ChatService(QObject):
             if active >= 0:
                 self._model.set_format(active, "plain")
                 self._model.update_content(active, content)
-                self.contentUpdated.emit(active, content)
+                self.incrementalContent.emit(active)
                 self._model.set_status(active, "error")
         else:
             if content:
@@ -1201,7 +1203,7 @@ class ChatService(QObject):
                     if is_provider_error:
                         self._model.set_format(active, "plain")
                     self._model.update_content(active, content)
-                    self.contentUpdated.emit(active, content)
+                    self.incrementalContent.emit(active)
                 self._active_has_content = active >= 0
             if active >= 0:
                 self._model.set_status(active, "error" if is_provider_error else "done")
@@ -1226,7 +1228,7 @@ class ChatService(QObject):
                 emit_change=True,
                 extra_updates={"session_running": False},
             )
-        self.statusUpdated.emit(active, final_status)
+        self.statusSettled.emit(active, final_status)
         # Drain pending system responses before releasing lock
         pending: list[_QueuedUiMessage] = []
         with self._lock:
@@ -1487,7 +1489,7 @@ class ChatService(QObject):
         target = self._active_streaming_row if row == -1 else row
         if target >= 0 and should_render_in_ui:
             self._model.update_content(target, content)
-            self.contentUpdated.emit(target, content)
+            self.incrementalContent.emit(target)
         self._active_has_content = bool(content)
 
     def _restore_active_streaming_row(self, *, emit_append_signal: bool) -> int:
@@ -1535,7 +1537,7 @@ class ChatService(QObject):
 
     def _append_typing_row(self) -> int:
         row = self._model.append_assistant("", status="typing")
-        self.messageAppended.emit(row)
+        self.appendAtBottom.emit(row)
         return row
 
     def _handle_tool_hint_update(self, hint: str) -> None:
@@ -1558,7 +1560,7 @@ class ChatService(QObject):
         clean_hint = hint.strip()
         if should_render_in_ui and clean_hint:
             self._model.update_content(current_row, clean_hint)
-            self.contentUpdated.emit(current_row, clean_hint)
+            self.incrementalContent.emit(current_row)
             self._model.set_status(current_row, "done")
             next_row = self._append_typing_row()
             self._active_streaming_row = next_row
@@ -1680,7 +1682,7 @@ class ChatService(QObject):
             entrance_style=entrance_style,
             entrance_pending=True,
         )
-        self.messageAppended.emit(row)
+        self.appendAtBottom.emit(row)
 
     def _append_transient_assistant_message(
         self,
@@ -1711,7 +1713,7 @@ class ChatService(QObject):
             entrance_style=entrance_style,
             entrance_pending=True,
         )
-        self.messageAppended.emit(row)
+        self.appendAtBottom.emit(row)
 
     @staticmethod
     def _persist_system_message_with_manager(

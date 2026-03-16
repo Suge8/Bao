@@ -105,7 +105,14 @@ def test_cron_bridge_can_create_and_update_job(monkeypatch, tmp_path: Path, qt_a
         service.updateDraftField("timezone", "Australia/Sydney")
         service.updateDraftField("message", "Review the project status")
         service.saveDraft()
-        _wait_until(lambda: service.totalTaskCount == 1 and not service.busy)
+        _wait_until(
+            lambda: (
+                service.totalTaskCount == 1
+                and not service.busy
+                and isinstance(service.property("selectedTask"), dict)
+                and service.property("selectedTask").get("name") == "Nightly Review"
+            )
+        )
 
         assert service.noticeText == "Task created"
         selected = service.property("selectedTask")

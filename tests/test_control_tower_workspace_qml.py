@@ -126,6 +126,8 @@ Item {{
                 channelKeys: ["telegram"]
             }}
         ]
+        property var profilesModel: profiles
+        property int profileCount: profiles.length
         property var workingItems: [
             {{
                 id: "default:session",
@@ -143,6 +145,8 @@ Item {{
                 statusLabel: "运行中"
             }}
         ]
+        property var workingModel: workingItems
+        property int workingCount: workingItems.length
         property var completedItems: [
             {{
                 id: "default:start",
@@ -160,6 +164,8 @@ Item {{
                 statusLabel: "已完成"
             }}
         ]
+        property var completedModel: completedItems
+        property int completedCount: completedItems.length
         property var automationItems: [
             {{
                 id: "default:cron",
@@ -177,6 +183,8 @@ Item {{
                 statusLabel: "已调度"
             }}
         ]
+        property var automationModel: automationItems
+        property int automationCount: automationItems.length
         property var attentionItems: [
             {{
                 id: "work:issue",
@@ -194,6 +202,8 @@ Item {{
                 statusLabel: "待处理"
             }}
         ]
+        property var attentionModel: attentionItems
+        property int attentionCount: attentionItems.length
         property var selectedProfile: {selected_profile_qml}
         function refresh() {{}}
         function selectProfile(_profileId) {{ selectCalls += 1 }}
@@ -325,6 +335,87 @@ def test_control_tower_profile_button_click_does_not_select_card(qapp, tmp_path:
 
     assert int(supervisor.property("activateCalls")) == 1
     assert int(supervisor.property("selectCalls")) == 0
+
+    view.close()
+
+
+def test_control_tower_overview_lanes_render_as_separate_panels(qapp, tmp_path: Path):
+    _ = qapp
+    qml_path = tmp_path / "ControlTowerWorkspaceLaneHarness.qml"
+    qml_path.write_text(
+        _build_wrapper(
+            selected_profile_qml="({id: 'default', displayName: '日常'})",
+            expected_title="日常",
+        ),
+        encoding="utf-8",
+    )
+
+    view = QQuickView()
+    view.setResizeMode(QQuickView.SizeRootObjectToView)
+    view.setColor(QtGui.QColor("#FFFDF9"))
+    view.setSource(QUrl.fromLocalFile(str(qml_path)))
+    assert view.status() == QQuickView.Ready, view.errors()
+    view.show()
+    _process(120)
+
+    root = view.rootObject()
+    assert root is not None
+
+    lane_names = {
+        "controlTowerLane_working",
+        "controlTowerLane_completed",
+        "controlTowerLane_attention",
+        "controlTowerLane_automation",
+    }
+
+    queue = [root] if isinstance(root, QQuickItem) else []
+    lanes: list[QQuickItem] = []
+    while queue:
+        current = queue.pop(0)
+        if str(current.objectName()) in lane_names:
+            lanes.append(current)
+        queue.extend(current.childItems())
+
+    assert len(lanes) == 4
+
+    for lane in lanes:
+        assert float(lane.property("width")) > 0.0
+        assert float(lane.property("height")) >= 180.0
+
+    view.close()
+
+
+def test_control_tower_overview_scrolls_when_content_exceeds_viewport(qapp, tmp_path: Path):
+    _ = qapp
+    qml_path = tmp_path / "ControlTowerWorkspaceScrollHarness.qml"
+    qml_path.write_text(
+        _build_wrapper(
+            selected_profile_qml="({id: 'default', displayName: '日常'})",
+            expected_title="日常",
+        ),
+        encoding="utf-8",
+    )
+
+    view = QQuickView()
+    view.setResizeMode(QQuickView.SizeRootObjectToView)
+    view.setColor(QtGui.QColor("#FFFDF9"))
+    view.setWidth(900)
+    view.setHeight(640)
+    view.setSource(QUrl.fromLocalFile(str(qml_path)))
+    assert view.status() == QQuickView.Ready, view.errors()
+    view.show()
+    _process(150)
+
+    root = view.rootObject()
+    assert root is not None
+
+    overview_scroll = root.findChild(QtCore.QObject, "controlTowerOverviewScroll")
+    assert isinstance(overview_scroll, QQuickItem)
+    assert float(overview_scroll.property("contentHeight")) > float(overview_scroll.property("height"))
+
+    assert overview_scroll.setProperty("contentY", 120.0)
+    _process(30)
+    assert float(overview_scroll.property("contentY")) > 0.0
 
     view.close()
 

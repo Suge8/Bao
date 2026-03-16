@@ -49,6 +49,9 @@ class UpdateService(QObject):
     class _Runner(Protocol):
         def submit(self, coro: Coroutine[Any, Any, object]) -> object: ...
 
+    class _CancelableHandle(Protocol):
+        def cancel(self) -> object: ...
+
     def __init__(
         self, runner: _Runner, config_service: QObject, parent: QObject | None = None
     ) -> None:
@@ -66,6 +69,9 @@ class UpdateService(QObject):
         self._release: ReleaseInfo | None = None
         self._auto_check_done: bool = False
         self._show_check_errors: bool = False
+        self._disposed: bool = False
+        self._active_check_future: UpdateService._CancelableHandle | None = None
+        self._active_install_future: UpdateService._CancelableHandle | None = None
 
         _ = self._checkFinished.connect(self._handle_check_finished)
         _ = self._installFinished.connect(self._handle_install_finished)
@@ -92,6 +98,8 @@ class UpdateService(QObject):
 
     @_typed_slot()
     def reloadConfig(self) -> None:
+        if self._disposed:
+            return
         update_cfg = self._config_value("ui.update", {})
         self._enabled = bool(update_cfg.get("enabled", True))
         self._auto_check = bool(update_cfg.get("autoCheck", True))
@@ -106,9 +114,13 @@ class UpdateService(QObject):
 
     @_typed_slot(name="checkForUpdates")
     def check_for_updates(self) -> None:
+        if self._disposed:
+            return
         self._start_check(show_errors=True)
 
     def _start_check(self, *, show_errors: bool) -> None:
+        if self._disposed:
+            return
         if not self._enabled:
             return
         if not self._feed_url:
@@ -124,16 +136,26 @@ class UpdateService(QObject):
         self._show_check_errors = show_errors
         self._clear_release_details(keep_error=False, emit=False)
         self._set_state("checking")
-        _ = self._runner.submit(self._check_async())
+        self._replace_cancel_handle("_active_check_future", self._runner.submit(self._check_async()))
 
     @_typed_slot(name="installUpdate")
     def install_update(self) -> None:
+        if self._disposed:
+            return
         if self._release is None or self._state != "available":
             return
         self._set_state("downloading")
         self._error_message = ""
         self.metadataChanged.emit()
-        _ = self._runner.submit(self._install_async())
+        self._replace_cancel_handle(
+            "_active_install_future", self._runner.submit(self._install_async())
+        )
+
+    @_typed_slot()
+    def shutdown(self) -> None:
+        self._disposed = True
+        for future_attr in ("_active_check_future", "_active_install_future"):
+            self._clear_cancel_handle(future_attr)
 
     async def _check_async(self) -> None:
         try:
@@ -286,6 +308,7 @@ open \"$TARGET_APP\"
         return None
 
     def _handle_check_finished(self, ok: bool, error: str, release: object) -> None:
+        self._active_check_future = None
         if not ok:
             if self._show_check_errors:
                 self._set_error(error or "Failed to check for updates.")
@@ -306,6 +329,7 @@ open \"$TARGET_APP\"
         self.metadataChanged.emit()
 
     def _handle_install_finished(self, ok: bool, error: str) -> None:
+        self._active_install_future = None
         if not ok:
             self._set_error(error or "Failed to install update.")
             return
@@ -341,6 +365,18 @@ open \"$TARGET_APP\"
         url = release.release_url or release.asset.url
         if url:
             _ = QDesktopServices.openUrl(QUrl(url))
+
+    def _replace_cancel_handle(self, attr_name: str, handle: object) -> None:
+        self._clear_cancel_handle(attr_name)
+        if callable(getattr(handle, "cancel", None)):
+            setattr(self, attr_name, handle)
+
+    def _clear_cancel_handle(self, attr_name: str) -> None:
+        handle = getattr(self, attr_name)
+        cancel = getattr(handle, "cancel", None)
+        if callable(cancel):
+            cancel()
+        setattr(self, attr_name, None)
 
     def _config_value(self, dotpath: str, default: object) -> Any:
         getter = getattr(self._config_service, "get", None)

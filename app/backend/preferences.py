@@ -21,7 +21,6 @@ class DesktopPreferences(QObject):
         self,
         *,
         system_ui_language: str,
-        legacy_ui_language: str | None = None,
         settings: QSettings | None = None,
         parent: QObject | None = None,
     ) -> None:
@@ -30,7 +29,7 @@ class DesktopPreferences(QObject):
         self._system_ui_language: str = self._sanitize_ui_language(
             system_ui_language, fallback="en"
         )
-        self._ui_language: str = self._load_ui_language(legacy_ui_language)
+        self._ui_language: str = self._load_ui_language()
         stored_theme_mode = self._settings.value(self._THEME_KEY, "system")
         self._theme_mode: str = self._sanitize_theme_mode(stored_theme_mode)
         self._style_hints: QStyleHints = QGuiApplication.styleHints()
@@ -115,15 +114,11 @@ class DesktopPreferences(QObject):
     def _sanitize_ui_language(self, value: object, fallback: str = "auto") -> str:
         return self._sanitize_choice(value, self._SUPPORTED_UI_LANGUAGES, fallback)
 
-    def _load_ui_language(self, legacy_ui_language: str | None) -> str:
+    def _load_ui_language(self) -> str:
         if self._settings.contains(self._LANGUAGE_KEY):
             stored_ui_language = self._settings.value(self._LANGUAGE_KEY, "auto")
             return self._sanitize_ui_language(stored_ui_language)
-
-        legacy_value = self._sanitize_ui_language(legacy_ui_language or "auto")
-        if legacy_value != "auto":
-            self._settings.setValue(self._LANGUAGE_KEY, legacy_value)
-        return legacy_value
+        return "auto"
 
     def _sanitize_theme_mode(self, value: object) -> str:
         return self._sanitize_choice(value, self._SUPPORTED_THEME_MODES, "system")

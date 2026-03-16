@@ -24,11 +24,24 @@ Item {
         return "en"
     }
     readonly property bool isZhLang: effectiveUiLanguage === "zh"
-    readonly property var allItems: hasToolsService && typeof toolsService.items !== "undefined"
-        ? (toolsService.items || [])
-        : []
-    readonly property var installedItems: allItems.filter(function(item) { return item.kind === "builtin" })
-    readonly property var serverItems: allItems.filter(function(item) { return item.kind === "mcp_server" })
+    readonly property var catalogModel: hasToolsService && typeof toolsService.catalogModel !== "undefined"
+        ? toolsService.catalogModel
+        : null
+    readonly property var serverModel: hasToolsService && typeof toolsService.serverModel !== "undefined"
+        ? toolsService.serverModel
+        : null
+    readonly property int catalogCount: hasToolsService && typeof toolsService.catalogCount !== "undefined"
+        ? Number(toolsService.catalogCount || 0)
+        : 0
+    readonly property int serverCount: hasToolsService && typeof toolsService.serverCount !== "undefined"
+        ? Number(toolsService.serverCount || 0)
+        : 0
+    readonly property string firstCatalogItemId: hasToolsService && typeof toolsService.firstCatalogItemId !== "undefined"
+        ? String(toolsService.firstCatalogItemId || "")
+        : ""
+    readonly property string firstServerItemId: hasToolsService && typeof toolsService.firstServerItemId !== "undefined"
+        ? String(toolsService.firstServerItemId || "")
+        : ""
     readonly property var selectedItem: hasToolsService && typeof toolsService.selectedItem !== "undefined"
         ? (toolsService.selectedItem || ({}))
         : ({})
@@ -367,20 +380,24 @@ Item {
     function ensureSelectionForScope() {
         if (!hasToolsService || currentScope === "policies")
             return
-        var items = currentScope === "servers" ? serverItems : installedItems
-        if (!items.length)
+        var hasItems = currentScope === "servers" ? serverCount > 0 : catalogCount > 0
+        if (!hasItems)
             return
+        var firstItemId = currentScope === "servers" ? firstServerItemId : firstCatalogItemId
         var selected = selectedItem || {}
         if (!selected.id) {
-            toolsService.selectItem(items[0].id)
+            if (firstItemId)
+                toolsService.selectItem(firstItemId)
             return
         }
         if (currentScope === "installed" && selected.kind !== "builtin") {
-            toolsService.selectItem(items[0].id)
+            if (firstItemId)
+                toolsService.selectItem(firstItemId)
             return
         }
         if (currentScope === "servers" && selected.kind !== "mcp_server")
-            toolsService.selectItem(items[0].id)
+            if (firstItemId)
+                toolsService.selectItem(firstItemId)
     }
 
     function statusTone(item) {
@@ -835,7 +852,7 @@ Item {
                                         Text {
                                             id: builtinsCountLabel
                                             anchors.centerIn: parent
-                                            text: String(root.installedItems.length)
+                                            text: String(root.catalogCount)
                                             color: textSecondary
                                             font.pixelSize: typeMeta
                                             font.weight: weightBold
@@ -850,7 +867,7 @@ Item {
                                     clip: true
                                     spacing: 10
                                     bottomMargin: 12
-                                    model: root.installedItems
+                                    model: root.catalogModel
                                     ScrollIndicator.vertical: ScrollIndicator {
                                         visible: false
                                         width: 4
@@ -991,7 +1008,7 @@ Item {
 
                                     footer: Item {
                                         width: builtinList.width
-                                        height: root.installedItems.length === 0 ? 180 : 0
+                                        height: root.catalogCount === 0 ? 180 : 0
 
                                         Column {
                                             anchors.centerIn: parent
@@ -1285,7 +1302,7 @@ Item {
                                         Text {
                                             id: serverCountLabel
                                             anchors.centerIn: parent
-                                            text: String(root.serverItems.length)
+                                            text: String(root.serverCount)
                                             color: textSecondary
                                             font.pixelSize: typeMeta
                                             font.weight: weightBold
@@ -1300,7 +1317,7 @@ Item {
                                     clip: true
                                     spacing: 10
                                     bottomMargin: 12
-                                    model: root.serverItems
+                                    model: root.serverModel
                                     ScrollIndicator.vertical: ScrollIndicator {
                                         visible: false
                                         width: 4
@@ -1441,7 +1458,7 @@ Item {
 
                                     footer: Item {
                                         width: serverList.width
-                                        height: root.serverItems.length === 0 ? 180 : 0
+                                        height: root.serverCount === 0 ? 180 : 0
 
                                         Column {
                                             anchors.centerIn: parent

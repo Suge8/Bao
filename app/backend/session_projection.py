@@ -4,7 +4,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable
 
-from bao.session.state import desktop_has_unread_ai, session_routing_metadata, session_runtime_state
+from bao.session.state import (
+    session_routing_metadata,
+    session_runtime_state,
+    session_view_state,
+    session_workflow_state,
+)
 
 
 @dataclass(frozen=True)
@@ -254,10 +259,19 @@ def project_session_item(
     current_sessions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     key = str(session.get("key") or "")
-    metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
-    routing = session_routing_metadata(metadata)
-    runtime = session_runtime_state(metadata)
-    child_status = runtime.child_status or str(metadata.get("child_status") or "")
+    routing_payload = session.get("routing") if isinstance(session.get("routing"), dict) else {}
+    runtime_payload = session.get("runtime") if isinstance(session.get("runtime"), dict) else {}
+    workflow_payload = session.get("workflow") if isinstance(session.get("workflow"), dict) else {}
+    view_payload = session.get("view") if isinstance(session.get("view"), dict) else {}
+    if not (routing_payload and runtime_payload and workflow_payload and view_payload):
+        raise ValueError(f"session entry missing structured snapshot fields: {key}")
+    routing = session_routing_metadata({"routing": routing_payload})
+    runtime = session_runtime_state(runtime_payload)
+    workflow = session_workflow_state({"workflow": workflow_payload})
+    view = session_view_state({"view": view_payload})
+    child_status = workflow.child_outcome.status or ("running" if runtime.child_running else "")
+    has_unread = view.read_receipts.has_unread_ai
+    title = view.title
     channel = (
         session_channel_key(routing.parent_session_key)
         if routing.session_kind == "subagent_child" and routing.parent_session_key
@@ -275,8 +289,8 @@ def project_session_item(
         natural_key=natural_key,
         updated_at=session.get("updated_at", ""),
         channel=channel,
-        has_unread=desktop_has_unread_ai(metadata),
-        title=metadata.get("title"),
+        has_unread=has_unread,
+        title=title,
         message_count=session.get("message_count"),
         has_messages=session.get("has_messages"),
         session_kind=routing.session_kind,

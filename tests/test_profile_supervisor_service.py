@@ -19,10 +19,11 @@ QObject = QtCore.QObject
 Signal = QtCore.Signal
 QGuiApplication = QtGui.QGuiApplication
 
+import app.backend.profile_supervisor as profile_supervisor_module
 from app.backend.asyncio_runner import AsyncioRunner
 from app.backend.profile import ProfileService
 from app.backend.profile_supervisor import _SNAPSHOT_FILENAME, ProfileWorkSupervisorService
-from bao.profile import profile_context, profile_context_from_mapping
+from bao.profile import profile_context_from_mapping
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -55,6 +56,21 @@ def _wait_until(predicate, timeout_ms: int = 4000) -> None:
     timer.stop()
     if not predicate():
         raise AssertionError("Timed out waiting for condition")
+
+
+def _spin(ms: int) -> None:
+    loop = QEventLoop()
+    QTimer.singleShot(ms, loop.quit)
+    loop.exec()
+
+
+def _model_items(model: object) -> list[dict[str, object]]:
+    items = getattr(model, "_items", [])
+    return [dict(item) for item in items if isinstance(item, dict)]
+
+
+def _profile_items(supervisor: object) -> list[dict[str, object]]:
+    return _model_items(getattr(supervisor, "profilesModel"))
 
 
 class _SessionModel:
@@ -424,16 +440,63 @@ def test_supervisor_projects_live_and_snapshot_profiles(
         assert supervisor.overview["workingCount"] == 2
         assert supervisor.overview["automationCount"] == 3
         assert supervisor.selectedProfile == {}
-        assert all(item["profileId"] == "default" for item in supervisor.workingItems)
-        default_profile = next(item for item in supervisor.profiles if item["id"] == "default")
-        work_profile = next(item for item in supervisor.profiles if item["id"] == work_id)
+        assert all(item["profileId"] == "default" for item in _model_items(supervisor.workingModel))
+        default_profile = next(item for item in _profile_items(supervisor) if item["id"] == "default")
+        work_profile = next(item for item in _profile_items(supervisor) if item["id"] == work_id)
         assert default_profile["totalSessionCount"] == 1
         assert default_profile["totalChildSessionCount"] == 1
         assert default_profile["channelKeys"] == ["desktop", "telegram"]
         assert work_profile["totalSessionCount"] == 1
         assert work_profile["channelKeys"] == ["telegram"]
         assert work_profile["workingCount"] == 0
-        assert any(item["id"] == work_id and item["isLive"] is False for item in supervisor.profiles)
+        assert any(item["id"] == work_id and item["isLive"] is False for item in _profile_items(supervisor))
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_supervisor_stays_idle_until_hydrated(
+    tmp_path: Path, qt_app, fake_home: Path
+) -> None:
+    _ = qt_app
+    _ = fake_home
+    (
+        runner,
+        supervisor,
+        profile_service,
+        session_service,
+        _chat_service,
+        _cron_service,
+        _heartbeat_service,
+        work_id,
+    ) = _build_supervisor(tmp_path)
+    try:
+        profile_service.activateProfile(work_id)
+        session_service.sessionManagerReady.emit(object())
+        _spin(150)
+
+        assert supervisor.overview == {}
+        assert _profile_items(supervisor) == []
+
+        supervisor.hydrateIfNeeded()
+        _wait_until(lambda: supervisor.overview.get("profileCount") == 2)
+
+        assert any(item["id"] == work_id for item in _profile_items(supervisor))
+    finally:
+        runner.shutdown(grace_s=1.0)
+
+
+def test_supervisor_refresh_if_hydrated_keeps_idle_when_cold(
+    tmp_path: Path, qt_app, fake_home: Path
+) -> None:
+    _ = qt_app
+    _ = fake_home
+    runner, supervisor, *_rest = _build_supervisor(tmp_path)
+    try:
+        supervisor.refreshIfHydrated()
+        _spin(150)
+
+        assert supervisor.overview == {}
+        assert _profile_items(supervisor) == []
     finally:
         runner.shutdown(grace_s=1.0)
 
@@ -464,7 +527,7 @@ def test_supervisor_queues_cross_profile_session_open(
 
         target = next(
             item
-            for item in supervisor.automationItems
+            for item in _model_items(supervisor.automationModel)
             if item["profileId"] == work_id and item["routeKind"] == "cron"
         )
         supervisor.selectItem(str(target["id"]))
@@ -481,8 +544,11 @@ def test_supervisor_queues_cross_profile_session_open(
         runner.shutdown(grace_s=1.0)
 
 
-def test_supervisor_normalizes_legacy_snapshot_profile_ids(
-    tmp_path: Path, qt_app, fake_home: Path
+def test_supervisor_uses_profile_service_registry_snapshot(
+    tmp_path: Path,
+    qt_app,
+    fake_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _ = qt_app
     _ = fake_home
@@ -494,67 +560,19 @@ def test_supervisor_normalizes_legacy_snapshot_profile_ids(
         _chat_service,
         _cron_service,
         _heartbeat_service,
-        work_id,
+        _work_id,
     ) = _build_supervisor(tmp_path)
     try:
-        shared_workspace = tmp_path / "workspace"
-        work_context = profile_context(work_id, shared_workspace=shared_workspace)
-        snapshot_path = work_context.state_root / _SNAPSHOT_FILENAME
-        _write_work_snapshot(
-            work_context,
-            session_key="telegram:legacy-room",
-            snapshot_profile_id="work",
+        monkeypatch.setattr(
+            profile_supervisor_module,
+            "ensure_profile_registry",
+            lambda _shared_workspace: (_ for _ in ()).throw(
+                AssertionError("supervisor should consume ProfileService.registrySnapshot")
+            ),
         )
-        payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
-        payload["updated_at"] = datetime.now(timezone.utc).isoformat()
-        payload["attention"] = [
-            {
-                "id": "work:gateway:issue",
-                "profileId": "work",
-                "kind": "issue",
-                "title": "网关状态",
-                "summary": "请查看网关状态",
-                "statusKey": "error",
-                "statusLabel": "待处理",
-                "visualChannel": "system",
-                "accentKey": "system",
-                "glyphSource": "../resources/icons/sidebar-pulse.svg",
-                "updatedAt": payload["updated_at"],
-                "updatedLabel": "刚刚",
-                "relativeLabel": "刚刚",
-                "isLive": False,
-                "personaVariant": "automation",
-                "avatarSource": "../resources/profile-avatars/mochi.svg",
-                "routeKind": "profile",
-                "routeValue": "work",
-                "canOpen": True,
-                "canToggleCron": False,
-                "canRunHeartbeat": False,
-            }
-        ]
-        snapshot_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-
         supervisor.refresh()
         _wait_until(lambda: supervisor.overview.get("profileCount") == 2)
-        supervisor.selectProfile(work_id)
-        _wait_until(lambda: supervisor.selectedProfile.get("id") == work_id)
-
-        selected_profile = supervisor.selectedProfile
-        assert all(item["profileId"] == work_id for item in supervisor.automationItems)
-        assert all(item["id"].startswith(f"{work_id}:") for item in supervisor.automationItems)
-        assert all(item["profileId"] == work_id for item in supervisor.attentionItems)
-        assert any(item["routeValue"] == work_id for item in supervisor.attentionItems)
-        assert all(worker["profileId"] == work_id for worker in selected_profile["workers"])
-        assert all(worker["workerId"].startswith(f"{work_id}:") for worker in selected_profile["workers"])
-
-        normalized = json.loads(snapshot_path.read_text(encoding="utf-8"))
-        assert normalized["profile_id"] == work_id
-        assert all(item["profileId"] == work_id for item in normalized["automation"])
-        assert all(item["id"].startswith(f"{work_id}:") for item in normalized["automation"])
-        assert all(item["profileId"] == work_id for item in normalized["attention"])
-        assert normalized["attention"][0]["routeValue"] == work_id
-        assert all(worker["profileId"] == work_id for worker in normalized["workers"])
-        assert all(worker["workerId"].startswith(f"{work_id}:") for worker in normalized["workers"])
+        assert supervisor.overview["liveProfileId"] == "default"
     finally:
         runner.shutdown(grace_s=1.0)
 
@@ -584,7 +602,7 @@ def test_supervisor_hides_live_work_when_gateway_is_not_running(
 
         assert supervisor.selectedProfile["isGatewayLive"] is False
         assert supervisor.selectedProfile["workingCount"] == 0
-        assert supervisor.workingItems == []
+        assert _model_items(supervisor.workingModel) == []
     finally:
         runner.shutdown(grace_s=1.0)
 
@@ -609,7 +627,7 @@ def test_supervisor_formats_automation_time_as_relative_label(
         _wait_until(lambda: supervisor.overview.get("profileCount") == 2)
         cron_item = next(
             item
-            for item in supervisor.automationItems
+            for item in _model_items(supervisor.automationModel)
             if str(item.get("routeKind", "")) == "cron" and str(item.get("profileId", "")) == "default"
         )
         assert "2026" not in str(cron_item.get("updatedLabel", ""))
@@ -639,9 +657,9 @@ def test_supervisor_select_profile_emits_filtered_collections_immediately(
         working_events: list[int] = []
         automation_events: list[int] = []
         attention_events: list[int] = []
-        supervisor.workingChanged.connect(lambda: working_events.append(len(supervisor.workingItems)))
-        supervisor.automationChanged.connect(lambda: automation_events.append(len(supervisor.automationItems)))
-        supervisor.attentionChanged.connect(lambda: attention_events.append(len(supervisor.attentionItems)))
+        supervisor.workingChanged.connect(lambda: working_events.append(len(_model_items(supervisor.workingModel))))
+        supervisor.automationChanged.connect(lambda: automation_events.append(len(_model_items(supervisor.automationModel))))
+        supervisor.attentionChanged.connect(lambda: attention_events.append(len(_model_items(supervisor.attentionModel))))
 
         supervisor.refresh()
         _wait_until(lambda: supervisor.overview.get("profileCount") == 2)
@@ -649,8 +667,8 @@ def test_supervisor_select_profile_emits_filtered_collections_immediately(
         supervisor.selectProfile(work_id)
 
         assert supervisor.selectedProfile["id"] == work_id
-        assert supervisor.workingItems == []
-        assert all(item["profileId"] == work_id for item in supervisor.automationItems)
+        assert _model_items(supervisor.workingModel) == []
+        assert all(item["profileId"] == work_id for item in _model_items(supervisor.automationModel))
         assert working_events
         assert automation_events
         assert attention_events
@@ -683,7 +701,7 @@ def test_supervisor_does_not_project_gateway_summary_as_attention(
 
         assert not any(
             str(item.get("id", "")).endswith(":gateway:issue")
-            for item in supervisor.attentionItems
+            for item in _model_items(supervisor.attentionModel)
         )
     finally:
         runner.shutdown(grace_s=1.0)
@@ -719,7 +737,7 @@ def test_supervisor_projects_startup_greeting_into_working_and_completed(
 
         running_item = next(
             item
-            for item in supervisor.workingItems
+            for item in _model_items(supervisor.workingModel)
             if str(item.get("kind", "")) == "startup_greeting"
         )
         assert running_item["statusKey"] == "running"
@@ -739,17 +757,17 @@ def test_supervisor_projects_startup_greeting_into_working_and_completed(
         _wait_until(
             lambda: any(
                 str(item.get("kind", "")) == "startup_greeting"
-                for item in supervisor.completedItems
+                for item in _model_items(supervisor.completedModel)
             )
         )
 
         assert not any(
             str(item.get("kind", "")) == "startup_greeting"
-            for item in supervisor.workingItems
+            for item in _model_items(supervisor.workingModel)
         )
         completed_item = next(
             item
-            for item in supervisor.completedItems
+            for item in _model_items(supervisor.completedModel)
             if str(item.get("kind", "")) == "startup_greeting"
         )
         assert completed_item["statusKey"] == "completed"

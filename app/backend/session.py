@@ -10,6 +10,8 @@ import asyncio
 import os
 from collections.abc import Coroutine
 from concurrent.futures import CancelledError as FutureCancelledError
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any
 
@@ -129,6 +131,28 @@ _SESSION_FIELD_TO_ROLE = {
     "child_status": _ROLE_CHILD_STATUS,
     "is_running": _ROLE_IS_RUNNING,
 }
+
+
+@dataclass
+class PendingDeleteState:
+    sessions_before: list[dict[str, Any]]
+    active_before: str
+    optimistic_active: str
+    expanded_groups: dict[str, bool]
+
+
+@dataclass
+class SessionUiState:
+    session_rows: list[dict[str, Any]] = dataclass_field(default_factory=list)
+    active_key: str = ""
+    expanded_groups: dict[str, bool] = dataclass_field(default_factory=dict)
+    unread_count: int = 0
+    unread_fingerprint: str = ""
+    loading: bool = False
+    gateway_ready: bool = False
+    pending_select_key: str = ""
+    pending_deletes: dict[str, PendingDeleteState] = dataclass_field(default_factory=dict)
+    pending_creates: set[str] = dataclass_field(default_factory=set)
 
 
 class SidebarRowsModel(QAbstractListModel):
@@ -535,24 +559,15 @@ class SessionService(QObject):
         self._runner = runner
         self._session_manager: Any = None
         self._natural_key = "desktop:local"
-        self._gateway_ready = False
-        self._active_key = ""
-        self._pending_select_key: str | None = None
+        self._ui_state = SessionUiState()
         self._last_emitted_active_key = ""
         self._model = SessionListModel()
         self._sidebar_model = SidebarRowsModel()
-        self._sidebar_expanded_groups: dict[str, bool] = {}
-        self._sidebar_unread_count = 0
-        self._sidebar_unread_fingerprint = ""
-        self._pending_deletes: dict[
-            str,
-            tuple[list[dict[str, Any]], str, str, dict[str, bool]],
-        ] = {}
-        self._pending_creates: set[str] = set()
         self._list_request_seq = 0
         self._list_latest_seq = 0
         self._list_inflight_count = 0
-        self._sessions_loading = False
+        self._refresh_inflight = False
+        self._refresh_requested = False
         self._active_commit_seq = 0
         self._bootstrap_storage_root = ""
         self._session_entry_generation = 0
@@ -584,30 +599,98 @@ class SessionService(QObject):
 
     @Property(int, notify=sidebarProjectionChanged)
     def sidebarUnreadCount(self) -> int:
-        return self._sidebar_unread_count
+        return self._ui_state.unread_count
 
     @Property(str, notify=sidebarProjectionChanged)
     def sidebarUnreadFingerprint(self) -> str:
-        return self._sidebar_unread_fingerprint
+        return self._ui_state.unread_fingerprint
 
     @Property(str, notify=activeKeyChanged)
     def activeKey(self) -> str:
-        return self._active_key
+        return self._ui_state.active_key
 
     @Property(bool, notify=sessionsLoadingChanged)
     def sessionsLoading(self) -> bool:
-        return self._sessions_loading
+        return self._ui_state.loading
 
     @Property(bool, notify=activeSessionMetaChanged)
     def activeSessionReadOnly(self) -> bool:
         return self._active_session_read_only
 
     def supervisorSessionsSnapshot(self) -> list[dict[str, Any]]:
-        return [
-            dict(item)
-            for item in getattr(self._model, "_sessions", [])
-            if isinstance(item, dict)
-        ]
+        return [dict(item) for item in self._ui_state.session_rows if isinstance(item, dict)]
+
+    @property
+    def _active_key(self) -> str:
+        return self._ui_state.active_key
+
+    @_active_key.setter
+    def _active_key(self, value: str) -> None:
+        self._ui_state.active_key = str(value or "")
+
+    @property
+    def _pending_select_key(self) -> str | None:
+        return self._ui_state.pending_select_key or None
+
+    @_pending_select_key.setter
+    def _pending_select_key(self, value: str | None) -> None:
+        self._ui_state.pending_select_key = str(value or "")
+
+    @property
+    def _pending_deletes(self) -> dict[str, PendingDeleteState]:
+        return self._ui_state.pending_deletes
+
+    @_pending_deletes.setter
+    def _pending_deletes(self, value: dict[str, PendingDeleteState]) -> None:
+        self._ui_state.pending_deletes = value
+
+    @property
+    def _pending_creates(self) -> set[str]:
+        return self._ui_state.pending_creates
+
+    @_pending_creates.setter
+    def _pending_creates(self, value: set[str]) -> None:
+        self._ui_state.pending_creates = value
+
+    @property
+    def _sidebar_expanded_groups(self) -> dict[str, bool]:
+        return self._ui_state.expanded_groups
+
+    @_sidebar_expanded_groups.setter
+    def _sidebar_expanded_groups(self, value: dict[str, bool]) -> None:
+        self._ui_state.expanded_groups = dict(value)
+
+    @property
+    def _sidebar_unread_count(self) -> int:
+        return self._ui_state.unread_count
+
+    @_sidebar_unread_count.setter
+    def _sidebar_unread_count(self, value: int) -> None:
+        self._ui_state.unread_count = int(value)
+
+    @property
+    def _sidebar_unread_fingerprint(self) -> str:
+        return self._ui_state.unread_fingerprint
+
+    @_sidebar_unread_fingerprint.setter
+    def _sidebar_unread_fingerprint(self, value: str) -> None:
+        self._ui_state.unread_fingerprint = str(value or "")
+
+    @property
+    def _sessions_loading(self) -> bool:
+        return self._ui_state.loading
+
+    @_sessions_loading.setter
+    def _sessions_loading(self, value: bool) -> None:
+        self._ui_state.loading = bool(value)
+
+    @property
+    def _gateway_ready(self) -> bool:
+        return self._ui_state.gateway_ready
+
+    @_gateway_ready.setter
+    def _gateway_ready(self, value: bool) -> None:
+        self._ui_state.gateway_ready = bool(value)
 
     def initialize(self, session_manager: Any) -> None:
         if self._disposed:
@@ -647,13 +730,17 @@ class SessionService(QObject):
         if self._disposed:
             return
         self._disposed = True
-        self._pending_select_key = None
-        self._pending_deletes.clear()
-        self._pending_creates.clear()
+        self._ui_state.pending_select_key = ""
+        self._ui_state.pending_deletes.clear()
+        self._ui_state.pending_creates.clear()
+        self._ui_state.session_rows = []
+        self._ui_state.active_key = ""
         self._session_entry_request_seq.clear()
         self._list_inflight_count = 0
+        self._refresh_inflight = False
+        self._refresh_requested = False
         self._set_sessions_loading(False)
-        self._sidebar_expanded_groups = {}
+        self._ui_state.expanded_groups = {}
         self._sidebar_model.clear_rows()
         self._set_sidebar_unread_summary(0, "")
         self._set_active_session_projection("")
@@ -716,8 +803,15 @@ class SessionService(QObject):
             return
         if self._disposed:
             return
+        if self._session_manager is not None and not self._bootstrap_storage_root:
+            return
         expected_root = self._bootstrap_storage_root
-        actual_root = str(Path(str(getattr(session_manager, "workspace", ""))).expanduser())
+        workspace = getattr(session_manager, "workspace", None)
+        actual_root = (
+            str(Path(str(workspace)).expanduser())
+            if isinstance(workspace, (str, Path))
+            else ""
+        )
         if expected_root and actual_root and expected_root != actual_root:
             return
         self.initialize(session_manager)
@@ -779,12 +873,12 @@ class SessionService(QObject):
         self.sidebarProjectionWillChange.emit()
         projection = build_sidebar_projection(
             self._model._sessions,
-            active_key=self._active_key,
-            expanded_groups=self._sidebar_expanded_groups,
+            active_key=self._ui_state.active_key,
+            expanded_groups=self._ui_state.expanded_groups,
             current_rows=self._sidebar_model._rows,
             channels=channels,
         )
-        self._sidebar_expanded_groups = projection.expanded_groups
+        self._ui_state.expanded_groups = projection.expanded_groups
         self._sidebar_model.sync_rows(projection.rows)
         self._set_sidebar_unread_summary(
             projection.unread_count,
@@ -826,9 +920,9 @@ class SessionService(QObject):
         )
 
     def _set_sessions_loading(self, loading: bool) -> None:
-        if self._sessions_loading == loading:
+        if self._ui_state.loading == loading:
             return
-        self._sessions_loading = loading
+        self._ui_state.loading = loading
         self.sessionsLoadingChanged.emit(loading)
 
     def _begin_list_request(self) -> None:
@@ -844,8 +938,8 @@ class SessionService(QObject):
         return self._active_commit_seq
 
     def _set_sidebar_unread_summary(self, unread_count: int, unread_fingerprint: str) -> None:
-        self._sidebar_unread_count = unread_count
-        self._sidebar_unread_fingerprint = unread_fingerprint
+        self._ui_state.unread_count = unread_count
+        self._ui_state.unread_fingerprint = unread_fingerprint
 
     @staticmethod
     def _with_active_session_read(
@@ -915,7 +1009,8 @@ class SessionService(QObject):
         sidebar_channels: set[str] | None = None,
         emit_sessions_changed: bool,
     ) -> None:
-        self._active_key = key
+        self._ui_state.active_key = key
+        self._ui_state.session_rows = [dict(item) for item in self._model._sessions]
         self._rebuild_sidebar_projection(sidebar_channels)
         if emit_sessions_changed:
             self.sessionsChanged.emit()
@@ -923,7 +1018,7 @@ class SessionService(QObject):
         self._emit_active_key_if_changed(key)
 
     def _set_local_active_key(self, key: str) -> None:
-        if self._active_key == key:
+        if self._ui_state.active_key == key:
             return
         self._model.set_active(key)
         if _DEBUG_SWITCH:
@@ -934,7 +1029,7 @@ class SessionService(QObject):
         self._clear_pending_select_if_resolved(active_for_view)
 
     def _desktop_startup_target_key(self) -> str:
-        active_key = self._active_key
+        active_key = self._ui_state.active_key
         if active_key and session_channel_key(active_key) == "desktop":
             for session in self._model._sessions:
                 if str(session.get("key", "")) == active_key:
@@ -946,11 +1041,11 @@ class SessionService(QObject):
         return ""
 
     def _emit_active_ready_if_applicable(self, key: str) -> None:
-        if self._gateway_ready and key:
+        if self._ui_state.gateway_ready and key:
             self.activeReady.emit(key)
 
     def _emit_startup_target_if_applicable(self) -> None:
-        if not self._gateway_ready:
+        if not self._ui_state.gateway_ready:
             return
         target_key = self._desktop_startup_target_key()
         if target_key:
@@ -962,7 +1057,10 @@ class SessionService(QObject):
     def _handle_session_change(self, event: object) -> None:
         if self._disposed or not isinstance(event, SessionChangeEvent):
             return
-        if event.session_key in self._pending_deletes:
+        if event.session_key in self._ui_state.pending_deletes:
+            return
+        if event.kind == "deleted":
+            self._handle_deleted_change(event.session_key)
             return
         if event.kind in {"metadata", "messages"}:
             load_entry = getattr(self._session_manager, "get_session_list_entry", None)
@@ -982,8 +1080,59 @@ class SessionService(QObject):
         self.refresh()
 
     def _clear_pending_select_if_resolved(self, active_key: str) -> None:
-        if self._pending_select_key is not None and active_key == self._pending_select_key:
-            self._pending_select_key = None
+        if self._ui_state.pending_select_key and active_key == self._ui_state.pending_select_key:
+            self._ui_state.pending_select_key = ""
+
+    def _schedule_select_commit(self, key: str) -> None:
+        if not key or self._session_manager is None:
+            return
+        fut = self._submit_safe(self._select_session(key, self._next_active_commit_seq()))
+        if fut is not None:
+            fut.add_done_callback(self._on_select_done)
+
+    def _handle_deleted_change(self, key: str) -> None:
+        normalized = str(key or "")
+        if not normalized:
+            return
+        self._session_entry_request_seq.pop(normalized, None)
+        self._ui_state.pending_creates.discard(normalized)
+        if self._ui_state.pending_select_key == normalized:
+            self._ui_state.pending_select_key = ""
+
+        current_sessions = [dict(item) for item in self._model._sessions]
+        next_sessions = [item for item in current_sessions if str(item.get("key", "")) != normalized]
+        if len(next_sessions) == len(current_sessions):
+            return
+
+        removed = next(
+            (item for item in current_sessions if str(item.get("key", "")) == normalized),
+            None,
+        )
+        removed_channel = str(
+            (removed or {}).get("channel") or session_channel_key(normalized) or "desktop"
+        )
+        removed_active = self._ui_state.active_key == normalized
+        active_for_view = self._ui_state.active_key if not removed_active else ""
+        if removed_active and next_sessions:
+            active_for_view = pick_latest_key(
+                next_sessions,
+                preferred_channel=(removed_channel or "desktop"),
+            )
+
+        self._apply_session_view(
+            next_sessions,
+            active_for_view,
+            sidebar_channels={removed_channel},
+        )
+        self._finalize_active_resolution(active_for_view)
+        self._emit_startup_target_if_applicable()
+
+        if next_sessions:
+            if removed_active and self._ui_state.gateway_ready and not self._ui_state.pending_select_key:
+                self._schedule_select_commit(active_for_view)
+            return
+        if self._ui_state.gateway_ready and self._session_manager is not None:
+            self.newSession("")
 
     # ------------------------------------------------------------------
     # Public slots
@@ -995,6 +1144,11 @@ class SessionService(QObject):
             return
         if self._session_manager is None:
             return
+        if self._refresh_inflight:
+            self._refresh_requested = True
+            return
+        self._refresh_inflight = True
+        self._refresh_requested = False
         self._session_entry_generation += 1
         self._begin_list_request()
         self._list_request_seq += 1
@@ -1002,15 +1156,16 @@ class SessionService(QObject):
         self._list_latest_seq = seq
         fut = self._submit_safe(self._list_sessions(seq))
         if fut is None:
+            self._refresh_inflight = False
             self._finish_list_request()
             return
         fut.add_done_callback(self._on_list_done)
 
     @Slot()
     def setGatewayReady(self) -> None:
-        self._gateway_ready = True
-        if self._active_key:
-            self._emit_active_ready_if_applicable(self._active_key)
+        self._ui_state.gateway_ready = True
+        if self._ui_state.active_key:
+            self._emit_active_ready_if_applicable(self._ui_state.active_key)
         self._emit_startup_target_if_applicable()
 
     @Slot(str)
@@ -1028,15 +1183,15 @@ class SessionService(QObject):
             return
 
         sessions_before = [dict(s) for s in self._model._sessions]
-        self._pending_creates.add(key)
+        self._ui_state.pending_creates.add(key)
 
         sessions_after = [
             build_session_item(key, natural_key=self._natural_key),
             *sessions_before,
         ]
 
-        self._gateway_ready = True
-        self._pending_select_key = key
+        self._ui_state.gateway_ready = True
+        self._ui_state.pending_select_key = key
         self._replace_session_view(sessions_after, key)
 
         fut = self._submit_safe(self._create_session(key, self._next_active_commit_seq()))
@@ -1052,10 +1207,10 @@ class SessionService(QObject):
             logger.debug("session_select_request key={}", key)
         if not key:
             return
-        self._gateway_ready = True
-        if self._pending_select_key == key:
+        self._ui_state.gateway_ready = True
+        if self._ui_state.pending_select_key == key:
             return
-        self._pending_select_key = key
+        self._ui_state.pending_select_key = key
         self._set_local_active_key(key)
         fut = self._submit_safe(self._select_session(key, self._next_active_commit_seq()))
         if fut is None:
@@ -1066,12 +1221,12 @@ class SessionService(QObject):
     def deleteSession(self, key: str) -> None:
         if self._disposed:
             return
-        if not key or self._session_manager is None or key in self._pending_deletes:
+        if not key or self._session_manager is None or key in self._ui_state.pending_deletes:
             return
         if self._is_read_only_session(key):
             return
         sessions_before = [dict(s) for s in self._model._sessions]
-        active_before = self._active_key
+        active_before = self._ui_state.active_key
         removed_index = next(
             (i for i, s in enumerate(sessions_before) if s.get("key") == key),
             -1,
@@ -1084,7 +1239,7 @@ class SessionService(QObject):
         removed_channel = str(sessions_before[removed_index].get("channel") or "")
         if not sessions_after:
             new_active = self._build_new_session_key("")
-            self._pending_creates.add(new_active)
+            self._ui_state.pending_creates.add(new_active)
             sessions_after = [build_session_item(new_active, natural_key=self._natural_key)]
             create_seq = self._next_active_commit_seq()
             fut_create = self._submit_safe(self._create_session(new_active, create_seq))
@@ -1102,18 +1257,18 @@ class SessionService(QObject):
             if str(item.get("key", "")) == new_active:
                 item["has_unread"] = False
 
-        self._pending_deletes[key] = (
-            sessions_before,
-            active_before,
-            new_active,
-            dict(self._sidebar_expanded_groups),
+        self._ui_state.pending_deletes[key] = PendingDeleteState(
+            sessions_before=sessions_before,
+            active_before=active_before,
+            optimistic_active=new_active,
+            expanded_groups=dict(self._ui_state.expanded_groups),
         )
         self._replace_session_view(sessions_after, new_active)
 
         delete_seq = self._next_active_commit_seq() if active_before == key else None
         fut = self._submit_safe(self._delete_session(key, new_active, delete_seq))
         if fut is None:
-            self._pending_deletes.pop(key, None)
+            self._ui_state.pending_deletes.pop(key, None)
             return
         fut.add_done_callback(lambda future, k=key: self._on_delete_done(k, future))
 
@@ -1121,8 +1276,8 @@ class SessionService(QObject):
     def toggleSidebarGroup(self, channel: str) -> None:
         if not channel:
             return
-        expanded = self._sidebar_expanded_groups.get(channel, False) is True
-        self._sidebar_expanded_groups[channel] = not expanded
+        expanded = self._ui_state.expanded_groups.get(channel, False) is True
+        self._ui_state.expanded_groups[channel] = not expanded
         self._rebuild_sidebar_projection()
 
     # ------------------------------------------------------------------
@@ -1306,9 +1461,11 @@ class SessionService(QObject):
     def _handle_list_result(self, ok: bool, error: str, data: Any) -> None:
         if self._disposed:
             return
+        self._refresh_inflight = False
         self._finish_list_request()
         if not ok:
             self.errorOccurred.emit(error)
+            self._drain_requested_refresh()
             return
         seq = 0
         sessions: list[dict[str, Any]]
@@ -1328,11 +1485,11 @@ class SessionService(QObject):
             sessions = filter_session_dicts(raw_sessions)
             if isinstance(raw_active, str):
                 stored_active = raw_active
-        pending_keys = set(self._pending_deletes.keys())
+        pending_keys = set(self._ui_state.pending_deletes.keys())
         if pending_keys:
             sessions = [s for s in sessions if s.get("key") not in pending_keys]
 
-        pending_create_keys = set(self._pending_creates)
+        pending_create_keys = set(self._ui_state.pending_creates)
         if pending_create_keys:
             existing_keys = {str(s.get("key", "")) for s in sessions}
             for key in pending_create_keys:
@@ -1349,12 +1506,12 @@ class SessionService(QObject):
         active_for_view = ""
         auto_selected_key = ""
         pending_candidate = visible_session_key(
-            (self._pending_select_key or "",),
+            (self._ui_state.pending_select_key,),
             available_keys=available_keys,
             pending_create_keys=pending_create_keys,
         )
         local_active_candidate = visible_session_key(
-            (self._active_key,),
+            (self._ui_state.active_key,),
             available_keys=available_keys,
             pending_create_keys=pending_create_keys,
         )
@@ -1372,22 +1529,24 @@ class SessionService(QObject):
         elif stored_active_candidate:
             active_for_view = stored_active_candidate
 
-        if self._gateway_ready and not sessions and not pending_create_keys:
+        if self._ui_state.gateway_ready and not sessions and not pending_create_keys:
             if self._session_manager is not None:
+                self._refresh_requested = False
                 self.newSession("")
                 return
 
-        if self._gateway_ready and not self._pending_select_key and not active_for_view:
+        if self._ui_state.gateway_ready and not self._ui_state.pending_select_key and not active_for_view:
             if sessions:
                 active_for_view = pick_latest_key(sessions, preferred_channel="desktop")
                 auto_selected_key = active_for_view
             else:
                 if self._session_manager is not None:
+                    self._refresh_requested = False
                     self.newSession("")
                     return
 
-        if not sessions and self._active_key:
-            self._active_key = ""
+        if not sessions and self._ui_state.active_key:
+            self._ui_state.active_key = ""
             self._emit_active_key_if_changed("")
 
         self._apply_session_view(sessions, active_for_view)
@@ -1399,6 +1558,13 @@ class SessionService(QObject):
             )
             if fut is not None:
                 fut.add_done_callback(self._on_select_done)
+        self._drain_requested_refresh()
+
+    def _drain_requested_refresh(self) -> None:
+        if not self._refresh_requested or self._disposed or self._session_manager is None:
+            return
+        self._refresh_requested = False
+        self.refresh()
 
 
     def _handle_session_entry_result(self, ok: bool, error: str, data: Any) -> None:
@@ -1412,13 +1578,16 @@ class SessionService(QObject):
             self.refresh()
             return
         key, request_seq, generation, entry = data
-        if key in self._pending_deletes:
+        if key in self._ui_state.pending_deletes:
             return
         if generation != self._session_entry_generation:
             return
         if self._session_entry_request_seq.get(key, 0) != request_seq:
             return
-        if entry is None or not isinstance(entry, dict):
+        if entry is None:
+            self._handle_deleted_change(str(key))
+            return
+        if not isinstance(entry, dict):
             self.refresh()
             return
         current_sessions = [dict(item) for item in self._model._sessions]
@@ -1486,8 +1655,10 @@ class SessionService(QObject):
         backfill_keys = [str(key)] if bool(projected.get("needs_tail_backfill", False)) else []
         available_keys = set(current_by_key)
         available_keys.add(str(key))
-        active_for_view = self._active_key if self._active_key in available_keys else ""
-        if not active_for_view and normalized_updates and not self._pending_select_key:
+        active_for_view = (
+            self._ui_state.active_key if self._ui_state.active_key in available_keys else ""
+        )
+        if not active_for_view and normalized_updates and not self._ui_state.pending_select_key:
             candidate_sessions = [
                 current_by_key[item_key]
                 for item_key in current_by_key
@@ -1505,18 +1676,18 @@ class SessionService(QObject):
     def _handle_select_result(self, ok: bool, error: str, key: str) -> None:
         if self._disposed:
             return
-        if self._pending_select_key is not None and key != self._pending_select_key:
+        if self._ui_state.pending_select_key and key != self._ui_state.pending_select_key:
             return
-        if self._pending_select_key is None and key != self._active_key:
+        if not self._ui_state.pending_select_key and key != self._ui_state.active_key:
             if _DEBUG_SWITCH:
                 logger.debug(
                     "Ignore stale select result key={} active={} pending=<none>",
                     key,
-                    self._active_key,
+                    self._ui_state.active_key,
                 )
             return
         if not ok:
-            self._pending_select_key = None
+            self._ui_state.pending_select_key = ""
             self.errorOccurred.emit(error)
             self.refresh()
             return
@@ -1525,27 +1696,37 @@ class SessionService(QObject):
     def _handle_create_result(self, ok: bool, error: str, key: str) -> None:
         if self._disposed:
             return
-        self._pending_creates.discard(key)
-        self.refresh()
+        self._ui_state.pending_creates.discard(key)
         if not ok:
+            self._handle_deleted_change(key)
             self.errorOccurred.emit(error)
+            return
+        if self._session_item_by_key(key) is None:
+            self.refresh()
+            return
+        self._clear_pending_select_if_resolved(key)
 
     def _handle_delete_result(self, key: str, ok: bool, error: str) -> None:
         if self._disposed:
             return
-        snapshot = self._pending_deletes.pop(key, None)
+        snapshot = self._ui_state.pending_deletes.pop(key, None)
         if not ok:
             if snapshot is not None:
-                sessions_before, active_before, optimistic_active, expanded_groups_before = snapshot
-                if self._active_key == optimistic_active:
-                    pending_keys = set(self._pending_deletes.keys())
+                if self._ui_state.active_key == snapshot.optimistic_active:
+                    pending_keys = set(self._ui_state.pending_deletes.keys())
                     if pending_keys:
                         sessions_before = [
-                            s for s in sessions_before if str(s.get("key", "")) not in pending_keys
+                            s
+                            for s in snapshot.sessions_before
+                            if str(s.get("key", "")) not in pending_keys
                         ]
+                        active_before = snapshot.active_before
                         if active_before in pending_keys:
-                            active_before = self._active_key
-                    self._sidebar_expanded_groups = dict(expanded_groups_before)
+                            active_before = self._ui_state.active_key
+                    else:
+                        sessions_before = snapshot.sessions_before
+                        active_before = snapshot.active_before
+                    self._ui_state.expanded_groups = dict(snapshot.expanded_groups)
                     self._replace_session_view(sessions_before, active_before)
                 else:
                     self.refresh()

@@ -440,7 +440,19 @@ def install_pointer_refresh_hooks(
     _ = app.applicationStateChanged.connect(focus_filter.on_application_state_changed)
 
 
-def parse_args() -> tuple[bool, str | None, bool, str, bool, str | None]:
+def is_smoke_run(smoke: bool, smoke_theme_toggle: bool, smoke_screenshot: str | None) -> bool:
+    return smoke or smoke_theme_toggle or bool(smoke_screenshot)
+
+
+def shutdown_desktop_services(*services: object) -> None:
+    for method_name in ("shutdown", "stop"):
+        for service in services:
+            method = getattr(service, method_name, None)
+            if callable(method):
+                method()
+
+
+def parse_args() -> tuple[bool, str | None, bool, str, bool, str | None, int | None, int | None]:
     p = argparse.ArgumentParser()
     _ = p.add_argument("--smoke", action="store_true")
     _ = p.add_argument("--qml", default=None)
@@ -448,6 +460,8 @@ def parse_args() -> tuple[bool, str | None, bool, str, bool, str | None]:
     _ = p.add_argument("--start-view", choices=("chat", "settings"), default="chat")
     _ = p.add_argument("--seed-messages", action="store_true")
     _ = p.add_argument("--smoke-screenshot", default=None)
+    _ = p.add_argument("--window-width", type=int, default=None)
+    _ = p.add_argument("--window-height", type=int, default=None)
     a = p.parse_args()
     smoke = bool(cast(object, a.smoke))
     qml = cast(str | None, a.qml)
@@ -455,6 +469,8 @@ def parse_args() -> tuple[bool, str | None, bool, str, bool, str | None]:
     start_view = cast(str, a.start_view)
     seed_messages = bool(cast(object, a.seed_messages))
     smoke_screenshot = cast(str | None, a.smoke_screenshot)
+    window_width = cast(int | None, a.window_width)
+    window_height = cast(int | None, a.window_height)
     return (
         smoke,
         qml,
@@ -462,6 +478,8 @@ def parse_args() -> tuple[bool, str | None, bool, str, bool, str | None]:
         start_view,
         seed_messages,
         smoke_screenshot,
+        window_width,
+        window_height,
     )
 
 
@@ -901,7 +919,7 @@ def _apply_windows_titlebar_colors(
 
 
 def main() -> int:
-    smoke, qml, smoke_theme_toggle, start_view, seed_messages, smoke_screenshot = parse_args()
+    smoke, qml, smoke_theme_toggle, start_view, seed_messages, smoke_screenshot, window_width, window_height = parse_args()
     from bao.runtime_diagnostics import configure_desktop_logging, report_startup_failure
 
     _ = configure_desktop_logging()
@@ -945,7 +963,6 @@ def main() -> int:
 
     import importlib
 
-    from app.backend.app_services import AppServices
     from app.backend.asyncio_runner import AsyncioRunner
     from app.backend.chat import ChatMessageModel
     from app.backend.config import ConfigService
@@ -972,7 +989,7 @@ def main() -> int:
     messages_model = ChatMessageModel()
     chat_service = ChatService(messages_model, runner)
     config_service = ConfigService()
-    profile_service = ProfileService()
+    profile_service = ProfileService(runner)
     session_service = SessionService(runner)
     cron_service = cron_bridge_service_cls(runner)
     heartbeat_service = heartbeat_bridge_service_cls(runner)
@@ -1000,10 +1017,8 @@ def main() -> int:
         return 1
 
     system_ui_language = detect_system_ui_language()
-    legacy_ui_language = config_service.get("ui.language", "auto")
     desktop_preferences = DesktopPreferences(
         system_ui_language=system_ui_language,
-        legacy_ui_language=legacy_ui_language if isinstance(legacy_ui_language, str) else None,
     )
     # Set UI language on ChatService for localized system messages
     set_language = cast(Callable[[str], None], chat_service.setLanguage)
@@ -1096,32 +1111,31 @@ def main() -> int:
     handle_deleted = cast(Callable[[str, bool, str], None], chat_service.handle_session_deleted)
     _ = session_service.deleteCompleted.connect(handle_deleted)
     connect_on_config_change(config_service, profile_coordinator.refresh_from_config)
-    connect_on_config_change(config_service, profile_supervisor_service.refresh)
+    connect_on_config_change(config_service, profile_supervisor_service.refreshIfHydrated)
     _ = update_bridge.checkRequested.connect(update_service.check_for_updates)
     _ = update_bridge.installRequested.connect(update_service.install_update)
     _ = update_bridge.reloadRequested.connect(update_service.reloadConfig)
     _ = update_service.quitRequested.connect(app.quit)
 
-    context = engine.rootContext()
-    app_services = AppServices(
-        chat_service=chat_service,
-        config_service=config_service,
-        profile_service=profile_service,
-        session_service=session_service,
-        cron_service=cron_service,
-        heartbeat_service=heartbeat_service,
-        profile_supervisor_service=profile_supervisor_service,
-        memory_service=memory_service,
-        skills_service=skills_service,
-        tools_service=tools_service,
-        update_service=update_service,
-        diagnostics_service=diagnostics_service,
-        update_bridge=update_bridge,
-        desktop_preferences=desktop_preferences,
-        messages_model=messages_model,
-        system_ui_language=system_ui_language,
+    engine.setInitialProperties(
+        {
+            "chatService": chat_service,
+            "configService": config_service,
+            "profileService": profile_service,
+            "sessionService": session_service,
+            "profileSupervisorService": profile_supervisor_service,
+            "cronService": cron_service,
+            "heartbeatService": heartbeat_service,
+            "memoryService": memory_service,
+            "skillsService": skills_service,
+            "toolsService": tools_service,
+            "diagnosticsService": diagnostics_service,
+            "desktopPreferences": desktop_preferences,
+            "updateService": update_service,
+            "updateBridge": update_bridge,
+            "systemUiLanguage": system_ui_language,
+        }
     )
-    context.setContextProperty("appServices", app_services)
 
     engine.load(qml_url)
     if not engine.rootObjects():
@@ -1133,6 +1147,7 @@ def main() -> int:
         return 1
 
     root = engine.rootObjects()[0]
+    smoke_mode = is_smoke_run(smoke, smoke_theme_toggle, smoke_screenshot)
     if logo_icon and isinstance(root, QQuickWindow):
         root.setIcon(logo_icon)
     if isinstance(root, QQuickWindow):
@@ -1175,11 +1190,17 @@ def main() -> int:
                 _apply_windows_chrome,
             )
     _ = root.setProperty("startView", start_view)
+    if window_width is not None:
+        min_width = int(cast(object, root.property("minimumWidth")) or 0)
+        _ = root.setProperty("width", max(window_width, min_width))
+    if window_height is not None:
+        min_height = int(cast(object, root.property("minimumHeight")) or 0)
+        _ = root.setProperty("height", max(window_height, min_height))
 
     def _run_deferred_startup() -> None:
         profile_coordinator.refresh_from_config()
-        profile_supervisor_service.refresh()
-        update_service.reloadConfig()
+        if not smoke_mode:
+            update_service.reloadConfig()
         diagnostics_service.refresh()
 
     QTimer.singleShot(16, _run_deferred_startup)
@@ -1201,7 +1222,7 @@ def main() -> int:
                     print(f"Smoke screenshot save failed: {out}", file=sys.stderr)
             app.quit()
 
-        QTimer.singleShot(250, _snap)
+        QTimer.singleShot(1500, _snap)
     elif smoke_theme_toggle:
         toggle_theme = cast(Callable[[], None], desktop_preferences.toggleTheme)
         QTimer.singleShot(100, toggle_theme)
@@ -1210,11 +1231,13 @@ def main() -> int:
         QTimer.singleShot(500, app.quit)
 
     ret = app.exec()
-    stop_chat = cast(Callable[[], None], chat_service.stop)
-    stop_chat()
-    shutdown_memory = cast(Callable[[], None], memory_service.shutdown)
-    shutdown_memory()
-    runner.shutdown(grace_s=2.0)
+    shutdown_desktop_services(
+        update_service,
+        chat_service,
+        session_service,
+        memory_service,
+    )
+    runner.shutdown(grace_s=5.0 if smoke_mode else 2.0)
     return ret
 
 

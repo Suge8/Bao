@@ -245,6 +245,7 @@ Item {
             }
 
             Rectangle {
+                id: brandMarkSpark
                 width: 22
                 height: 9
                 radius: 4.5
@@ -258,6 +259,21 @@ Item {
 
                 Behavior on opacity {
                     NumberAnimation { duration: motionFast; easing.type: easeStandard }
+                }
+
+                SequentialAnimation on opacity {
+                    running: root.visible && !root.iconHovered && !root.active
+                    loops: Animation.Infinite
+                    NumberAnimation {
+                        to: 0.30
+                        duration: root.idleMotionDuration
+                        easing.type: easeSoft
+                    }
+                    NumberAnimation {
+                        to: 0.18
+                        duration: root.idleMotionDuration - 110
+                        easing.type: easeSoft
+                    }
                 }
             }
         }

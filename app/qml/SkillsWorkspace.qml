@@ -24,7 +24,8 @@ Item {
         && typeof skillsService.changed !== "undefined"
         && typeof skillsService.operationFinished !== "undefined"
     readonly property var overview: hasSkillsService ? (skillsService.overview || {}) : ({})
-    readonly property var installedSkills: hasSkillsService ? (skillsService.skills || []) : []
+    readonly property var installedSkillsModel: hasSkillsService ? skillsService.skillsModel : null
+    readonly property int installedSkillCount: hasSkillsService ? Number(skillsService.totalCount || 0) : 0
     readonly property var selectedSkill: hasSkillsService ? (skillsService.selectedSkill || {}) : ({})
     readonly property string selectedSkillId: hasSkillsService ? String(skillsService.selectedSkillId || "") : ""
     readonly property string selectedContent: hasSkillsService ? String(skillsService.selectedContent || "") : ""
@@ -33,7 +34,8 @@ Item {
     readonly property bool serviceBusy: hasSkillsService
         && typeof skillsService.busy !== "undefined"
         && skillsService.busy
-    readonly property var discoverResults: hasSkillsService ? (skillsService.discoverResults || []) : []
+    readonly property var discoverResultsModel: hasSkillsService ? skillsService.discoverResultsModel : null
+    readonly property int discoverResultCount: hasSkillsService ? Number(skillsService.discoverResultCount || 0) : 0
     readonly property var selectedDiscoverItem: hasSkillsService ? (skillsService.selectedDiscoverItem || {}) : ({})
     readonly property string selectedDiscoverId: hasSkillsService ? String(skillsService.selectedDiscoverId || "") : ""
     readonly property string discoverQueryValue: hasSkillsService ? String(skillsService.discoverQuery || "") : ""
@@ -526,7 +528,7 @@ Item {
                             Text {
                                 id: listCountLabel
                                 anchors.centerIn: parent
-                                text: tr("显示 ", "Showing ") + String(root.installedSkills.length) + tr(" · 就绪 ", " · Ready ") + String(root.overview.readyCount || 0) + tr(" · 待设置 ", " · Setup ") + String(root.overview.needsSetupCount || 0)
+                                text: tr("显示 ", "Showing ") + String(root.installedSkillCount) + tr(" · 就绪 ", " · Ready ") + String(root.overview.readyCount || 0) + tr(" · 待设置 ", " · Setup ") + String(root.overview.needsSetupCount || 0)
                                 color: textSecondary
                                 font.pixelSize: typeMeta
                                 font.weight: weightBold
@@ -551,7 +553,7 @@ Item {
                                 color: isDark ? "#28FFFFFF" : "#22000000"
                             }
                         }
-                        model: root.installedSkills
+                        model: root.installedSkillsModel
 
                         delegate: Item {
                             id: skillDelegateRoot
@@ -711,7 +713,7 @@ Item {
 
                         footer: Item {
                             width: skillList.width
-                            height: root.installedSkills.length === 0 ? 180 : 0
+                            height: root.installedSkillCount === 0 ? 180 : 0
 
                             Column {
                                 anchors.centerIn: parent
@@ -1191,7 +1193,7 @@ Item {
                             Text {
                                 id: discoverCountLabel
                                 anchors.centerIn: parent
-                                text: String(root.discoverResults.length)
+                                text: String(root.discoverResultCount)
                                 color: textSecondary
                                 font.pixelSize: typeMeta
                                 font.weight: weightBold
@@ -1216,7 +1218,7 @@ Item {
                                 color: isDark ? "#28FFFFFF" : "#22000000"
                             }
                         }
-                        model: root.discoverResults
+                        model: root.discoverResultsModel
 
                         delegate: Item {
                             id: discoverDelegateRoot
@@ -1344,7 +1346,7 @@ Item {
 
                         footer: Item {
                             width: discoverList.width
-                            height: root.discoverResults.length === 0 ? 180 : 0
+                            height: root.discoverResultCount === 0 ? 180 : 0
 
                             Column {
                                 anchors.centerIn: parent

@@ -334,10 +334,6 @@ Item {
         Math.max(0, bubbleMaxWidth - (bubblePaddingX * 2)),
         bubbleAttachmentContentWidth
     )
-    readonly property real bubbleContentWidth: Math.max(
-        contentMetrics.implicitWidth,
-        bubbleAttachmentViewportWidth
-    )
     readonly property real contentColumnSpacing: {
         var visibleBlocks = 0
         if (root.showsContentBody)
@@ -859,14 +855,6 @@ Item {
 
     TextEdit { id: clipHelper; visible: false }
 
-    Text {
-        id: contentMetrics
-        text: root.content
-        font.pixelSize: typeBody
-        textFormat: Text.PlainText
-        visible: false
-    }
-
     Rectangle {
         id: bubbleEntranceGlow
         objectName: "bubbleEntranceGlow"
@@ -893,7 +881,9 @@ Item {
             topMargin: root.dividerBlockHeight + 5
         }
         property bool isTyping: root.isTypingBubble
-        width: isTyping ? 72 : Math.min(bubbleContentWidth + (bubblePaddingX * 2), bubbleMaxWidth)
+        width: isTyping
+               ? 72
+               : Math.min(Math.ceil(bubbleContent.implicitWidth) + (bubblePaddingX * 2), bubbleMaxWidth)
         height: isTyping ? 42 : bubbleContent.implicitHeight + bubblePaddingTop + bubblePaddingBottom
         radius: sizeBubbleRadius
         clip: true

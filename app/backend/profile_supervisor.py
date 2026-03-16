@@ -9,33 +9,24 @@ from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from app.backend.asyncio_runner import AsyncioRunner
 from app.backend.cron import _serialize_job
+from app.backend.list_model import KeyValueListModel
 from app.backend.session_projection import normalize_session_items, project_session_item
 from bao.cron.service import CronService
 from bao.profile import (
     ProfileContext,
+    ProfileRegistry,
     ProfileSpec,
     ensure_profile_registry,
-    legacy_profile_id,
     profile_context,
     profile_context_from_mapping,
-    rewrite_profile_scoped_id,
 )
 
 _SNAPSHOT_FILENAME = "supervisor_snapshot.json"
-_SNAPSHOT_SCHEMA_VERSION = 1
+_SNAPSHOT_SCHEMA_VERSION = 2
 _NATURAL_KEY = "desktop:local"
 _RECENT_COMPLETED_WINDOW_SECONDS = 2 * 60 * 60
 _RECENT_COMPLETED_LIMIT = 8
 _COLLECTION_NAMES = ("working", "completed", "automation", "attention")
-_SNAPSHOT_ITEM_SECTIONS = (
-    ("working", "id"),
-    ("automation", "id"),
-    ("completed", "id"),
-    ("attention", "id"),
-    ("workers", "workerId"),
-)
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -110,6 +101,55 @@ def _safe_text(value: object, *, limit: int = 120) -> str:
 
 def _clone_dict_list(values: list[object]) -> list[dict[str, Any]]:
     return [dict(item) for item in values if isinstance(item, dict)]
+
+
+def _profile_registry_from_snapshot(value: object) -> ProfileRegistry | None:
+    if not isinstance(value, dict):
+        return None
+    raw_profiles = value.get("profiles")
+    if not isinstance(raw_profiles, list):
+        return None
+    profiles: list[ProfileSpec] = []
+    profile_ids: set[str] = set()
+    for item in raw_profiles:
+        if not isinstance(item, dict):
+            continue
+        profile_id = str(item.get("id", "") or "").strip()
+        if not profile_id:
+            continue
+        profile_ids.add(profile_id)
+        profiles.append(
+            ProfileSpec(
+                id=profile_id,
+                display_name=str(item.get("display_name") or item.get("displayName") or profile_id).strip()
+                or profile_id,
+                storage_key=str(item.get("storage_key") or item.get("storageKey") or profile_id).strip()
+                or profile_id,
+                avatar_key=str(item.get("avatar_key") or item.get("avatarKey") or "mochi").strip()
+                or "mochi",
+                enabled=bool(item.get("enabled", True)),
+                created_at=str(item.get("created_at") or item.get("createdAt") or ""),
+            )
+        )
+    if not profiles:
+        return None
+    default_profile_id = str(value.get("defaultProfileId") or value.get("default_profile_id") or "").strip()
+    if default_profile_id not in profile_ids:
+        default_profile_id = profiles[0].id
+    active_profile_id = str(value.get("activeProfileId") or value.get("active_profile_id") or "").strip()
+    if active_profile_id not in profile_ids:
+        active_profile_id = default_profile_id
+    version = value.get("version", 1)
+    try:
+        normalized_version = int(version)
+    except (TypeError, ValueError):
+        normalized_version = 1
+    return ProfileRegistry(
+        version=normalized_version,
+        default_profile_id=default_profile_id,
+        active_profile_id=active_profile_id,
+        profiles=tuple(profiles),
+    )
 
 
 def _empty_projection() -> dict[str, Any]:
@@ -212,108 +252,6 @@ def _write_snapshot(path: Path, payload: dict[str, Any]) -> None:
         encoding="utf-8",
     )
     temp_path.replace(path)
-
-
-def _item_legacy_profile_id(
-    item: dict[str, Any],
-    *,
-    snapshot_profile_id: str,
-    profile_id: str,
-) -> str:
-    return legacy_profile_id(
-        current_profile_id=profile_id,
-        item_profile_id=item.get("profileId", ""),
-        snapshot_profile_id=snapshot_profile_id,
-    )
-
-
-def _normalize_snapshot_route_value(
-    item: dict[str, Any],
-    *,
-    snapshot_profile_id: str,
-    profile_id: str,
-) -> bool:
-    if str(item.get("routeKind", "") or "") != "profile":
-        return False
-    route_value = str(item.get("routeValue", "") or "").strip()
-    if not route_value or route_value == profile_id:
-        return False
-    legacy_profile_id = _item_legacy_profile_id(
-        item,
-        snapshot_profile_id=snapshot_profile_id,
-        profile_id=profile_id,
-    )
-    if route_value != legacy_profile_id:
-        return False
-    item["routeValue"] = profile_id
-    return True
-
-
-def _normalize_snapshot_items(
-    values: list[object],
-    *,
-    id_key: str,
-    snapshot_profile_id: str,
-    profile_id: str,
-) -> tuple[list[dict[str, Any]], bool]:
-    items: list[dict[str, Any]] = []
-    changed = False
-    for value in values:
-        if not isinstance(value, dict):
-            continue
-        item = dict(value)
-        legacy_profile_id = _item_legacy_profile_id(
-            item,
-            snapshot_profile_id=snapshot_profile_id,
-            profile_id=profile_id,
-        )
-        item_profile_id = str(item.get("profileId", "") or "").strip()
-        if item_profile_id != profile_id:
-            item["profileId"] = profile_id
-            changed = True
-        if legacy_profile_id:
-            current_id = str(item.get(id_key, "") or "").strip()
-            next_id = rewrite_profile_scoped_id(
-                current_id,
-                legacy_profile_id=legacy_profile_id,
-                profile_id=profile_id,
-            )
-            if next_id != current_id:
-                item[id_key] = next_id
-                changed = True
-        if _normalize_snapshot_route_value(
-            item,
-            snapshot_profile_id=snapshot_profile_id,
-            profile_id=profile_id,
-        ):
-            changed = True
-        items.append(item)
-    return items, changed
-
-
-def _normalize_snapshot_payload(
-    payload: dict[str, Any],
-    *,
-    profile_id: str,
-) -> tuple[dict[str, Any], bool]:
-    if not payload:
-        return {}, False
-    snapshot = dict(payload)
-    snapshot_profile_id = str(snapshot.get("profile_id", "") or "").strip()
-    changed = False
-    if snapshot_profile_id != profile_id:
-        snapshot["profile_id"] = profile_id
-        changed = True
-    for section_name, id_key in _SNAPSHOT_ITEM_SECTIONS:
-        next_items, section_changed = _normalize_snapshot_items(
-            list(snapshot.get(section_name, []) or []),
-            id_key=id_key,
-            snapshot_profile_id=snapshot_profile_id,
-            profile_id=profile_id,
-        )
-        snapshot[section_name] = next_items
-        changed = changed or section_changed
-    return snapshot, changed
 
 
 def _load_sessions_from_root(state_root: Path) -> list[dict[str, Any]]:
@@ -705,6 +643,96 @@ def _build_session_work_units(
     return units, workers
 
 
+def _build_cached_domain_collections(
+    *,
+    profile_id: str,
+    avatar_source: str,
+    sessions: list[dict[str, Any]],
+    cron_items: list[dict[str, Any]],
+    heartbeat_status: dict[str, Any],
+    gateway_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    gateway_state = str(gateway_snapshot.get("state", "") or "")
+    gateway_detail = str(gateway_snapshot.get("detail", "") or "")
+    gateway_error = str(gateway_snapshot.get("error", "") or "")
+    gateway_detail_is_error = bool(gateway_snapshot.get("detail_is_error", False))
+    gateway_channels = list(gateway_snapshot.get("channels", []) or [])
+    startup_activity = dict(gateway_snapshot.get("startup_activity", {}) or {})
+    session_units, session_workers = _build_session_work_units(
+        profile_id=profile_id,
+        avatar_source=avatar_source,
+        sessions=sessions,
+        is_live=False,
+    )
+    cron_units, cron_workers, cron_issues = _build_cron_work_units(
+        profile_id=profile_id,
+        avatar_source=avatar_source,
+        cron_items=cron_items,
+        is_live=False,
+    )
+    heartbeat_unit, heartbeat_issue = _build_heartbeat_work_unit(
+        profile_id=profile_id,
+        avatar_source=avatar_source,
+        heartbeat_status=heartbeat_status,
+        is_live=False,
+    )
+    startup_unit = _build_startup_activity_unit(
+        profile_id=profile_id,
+        avatar_source=avatar_source,
+        startup_activity=startup_activity,
+        is_live=False,
+    )
+    gateway_issue = _build_gateway_issue(
+        profile_id=profile_id,
+        avatar_source=avatar_source,
+        gateway_state=gateway_state,
+        gateway_detail=gateway_detail,
+        gateway_error=gateway_error,
+        gateway_detail_is_error=gateway_detail_is_error,
+        is_live=False,
+    )
+    completed = [
+        unit
+        for unit in session_units
+        if str(unit.get("kind", "") or "") == "subagent_task"
+        and str(unit.get("statusKey", "") or "") == "completed"
+    ]
+    automation = cron_units + ([heartbeat_unit] if heartbeat_unit else [])
+    attention = cron_issues + ([heartbeat_issue] if heartbeat_issue else [])
+    if startup_unit is not None and str(startup_unit.get("statusKey", "") or "") == "completed":
+        completed.insert(0, startup_unit)
+    elif startup_unit is not None and str(startup_unit.get("statusKey", "") or "") == "error":
+        attention.insert(0, startup_unit)
+    if gateway_issue is not None:
+        attention.append(gateway_issue)
+    workers = (session_workers + cron_workers)[:8]
+    if heartbeat_unit is not None:
+        workers.append(
+            _build_worker_token(
+                profile_id=profile_id,
+                avatar_source=avatar_source,
+                title="自动检查",
+                variant="automation",
+                accent_key="heartbeat",
+                glyph_source=_glyph_for_kind("heartbeat_check", "heartbeat"),
+                status_key=str(heartbeat_unit.get("statusKey", "idle")),
+                status_label=str(heartbeat_unit.get("statusLabel", "待命")),
+                route_kind="heartbeat",
+                route_value="heartbeat",
+                unit_id=f"{profile_id}:heartbeat",
+            )
+        )
+    return {
+        "working": [],
+        "completed": completed,
+        "automation": automation,
+        "attention": attention,
+        "workers": workers,
+        "gateway_channels": gateway_channels,
+        "inventory": _session_inventory(sessions, gateway_channels=gateway_channels),
+    }
+
+
 def _build_cron_work_units(
     *,
     profile_id: str,
@@ -1012,12 +1040,21 @@ class ProfileWorkSupervisorService(QObject):
         self._heartbeat_service = heartbeat_service
         self._overview: dict[str, Any] = {}
         self._profiles: list[dict[str, Any]] = []
+        self._profiles_model = KeyValueListModel(self)
+        self._section_models = {
+            name: KeyValueListModel(self)
+            for name in _COLLECTION_NAMES
+        }
         self._all_items = self._empty_collections()
         self._visible_items = self._empty_collections()
         self._selected_profile_id = ""
         self._selected_item_id = ""
         self._busy = False
+        self._hydrated = False
+        self._refresh_inflight = False
+        self._refresh_requested = False
         self._pending_action: dict[str, Any] | None = None
+        self._snapshot_writer = SnapshotWriter(runner, self)
         self._refreshResult.connect(self._handle_refresh_result)
         self._wire_signals()
 
@@ -1028,43 +1065,64 @@ class ProfileWorkSupervisorService(QObject):
         return [dict(item) for item in self._visible_items.get(section, [])]
 
     def _wire_signals(self) -> None:
+        refresh_if_hydrated = self._refresh_if_hydrated
         _ = self._profile_service.activeProfileChanged.connect(self._on_profile_switched)
-        _ = self._profile_service.profilesChanged.connect(self.refresh)
-        _ = self._session_service.sessionsChanged.connect(self.refresh)
+        _ = self._profile_service.profilesChanged.connect(refresh_if_hydrated)
+        _ = self._session_service.sessionsChanged.connect(refresh_if_hydrated)
         _ = self._session_service.sessionManagerReady.connect(self._on_session_manager_ready)
-        _ = self._chat_service.stateChanged.connect(lambda _state: self.refresh())
-        _ = self._chat_service.errorChanged.connect(lambda _error: self.refresh())
-        _ = self._chat_service.gatewayChannelsChanged.connect(self.refresh)
-        _ = self._chat_service.gatewayDetailChanged.connect(self.refresh)
-        _ = self._chat_service.startupActivityChanged.connect(self.refresh)
-        _ = self._cron_service.tasksChanged.connect(self.refresh)
-        _ = self._cron_service.profileChanged.connect(self.refresh)
-        _ = self._heartbeat_service.stateChanged.connect(self.refresh)
-        _ = self._heartbeat_service.profileChanged.connect(self.refresh)
+        _ = self._chat_service.stateChanged.connect(lambda _state: refresh_if_hydrated())
+        _ = self._chat_service.errorChanged.connect(lambda _error: refresh_if_hydrated())
+        _ = self._chat_service.gatewayChannelsChanged.connect(refresh_if_hydrated)
+        _ = self._chat_service.gatewayDetailChanged.connect(refresh_if_hydrated)
+        _ = self._chat_service.startupActivityChanged.connect(refresh_if_hydrated)
+        _ = self._cron_service.tasksChanged.connect(refresh_if_hydrated)
+        _ = self._cron_service.profileChanged.connect(refresh_if_hydrated)
+        _ = self._heartbeat_service.stateChanged.connect(refresh_if_hydrated)
+        _ = self._heartbeat_service.profileChanged.connect(refresh_if_hydrated)
 
     @Property(dict, notify=overviewChanged)
     def overview(self) -> dict[str, Any]:
         return dict(self._overview)
 
-    @Property(list, notify=profilesChanged)
-    def profiles(self) -> list[dict[str, Any]]:
-        return [dict(item) for item in self._profiles]
+    @Property(QObject, constant=True)
+    def profilesModel(self) -> QObject:
+        return self._profiles_model
 
-    @Property(list, notify=workingChanged)
-    def workingItems(self) -> list[dict[str, Any]]:
-        return self._section_items("working")
+    @Property(QObject, constant=True)
+    def workingModel(self) -> QObject:
+        return self._section_models["working"]
 
-    @Property(list, notify=completedChanged)
-    def completedItems(self) -> list[dict[str, Any]]:
-        return self._section_items("completed")
+    @Property(QObject, constant=True)
+    def completedModel(self) -> QObject:
+        return self._section_models["completed"]
 
-    @Property(list, notify=automationChanged)
-    def automationItems(self) -> list[dict[str, Any]]:
-        return self._section_items("automation")
+    @Property(QObject, constant=True)
+    def automationModel(self) -> QObject:
+        return self._section_models["automation"]
 
-    @Property(list, notify=attentionChanged)
-    def attentionItems(self) -> list[dict[str, Any]]:
-        return self._section_items("attention")
+    @Property(QObject, constant=True)
+    def attentionModel(self) -> QObject:
+        return self._section_models["attention"]
+
+    @Property(int, notify=profilesChanged)
+    def profileCount(self) -> int:
+        return len(self._profiles)
+
+    @Property(int, notify=workingChanged)
+    def workingCount(self) -> int:
+        return len(self._visible_items["working"])
+
+    @Property(int, notify=completedChanged)
+    def completedCount(self) -> int:
+        return len(self._visible_items["completed"])
+
+    @Property(int, notify=automationChanged)
+    def automationCount(self) -> int:
+        return len(self._visible_items["automation"])
+
+    @Property(int, notify=attentionChanged)
+    def attentionCount(self) -> int:
+        return len(self._visible_items["attention"])
 
     @Property(dict, notify=selectionChanged)
     def selectedProfile(self) -> dict[str, Any]:
@@ -1092,14 +1150,36 @@ class ProfileWorkSupervisorService(QObject):
         return self._busy
 
     @Slot()
+    def hydrateIfNeeded(self) -> None:
+        if self._hydrated:
+            return
+        self.refresh()
+
+    @Slot()
+    def refreshIfHydrated(self) -> None:
+        self._refresh_if_hydrated()
+
+    @Slot()
     def refresh(self) -> None:
+        self._hydrated = True
+        if self._refresh_inflight:
+            self._refresh_requested = True
+            return
+        self._refresh_inflight = True
+        self._refresh_requested = False
         self._set_busy(True)
         snapshot = self._capture_active_inputs()
         future = self._submit_safe(self._build_projection(snapshot))
         if future is None:
+            self._refresh_inflight = False
             self._set_busy(False)
             return
         future.add_done_callback(self._on_refresh_done)
+
+    def _refresh_if_hydrated(self) -> None:
+        if not self._hydrated:
+            return
+        self.refresh()
 
     @Slot(str)
     def selectProfile(self, profile_id: str) -> None:
@@ -1181,11 +1261,11 @@ class ProfileWorkSupervisorService(QObject):
         self._run_pending_action(action)
 
     def _on_profile_switched(self) -> None:
-        self.refresh()
+        self._refresh_if_hydrated()
         self._try_flush_pending_action(session_manager_ready=False)
 
     def _on_session_manager_ready(self, _manager: object) -> None:
-        self.refresh()
+        self._refresh_if_hydrated()
         self._try_flush_pending_action(session_manager_ready=True)
 
     def _pending_action_needs_session_manager(self, action: dict[str, Any]) -> bool:
@@ -1251,13 +1331,13 @@ class ProfileWorkSupervisorService(QObject):
         snapshot_fn = getattr(self._session_service, "supervisorSessionsSnapshot", None)
         if callable(snapshot_fn):
             return _clone_dict_list(snapshot_fn())
-        return _clone_dict_list(getattr(getattr(self._session_service, "_model", None), "_sessions", []))
+        return []
 
     def _cron_snapshot(self) -> list[dict[str, Any]]:
         snapshot_fn = getattr(self._cron_service, "supervisorTasksSnapshot", None)
         if callable(snapshot_fn):
             return _clone_dict_list(snapshot_fn())
-        return _clone_dict_list(getattr(self._cron_service, "_all_tasks", []))
+        return []
 
     def _heartbeat_snapshot(self) -> dict[str, Any]:
         snapshot_fn = getattr(self._heartbeat_service, "supervisorSnapshot", None)
@@ -1267,25 +1347,7 @@ class ProfileWorkSupervisorService(QObject):
                 next_snapshot = dict(snapshot)
                 next_snapshot.setdefault("updated_at", _now_iso())
                 return next_snapshot
-        heartbeat_status = {
-            "enabled": bool(getattr(self._heartbeat_service, "enabled", False)),
-            "heartbeat_file": str(getattr(self._heartbeat_service, "heartbeatFilePath", "") or ""),
-            "heartbeat_file_exists": bool(
-                getattr(self._heartbeat_service, "heartbeatFileExists", False)
-            ),
-            "last_checked_at_ms": getattr(self._heartbeat_service, "_snapshot", {}).get(
-                "last_checked_at_ms"
-            ),
-            "last_run_at_ms": getattr(self._heartbeat_service, "_snapshot", {}).get("last_run_at_ms"),
-            "last_decision": str(getattr(self._heartbeat_service, "lastDecisionLabel", "") or ""),
-            "last_error": str(getattr(self._heartbeat_service, "lastError", "") or ""),
-            "updated_at": _now_iso(),
-        }
-        effective_live = getattr(self._heartbeat_service, "_effective_live", None)
-        live_heartbeat = effective_live() if callable(effective_live) else None
-        live_status = live_heartbeat.status() if live_heartbeat is not None else {}
-        heartbeat_status["running"] = bool(live_status.get("running", False))
-        return heartbeat_status
+        return {"updated_at": _now_iso()}
 
     def _gateway_snapshot(self) -> dict[str, Any]:
         snapshot_fn = getattr(self._chat_service, "supervisorGatewaySnapshot", None)
@@ -1293,14 +1355,7 @@ class ProfileWorkSupervisorService(QObject):
             snapshot = snapshot_fn()
             if isinstance(snapshot, dict):
                 return dict(snapshot)
-        return {
-            "state": str(getattr(self._chat_service, "gatewayState", "") or ""),
-            "detail": str(getattr(self._chat_service, "gatewayDetail", "") or ""),
-            "error": str(getattr(self._chat_service, "lastError", "") or ""),
-            "detail_is_error": bool(getattr(self._chat_service, "gatewayDetailIsError", False)),
-            "channels": list(getattr(self._chat_service, "gatewayChannels", []) or []),
-            "startup_activity": dict(getattr(self._chat_service, "startupActivity", {}) or {}),
-        }
+        return {}
 
     def _capture_active_inputs(self) -> dict[str, Any]:
         active_context = profile_context_from_mapping(
@@ -1310,6 +1365,9 @@ class ProfileWorkSupervisorService(QObject):
         return {
             "shared_workspace_path": str(getattr(self._profile_service, "sharedWorkspacePath", "") or ""),
             "active_profile_id": str(getattr(self._profile_service, "activeProfileId", "") or ""),
+            "profile_registry_snapshot": dict(
+                getattr(self._profile_service, "registrySnapshot", {}) or {}
+            ),
             "active_context": active_context,
             "active_sessions": self._session_snapshot(),
             "active_cron_items": self._cron_snapshot(),
@@ -1337,7 +1395,9 @@ class ProfileWorkSupervisorService(QObject):
         if not shared_workspace_path:
             return _empty_projection()
         shared_workspace = Path(shared_workspace_path).expanduser()
-        registry = ensure_profile_registry(shared_workspace)
+        registry = _profile_registry_from_snapshot(captured.get("profile_registry_snapshot"))
+        if registry is None:
+            registry = ensure_profile_registry(shared_workspace)
         active_context = captured.get("active_context")
         active_profile_id = str(captured.get("active_profile_id", "") or "")
         profile_cards: list[dict[str, Any]] = []
@@ -1345,10 +1405,12 @@ class ProfileWorkSupervisorService(QObject):
         completed_items: list[dict[str, Any]] = []
         automation_items: list[dict[str, Any]] = []
         attention_items: list[dict[str, Any]] = []
+        snapshot_writes: list[dict[str, Any]] = []
         for spec in registry.profiles:
             context = profile_context(spec.id, shared_workspace=shared_workspace, registry=registry)
             if active_context is not None and spec.id == active_profile_id:
                 payload = self._build_live_profile_payload(
+                    context=context,
                     spec=spec,
                     sessions=_clone_dict_list(captured.get("active_sessions", [])),
                     cron_items=_clone_dict_list(captured.get("active_cron_items", [])),
@@ -1360,9 +1422,11 @@ class ProfileWorkSupervisorService(QObject):
                     gateway_channels=list(captured.get("gateway_channels", []) or []),
                     startup_activity=dict(captured.get("startup_activity", {}) or {}),
                 )
-                _write_snapshot(_snapshot_path(context), payload["snapshot"])
             else:
                 payload = self._build_cached_profile_payload(spec=spec, context=context)
+            snapshot_write = payload.get("snapshot_write")
+            if isinstance(snapshot_write, dict):
+                snapshot_writes.append(dict(snapshot_write))
             profile_cards.append(payload["profile"])
             working_items.extend(payload["working"])
             completed_items.extend(payload["completed"])
@@ -1382,6 +1446,9 @@ class ProfileWorkSupervisorService(QObject):
             "title": "指挥舱",
             "subtitle": "统一查看分身回复、自动化与待处理事项",
             "profileCount": len(profile_cards),
+            "totalSessionCount": sum(
+                int(item.get("totalSessionCount", 0) or 0) for item in profile_cards
+            ),
             "workingCount": len(working_items),
             "completedCount": len(completed_items),
             "automationCount": len(automation_items),
@@ -1389,6 +1456,16 @@ class ProfileWorkSupervisorService(QObject):
             "liveProfileId": active_profile_id,
             "liveProfileName": str(
                 next((item.get("displayName", "") for item in profile_cards if item.get("id") == active_profile_id), "")
+            ),
+            "liveGatewayLive": bool(
+                next(
+                    (
+                        item.get("isGatewayLive", False)
+                        for item in profile_cards
+                        if item.get("id") == active_profile_id
+                    ),
+                    False,
+                )
             ),
             "updatedAt": _now_iso(),
             "updatedLabel": _relative_time(_now_iso()),
@@ -1400,11 +1477,13 @@ class ProfileWorkSupervisorService(QObject):
             "completed": completed_items,
             "automation": automation_items,
             "attention": attention_items,
+            "snapshot_writes": snapshot_writes,
         }
 
     def _build_live_profile_payload(
         self,
         *,
+        context: ProfileContext,
         spec: ProfileSpec,
         sessions: list[dict[str, Any]],
         cron_items: list[dict[str, Any]],
@@ -1501,6 +1580,20 @@ class ProfileWorkSupervisorService(QObject):
             "display_name": spec.display_name,
             "avatar_key": spec.avatar_key,
             "updated_at": updated_at,
+            "domain": {
+                "sessions": [dict(item) for item in sessions],
+                "cron": [dict(item) for item in cron_items],
+                "heartbeat": dict(heartbeat_status),
+                "gateway": {
+                    "state": gateway_state,
+                    "detail": gateway_detail,
+                    "error": gateway_error,
+                    "detail_is_error": gateway_detail_is_error,
+                    "channels": list(gateway_channels),
+                    "startup_activity": dict(startup_activity),
+                    "is_live": gateway_live,
+                },
+            },
             "gateway": {
                 "state": gateway_state,
                 "detail": gateway_detail,
@@ -1560,7 +1653,11 @@ class ProfileWorkSupervisorService(QObject):
             "completed": completed,
             "automation": automation,
             "attention": attention,
-            "snapshot": snapshot,
+            "snapshot_write": {
+                "profileId": spec.id,
+                "path": str(_snapshot_path(context)),
+                "payload": snapshot,
+            },
         }
 
     def _load_cached_profile_state(
@@ -1571,12 +1668,7 @@ class ProfileWorkSupervisorService(QObject):
         avatar_source: str,
     ) -> dict[str, Any]:
         snapshot_path = _snapshot_path(context)
-        snapshot, snapshot_changed = _normalize_snapshot_payload(
-            _read_snapshot(snapshot_path),
-            profile_id=spec.id,
-        )
-        if snapshot_changed:
-            _write_snapshot(snapshot_path, snapshot)
+        snapshot = _read_snapshot(snapshot_path)
         working: list[dict[str, Any]] = []
         completed = _clone_dict_list(snapshot.get("completed", []))
         automation = _clone_dict_list(snapshot.get("automation", []))
@@ -1584,7 +1676,23 @@ class ProfileWorkSupervisorService(QObject):
         workers = _clone_dict_list(snapshot.get("workers", []))
         gateway = dict(snapshot.get("gateway", {}) or {})
         gateway_channels = list(gateway.get("channels", []) or [])
-        if not working and not completed and not automation and not attention and not workers:
+        domain = dict(snapshot.get("domain", {}) or {})
+        if domain:
+            cached_domain = _build_cached_domain_collections(
+                profile_id=spec.id,
+                avatar_source=avatar_source,
+                sessions=_clone_dict_list(domain.get("sessions", [])),
+                cron_items=_clone_dict_list(domain.get("cron", [])),
+                heartbeat_status=dict(domain.get("heartbeat", {}) or {}),
+                gateway_snapshot=dict(domain.get("gateway", {}) or {}),
+            )
+            working = list(cached_domain["working"])
+            completed = list(cached_domain["completed"])
+            automation = list(cached_domain["automation"])
+            attention = list(cached_domain["attention"])
+            workers = list(cached_domain["workers"])
+            gateway_channels = list(cached_domain["gateway_channels"])
+        elif not working and not completed and not automation and not attention and not workers:
             try:
                 cron_items = _load_cron_items(context.cron_store_path)
             except Exception:
@@ -1608,22 +1716,25 @@ class ProfileWorkSupervisorService(QObject):
                 automation.append(heartbeat_unit)
             if heartbeat_issue is not None:
                 attention.append(heartbeat_issue)
-        snapshot_inventory = dict(snapshot.get("inventory", {}) or {})
-        inventory = {
-            "totalSessionCount": int(snapshot_inventory.get("totalSessionCount", 0) or 0),
-            "totalChildSessionCount": int(snapshot_inventory.get("totalChildSessionCount", 0) or 0),
-            "channelKeys": _dedupe_channel_keys(snapshot_inventory.get("channelKeys", []) or []),
-        }
-        if (
-            not inventory["totalSessionCount"]
-            and not inventory["totalChildSessionCount"]
-            and not inventory["channelKeys"]
-        ):
-            try:
-                stored_sessions = _load_sessions_from_root(context.state_root)
-            except Exception:
-                stored_sessions = []
-            inventory = _session_inventory(stored_sessions, gateway_channels=gateway_channels)
+        if domain:
+            inventory = dict(cached_domain["inventory"])
+        else:
+            snapshot_inventory = dict(snapshot.get("inventory", {}) or {})
+            inventory = {
+                "totalSessionCount": int(snapshot_inventory.get("totalSessionCount", 0) or 0),
+                "totalChildSessionCount": int(snapshot_inventory.get("totalChildSessionCount", 0) or 0),
+                "channelKeys": _dedupe_channel_keys(snapshot_inventory.get("channelKeys", []) or []),
+            }
+            if (
+                not inventory["totalSessionCount"]
+                and not inventory["totalChildSessionCount"]
+                and not inventory["channelKeys"]
+            ):
+                try:
+                    stored_sessions = _load_sessions_from_root(context.state_root)
+                except Exception:
+                    stored_sessions = []
+                inventory = _session_inventory(stored_sessions, gateway_channels=gateway_channels)
         return {
             "snapshot_updated_at": str(snapshot.get("updated_at", "") or ""),
             "working": working,
@@ -1635,6 +1746,7 @@ class ProfileWorkSupervisorService(QObject):
             "gateway_state": str(gateway.get("state", "") or ""),
             "gateway_detail": str(gateway.get("detail", "") or ""),
             "is_gateway_live": bool(gateway.get("is_live", False)),
+            "snapshot_write": None,
         }
 
     def _build_cached_profile_payload(
@@ -1691,9 +1803,11 @@ class ProfileWorkSupervisorService(QObject):
             "completed": completed,
             "automation": automation,
             "attention": attention,
+            "snapshot_write": cached_state.get("snapshot_write"),
         }
 
     def _on_refresh_done(self, future: Any) -> None:
+        self._refresh_inflight = False
         if future.cancelled():
             self._set_busy(False)
             return
@@ -1712,25 +1826,44 @@ class ProfileWorkSupervisorService(QObject):
 
     def _handle_refresh_result(self, payload: object) -> None:
         data = payload if isinstance(payload, dict) else {}
-        self._overview = dict(data.get("overview", {}) if isinstance(data, dict) else {})
-        self._profiles = [dict(item) for item in data.get("profiles", []) if isinstance(item, dict)]
+        next_overview = dict(data.get("overview", {}) if isinstance(data, dict) else {})
+        next_profiles = [dict(item) for item in data.get("profiles", []) if isinstance(item, dict)]
+        next_all_items = {
+            name: _clone_dict_list(data.get(name, []))
+            for name in _COLLECTION_NAMES
+        }
+        overview_changed = next_overview != self._overview
+        profiles_changed = next_profiles != self._profiles
+        previous_visible = {
+            name: [dict(item) for item in self._visible_items.get(name, [])]
+            for name in _COLLECTION_NAMES
+        }
+        self._overview = next_overview
+        self._profiles = next_profiles
+        self._profiles_model.sync_items(self._profiles)
         valid_profile_ids = {str(item.get("id", "")) for item in self._profiles}
         selection_changed = False
         if self._selected_profile_id and self._selected_profile_id not in valid_profile_ids:
             self._selected_profile_id = ""
             self._selected_item_id = ""
             selection_changed = True
-        self._all_items = {
-            name: _clone_dict_list(data.get(name, []))
+        self._all_items = next_all_items
+        self._apply_filter()
+        visible_changed = {
+            name: self._visible_items.get(name, []) != previous_visible.get(name, [])
             for name in _COLLECTION_NAMES
         }
-        self._apply_filter()
         self._set_busy(False)
+        self._schedule_snapshot_writes(data.get("snapshot_writes", []))
         if selection_changed:
             self.selectionChanged.emit()
-        self.overviewChanged.emit()
-        self.profilesChanged.emit()
-        self._emit_collection_changes()
+        if overview_changed:
+            self.overviewChanged.emit()
+        if profiles_changed:
+            self.profilesChanged.emit()
+        self._emit_collection_changes(visible_changed)
+        if self._refresh_requested:
+            self.refresh()
 
     def _apply_filter(self) -> None:
         profile_id = self._selected_profile_id
@@ -1753,15 +1886,56 @@ class ProfileWorkSupervisorService(QObject):
             if not item:
                 self._selected_item_id = ""
                 self.selectionChanged.emit()
+        for name in _COLLECTION_NAMES:
+            self._section_models[name].sync_items(self._visible_items[name])
 
-    def _emit_collection_changes(self) -> None:
-        self.workingChanged.emit()
-        self.completedChanged.emit()
-        self.automationChanged.emit()
-        self.attentionChanged.emit()
+    def _emit_collection_changes(self, changed: dict[str, bool] | None = None) -> None:
+        status = changed or {name: True for name in _COLLECTION_NAMES}
+        if status.get("working", False):
+            self.workingChanged.emit()
+        if status.get("completed", False):
+            self.completedChanged.emit()
+        if status.get("automation", False):
+            self.automationChanged.emit()
+        if status.get("attention", False):
+            self.attentionChanged.emit()
+
+    def _schedule_snapshot_writes(self, raw_writes: object) -> None:
+        if not isinstance(raw_writes, list):
+            return
+        for item in raw_writes:
+            if not isinstance(item, dict):
+                continue
+            raw_path = str(item.get("path", "") or "")
+            payload = item.get("payload")
+            if not raw_path or not isinstance(payload, dict):
+                continue
+            path = Path(raw_path)
+            self._snapshot_writer.write(path, payload)
 
     def _set_busy(self, busy: bool) -> None:
         if self._busy == busy:
             return
         self._busy = busy
         self.busyChanged.emit(busy)
+
+
+class SnapshotWriter(QObject):
+    def __init__(self, runner: AsyncioRunner, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._runner = runner
+
+    def write(self, path: Path, payload: dict[str, Any]) -> None:
+        future = self._submit_safe(self._runner.run_bg_io(_write_snapshot, path, dict(payload)))
+        if future is None:
+            return
+        future.add_done_callback(lambda _future: None)
+
+    def _submit_safe(self, coro: Any) -> Any:
+        try:
+            return self._runner.submit(coro)
+        except RuntimeError:
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
+            return None

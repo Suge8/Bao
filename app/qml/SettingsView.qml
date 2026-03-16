@@ -1291,6 +1291,7 @@ Rectangle {
                                 spacing: spacingMd
 
                                 SettingsSelect {
+                                    configService: root.configService
                                     label: strings.ui_language
                                     dotpath: ""
                                     initialValue: root.onboardingUiLanguage
@@ -1306,6 +1307,7 @@ Rectangle {
                                 }
 
                                 SettingsSelect {
+                                    configService: root.configService
                                     label: strings.ui_theme
                                     dotpath: ""
                                     initialValue: root.currentThemeMode
@@ -1328,6 +1330,7 @@ Rectangle {
                             spacing: spacingMd
 
                             SettingsSelect {
+                                configService: root.configService
                                 Layout.fillWidth: true
                                 label: strings.ui_language
                                 dotpath: ""
@@ -1344,6 +1347,7 @@ Rectangle {
                             }
 
                             SettingsSelect {
+                                configService: root.configService
                                 Layout.fillWidth: true
                                 label: strings.ui_theme
                                 dotpath: ""
@@ -1445,11 +1449,11 @@ Rectangle {
                         width: parent.width
                         spacing: spacingMd
 
-                        SettingsField { label: tr("工作目录", "Workspace Folder"); dotpath: "agents.defaults.workspace"; placeholder: "~/.bao/workspace" }
-                        SettingsField { label: tr("默认聊天模型", "Primary Model"); dotpath: "agents.defaults.model"; placeholder: "openai/gpt-4o"; description: tr("Bao 平时聊天最常用的模型", "The model Bao uses for normal chats") }
-                        SettingsField { label: tr("后台小任务模型", "Background Model"); dotpath: "agents.defaults.utilityModel"; placeholder: "openrouter/google/gemini-flash-1.5"; description: tr("做标题生成、经验整理这类后台任务时更省钱的模型", "A cheaper model for background tasks such as titles and summaries") }
-                        SettingsField { label: tr("自动学习经验", "Learning Mode"); dotpath: "agents.defaults.memory.learningMode"; placeholder: "utility / main / none"; description: tr("utility = 用后台模型 / main = 用主模型 / none = 关闭自动学习", "utility = use the background model / main = use the primary model / none = turn off automatic learning") }
-                        SettingsListField { label: tr("聊天里可切换的模型", "Switchable Models"); dotpath: "agents.defaults.models"; placeholder: "model1, model2"; description: tr("聊天中通过 /model 可以切到这些模型，不填也可以", "Models you can switch to with /model in chat; optional") }
+                        SettingsField { configService: root.configService; label: tr("工作目录", "Workspace Folder"); dotpath: "agents.defaults.workspace"; placeholder: "~/.bao/workspace" }
+                        SettingsField { configService: root.configService; label: tr("默认聊天模型", "Primary Model"); dotpath: "agents.defaults.model"; placeholder: "openai/gpt-4o"; description: tr("Bao 平时聊天最常用的模型", "The model Bao uses for normal chats") }
+                        SettingsField { configService: root.configService; label: tr("后台小任务模型", "Background Model"); dotpath: "agents.defaults.utilityModel"; placeholder: "openrouter/google/gemini-flash-1.5"; description: tr("做标题生成、经验整理这类后台任务时更省钱的模型", "A cheaper model for background tasks such as titles and summaries") }
+                        SettingsField { configService: root.configService; label: tr("自动学习经验", "Learning Mode"); dotpath: "agents.defaults.memory.learningMode"; placeholder: "utility / main / none"; description: tr("utility = 用后台模型 / main = 用主模型 / none = 关闭自动学习", "utility = use the background model / main = use the primary model / none = turn off automatic learning") }
+                        SettingsListField { configService: root.configService; label: tr("聊天里可切换的模型", "Switchable Models"); dotpath: "agents.defaults.models"; placeholder: "model1, model2"; description: tr("聊天中通过 /model 可以切到这些模型，不填也可以", "Models you can switch to with /model in chat; optional") }
 
                         SettingsCollapsible {
                             Layout.fillWidth: true
@@ -1459,11 +1463,12 @@ Rectangle {
                                 width: parent.width
                                 spacing: spacingMd
 
-                                SettingsField { label: tr("单次回复上限", "Reply Length Limit"); dotpath: "agents.defaults.maxTokens"; placeholder: "8192"; inputType: "number"; description: tr("一条回复最多能输出多少内容", "How much one reply can generate at most") }
-                                SettingsField { label: tr("稳定 / 发散程度", "Stability vs Variety"); dotpath: "agents.defaults.temperature"; placeholder: "0.1"; inputType: "number"; description: tr("越低越稳，越高越发散（0-2）", "Lower is steadier; higher is more varied (0-2)") }
-                                SettingsField { label: tr("单轮最多调用工具次数", "Tool Call Limit Per Turn"); dotpath: "agents.defaults.maxToolIterations"; placeholder: "20"; inputType: "number"; description: tr("一轮对话里最多让 Bao 调多少次工具", "The maximum number of tool calls Bao can make in one turn") }
-                                SettingsField { label: tr("最近对话上下文", "Recent Context Window"); dotpath: "agents.defaults.memory.recentWindow"; placeholder: "50"; inputType: "number"; description: tr("保留最近多少条消息作为上下文，不会写入长期记忆", "How many recent messages Bao keeps in prompt context; this does not control long-term memory") }
+                                SettingsField { configService: root.configService; label: tr("单次回复上限", "Reply Length Limit"); dotpath: "agents.defaults.maxTokens"; placeholder: "8192"; inputType: "number"; description: tr("一条回复最多能输出多少内容", "How much one reply can generate at most") }
+                                SettingsField { configService: root.configService; label: tr("稳定 / 发散程度", "Stability vs Variety"); dotpath: "agents.defaults.temperature"; placeholder: "0.1"; inputType: "number"; description: tr("越低越稳，越高越发散（0-2）", "Lower is steadier; higher is more varied (0-2)") }
+                                SettingsField { configService: root.configService; label: tr("单轮最多调用工具次数", "Tool Call Limit Per Turn"); dotpath: "agents.defaults.maxToolIterations"; placeholder: "20"; inputType: "number"; description: tr("一轮对话里最多让 Bao 调多少次工具", "The maximum number of tool calls Bao can make in one turn") }
+                                SettingsField { configService: root.configService; label: tr("最近对话上下文", "Recent Context Window"); dotpath: "agents.defaults.memory.recentWindow"; placeholder: "50"; inputType: "number"; description: tr("保留最近多少条消息作为上下文，不会写入长期记忆", "How many recent messages Bao keeps in prompt context; this does not control long-term memory") }
                                 SettingsSelect {
+                                    configService: root.configService
                                     label: tr("长对话管理", "Long Chat Handling")
                                     dotpath: "agents.defaults.contextManagement"
                                     description: tr("对话很长时，Bao 怎么压缩和整理上下文", "How Bao trims and manages context in long conversations")
@@ -1475,6 +1480,7 @@ Rectangle {
                                     ]
                                 }
                                 SettingsSelect {
+                                    configService: root.configService
                                     label: tr("深度思考强度", "Reasoning Depth")
                                     dotpath: "agents.defaults.reasoningEffort"
                                     description: tr("控制模型要不要多想一点；Auto = 交给模型自己判断", "Controls how much extra reasoning the model should use; Auto lets the model decide")
@@ -1487,6 +1493,7 @@ Rectangle {
                                     ]
                                 }
                                 SettingsSelect {
+                                    configService: root.configService
                                     label: tr("回复加速模式", "Reply Speed Mode")
                                     dotpath: "agents.defaults.serviceTier"
                                     description: tr("仅对支持的 OpenAI / Codex 服务生效。极速优先会尽量更快回复；省钱优先更便宜，但排队时间可能更长。", "Only applies to supported OpenAI / Codex services. Speed Priority aims for faster replies; Cost Saver is cheaper, but queue time may be longer.")
@@ -1496,13 +1503,13 @@ Rectangle {
                                         {"label": tr("省钱优先", "Cost Saver"), "value": "flex"}
                                     ]
                                 }
-                                SettingsField { label: tr("工具结果预览长度", "Tool Preview Length"); dotpath: "agents.defaults.toolOutputPreviewChars"; placeholder: "3000"; inputType: "number"; description: tr("工具结果太长时，消息里先显示多少预览", "How much preview to keep in the message when tool output is long") }
-                                SettingsField { label: tr("工具结果外置阈值", "Tool Offload Threshold"); dotpath: "agents.defaults.toolOutputOffloadChars"; placeholder: "8000"; inputType: "number"; description: tr("超过这个长度就自动存成文件，不全塞进对话", "Tool output longer than this is moved to a file instead of staying fully in chat") }
-                                SettingsField { label: tr("开始压缩上下文的阈值", "Context Trim Threshold"); dotpath: "agents.defaults.contextCompactBytesEst"; placeholder: "240000"; inputType: "number"; description: tr("对话太长时，达到这个体量就开始压缩", "When the conversation grows past this size, Bao starts compacting it") }
-                                SettingsField { label: tr("压缩时保留最近工具块", "Recent Tool Blocks to Keep"); dotpath: "agents.defaults.contextCompactKeepRecentToolBlocks"; placeholder: "4"; inputType: "number"; description: tr("压缩长对话时，保留最近几组工具调用", "How many recent tool call groups to keep when compacting") }
-                                SettingsField { label: tr("临时产物保留天数", "Artifact Cleanup Days"); dotpath: "agents.defaults.artifactRetentionDays"; placeholder: "7"; inputType: "number"; description: tr("自动清理临时文件前保留多少天", "How many days temporary output files are kept before cleanup") }
-                                SettingsToggle { label: tr("回复里显示进度提示", "Show Progress Updates"); dotpath: "agents.defaults.sendProgress" }
-                                SettingsToggle { label: tr("回复里显示工具提示", "Show Tool Hints"); dotpath: "agents.defaults.sendToolHints" }
+                                SettingsField { configService: root.configService; label: tr("工具结果预览长度", "Tool Preview Length"); dotpath: "agents.defaults.toolOutputPreviewChars"; placeholder: "3000"; inputType: "number"; description: tr("工具结果太长时，消息里先显示多少预览", "How much preview to keep in the message when tool output is long") }
+                                SettingsField { configService: root.configService; label: tr("工具结果外置阈值", "Tool Offload Threshold"); dotpath: "agents.defaults.toolOutputOffloadChars"; placeholder: "8000"; inputType: "number"; description: tr("超过这个长度就自动存成文件，不全塞进对话", "Tool output longer than this is moved to a file instead of staying fully in chat") }
+                                SettingsField { configService: root.configService; label: tr("开始压缩上下文的阈值", "Context Trim Threshold"); dotpath: "agents.defaults.contextCompactBytesEst"; placeholder: "240000"; inputType: "number"; description: tr("对话太长时，达到这个体量就开始压缩", "When the conversation grows past this size, Bao starts compacting it") }
+                                SettingsField { configService: root.configService; label: tr("压缩时保留最近工具块", "Recent Tool Blocks to Keep"); dotpath: "agents.defaults.contextCompactKeepRecentToolBlocks"; placeholder: "4"; inputType: "number"; description: tr("压缩长对话时，保留最近几组工具调用", "How many recent tool call groups to keep when compacting") }
+                                SettingsField { configService: root.configService; label: tr("临时产物保留天数", "Artifact Cleanup Days"); dotpath: "agents.defaults.artifactRetentionDays"; placeholder: "7"; inputType: "number"; description: tr("自动清理临时文件前保留多少天", "How many days temporary output files are kept before cleanup") }
+                                SettingsToggle { configService: root.configService; label: tr("回复里显示进度提示", "Show Progress Updates"); dotpath: "agents.defaults.sendProgress" }
+                                SettingsToggle { configService: root.configService; label: tr("回复里显示工具提示", "Show Tool Hints"); dotpath: "agents.defaults.sendToolHints" }
                             }
                         }
                     }
@@ -1612,6 +1619,7 @@ Rectangle {
                                 onRemoveClicked: if (provData.name) root._removeProviderDraft(provData.name)
 
                                 SettingsField {
+                                    configService: root.configService
                                     visible: !root.onboardingMode
                                     label: tr("名称", "Name")
                                     placeholder: "openaiCompatible"
@@ -1619,6 +1627,7 @@ Rectangle {
                                     Component.onCompleted: presetText(provData.name || "")
                                 }
                                 SettingsSelect {
+                                    configService: root.configService
                                     visible: !root.onboardingMode
                                     label: tr("类型", "Type")
                                     dotpath: "_prov_" + index + "_type"
@@ -1640,6 +1649,7 @@ Rectangle {
                                         spacing: spacingMd
 
                                         SettingsSelect {
+                                            configService: root.configService
                                             label: tr("连接方式", "Connection mode")
                                             dotpath: "_prov_" + index + "_type"
                                             description: tr("默认不用动。只有你明确知道自己连的是 Claude 官方或 Gemini 官方时才改。", "You usually do not need to change this. Only switch when you know you are connecting to the official Claude or Gemini endpoints.")
@@ -1653,6 +1663,7 @@ Rectangle {
                                     }
                                 }
                                 SettingsField {
+                                    configService: root.configService
                                     label: tr("API 密钥", "API Key")
                                     placeholder: "sk-..."
                                     dotpath: "_prov_" + index + "_apiKey"
@@ -1669,6 +1680,7 @@ Rectangle {
                                         spacing: spacingMd
 
                                         SettingsField {
+                                            configService: root.configService
                                             label: tr("API 地址", "API Base URL")
                                             placeholder: tr("可留空；例如 https://api.openai.com/v1", "Optional; for example https://api.openai.com/v1")
                                             dotpath: "_prov_" + index + "_apiBase"
@@ -1678,6 +1690,7 @@ Rectangle {
                                     }
                                 }
                                 SettingsField {
+                                    configService: root.configService
                                     visible: !root.onboardingMode
                                     label: tr("API 地址", "API Base URL")
                                     placeholder: tr("可留空；例如 https://api.openai.com/v1", "Optional; for example https://api.openai.com/v1")
@@ -1698,6 +1711,7 @@ Rectangle {
                             highlighted: root.providerConfigured
 
                             SettingsField {
+                                configService: root.configService
                                 id: onboardingProviderApiKeyField
                                 objectName: "onboardingProviderApiKeyField"
                                 label: tr("这个服务的 API Key", "API key for this service")
@@ -1722,6 +1736,7 @@ Rectangle {
                                     spacing: spacingMd
 
                                     SettingsSelect {
+                                        configService: root.configService
                                         id: onboardingProviderTypeField
                                         objectName: "onboardingProviderTypeField"
                                         label: tr("连接方式", "Connection mode")
@@ -1739,6 +1754,7 @@ Rectangle {
                                     }
 
                                     SettingsField {
+                                        configService: root.configService
                                         id: onboardingProviderApiBaseField
                                         objectName: "onboardingProviderApiBaseField"
                                         label: tr("自定义接口地址", "Custom endpoint URL")
@@ -1755,9 +1771,9 @@ Rectangle {
                         }
 
                         Rectangle {
-                            visible: !root.onboardingMode
                             Layout.fillWidth: true
-                            height: root.onboardingMode && root._providerList.length === 0 ? 48 : 42
+                            implicitHeight: root.onboardingMode && root._providerList.length === 0 ? 48 : 42
+                            Layout.preferredHeight: implicitHeight
                             radius: radiusMd
                             color: root.onboardingMode && root._providerList.length === 0
                                    ? (addHover.containsMouse ? accentHover : accent)
@@ -1876,6 +1892,7 @@ Rectangle {
                                 spacing: spacingMd
 
                                 SettingsField {
+                                    configService: root.configService
                                     id: onboardingPrimaryModelField
                                     objectName: "onboardingPrimaryModelField"
                                     label: tr("默认聊天 AI", "Default chat AI")
@@ -1902,6 +1919,7 @@ Rectangle {
                                 }
 
                                 SettingsField {
+                                    configService: root.configService
                                     label: tr("更省钱的后台 AI（可选）", "Cheaper background AI (optional)")
                                     dotpath: "agents.defaults.utilityModel"
                                     placeholder: "openrouter/google/gemini-flash-1.5"
@@ -1931,6 +1949,7 @@ Rectangle {
                         spacing: 18
 
                         ChannelRow {
+                            configService: root.configService
                             width: parent.width
                             rowObjectName: "channelRow_telegram"
                             headerObjectName: "channelHeader_telegram"
@@ -1945,6 +1964,7 @@ Rectangle {
                         }
 
                         ChannelRow {
+                            configService: root.configService
                             width: parent.width
                             rowObjectName: "channelRow_discord"
                             headerObjectName: "channelHeader_discord"
@@ -1959,6 +1979,7 @@ Rectangle {
                         }
 
                         ChannelRow {
+                            configService: root.configService
                             width: parent.width
                             rowObjectName: "channelRow_whatsapp"
                             headerObjectName: "channelHeader_whatsapp"
@@ -1972,6 +1993,7 @@ Rectangle {
                         }
 
                         ChannelRow {
+                            configService: root.configService
                             width: parent.width
                             rowObjectName: "channelRow_feishu"
                             headerObjectName: "channelHeader_feishu"
@@ -1987,6 +2009,7 @@ Rectangle {
                         }
 
                         ChannelRow {
+                            configService: root.configService
                             width: parent.width
                             rowObjectName: "channelRow_slack"
                             headerObjectName: "channelHeader_slack"
@@ -2011,6 +2034,7 @@ Rectangle {
                         }
 
                         ChannelRow {
+                            configService: root.configService
                             width: parent.width
                             rowObjectName: "channelRow_dingtalk"
                             headerObjectName: "channelHeader_dingtalk"
@@ -2024,6 +2048,7 @@ Rectangle {
                         }
 
                         ChannelRow {
+                            configService: root.configService
                             width: parent.width
                             rowObjectName: "channelRow_qq"
                             headerObjectName: "channelHeader_qq"
@@ -2037,6 +2062,7 @@ Rectangle {
                         }
 
                         ChannelRow {
+                            configService: root.configService
                             width: parent.width
                             rowObjectName: "channelRow_email"
                             headerObjectName: "channelHeader_email"
@@ -2069,6 +2095,7 @@ Rectangle {
                         }
 
                         ChannelRow {
+                            configService: root.configService
                             width: parent.width
                             rowObjectName: "channelRow_imessage"
                             headerObjectName: "channelHeader_imessage"
@@ -2082,6 +2109,7 @@ Rectangle {
                         }
 
                         ChannelRow {
+                            configService: root.configService
                             width: parent.width
                             rowObjectName: "channelRow_mochat"
                             headerObjectName: "channelHeader_mochat"
@@ -2172,10 +2200,10 @@ Rectangle {
                         width: parent.width
                         spacing: spacingMd
 
-                        SettingsField { label: tr("主机", "Host"); dotpath: "gateway.host"; placeholder: "0.0.0.0" }
-                        SettingsField { label: tr("端口", "Port"); dotpath: "gateway.port"; placeholder: "18790"; inputType: "number" }
-                        SettingsToggle { label: tr("启用心跳", "Heartbeat Enabled"); dotpath: "gateway.heartbeat.enabled" }
-                        SettingsField { label: tr("心跳间隔秒", "Heartbeat Interval Seconds"); dotpath: "gateway.heartbeat.intervalS"; placeholder: "1800"; inputType: "number" }
+                        SettingsField { configService: root.configService; label: tr("主机", "Host"); dotpath: "gateway.host"; placeholder: "0.0.0.0" }
+                        SettingsField { configService: root.configService; label: tr("端口", "Port"); dotpath: "gateway.port"; placeholder: "18790"; inputType: "number" }
+                        SettingsToggle { configService: root.configService; label: tr("启用心跳", "Heartbeat Enabled"); dotpath: "gateway.heartbeat.enabled" }
+                        SettingsField { configService: root.configService; label: tr("心跳间隔秒", "Heartbeat Interval Seconds"); dotpath: "gateway.heartbeat.intervalS"; placeholder: "1800"; inputType: "number" }
                     }
                 }
 
@@ -2199,9 +2227,9 @@ Rectangle {
                             font.pixelSize: 13
                             font.weight: Font.DemiBold
                         }
-                        SettingsField { label: tr("搜索提供商", "Provider"); dotpath: "tools.web.search.provider"; placeholder: "tavily / brave" }
-                        SettingsField { label: tr("Tavily API 密钥", "Tavily API Key"); dotpath: "tools.web.search.tavilyApiKey"; placeholder: "tvly-..."; isSecret: true }
-                        SettingsField { label: tr("Brave API 密钥", "Brave API Key"); dotpath: "tools.web.search.braveApiKey"; placeholder: "BSA..."; isSecret: true }
+                        SettingsField { configService: root.configService; label: tr("搜索提供商", "Provider"); dotpath: "tools.web.search.provider"; placeholder: "tavily / brave" }
+                        SettingsField { configService: root.configService; label: tr("Tavily API 密钥", "Tavily API Key"); dotpath: "tools.web.search.tavilyApiKey"; placeholder: "tvly-..."; isSecret: true }
+                        SettingsField { configService: root.configService; label: tr("Brave API 密钥", "Brave API Key"); dotpath: "tools.web.search.braveApiKey"; placeholder: "BSA..."; isSecret: true }
 
                         Text {
                             text: tr("执行工具", "Exec")
@@ -2210,7 +2238,7 @@ Rectangle {
                             font.weight: Font.DemiBold
                             Layout.topMargin: 8
                         }
-                        SettingsField { label: tr("超时秒数", "Timeout"); dotpath: "tools.exec.timeout"; placeholder: "60"; inputType: "number" }
+                        SettingsField { configService: root.configService; label: tr("超时秒数", "Timeout"); dotpath: "tools.exec.timeout"; placeholder: "60"; inputType: "number" }
 
                         Text {
                             text: tr("向量嵌入", "Embedding")
@@ -2219,12 +2247,12 @@ Rectangle {
                             font.weight: Font.DemiBold
                             Layout.topMargin: 8
                         }
-                        SettingsField { label: tr("模型", "Model"); dotpath: "tools.embedding.model"; placeholder: "text-embedding-3-small" }
-                        SettingsField { label: tr("API 密钥", "API Key"); dotpath: "tools.embedding.apiKey"; placeholder: "sk-..."; isSecret: true }
-                        SettingsField { label: tr("基础地址", "Base URL"); dotpath: "tools.embedding.baseUrl"; placeholder: "https://api.openai.com/v1" }
+                        SettingsField { configService: root.configService; label: tr("模型", "Model"); dotpath: "tools.embedding.model"; placeholder: "text-embedding-3-small" }
+                        SettingsField { configService: root.configService; label: tr("API 密钥", "API Key"); dotpath: "tools.embedding.apiKey"; placeholder: "sk-..."; isSecret: true }
+                        SettingsField { configService: root.configService; label: tr("基础地址", "Base URL"); dotpath: "tools.embedding.baseUrl"; placeholder: "https://api.openai.com/v1" }
 
-                        SettingsField { label: tr("搜索最大结果数", "Web Search Max Results"); dotpath: "tools.web.search.maxResults"; placeholder: "5"; inputType: "number" }
-                        SettingsField { label: tr("嵌入维度", "Embedding Dim"); dotpath: "tools.embedding.dim"; placeholder: "0"; inputType: "number" }
+                        SettingsField { configService: root.configService; label: tr("搜索最大结果数", "Web Search Max Results"); dotpath: "tools.web.search.maxResults"; placeholder: "5"; inputType: "number" }
+                        SettingsField { configService: root.configService; label: tr("嵌入维度", "Embedding Dim"); dotpath: "tools.embedding.dim"; placeholder: "0"; inputType: "number" }
 
                         Text {
                             text: tr("图像生成", "Image Generation")
@@ -2233,9 +2261,9 @@ Rectangle {
                             font.weight: Font.DemiBold
                             Layout.topMargin: 8
                         }
-                        SettingsField { label: tr("API 密钥", "API Key"); dotpath: "tools.imageGeneration.apiKey"; placeholder: "AIza..."; isSecret: true }
-                        SettingsField { label: tr("模型", "Model"); dotpath: "tools.imageGeneration.model"; placeholder: "gemini-2.0-flash-exp-image-generation" }
-                        SettingsField { label: tr("基础地址", "Base URL"); dotpath: "tools.imageGeneration.baseUrl"; placeholder: "https://generativelanguage.googleapis.com/v1beta" }
+                        SettingsField { configService: root.configService; label: tr("API 密钥", "API Key"); dotpath: "tools.imageGeneration.apiKey"; placeholder: "AIza..."; isSecret: true }
+                        SettingsField { configService: root.configService; label: tr("模型", "Model"); dotpath: "tools.imageGeneration.model"; placeholder: "gemini-2.0-flash-exp-image-generation" }
+                        SettingsField { configService: root.configService; label: tr("基础地址", "Base URL"); dotpath: "tools.imageGeneration.baseUrl"; placeholder: "https://generativelanguage.googleapis.com/v1beta" }
                         Text {
                             text: tr("桌面自动化", "Desktop Automation")
                             color: textSecondary
@@ -2243,8 +2271,8 @@ Rectangle {
                             font.weight: Font.DemiBold
                             Layout.topMargin: 8
                         }
-                        SettingsToggle { label: tr("启用桌面操作", "Enable Desktop Control"); dotpath: "tools.desktop.enabled" }
-                        SettingsToggle { label: tr("限制到工作区", "Restrict To Workspace"); dotpath: "tools.restrictToWorkspace" }
+                        SettingsToggle { configService: root.configService; label: tr("启用桌面操作", "Enable Desktop Control"); dotpath: "tools.desktop.enabled" }
+                        SettingsToggle { configService: root.configService; label: tr("限制到工作区", "Restrict To Workspace"); dotpath: "tools.restrictToWorkspace" }
                     }
                 }
 

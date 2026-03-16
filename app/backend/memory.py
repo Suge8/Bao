@@ -9,6 +9,7 @@ from typing import Any, ClassVar
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from app.backend.asyncio_runner import AsyncioRunner
+from app.backend.list_model import KeyValueListModel
 from bao.agent.memory import MEMORY_CATEGORIES, MemoryChangeEvent, MemoryStore
 
 
@@ -61,6 +62,16 @@ class MemoryService(QObject):
     _runnerResult: ClassVar[Signal] = Signal(str, bool, bool, str, object)
     _externalChangeRequested: ClassVar[Signal] = Signal(str, str, str)
     _MUTATION_BUSY_MESSAGE = "Another memory operation is already in progress."
+    _SUCCESS_MESSAGES: ClassVar[dict[str, str]] = {
+        "save_memory": "Memory saved",
+        "append_memory": "Memory updated",
+        "clear_memory": "Memory cleared",
+        "save_memory_fact": "Memory fact saved",
+        "delete_memory_fact": "Memory fact deleted",
+        "deprecate_experience": "Experience updated",
+        "delete_experience": "Experience deleted",
+        "promote_experience": "Experience promoted",
+    }
 
     def __init__(self, runner: AsyncioRunner, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -75,10 +86,11 @@ class MemoryService(QObject):
         self._error = ""
         self._memory_categories: list[dict[str, Any]] = []
         self._experience_items: list[dict[str, Any]] = []
-        self._selected_memory_category: dict[str, Any] = {}
-        self._selected_memory_fact: dict[str, Any] = {}
+        self._memory_query = ""
+        self._filtered_memory_categories: list[dict[str, Any]] = []
+        self._memory_category_model = KeyValueListModel(self)
+        self._experience_model = KeyValueListModel(self)
         self._selected_memory_fact_key = ""
-        self._selected_experience: dict[str, Any] = {}
         self._memory_stats: dict[str, Any] = {}
         self._experience_stats: dict[str, Any] = {}
         self._selected_memory_category_name = "project"
@@ -113,21 +125,33 @@ class MemoryService(QObject):
     def lastError(self) -> str:
         return self._error
 
-    @Property(list, notify=memoryCategoriesChanged)
-    def memoryCategories(self) -> list[dict[str, Any]]:
-        return [dict(item) for item in self._memory_categories]
+    @Property(QObject, constant=True)
+    def memoryCategoryModel(self) -> QObject:
+        return self._memory_category_model
 
-    @Property(list, notify=experienceItemsChanged)
-    def experienceItems(self) -> list[dict[str, Any]]:
-        return [dict(item) for item in self._experience_items]
+    @Property(QObject, constant=True)
+    def experienceModel(self) -> QObject:
+        return self._experience_model
+
+    @Property(int, notify=memoryCategoriesChanged)
+    def memoryCategoryCount(self) -> int:
+        return len(self._filtered_memory_categories)
+
+    @Property(int, notify=experienceItemsChanged)
+    def experienceCount(self) -> int:
+        return len(self._experience_items)
+
+    @Property(str, notify=memoryCategoriesChanged)
+    def memoryQuery(self) -> str:
+        return self._memory_query
 
     @Property(dict, notify=selectedMemoryCategoryChanged)
     def selectedMemoryCategory(self) -> dict[str, Any]:
-        return dict(self._selected_memory_category)
+        return self._selected_memory_category()
 
     @Property(dict, notify=selectedMemoryFactChanged)
     def selectedMemoryFact(self) -> dict[str, Any]:
-        return dict(self._selected_memory_fact)
+        return self._selected_memory_fact()
 
     @Property(str, notify=selectedMemoryFactKeyChanged)
     def selectedMemoryFactKey(self) -> str:
@@ -135,7 +159,7 @@ class MemoryService(QObject):
 
     @Property(dict, notify=selectedExperienceChanged)
     def selectedExperience(self) -> dict[str, Any]:
-        return dict(self._selected_experience)
+        return self._selected_experience()
 
     @Property(dict, notify=memoryStatsChanged)
     def memoryStats(self) -> dict[str, Any]:
@@ -177,6 +201,15 @@ class MemoryService(QObject):
         self._submit_task("load_memory", self._load_memory_categories())
 
     @Slot(str)
+    def setMemoryQuery(self, query: str) -> None:
+        normalized = str(query or "").strip().lower()
+        if normalized == self._memory_query:
+            return
+        self._memory_query = normalized
+        self._refresh_visible_memory_categories()
+        self.memoryCategoriesChanged.emit()
+
+    @Slot(str)
     def selectMemoryCategory(self, category: str) -> None:
         normalized = category if category in MEMORY_CATEGORIES else "project"
         self._apply_selected_memory_category(normalized, self._memory_category_from_cache(normalized))
@@ -187,7 +220,7 @@ class MemoryService(QObject):
         if not normalized:
             self._apply_selected_memory_fact({})
             return
-        selected = self._memory_fact_by_key(self._selected_memory_category, normalized)
+        selected = self._memory_fact_by_key(self._selected_memory_category(), normalized)
         if selected:
             self._apply_selected_memory_fact(selected)
 
@@ -241,13 +274,11 @@ class MemoryService(QObject):
         normalized = key.strip()
         if not normalized:
             self._selected_experience_key = ""
-            self._selected_experience = {}
             self.selectedExperienceChanged.emit()
             return
         self._selected_experience_key = normalized
         cached = self._experience_from_cache(normalized)
         if cached is not None:
-            self._selected_experience = cached
             self.selectedExperienceChanged.emit()
         self._experience_detail_request_seq += 1
         seq = self._experience_detail_request_seq
@@ -468,77 +499,78 @@ class MemoryService(QObject):
 
         self._set_error("")
         data = payload if isinstance(payload, dict) else {}
+        if self._is_stale_payload(kind, data):
+            return
         if kind == "bootstrap":
-            previous = self._store
-            store = data.get("store")
-            self._store = store if isinstance(store, MemoryStore) else self._store
-            if previous is not None and previous is not self._store:
-                self._detach_store_listener(previous)
-            if isinstance(self._store, MemoryStore) and self._store is not previous:
-                self._attach_store_listener(self._store)
-            if previous is not None and previous is not self._store:
-                try:
-                    previous.close()
-                except Exception:
-                    pass
-        if kind == "load_experiences":
-            seq = int(data.get("seq", 0) or 0)
-            if seq < self._latest_experience_request_seq:
-                return
-        if kind == "load_experience_detail":
-            detail_seq = int(data.get("detail_seq", 0) or 0)
-            if detail_seq < self._latest_experience_detail_request_seq:
-                return
-        if "memory_items" in data:
-            self._apply_memory_items(data.get("memory_items"))
-        if "experience_items" in data:
-            self._apply_experience_items(data.get("experience_items"))
-        if "memory_category" in data:
-            category = str(data.get("memory_category") or self._selected_memory_category_name)
-            detail = data.get("memory_detail")
-            preferred_fact_key = str(data.get("memory_fact_key") or "")
-            self._apply_selected_memory_category(category, detail, preferred_fact_key)
-        if kind == "load_memory" and not self._selected_memory_category:
-            self._apply_selected_memory_category(
-                self._selected_memory_category_name,
-                self._memory_category_from_cache(self._selected_memory_category_name)
-                or self._memory_category_from_cache("project"),
-            )
-        if "experience_detail" in data:
-            detail = data.get("experience_detail")
-            if isinstance(detail, dict):
-                self._selected_experience = self._decorate_experience_item(detail)
-                self._selected_experience_key = str(self._selected_experience.get("key", ""))
-            elif detail is None and kind == "delete_experience":
-                self._selected_experience = {}
-                self._selected_experience_key = ""
-            elif self._selected_experience_key:
-                self._selected_experience = (
-                    self._experience_from_cache(self._selected_experience_key) or {}
-                )
-            else:
-                self._selected_experience = {}
-            self.selectedExperienceChanged.emit()
-        if kind == "load_experiences" and not self._selected_experience and self._experience_items:
-            self._selected_experience = dict(self._experience_items[0])
-            self._selected_experience_key = str(self._selected_experience.get("key", ""))
-            self.selectedExperienceChanged.emit()
-        if kind == "bootstrap":
+            self._replace_store(data.get("store"))
+        self._apply_memory_payload(kind, data)
+        self._apply_experience_payload(kind, data)
+        if kind == "bootstrap" and not self._ready:
             self._ready = True
             self.readyChanged.emit()
 
-        messages = {
-            "save_memory": "Memory saved",
-            "append_memory": "Memory updated",
-            "clear_memory": "Memory cleared",
-            "save_memory_fact": "Memory fact saved",
-            "delete_memory_fact": "Memory fact deleted",
-            "deprecate_experience": "Experience updated",
-            "delete_experience": "Experience deleted",
-            "promote_experience": "Experience promoted",
-        }
-        if kind in messages:
-            self.operationFinished.emit(messages[kind], True)
+        success_message = self._SUCCESS_MESSAGES.get(kind)
+        if success_message:
+            self.operationFinished.emit(success_message, True)
+
+    def _is_stale_payload(self, kind: str, data: dict[str, Any]) -> bool:
+        if kind == "load_experiences":
+            return int(data.get("seq", 0) or 0) < self._latest_experience_request_seq
+        if kind == "load_experience_detail":
+            return int(data.get("detail_seq", 0) or 0) < self._latest_experience_detail_request_seq
+        return False
+
+    def _replace_store(self, next_store: object) -> None:
+        previous_store = self._store
+        self._store = next_store if isinstance(next_store, MemoryStore) else self._store
+        if previous_store is None or previous_store is self._store:
+            if isinstance(self._store, MemoryStore) and previous_store is None:
+                self._attach_store_listener(self._store)
+            return
+        self._detach_store_listener(previous_store)
+        if isinstance(self._store, MemoryStore):
+            self._attach_store_listener(self._store)
+        try:
+            previous_store.close()
+        except Exception:
+            pass
+
+    def _apply_memory_payload(self, kind: str, data: dict[str, Any]) -> None:
+        if "memory_items" in data:
+            self._apply_memory_items(data.get("memory_items"))
+        if "memory_category" in data:
+            category = str(data.get("memory_category") or self._selected_memory_category_name)
+            self._apply_selected_memory_category(
+                category,
+                data.get("memory_detail"),
+                str(data.get("memory_fact_key") or ""),
+            )
+            return
+        if kind == "load_memory" and not self._selected_memory_category():
+            fallback = self._memory_category_from_cache(self._selected_memory_category_name)
+            if fallback is None:
+                fallback = self._memory_category_from_cache("project")
+            self._apply_selected_memory_category(self._selected_memory_category_name, fallback)
+
+    def _apply_experience_payload(self, kind: str, data: dict[str, Any]) -> None:
+        if "experience_items" in data:
+            self._apply_experience_items(data.get("experience_items"))
+        if "experience_detail" in data:
+            self._apply_selected_experience_detail(kind, data.get("experience_detail"))
+        if kind == "load_experiences" and not self._selected_experience() and self._experience_items:
+            self._selected_experience_key = str(self._experience_items[0].get("key", ""))
+            self.selectedExperienceChanged.emit()
+
+    def _apply_selected_experience_detail(self, kind: str, detail: object) -> None:
+        if isinstance(detail, dict):
+            decorated = self._decorate_experience_item(detail)
+            self._selected_experience_key = str(decorated.get("key", ""))
+            self._upsert_experience_cache(decorated)
+        elif detail is None and kind == "delete_experience":
+            self._selected_experience_key = ""
+        else:
+            return
+        self.selectedExperienceChanged.emit()
 
     def _require_store(self) -> MemoryStore:
         if self._store is None:
@@ -635,6 +667,7 @@ class MemoryService(QObject):
             [self._decorate_memory_item(item) for item in items] if isinstance(items, list) else []
         )
         self._memory_categories = [item for item in normalized if isinstance(item, dict)]
+        self._refresh_visible_memory_categories()
         self._memory_stats = self._build_memory_stats(self._memory_categories)
         self.memoryCategoriesChanged.emit()
         self.memoryStatsChanged.emit()
@@ -645,10 +678,34 @@ class MemoryService(QObject):
             if isinstance(items, list)
             else []
         )
-        self._experience_items = [item for item in normalized if isinstance(item, dict)]
+        next_items = [item for item in normalized if isinstance(item, dict)]
+        if next_items == self._experience_items:
+            return
+        self._experience_items = next_items
+        self._experience_model.sync_items(self._experience_items)
         self._experience_stats = self._build_experience_stats(self._experience_items)
         self.experienceItemsChanged.emit()
         self.experienceStatsChanged.emit()
+
+    def _refresh_visible_memory_categories(self) -> None:
+        query = self._memory_query
+        if not query:
+            self._filtered_memory_categories = [dict(item) for item in self._memory_categories]
+        else:
+            next_items = [
+                dict(item)
+                for item in self._memory_categories
+                if query
+                in " ".join(
+                    [
+                        str(item.get("category", "") or ""),
+                        str(item.get("content", "") or ""),
+                        str(item.get("preview", "") or ""),
+                    ]
+                ).lower()
+            ]
+            self._filtered_memory_categories = next_items
+        self._memory_category_model.sync_items(self._filtered_memory_categories)
 
     def _memory_category_from_cache(self, category: str) -> dict[str, Any] | None:
         for item in self._memory_categories:
@@ -691,9 +748,8 @@ class MemoryService(QObject):
     def _apply_selected_memory_fact(self, fact: object) -> None:
         selected = dict(fact) if isinstance(fact, dict) else {}
         next_fact_key = str(selected.get("key", "")).strip()
-        fact_changed = selected != self._selected_memory_fact
+        fact_changed = selected != self._selected_memory_fact()
         key_changed = next_fact_key != self._selected_memory_fact_key
-        self._selected_memory_fact = selected
         self._selected_memory_fact_key = next_fact_key
         if fact_changed:
             self.selectedMemoryFactChanged.emit()
@@ -709,19 +765,18 @@ class MemoryService(QObject):
         normalized_category = category if category in MEMORY_CATEGORIES else "project"
         if isinstance(detail, dict):
             selected = self._decorate_memory_item(detail)
+            self._upsert_memory_category_cache(selected)
         else:
             selected = self._memory_category_from_cache(normalized_category) or {}
         selected_fact = self._resolve_selected_memory_fact(
             selected,
             preferred_fact_key or self._selected_memory_fact_key,
         )
-        category_changed = selected != self._selected_memory_category
-        fact_changed = selected_fact != self._selected_memory_fact
+        category_changed = selected != self._selected_memory_category()
+        fact_changed = selected_fact != self._selected_memory_fact()
         next_fact_key = str(selected_fact.get("key", "")).strip()
         key_changed = next_fact_key != self._selected_memory_fact_key
         self._selected_memory_category_name = normalized_category
-        self._selected_memory_category = selected
-        self._selected_memory_fact = selected_fact
         self._selected_memory_fact_key = next_fact_key
         if category_changed:
             self.selectedMemoryCategoryChanged.emit()
@@ -735,6 +790,49 @@ class MemoryService(QObject):
             if str(item.get("key", "")) == key:
                 return dict(item)
         return None
+
+    def _selected_memory_category(self) -> dict[str, Any]:
+        return self._memory_category_from_cache(self._selected_memory_category_name) or {}
+
+    def _selected_memory_fact(self) -> dict[str, Any]:
+        return self._memory_fact_by_key(self._selected_memory_category(), self._selected_memory_fact_key)
+
+    def _selected_experience(self) -> dict[str, Any]:
+        return self._experience_from_cache(self._selected_experience_key) or {}
+
+    def _upsert_memory_category_cache(self, detail: dict[str, Any]) -> None:
+        category = str(detail.get("category", "") or "")
+        if not category:
+            return
+        replaced = False
+        next_items: list[dict[str, Any]] = []
+        for item in self._memory_categories:
+            if str(item.get("category", "") or "") == category:
+                next_items.append(dict(detail))
+                replaced = True
+            else:
+                next_items.append(dict(item))
+        if not replaced:
+            next_items.append(dict(detail))
+        self._memory_categories = next_items
+        self._refresh_visible_memory_categories()
+
+    def _upsert_experience_cache(self, detail: dict[str, Any]) -> None:
+        key = str(detail.get("key", "") or "")
+        if not key:
+            return
+        replaced = False
+        next_items: list[dict[str, Any]] = []
+        for item in self._experience_items:
+            if str(item.get("key", "") or "") == key:
+                next_items.append(dict(detail))
+                replaced = True
+            else:
+                next_items.append(dict(item))
+        if not replaced:
+            next_items.append(dict(detail))
+        self._experience_items = next_items
+        self._experience_model.sync_items(self._experience_items)
 
     @staticmethod
     def _build_memory_stats(items: list[dict[str, Any]]) -> dict[str, Any]:

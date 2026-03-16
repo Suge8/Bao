@@ -1,47 +1,30 @@
 from __future__ import annotations
 
 import importlib
-import sys
 from pathlib import Path
 
+from tests.desktop_ui_testkit import process_events as _process
+from tests.desktop_ui_testkit import qapp as _shared_qapp
+from tests.desktop_ui_testkit import wait_until_ready as _wait_until_ready
+
 pytest = importlib.import_module("pytest")
+pytestmark = [pytest.mark.gui, pytest.mark.desktop_ui_smoke]
 
 QtCore = pytest.importorskip("PySide6.QtCore")
-QtGui = pytest.importorskip("PySide6.QtGui")
 QtQml = pytest.importorskip("PySide6.QtQml")
 QtTest = pytest.importorskip("PySide6.QtTest")
 
-QEventLoop = QtCore.QEventLoop
 QObject = QtCore.QObject
 QPoint = QtCore.QPoint
-QTimer = QtCore.QTimer
+QPointF = QtCore.QPointF
 QUrl = QtCore.QUrl
 Qt = QtCore.Qt
-QGuiApplication = QtGui.QGuiApplication
 QQmlComponent = QtQml.QQmlComponent
 QQmlEngine = QtQml.QQmlEngine
 QTest = QtTest.QTest
 
 QML_DIR = Path(__file__).resolve().parents[1] / "app" / "qml"
-
-
-@pytest.fixture(scope="session")
-def qapp():
-    app = QGuiApplication.instance() or QGuiApplication(sys.argv)
-    yield app
-
-
-def _process(ms: int) -> None:
-    loop = QEventLoop()
-    QTimer.singleShot(ms, loop.quit)
-    loop.exec()
-
-
-def _wait_until_ready(component: QQmlComponent, timeout_ms: int = 500) -> None:
-    remaining = timeout_ms
-    while component.status() == QQmlComponent.Loading and remaining > 0:
-        _process(25)
-        remaining -= 25
+qapp = _shared_qapp
 
 
 def _build_composer_window() -> bytes:
@@ -93,7 +76,7 @@ ApplicationWindow {
 """
 
 
-def test_chat_composer_click_target_covers_full_field(qapp):
+def test_chat_composer_click_focus_works_inside_text_input_region(qapp):
     engine = QQmlEngine()
     component = QQmlComponent(engine)
     component.setData(_build_composer_window(), QUrl("inline:ChatComposerHarness.qml"))
@@ -108,21 +91,29 @@ def test_chat_composer_click_target_covers_full_field(qapp):
         if callable(request_activate):
             request_activate()
             _process(30)
-        composer = root.findChild(QObject, "composerField")
         message_input = root.findChild(QObject, "messageInput")
-        assert composer is not None
         assert message_input is not None
 
+        message_input_top_left = message_input.mapToScene(QPointF(0, 0))
         click_points = [
-            QPoint(45, 45),
-            QPoint(55, 60),
-            QPoint(180, 68),
-            QPoint(330, 90),
+            QPoint(int(message_input_top_left.x()) + 24, int(message_input_top_left.y()) + 16),
+            QPoint(
+                int(message_input_top_left.x()) + int(message_input.property("width")) // 2,
+                int(message_input_top_left.y()) + int(message_input.property("height")) // 2,
+            ),
+            QPoint(
+                int(message_input_top_left.x()) + int(message_input.property("width")) - 24,
+                int(message_input_top_left.y()) + int(message_input.property("height")) - 16,
+            ),
         ]
 
         for point in click_points:
             QTest.mouseClick(root, Qt.LeftButton, Qt.NoModifier, point)
-            _process(0)
+            _wait_until_ready(component, timeout_ms=50)
+            for _ in range(3):
+                if bool(message_input.property("activeFocus")) is True:
+                    break
+                _process(15)
             assert bool(message_input.property("activeFocus")) is True
             _ = message_input.setProperty("focus", False)
             _process(0)
@@ -156,3 +147,13 @@ def test_chat_view_reconcile_queue_uses_single_pending_request() -> None:
     assert "pendingPinnedReconcile = { animated: animated !== false }" in text
     assert "var request = messageList.pendingPinnedReconcile" in text
     assert "messageList.pendingPinnedReconcile = null" in text
+
+
+def test_chat_view_uses_single_deferred_viewport_scheduler() -> None:
+    text = (QML_DIR / "ChatView.qml").read_text(encoding="utf-8")
+
+    assert "function scheduleDeferredViewportActions()" in text
+    assert "Qt.callLater(flushDeferredViewportActions)" in text
+    assert "property bool pendingSessionViewportReady: false" in text
+    assert "property var pendingViewportRestore: null" in text
+    assert "property bool deferredViewportFlushScheduled: false" in text

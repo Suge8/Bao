@@ -327,7 +327,7 @@ def test_paste_clipboard_attachment_saves_image_to_draft(monkeypatch) -> None:
 def test_send_message_emits_signal():
     svc, model = make_service()
     emitted = []
-    svc.messageAppended.connect(emitted.append)
+    svc.appendAtBottom.connect(emitted.append)
     svc.sendMessage("test")
     assert len(emitted) == 1
     assert emitted[0] == 0  # row 0
@@ -353,7 +353,7 @@ def test_send_message_while_starting_keeps_single_pending_user_path() -> None:
     svc._state = "starting"
     svc._set_history_loading(True)
     emitted: list[int] = []
-    svc.messageAppended.connect(emitted.append)
+    svc.appendAtBottom.connect(emitted.append)
 
     svc.sendMessage("hello")
 
@@ -1520,7 +1520,7 @@ def test_set_session_key_same_session_cold_open_emits_session_viewport_ready():
     svc._request_history_load = lambda *_args, **_kwargs: None
 
     ready: list[str] = []
-    svc.sessionViewportReady.connect(ready.append)
+    svc.historyReady.connect(ready.append)
 
     svc.setSessionKey(key)
 
@@ -1536,7 +1536,7 @@ def test_handle_history_result_emits_session_viewport_ready_after_apply():
     svc._current_nav_id = 1
 
     ready: list[str] = []
-    svc.sessionViewportReady.connect(ready.append)
+    svc.historyReady.connect(ready.append)
 
     svc._handle_history_result(
         True,
@@ -2149,7 +2149,7 @@ def test_send_result_after_history_reconcile_uses_shifted_active_row():
     )
     sig = svc._history_signature(prepared)
     statuses = []
-    svc.statusUpdated.connect(lambda row, status: statuses.append((row, status)))
+    svc.statusSettled.connect(lambda row, status: statuses.append((row, status)))
 
     svc._handle_history_result(True, "", ("desktop:local", 1, sig, prepared))
     svc._handle_send_result(typing_row, True, "final")
@@ -2183,7 +2183,7 @@ def test_send_result_after_assistant_only_history_split_uses_last_row():
     )
     sig = svc._history_signature(prepared)
     statuses = []
-    svc.statusUpdated.connect(lambda row, status: statuses.append((row, status)))
+    svc.statusSettled.connect(lambda row, status: statuses.append((row, status)))
 
     svc._handle_history_result(True, "", ("desktop:local", 1, sig, prepared))
     svc._handle_send_result(typing_row, True, "second")
@@ -2220,7 +2220,7 @@ def test_history_materialized_split_clears_pending_split_before_send_result():
     )
     sig = svc._history_signature(prepared)
     statuses = []
-    svc.statusUpdated.connect(lambda row, status: statuses.append((row, status)))
+    svc.statusSettled.connect(lambda row, status: statuses.append((row, status)))
 
     svc._handle_history_result(True, "", ("desktop:local", 1, sig, prepared))
     svc._handle_send_result(typing_row, True, "second")
@@ -2255,7 +2255,7 @@ def test_switch_back_to_streaming_session_rebinds_active_row_to_last_assistant()
     )
     sig = svc._history_signature(prepared)
     statuses = []
-    svc.statusUpdated.connect(lambda active_row, status: statuses.append((active_row, status)))
+    svc.statusSettled.connect(lambda active_row, status: statuses.append((active_row, status)))
 
     svc._handle_history_result(True, "", ("desktop:old", svc._current_nav_id, sig, prepared))
     svc._handle_send_result(row, True, "second")
@@ -2336,7 +2336,7 @@ def test_switch_back_to_streaming_session_restores_typing_placeholder_after_late
     )
     sig = svc._history_signature(prepared)
     statuses = []
-    svc.statusUpdated.connect(lambda active_row, status: statuses.append((active_row, status)))
+    svc.statusSettled.connect(lambda active_row, status: statuses.append((active_row, status)))
 
     svc._handle_history_result(True, "", ("desktop:old", svc._current_nav_id, sig, prepared))
     svc._handle_send_result(row, True, "final")
@@ -2364,7 +2364,7 @@ def test_send_result_before_switch_back_history_rebind_restores_placeholder():
     svc.setSessionKey("desktop:old")
 
     statuses = []
-    svc.statusUpdated.connect(lambda active_row, status: statuses.append((active_row, status)))
+    svc.statusSettled.connect(lambda active_row, status: statuses.append((active_row, status)))
 
     svc._handle_send_result(row, True, "final")
 

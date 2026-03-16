@@ -5,9 +5,7 @@ import QtQuick.Layouts 1.15
 Item {
     id: root
 
-    readonly property var configService: (typeof appServices !== "undefined" && appServices !== null)
-                                      ? appServices.configService
-                                      : null
+    property var configService: null
     objectName: root.rowObjectName
     property string channelName: ""
     property string enabledPath: ""
@@ -130,6 +128,7 @@ Item {
     Component {
         id: fieldComp
         SettingsField {
+            configService: root.configService
             label: fieldData.label || ""
             placeholder: fieldData.placeholder || ""
             dotpath: fieldData.dotpath || ""
@@ -141,6 +140,7 @@ Item {
     Component {
         id: listComp
         SettingsListField {
+            configService: root.configService
             label: fieldData.label || ""
             placeholder: fieldData.placeholder || ""
             dotpath: fieldData.dotpath || ""

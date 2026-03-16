@@ -22,11 +22,21 @@ def qt_app():
 class _FakeRunner:
     def __init__(self) -> None:
         self.submitted = 0
+        self.last_submitted = None
 
     def submit(self, coro):  # type: ignore[no-untyped-def]
         self.submitted += 1
+        self.last_submitted = coro
         coro.close()
         return None
+
+
+class _CancelableFuture:
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
 
 
 MINIMAL_CONFIG = """{
@@ -141,6 +151,34 @@ def test_update_bridge_signal_triggers_safe_check_path() -> None:
 
     assert runner.submitted == 1
     assert svc.state == "checking"
+
+
+def test_update_service_shutdown_cancels_inflight_futures() -> None:
+    from app.backend.update import UpdateService
+
+    class _Config(QObject):
+        def get(self, dotpath: str, default: object = None) -> object:
+            if dotpath == "ui.update":
+                return {
+                    "enabled": True,
+                    "autoCheck": False,
+                    "channel": "stable",
+                    "feedUrl": "https://example.com/desktop-update.json",
+                }
+            return default
+
+    svc = UpdateService(_FakeRunner(), _Config())
+    check_future = _CancelableFuture()
+    install_future = _CancelableFuture()
+    svc._active_check_future = check_future
+    svc._active_install_future = install_future
+
+    svc.shutdown()
+
+    assert check_future.cancelled is True
+    assert install_future.cancelled is True
+    assert svc._active_check_future is None
+    assert svc._active_install_future is None
 
 
 def test_current_app_bundle_detects_frozen_macos_bundle_path() -> None:

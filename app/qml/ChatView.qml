@@ -53,7 +53,7 @@ Rectangle {
         activeFocusOnTab: true
         boundsBehavior: Flickable.StopAtBounds
         cacheBuffer: 20000
-        reuseItems: false
+        reuseItems: true
         highlightFollowsCurrentItem: false
         highlightRangeMode: ListView.NoHighlightRange
         verticalLayoutDirection: ListView.TopToBottom
@@ -83,11 +83,12 @@ Rectangle {
         readonly property real keyboardPageStep: Math.max(keyboardLineStep, Math.round(height * 0.9))
         readonly property real nearEndThresholdPx: Math.max(24, keyboardLineStep)
         readonly property real animateReconcileThresholdPx: Math.max(height * 0.75, 240)
-        property real pendingRestoreContentY: -1
-        property bool pendingRestorePinned: false
+        property var pendingViewportRestore: null
         property bool bottomPinned: true
         property int suppressViewportTracking: 0
         property var pendingPinnedReconcile: null
+        property bool pendingSessionViewportReady: false
+        property bool deferredViewportFlushScheduled: false
         property bool programmaticFollowActive: false
 
         function positionAfterLayout() {
@@ -194,11 +195,6 @@ Rectangle {
         function reconcilePinnedBottom(animated) {
             var useAnimation = animated !== false
             applyPinnedReconcileOnce(useAnimation)
-            Qt.callLater(function() {
-                if (!messageList.bottomPinned || messageList.historyLoading || messageList.count <= 0)
-                    return
-                messageList.applyPinnedReconcileOnce(useAnimation)
-            })
         }
 
         function queuePinnedReconcile(animated) {
@@ -320,43 +316,60 @@ Rectangle {
         }
 
         function captureViewportBeforeReset() {
-            pendingRestorePinned = bottomPinned
-            pendingRestoreContentY = contentY
+            pendingViewportRestore = {
+                pinned: bottomPinned,
+                contentY: contentY
+            }
         }
 
         function clearPendingViewportRestore() {
-            pendingRestoreContentY = -1
-            pendingRestorePinned = false
+            pendingViewportRestore = null
+        }
+
+        function scheduleDeferredViewportActions() {
+            if (deferredViewportFlushScheduled)
+                return
+            deferredViewportFlushScheduled = true
+            Qt.callLater(flushDeferredViewportActions)
+        }
+
+        function flushDeferredViewportActions() {
+            deferredViewportFlushScheduled = false
+            if (pendingSessionViewportReady) {
+                pendingSessionViewportReady = false
+                if (!historyLoading && count > 0) {
+                    bottomPinned = true
+                    queuePinnedReconcile(false)
+                }
+            }
+
+            var restore = pendingViewportRestore
+            if (restore === null)
+                return
+            if (count <= 0) {
+                clearPendingViewportRestore()
+                bottomPinned = true
+                return
+            }
+
+            if (Boolean(restore.pinned)) {
+                bottomPinned = true
+                reconcilePinnedBottom(false)
+            } else {
+                setProgrammaticContentY(Number(restore.contentY || 0), false)
+                refreshPinnedFromViewport()
+            }
+            clearPendingViewportRestore()
         }
 
         function scheduleSessionViewportReady() {
-            Qt.callLater(function() {
-                if (messageList.historyLoading || messageList.count <= 0)
-                    return
-                messageList.bottomPinned = true
-                messageList.queuePinnedReconcile(false)
-            })
+            pendingSessionViewportReady = true
+            scheduleDeferredViewportActions()
         }
 
         function restoreViewportAfterReset() {
-            if (pendingRestoreContentY < 0 && !pendingRestorePinned) return
-
-            Qt.callLater(function() {
-                if (messageList.count <= 0) {
-                    messageList.clearPendingViewportRestore()
-                    messageList.bottomPinned = true
-                    return
-                }
-
-                if (messageList.pendingRestorePinned) {
-                    messageList.bottomPinned = true
-                    messageList.reconcilePinnedBottom(false)
-                } else {
-                    messageList.setProgrammaticContentY(messageList.pendingRestoreContentY, false)
-                    messageList.refreshPinnedFromViewport()
-                }
-                messageList.clearPendingViewportRestore()
-            })
+            if (pendingViewportRestore === null) return
+            scheduleDeferredViewportActions()
         }
 
         Connections {
@@ -370,24 +383,36 @@ Rectangle {
                 }
             }
 
-            function onMessageAppended(_row) {
-                if (messageList.pinOnAppend(_row))
+            function onAppendAtBottom(row) {
+                if (messageList.pinOnAppend(row))
                     messageList.bottomPinned = true
-                if (messageList.shouldForceInstantAppend(_row)) {
+                if (messageList.shouldForceInstantAppend(row)) {
                     messageList.forceFollowToEnd(false)
                     return
                 }
                 messageList.queuePinnedReconcile(messageList.shouldAnimatePinnedReconcile())
             }
 
-            function onStatusUpdated(_row, _status) {
+            function onIncrementalContent(_row) {
+                if (messageList.bottomPinned)
+                    messageList.forceFollowToEnd(false)
+            }
+
+            function onStatusSettled(_row, _status) {
                 if (messageList.shouldReconcileOnStatusUpdate(_row, _status))
                     messageList.queuePinnedReconcile(messageList.shouldAnimatePinnedReconcile())
             }
 
-            function onContentUpdated(_row, _content) {
-                if (messageList.bottomPinned)
-                    messageList.forceFollowToEnd(false)
+            function onSessionSwitchedApplied(key) {
+                messageList.renderedSessionKey = key || messageList.activeSessionKey
+                messageList.clearPendingViewportRestore()
+                messageList.cancelProgrammaticFollow()
+            }
+
+            function onHistoryReady(key) {
+                messageList.renderedSessionKey = key || messageList.activeSessionKey
+                messageList.forceActiveFocus()
+                messageList.scheduleSessionViewportReady()
             }
         }
 
@@ -406,23 +431,9 @@ Rectangle {
             function onModelReset() {
                 var switchedSession = messageList.activeSessionKey !== messageList.renderedSessionKey
                 messageList.renderedSessionKey = messageList.activeSessionKey
-                if (switchedSession) {
+                if (switchedSession)
                     return
-                }
                 messageList.restoreViewportAfterReset()
-            }
-        }
-
-        Connections {
-            target: chatService
-            ignoreUnknownSignals: true
-
-            function onSessionViewportReady(key) {
-                Qt.callLater(function() {
-                    messageList.renderedSessionKey = key || messageList.activeSessionKey
-                    messageList.forceActiveFocus()
-                    messageList.scheduleSessionViewportReady()
-                })
             }
         }
 
@@ -441,7 +452,7 @@ Rectangle {
         function onViewportGeometryChanged() {
             if (!bottomPinned)
                 return
-            queuePinnedReconcile(shouldAnimatePinnedReconcile())
+            queuePinnedReconcile(false)
         }
 
         onMovementStarted: cancelProgrammaticFollow()
@@ -749,13 +760,17 @@ Rectangle {
                 radius: 22
                 color: isDark ? "#E623170F" : "#F7FFFFFF"
                 border.width: 1
-                border.color: root.hasDraftAttachments ? borderDefault : borderSubtle
+                border.color: chipHover.containsMouse ? accent : borderSubtle
                 opacity: root.hasDraftAttachments ? 1.0 : 0.0
                 clip: true
                 visible: opacity > 0
                 Behavior on height { NumberAnimation { duration: motionUi; easing.type: easeStandard } }
                 Behavior on opacity { NumberAnimation { duration: motionFast; easing.type: easeStandard } }
                 Behavior on border.color { ColorAnimation { duration: motionFast; easing.type: easeStandard } }
+
+                HoverHandler {
+                    id: chipHover
+                }
 
                 Rectangle {
                     anchors.fill: parent
@@ -777,6 +792,19 @@ Rectangle {
                         GradientStop { position: 1.0; color: "#00FFFFFF" }
                     }
                     opacity: 0.55
+                }
+
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: 20
+                    radius: parent.radius
+                    gradient: Gradient {
+                        GradientStop { position: 0.0; color: "#00000000" }
+                        GradientStop { position: 1.0; color: "#99000000" }
+                    }
+                    opacity: isDark ? 0.18 : 0.08
                 }
 
                 ListView {

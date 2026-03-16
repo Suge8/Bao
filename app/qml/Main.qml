@@ -31,18 +31,21 @@ ApplicationWindow {
 
     property string startView: "chat"
     property string activeWorkspace: "sessions"
-    readonly property bool hasAppServices: typeof appServices !== "undefined" && appServices !== null
-    readonly property var chatService: hasAppServices ? appServices.chatService : null
-    readonly property var configService: hasAppServices ? appServices.configService : null
-    readonly property var profileService: hasAppServices ? appServices.profileService : null
-    readonly property var sessionService: hasAppServices ? appServices.sessionService : null
-    readonly property var profileSupervisorService: hasAppServices ? appServices.profileSupervisorService : null
-    readonly property var heartbeatService: hasAppServices ? appServices.heartbeatService : null
-    readonly property var diagnosticsService: hasAppServices ? appServices.diagnosticsService : null
-    readonly property var desktopPreferences: hasAppServices ? appServices.desktopPreferences : null
-    readonly property var updateService: hasAppServices ? appServices.updateService : null
-    readonly property var updateBridge: hasAppServices ? appServices.updateBridge : null
-    readonly property string systemUiLanguage: hasAppServices ? appServices.systemUiLanguage : ""
+    required property var chatService
+    required property var configService
+    required property var profileService
+    required property var sessionService
+    required property var profileSupervisorService
+    required property var cronService
+    required property var heartbeatService
+    required property var memoryService
+    required property var skillsService
+    required property var toolsService
+    required property var diagnosticsService
+    required property var desktopPreferences
+    required property var updateService
+    required property var updateBridge
+    required property string systemUiLanguage
     readonly property bool hasDesktopPreferences: desktopPreferences !== null
     readonly property bool hasConfigService: configService !== null
     readonly property bool hasSessionService: sessionService !== null
@@ -473,7 +476,9 @@ ApplicationWindow {
             setupCompletionToken += 1
         _previousSetupMode = setupMode
     }
-    Component.onCompleted: _lastActiveWorkspaceIndex = activeWorkspaceIndex
+    Component.onCompleted: {
+        _lastActiveWorkspaceIndex = activeWorkspaceIndex
+    }
 
     Connections {
         target: hasSessionService ? sessionService : null
@@ -864,12 +869,14 @@ ApplicationWindow {
                         id: stack
                         Layout.fillWidth: true
                         Layout.fillHeight: true
+                        Layout.minimumWidth: 0
                         currentIndex: root.currentPageIndex
 
                         Item {
                             id: chatPage
                             Layout.fillWidth: true
                             Layout.fillHeight: true
+                            Layout.minimumWidth: 0
                             clip: true
 
                             property bool active: !root.showingSettings
@@ -998,69 +1005,97 @@ ApplicationWindow {
                                         }
 
                                         Loader {
+                                            id: controlTowerWorkspaceLoader
+                                            objectName: "controlTowerWorkspaceLoader"
                                             Layout.fillWidth: true
                                             Layout.fillHeight: true
-                                            active: root.activeWorkspace === "control_tower"
-                                            source: "ControlTowerWorkspace.qml"
-                                            onLoaded: if (item) {
-                                                item.active = true
-                                                item.appRoot = root
-                                                item.supervisorService = root.profileSupervisorService
+                                            property bool cached: false
+                                            readonly property bool currentWorkspace: root.activeWorkspace === "control_tower"
+                                            active: cached || currentWorkspace
+                                            Component.onCompleted: if (currentWorkspace) cached = true
+                                            onCurrentWorkspaceChanged: if (currentWorkspace) cached = true
+                                            sourceComponent: ControlTowerWorkspace {
+                                                active: controlTowerWorkspaceLoader.currentWorkspace
+                                                appRoot: root
+                                                supervisorService: root.profileSupervisorService
                                             }
                                         }
 
                                         Loader {
+                                            id: memoryWorkspaceLoader
+                                            objectName: "memoryWorkspaceLoader"
                                             Layout.fillWidth: true
                                             Layout.fillHeight: true
-                                            active: root.activeWorkspace === "memory"
+                                            property bool cached: false
+                                            readonly property bool currentWorkspace: root.activeWorkspace === "memory"
+                                            active: cached || currentWorkspace
                                             asynchronous: true
-                                            source: "MemoryWorkspace.qml"
-                                            onLoaded: if (item) {
-                                                item.active = true
-                                                item.memoryService = root.hasAppServices ? appServices.memoryService : null
+                                            Component.onCompleted: if (currentWorkspace) cached = true
+                                            onCurrentWorkspaceChanged: if (currentWorkspace) cached = true
+                                            sourceComponent: MemoryWorkspace {
+                                                active: memoryWorkspaceLoader.currentWorkspace
+                                                memoryService: root.memoryService
                                             }
                                         }
 
                                         Loader {
+                                            id: skillsWorkspaceLoader
+                                            objectName: "skillsWorkspaceLoader"
                                             Layout.fillWidth: true
                                             Layout.fillHeight: true
-                                            active: root.activeWorkspace === "skills"
+                                            property bool cached: false
+                                            readonly property bool currentWorkspace: root.activeWorkspace === "skills"
+                                            active: cached || currentWorkspace
                                             asynchronous: true
-                                            source: "SkillsWorkspace.qml"
-                                            onLoaded: if (item) {
-                                                var skillsService = root.hasAppServices ? appServices.skillsService : null
-                                                item.active = true
-                                                item.skillsService = skillsService
-                                                if (skillsService && skillsService.hydrateIfNeeded)
-                                                    skillsService.hydrateIfNeeded()
+                                            Component.onCompleted: if (currentWorkspace) cached = true
+                                            onCurrentWorkspaceChanged: {
+                                                if (!currentWorkspace)
+                                                    return
+                                                cached = true
+                                                if (root.skillsService && root.skillsService.hydrateIfNeeded)
+                                                    root.skillsService.hydrateIfNeeded()
+                                            }
+                                            sourceComponent: SkillsWorkspace {
+                                                active: skillsWorkspaceLoader.currentWorkspace
+                                                skillsService: root.skillsService
                                             }
                                         }
 
                                         Loader {
+                                            id: toolsWorkspaceLoader
+                                            objectName: "toolsWorkspaceLoader"
                                             Layout.fillWidth: true
                                             Layout.fillHeight: true
-                                            active: root.activeWorkspace === "tools"
+                                            property bool cached: false
+                                            readonly property bool currentWorkspace: root.activeWorkspace === "tools"
+                                            active: cached || currentWorkspace
                                             asynchronous: true
-                                            source: "ToolsWorkspace.qml"
-                                            onLoaded: if (item) {
-                                                item.active = true
-                                                item.toolsService = root.hasAppServices ? appServices.toolsService : null
-                                                item.configService = root.configService
-                                                item.uiLanguage = root.uiLanguage
-                                                item.autoLanguage = root.autoLanguage
+                                            Component.onCompleted: if (currentWorkspace) cached = true
+                                            onCurrentWorkspaceChanged: if (currentWorkspace) cached = true
+                                            sourceComponent: ToolsWorkspace {
+                                                active: toolsWorkspaceLoader.currentWorkspace
+                                                toolsService: root.toolsService
+                                                configService: root.configService
+                                                uiLanguage: root.uiLanguage
+                                                autoLanguage: root.autoLanguage
                                             }
                                         }
 
                                         Loader {
+                                            id: cronWorkspaceLoader
+                                            objectName: "cronWorkspaceLoader"
                                             Layout.fillWidth: true
                                             Layout.fillHeight: true
-                                            active: root.activeWorkspace === "cron"
-                                            source: "CronWorkspace.qml"
-                                            onLoaded: if (item) {
-                                                item.active = true
-                                                item.appRoot = root
-                                                item.cronService = root.hasAppServices ? appServices.cronService : null
-                                                item.heartbeatService = root.hasAppServices ? appServices.heartbeatService : null
+                                            property bool cached: false
+                                            readonly property bool currentWorkspace: root.activeWorkspace === "cron"
+                                            active: cached || currentWorkspace
+                                            Component.onCompleted: if (currentWorkspace) cached = true
+                                            onCurrentWorkspaceChanged: if (currentWorkspace) cached = true
+                                            sourceComponent: CronWorkspace {
+                                                active: cronWorkspaceLoader.currentWorkspace
+                                                appRoot: root
+                                                cronService: root.cronService
+                                                heartbeatService: root.heartbeatService
                                             }
                                         }
                                     }
@@ -1181,6 +1216,7 @@ ApplicationWindow {
                             id: settingsPage
                             Layout.fillWidth: true
                             Layout.fillHeight: true
+                            Layout.minimumWidth: 0
                             clip: true
 
                             property bool active: root.showingSettings

@@ -620,8 +620,10 @@ def test_settings_select_popup_closes_without_eating_target_click(qapp):
     assert component.status() == QQmlComponent.Ready, component.errors()
     root = component.create()
     assert root is not None, component.errors()
+    focus_filter: WindowFocusDismissFilter | None = None
 
     try:
+        focus_filter = _install_focus_filter(root)
         settings_select = root.findChild(QObject, "settingsSelect")
         hit_target = root.findChild(QObject, "hitTarget")
         assert settings_select is not None
@@ -658,6 +660,7 @@ def test_settings_select_popup_closes_without_eating_target_click(qapp):
         assert bool(settings_select.property("popupOpen")) is False
         assert bool(root.property("clicked")) is True
     finally:
+        _remove_focus_filter(root, focus_filter)
         root.deleteLater()
         _process(0)
 

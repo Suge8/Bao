@@ -220,5 +220,5 @@ def test_tools_service_restores_probe_cache(runner: AsyncioRunner, config_servic
 
     reloaded = ToolsService(runner, config_service)
     reloaded.setConfigData(config_service.exportData())
-    demo = next(item for item in reloaded.items if item["id"] == "mcp:demo")
+    demo = next(item for item in reloaded.serverModel.items() if item["id"] == "mcp:demo")
     assert demo["status"] == "healthy"

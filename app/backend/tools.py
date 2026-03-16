@@ -9,6 +9,7 @@ from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from app.backend.asyncio_runner import AsyncioRunner
 from app.backend.config import ConfigService
+from app.backend.list_model import KeyValueListModel, build_selection_projection
 from bao.agent.capability_registry import build_capability_registry_snapshot
 from bao.agent.tool_catalog import ToolCatalog
 from bao.agent.tool_probe_cache import delete_probe_result, load_probe_results, save_probe_result
@@ -56,8 +57,9 @@ class ToolsService(QObject):
         self._busy_count = 0
         self._error = ""
         self._items: list[dict[str, object]] = []
+        self._catalog_model = KeyValueListModel(self)
+        self._server_model = KeyValueListModel(self)
         self._selected_id = ""
-        self._selected_item: dict[str, object] = {}
         self._overview: dict[str, object] = {}
         self._probe_results: dict[str, dict[str, object]] = load_probe_results(self._probe_cache_dir)
         _ = self._runnerResult.connect(self._handle_runner_result)
@@ -78,13 +80,35 @@ class ToolsService(QObject):
     def lastError(self) -> str:
         return self._error
 
-    @Property(list, notify=changed)
-    def items(self) -> list[dict[str, object]]:
-        return [dict(item) for item in self._items]
+    @Property(QObject, constant=True)
+    def catalogModel(self) -> QObject:
+        return self._catalog_model
+
+    @Property(QObject, constant=True)
+    def serverModel(self) -> QObject:
+        return self._server_model
+
+    @Property(int, notify=changed)
+    def catalogCount(self) -> int:
+        return self._catalog_model.rowCount()
+
+    @Property(int, notify=changed)
+    def serverCount(self) -> int:
+        return self._server_model.rowCount()
+
+    @Property(str, notify=changed)
+    def firstCatalogItemId(self) -> str:
+        items = self._catalog_model.items()
+        return str(items[0].get("id", "")) if items else ""
+
+    @Property(str, notify=changed)
+    def firstServerItemId(self) -> str:
+        items = self._server_model.items()
+        return str(items[0].get("id", "")) if items else ""
 
     @Property(dict, notify=changed)
     def selectedItem(self) -> dict[str, object]:
-        return dict(self._selected_item)
+        return self._selected_item()
 
     @Property(str, notify=changed)
     def selectedItemId(self) -> str:
@@ -123,7 +147,6 @@ class ToolsService(QObject):
         if target is None:
             return
         self._selected_id = item_id
-        self._selected_item = dict(target)
         self.changed.emit()
 
     @Slot("QVariant", result=bool)
@@ -223,11 +246,35 @@ class ToolsService(QObject):
             selected_id=self._selected_id,
             diagnostics_snapshot=self._runtime_diagnostics.snapshot(max_events=0, max_log_lines=0),
         )
-        self._overview = dict(snapshot.overview)
-        self._items = [dict(item) for item in snapshot.items]
-        self._selected_id = snapshot.selected_id
-        self._selected_item = dict(snapshot.selected_item)
+        next_overview = dict(snapshot.overview)
+        selection = build_selection_projection(
+            [dict(item) for item in snapshot.items],
+            preferred_id=snapshot.selected_id or self._selected_id,
+        )
+        next_items = selection.items
+        if (
+            next_overview == self._overview
+            and next_items == self._items
+            and selection.selected_id == self._selected_id
+        ):
+            return
+        self._overview = next_overview
+        self._items = next_items
+        self._catalog_model.sync_items(self._items_for_kind("builtin"))
+        self._server_model.sync_items(self._items_for_kind("mcp_server"))
+        self._selected_id = selection.selected_id
         self.changed.emit()
+
+    def _selected_item(self) -> dict[str, object]:
+        if not self._selected_id:
+            return {}
+        return next(
+            (dict(item) for item in self._items if str(item.get("id", "")) == self._selected_id),
+            {},
+        )
+
+    def _items_for_kind(self, kind: str) -> list[dict[str, object]]:
+        return [dict(item) for item in self._items if str(item.get("kind", "")) == kind]
 
     def _submit_task(self, kind: str, coro: Coroutine[Any, Any, Any]) -> None:
         try:

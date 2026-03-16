@@ -241,6 +241,65 @@ def test_message_bubble_shows_attachment_strip(qapp):
         _process(0)
 
 
+def test_short_pending_user_message_keeps_compact_bubble_width(qapp):
+    engine = QQmlEngine()
+    component = QQmlComponent(engine)
+    component.setData(
+        _build_wrapper(
+            "user",
+            "none",
+            content="1",
+            status="pending",
+        ).encode("utf-8"),
+        QUrl("inline:MessageBubblePendingUserHarness.qml"),
+    )
+
+    _wait_until_ready(component)
+
+    assert component.status() == QQmlComponent.Ready, component.errors()
+    root = component.create()
+    assert root is not None, component.errors()
+
+    try:
+        bubble = root.findChild(QObject, "bubbleBody")
+        assert bubble is not None
+        assert float(bubble.property("width")) < 120.0
+    finally:
+        root.deleteLater()
+        _process(0)
+
+
+def test_short_user_cjk_message_stays_on_single_line(qapp):
+    engine = QQmlEngine()
+    component = QQmlComponent(engine)
+    component.setData(
+        _build_wrapper(
+            "user",
+            "none",
+            content="你是谁",
+            status="done",
+        ).encode("utf-8"),
+        QUrl("inline:MessageBubbleCjkHarness.qml"),
+    )
+
+    _wait_until_ready(component)
+
+    assert component.status() == QQmlComponent.Ready, component.errors()
+    root = component.create()
+    assert root is not None, component.errors()
+
+    try:
+        bubble = root.findChild(QObject, "bubbleBody")
+        content_text = root.findChild(QObject, "contentText")
+        assert bubble is not None
+        assert content_text is not None
+        assert int(content_text.property("lineCount")) == 1
+        assert float(bubble.property("width")) < 140.0
+    finally:
+        root.deleteLater()
+        _process(0)
+
+
 def test_message_bubble_shows_memory_reference_summary(qapp):
     engine = QQmlEngine()
     component = QQmlComponent(engine)
@@ -261,11 +320,18 @@ def test_message_bubble_shows_memory_reference_summary(qapp):
     assert root is not None, component.errors()
 
     try:
+        bubble = root.findChild(QObject, "bubbleBody")
         reference_text = root.findChild(QObject, "referenceText")
+        assert bubble is not None
         assert reference_text is not None
         assert bool(reference_text.property("visible")) is True
         assert "2" in str(reference_text.property("text"))
         assert "1" in str(reference_text.property("text"))
+        assert float(bubble.property("width")) > 280.0
+        assert float(reference_text.property("width")) == pytest.approx(
+            float(bubble.property("width")) - 32.0,
+            abs=1.0,
+        )
     finally:
         root.deleteLater()
         _process(0)

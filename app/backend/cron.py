@@ -338,6 +338,56 @@ class CronTasksModel(QAbstractListModel):
         self._rows = [dict(row) for row in rows]
         self.endResetModel()
 
+    def sync_rows(self, rows: list[dict[str, Any]]) -> None:
+        next_rows = [dict(row) for row in rows]
+        next_ids = {str(row.get("id", "")) for row in next_rows}
+        for remove_index in range(len(self._rows) - 1, -1, -1):
+            if str(self._rows[remove_index].get("id", "")) in next_ids:
+                continue
+            self.beginRemoveRows(QModelIndex(), remove_index, remove_index)
+            del self._rows[remove_index]
+            self.endRemoveRows()
+
+        row_index = 0
+        while row_index < len(next_rows):
+            next_row = next_rows[row_index]
+            next_id = str(next_row.get("id", ""))
+            if row_index < len(self._rows) and str(self._rows[row_index].get("id", "")) == next_id:
+                self._update_row(row_index, next_row)
+                row_index += 1
+                continue
+
+            found_index = -1
+            for search_index in range(row_index + 1, len(self._rows)):
+                if str(self._rows[search_index].get("id", "")) == next_id:
+                    found_index = search_index
+                    break
+            if found_index >= 0:
+                self.beginMoveRows(
+                    QModelIndex(),
+                    found_index,
+                    found_index,
+                    QModelIndex(),
+                    row_index,
+                )
+                row = self._rows.pop(found_index)
+                self._rows.insert(row_index, row)
+                self.endMoveRows()
+            else:
+                self.beginInsertRows(QModelIndex(), row_index, row_index)
+                self._rows.insert(row_index, dict(next_row))
+                self.endInsertRows()
+            self._update_row(row_index, next_row)
+            row_index += 1
+
+    def _update_row(self, row_index: int, next_row: dict[str, Any]) -> None:
+        current = self._rows[row_index]
+        if current == next_row:
+            return
+        self._rows[row_index] = dict(next_row)
+        model_index = self.index(row_index)
+        self.dataChanged.emit(model_index, model_index, list(self._FIELD_MAP))
+
 
 class CronBridgeService(QObject):
     tasksChanged = Signal()
@@ -918,12 +968,14 @@ class CronBridgeService(QObject):
         projected = [task for task in self._all_tasks if self._matches_filter(task)]
         if self.editingNewTask:
             projected = [_draft_preview_task(self._draft, self._lang), *projected]
+        projected_changed = projected != self._projected_tasks
         self._projected_tasks = projected
-        self._tasks_model.reset_rows(self._projected_tasks)
+        self._tasks_model.sync_rows(self._projected_tasks)
         self.tasksChanged.emit()
         self.filtersChanged.emit()
         self.selectedTaskChanged.emit()
-        self.executionStateChanged.emit()
+        if projected_changed:
+            self.executionStateChanged.emit()
 
     def _set_busy(self, busy: bool) -> None:
         if self._busy == busy:
