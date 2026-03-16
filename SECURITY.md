@@ -24,6 +24,8 @@
 
 - `toolExposure` 只影响“哪些工具对模型可见”，不改变工具执行层的权限与路径校验。
 - 目前文件系统工具（`read_file` / `write_file` / `edit_file` / `list_dir`）属于 core 工具集，默认可见；如需收敛风险，请优先启用 `restrictToWorkspace`。
+- 主代理对高风险副作用工具（如 `exec`、`write_file/edit_file`、`notify`、`cron`、交互式 browser/desktop 控制、显式 memory 写入）还会额外检查“用户是否明确要求执行该类动作”；未命中明确意图时会直接返回结构化 `approval_required` 错误，而不是静默执行。
+- 这层审批门禁只发生在最外层用户请求边界；子代理等内部执行路径不额外重复做第二套审批状态机。
 
 ### 2. 渠道访问控制 (`allowFrom`)
 
