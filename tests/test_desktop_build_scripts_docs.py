@@ -13,7 +13,7 @@ def test_app_readme_documents_mac_imessage_permissions() -> None:
 
 
 def test_desktop_packaging_doc_covers_mac_imessage_permissions() -> None:
-    text = _read("docs/desktop-packaging.md")
+    text = _read("app/DESKTOP_PACKAGING.md")
 
     assert "NSAppleEventsUsageDescription" in text
     assert "Full Disk Access" in text

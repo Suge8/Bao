@@ -285,7 +285,7 @@ uv sync --extra desktop
 uv run python app/main.py
 ```
 
-首次启动自动创建配置与 workspace。详见 [`app/README.md`](app/README.md) 和 [`docs/desktop-packaging.md`](docs/desktop-packaging.md)。
+首次启动自动创建配置与 workspace。详见 [`app/README.md`](app/README.md) 和 [`app/DESKTOP_PACKAGING.md`](app/DESKTOP_PACKAGING.md)。
 
 ## 🔒 安全
 
@@ -592,7 +592,7 @@ uv sync --extra desktop
 uv run python app/main.py
 ```
 
-First launch auto-creates config and workspace. See [`app/README.md`](app/README.md) and [`docs/desktop-packaging.md`](docs/desktop-packaging.md).
+First launch auto-creates config and workspace. See [`app/README.md`](app/README.md) and [`app/DESKTOP_PACKAGING.md`](app/DESKTOP_PACKAGING.md).
 
 ### 🔒 Security
 

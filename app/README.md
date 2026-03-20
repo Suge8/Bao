@@ -35,6 +35,12 @@ uv sync --extra desktop
 uv run python app/main.py
 ```
 
+如需本地打包或验证桌面产物，使用：
+
+```bash
+uv sync --extra desktop-build-pyinstaller
+```
+
 ---
 
 ## 首次使用
@@ -97,9 +103,35 @@ Bao Desktop 支持这些基础命令：
 
 ---
 
+## 打包与资源
+
+桌面发布默认以 **PyInstaller** 为 primary 主链，**Nuitka** 只保留为 backup 备用链。常用脚本：
+
+- `app/scripts/build_mac_pyinstaller.sh`
+- `app/scripts/build_win_pyinstaller.bat`
+- `app/scripts/generate_installer_assets.py`
+
+更完整的桌面打包说明见 [DESKTOP_PACKAGING.md](/Users/sugeh/Project/Bao/app/DESKTOP_PACKAGING.md)。
+
+---
+
+## 权限与运行前提
+
+- macOS 桌面产物会写入 `NSAppleEventsUsageDescription`
+- 若启用 iMessage，需要允许 Bao 控制 `Messages`
+- 还需要为 `Bao.app` 打开 `Full Disk Access`
+
+---
+
 ## 资源事实源
 
 - Windows 安装器与应用图标统一使用 `app/resources/logo.ico`
+- `logo-circle.png` 只保留给应用内 UI 预览
+- 应用级字体统一使用 `app/resources/fonts/OPPO Sans.ttf`
+- 字体加载入口收口在 `app/main.py`，只保留应用级这一处字体决策
+- 安装器与 DMG 品牌资源统一由 `generate_installer_assets.py` 生成
+- 统一产出 `dmg-background.png`，并保持 `windowContentInsetTop/Side/Bottom` 的同一视觉节奏
+- 这条路径的目标是避免 Win/mac 安装体验与桌面端首屏漂移
 
 ---
 
