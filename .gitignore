@@ -27,14 +27,8 @@ venv/
 .coverage
 htmlcov/
 
-# Docs (local engineering notes, not published)
+# Docs (local engineering notes)
 docs/
-!docs/
-docs/*
-!docs/desktop-packaging.md
-
-# Runtime workspace (template is bao/templates/workspace/)
-/workspace/
 
 # Generated managed browser runtime payloads
 app/resources/runtime/browser/node_modules/
@@ -61,9 +55,14 @@ botpy.log
 .sisyphus/
 .opencode/
 update.md
+# Internal agent instructions: keep local, never track in repo
 AGENTS.md
+**/AGENTS.md
+agents.md
+**/agents.md
 _research
 .codex-tasks/
+.codex-artifacts/
 
 # Backup files
 *.bak

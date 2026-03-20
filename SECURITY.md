@@ -24,8 +24,9 @@
 
 - `toolExposure` 只影响“哪些工具对模型可见”，不改变工具执行层的权限与路径校验。
 - 目前文件系统工具（`read_file` / `write_file` / `edit_file` / `list_dir`）属于 core 工具集，默认可见；如需收敛风险，请优先启用 `restrictToWorkspace`。
-- 主代理对高风险副作用工具（如 `exec`、`write_file/edit_file`、`notify`、`cron`、交互式 browser/desktop 控制、显式 memory 写入）还会额外检查“用户是否明确要求执行该类动作”；未命中明确意图时会直接返回结构化 `approval_required` 错误，而不是静默执行。
-- 这层审批门禁只发生在最外层用户请求边界；子代理等内部执行路径不额外重复做第二套审批状态机。
+- Bao 当前不再对工具执行增加额外 approval gate；所有工具统一走同一条参数校验、路径限制与工具本体执行路径。
+- 当前默认配置下，`tools.exec.sandboxMode = "semi-auto"` 只拦明显危险命令，**不会**自动启用工作区限制；`restrictToWorkspace` 仍是独立开关，默认 `false`。
+- `tools.exec.sandboxMode = "read-only"` 时，`exec` 会额外拦截写操作，并强制收束到当前工作区。
 
 ### 2. 渠道访问控制 (`allowFrom`)
 
@@ -73,7 +74,13 @@ chmod 600 ~/.bao/config.jsonc
 
 ### 4. Shell 命令安全
 
-`exec` 工具可执行 Shell 命令。虽然内置了危险命令拦截，你仍应注意：
+`exec` 工具可执行 Shell 命令。当前执行边界分为三层：
+
+- `full-auto`：不做危险命令模式拦截，也不自动限制到工作区
+- `semi-auto`（默认）：仅拦明显危险命令
+- `read-only`：拦写操作，并强制限制到工作区
+
+虽然默认保留了低摩擦护栏，你仍应注意：
 
 - ✅ 审查 Agent 日志中的所有工具调用
 - ✅ 使用专用系统用户运行，限制权限
