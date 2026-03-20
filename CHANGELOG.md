@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-03-20
+
+### Added
+
+- **Bao Hub 现成为统一运行入口** — Hub builder、dispatcher、route index、session directory 与 delivery/runtime 现在收口为一条主路径，替代旧 gateway 边界，并为 profile-aware startup、handoff 与 session routing 提供统一事实源。
+- **Desktop shell 进一步拆成可维护的 backend/QML 组件树** — `app/main.py`、desktop backend 服务与各 workspace QML 现在拆成更细的模块与逻辑文件，侧边栏、Settings、Control Tower、Memory、Skills、Tools、Cron 等页面继续沿单一 read-model 展示。
+- **桌面与服务测试现具备更细粒度的 testkit / case split** — chat/session/profile/control tower/update/build 等大测试文件已拆成多个 focused suites 与共享 harness，便于后续按功能回归。
+
+### Changed
+
+- **Core runtime、channels、providers 与 tools 已从 mega-file 重构为 focused helpers** — Agent loop、memory、subagent、tool registry、web/coding tools、profile/config/session/runtime diagnostics 以及各聊天渠道/Provider 现在都改为更小的职责模块，维持单一路径契约同时降低单文件复杂度。
+- **命令事实源与工具暴露说明已统一收口** — `/new`、`/session`、`/model`、`/memory` 等命令现在由 `bao/command_text.py` 统一维护；README/SECURITY/AGENTS 对 hub 命名、tool exposure 与 exec sandbox 语义也已同步。
+
+### Fixed
+
+- **桌面 smoke baseline 与构建/资源文档契约已对齐当前 UI** — chat/settings 的截图基线、Windows `logo.ico` 资源说明以及 desktop build script 相关测试现与当前 UI 和打包链保持一致。
+- **工具执行与 cron bridge 测试契约已对齐新运行时参数与刷新时序** — tool boundary stub 现兼容 `raw_arguments`/`argument_parse_error`，cron bridge projection 测试也会显式刷新后再断言选中任务，避免把旧时序假设误当成回归。
+
 ## [0.3.32] - 2026-03-16
 
 ### Changed
