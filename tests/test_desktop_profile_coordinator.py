@@ -8,7 +8,10 @@ import pytest
 
 pytest.importorskip("PySide6.QtCore")
 
-from app.backend.profile_binding import DesktopProfileCoordinator
+from app.backend.profile_binding import (
+    DesktopProfileCoordinator,
+    DesktopProfileCoordinatorOptions,
+)
 from bao.profile import ProfileContext, profile_context_to_dict
 
 
@@ -51,6 +54,7 @@ class _DummyChatService:
         self.profile_contexts: list[object] = []
         self.stop_calls = 0
         self.start_calls = 0
+        self.restart_calls = 0
 
     def setProfileContext(self, data: object) -> None:
         self.profile_contexts.append(data)
@@ -63,6 +67,9 @@ class _DummyChatService:
         self.start_calls += 1
         self.state = "running"
 
+    def restart(self) -> None:
+        self.restart_calls += 1
+
 
 class _DummySessionService:
     def __init__(self) -> None:
@@ -74,7 +81,11 @@ class _DummySessionService:
 
 class _DummyMemoryService:
     def __init__(self) -> None:
+        self.hints: list[str] = []
         self.bootstraps: list[str] = []
+
+    def setStorageRootHint(self, root: str) -> None:
+        self.hints.append(root)
 
     def bootstrapStorageRoot(self, root: str) -> None:
         self.bootstraps.append(root)
@@ -112,19 +123,59 @@ class _DummySkillsService:
         self.workspace_paths.append(path)
 
 
-def test_refresh_from_config_updates_profile_and_skills_workspace(tmp_path: Path) -> None:
-    profile_service = _DummyProfileService()
-    skills_service = _DummySkillsService()
+def _make_coordinator(
+    tmp_path: Path,
+    *,
+    profile_context: ProfileContext | None = None,
+    chat_state: str = "stopped",
+    session_service: _DummySessionService | None = None,
+    memory_service: _DummyMemoryService | None = None,
+    cron_service: _DummyCronService | None = None,
+    heartbeat_service: _DummyHeartbeatService | None = None,
+    skills_service: _DummySkillsService | None = None,
+) -> tuple[
+    DesktopProfileCoordinator,
+    _DummyProfileService,
+    _DummyChatService,
+    _DummySessionService,
+    _DummyMemoryService,
+    _DummyCronService,
+    _DummyHeartbeatService,
+    _DummySkillsService,
+]:
+    profile_service = _DummyProfileService(profile_context)
+    chat_service = _DummyChatService(state=chat_state)
+    resolved_session_service = session_service or _DummySessionService()
+    resolved_memory_service = memory_service or _DummyMemoryService()
+    resolved_cron_service = cron_service or _DummyCronService()
+    resolved_heartbeat_service = heartbeat_service or _DummyHeartbeatService()
+    resolved_skills_service = skills_service or _DummySkillsService()
     coordinator = DesktopProfileCoordinator(
-        config_service=_DummyConfigService(str(tmp_path / "workspace")),
-        profile_service=profile_service,
-        chat_service=_DummyChatService(),
-        session_service=_DummySessionService(),
-        memory_service=_DummyMemoryService(),
-        cron_service=_DummyCronService(),
-        heartbeat_service=_DummyHeartbeatService(),
-        skills_service=skills_service,
+        DesktopProfileCoordinatorOptions(
+            config_service=_DummyConfigService(str(tmp_path / "workspace")),
+            profile_service=profile_service,
+            chat_service=chat_service,
+            session_service=resolved_session_service,
+            memory_service=resolved_memory_service,
+            cron_service=resolved_cron_service,
+            heartbeat_service=resolved_heartbeat_service,
+            skills_service=resolved_skills_service,
+        )
     )
+    return (
+        coordinator,
+        profile_service,
+        chat_service,
+        resolved_session_service,
+        resolved_memory_service,
+        resolved_cron_service,
+        resolved_heartbeat_service,
+        resolved_skills_service,
+    )
+
+
+def test_refresh_from_config_updates_profile_and_skills_workspace(tmp_path: Path) -> None:
+    coordinator, profile_service, _chat_service, _session_service, _memory_service, _cron_service, _heartbeat_service, skills_service = _make_coordinator(tmp_path)
 
     coordinator.refresh_from_config()
 
@@ -133,74 +184,63 @@ def test_refresh_from_config_updates_profile_and_skills_workspace(tmp_path: Path
     assert skills_service.workspace_paths == [expected]
 
 
-def test_running_gateway_switch_stops_once_and_restarts_after_ready(tmp_path: Path) -> None:
+def test_running_hub_switch_stops_once_and_restarts_after_ready(tmp_path: Path) -> None:
     work = _context("work", tmp_path)
-    scheduled: list[tuple[int, object]] = []
-    chat_service = _DummyChatService(state="running")
-    session_service = _DummySessionService()
-    memory_service = _DummyMemoryService()
-    cron_service = _DummyCronService()
-    heartbeat_service = _DummyHeartbeatService()
-    coordinator = DesktopProfileCoordinator(
-        config_service=_DummyConfigService(str(tmp_path / "workspace")),
-        profile_service=_DummyProfileService(work),
-        chat_service=chat_service,
-        session_service=session_service,
-        memory_service=memory_service,
-        cron_service=cron_service,
-        heartbeat_service=heartbeat_service,
-        skills_service=_DummySkillsService(),
-        schedule_call=lambda delay, fn: scheduled.append((delay, fn)),
+    (
+        coordinator,
+        _profile_service,
+        chat_service,
+        session_service,
+        memory_service,
+        cron_service,
+        heartbeat_service,
+        _skills_service,
+    ) = _make_coordinator(
+        tmp_path,
+        profile_context=work,
+        chat_state="running",
     )
 
     coordinator.apply_active_profile()
 
-    assert chat_service.stop_calls == 1
+    assert chat_service.stop_calls == 0
+    assert chat_service.restart_calls == 0
     assert session_service.bootstraps == [str(work.state_root)]
-    assert memory_service.bootstraps == [str(work.state_root)]
+    assert memory_service.hints == [str(work.state_root)]
+    assert memory_service.bootstraps == []
     assert cron_service.store_paths == [str(work.cron_store_path)]
     assert heartbeat_service.file_paths == [str(work.heartbeat_file)]
     assert cron_service.profile_info == [(work.profile_id, work.display_name)]
     assert heartbeat_service.profile_info == [(work.profile_id, work.display_name)]
 
-    coordinator.restart_gateway_if_ready(object())
-
-    assert scheduled and scheduled[0][0] == 0
-    scheduled[0][1]()
-    assert chat_service.start_calls == 1
-
 
 def test_same_profile_context_does_not_rebootstrap_or_restart(tmp_path: Path) -> None:
     work = _context("work", tmp_path)
-    chat_service = _DummyChatService(state="stopped")
-    session_service = _DummySessionService()
-    memory_service = _DummyMemoryService()
-    cron_service = _DummyCronService()
-    heartbeat_service = _DummyHeartbeatService()
-    coordinator = DesktopProfileCoordinator(
-        config_service=_DummyConfigService(str(tmp_path / "workspace")),
-        profile_service=_DummyProfileService(work),
-        chat_service=chat_service,
-        session_service=session_service,
-        memory_service=memory_service,
-        cron_service=cron_service,
-        heartbeat_service=heartbeat_service,
-        skills_service=_DummySkillsService(),
-    )
+    (
+        coordinator,
+        _profile_service,
+        chat_service,
+        session_service,
+        memory_service,
+        cron_service,
+        heartbeat_service,
+        _skills_service,
+    ) = _make_coordinator(tmp_path, profile_context=work)
 
     coordinator.apply_active_profile()
     coordinator.apply_active_profile()
-    coordinator.restart_gateway_if_ready(object())
 
     assert chat_service.stop_calls == 0
     assert chat_service.start_calls == 0
+    assert chat_service.restart_calls == 0
     assert session_service.bootstraps == [str(work.state_root)]
-    assert memory_service.bootstraps == [str(work.state_root)]
+    assert memory_service.hints == [str(work.state_root)]
+    assert memory_service.bootstraps == []
     assert cron_service.store_paths == [str(work.cron_store_path)]
     assert heartbeat_service.file_paths == [str(work.heartbeat_file)]
 
 
-def test_profile_rename_does_not_restart_running_gateway(tmp_path: Path) -> None:
+def test_profile_rename_does_not_restart_running_hub(tmp_path: Path) -> None:
     work = _context("work", tmp_path)
     renamed = ProfileContext(
         profile_id=work.profile_id,
@@ -213,27 +253,25 @@ def test_profile_rename_does_not_restart_running_gateway(tmp_path: Path) -> None
         cron_store_path=work.cron_store_path,
         heartbeat_file=work.heartbeat_file,
     )
-    scheduled: list[tuple[int, object]] = []
-    profile_service = _DummyProfileService(work)
-    chat_service = _DummyChatService(state="stopped")
-    coordinator = DesktopProfileCoordinator(
-        config_service=_DummyConfigService(str(tmp_path / "workspace")),
-        profile_service=profile_service,
-        chat_service=chat_service,
-        session_service=_DummySessionService(),
-        memory_service=_DummyMemoryService(),
-        cron_service=_DummyCronService(),
-        heartbeat_service=_DummyHeartbeatService(),
-        skills_service=_DummySkillsService(),
-        schedule_call=lambda delay, fn: scheduled.append((delay, fn)),
+    (
+        coordinator,
+        profile_service,
+        chat_service,
+        _session_service,
+        _memory_service,
+        _cron_service,
+        _heartbeat_service,
+        _skills_service,
+    ) = _make_coordinator(
+        tmp_path,
+        profile_context=work,
     )
 
     coordinator.apply_active_profile()
     chat_service.state = "running"
     profile_service.activeProfileContext = profile_context_to_dict(renamed)
     coordinator.apply_active_profile()
-    coordinator.restart_gateway_if_ready(object())
 
     assert chat_service.stop_calls == 0
     assert chat_service.start_calls == 0
-    assert scheduled == []
+    assert chat_service.restart_calls == 0
