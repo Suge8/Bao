@@ -18,7 +18,7 @@ def _write_skill(base: Path, name: str, description: str, metadata: str) -> None
 
 def test_skill_workspace_snapshot_groups_statuses_and_shadowed(monkeypatch, tmp_path: Path) -> None:
     builtin_dir = tmp_path / "builtin"
-    workspace = tmp_path / "workspace"
+    user_dir = tmp_path / "user"
     _write_skill(
         builtin_dir,
         "ready-skill",
@@ -44,10 +44,10 @@ def test_skill_workspace_snapshot_groups_statuses_and_shadowed(monkeypatch, tmp_
         '{"bao":{"icon":"toolbox","display":{"name":"Shadowed Skill","nameZh":"被覆盖技能"},"capabilityRefs":["filesystem"],"activationRefs":["filesystem"]}}',
     )
     _write_skill(
-        workspace / "skills",
+        user_dir,
         "shadowed-skill",
-        "Workspace shadowing skill.",
-        '{"bao":{"icon":"toolbox","display":{"name":"Workspace Shadow","nameZh":"工作区覆盖"},"capabilityRefs":["filesystem"],"activationRefs":["filesystem"]}}',
+        "User shadowing skill.",
+        '{"bao":{"icon":"toolbox","display":{"name":"User Shadow","nameZh":"用户覆盖"},"capabilityRefs":["filesystem"],"activationRefs":["filesystem"]}}',
     )
 
     original_which = shutil.which
@@ -57,7 +57,7 @@ def test_skill_workspace_snapshot_groups_statuses_and_shadowed(monkeypatch, tmp_
     )
 
     snapshot = build_skill_workspace_snapshot(
-        catalog=SkillCatalog(workspace=workspace, builtin_skills_dir=builtin_dir),
+        catalog=SkillCatalog(user_skills_dir=user_dir, builtin_skills_dir=builtin_dir),
         config_data={},
         query="",
         source_filter="all",
@@ -69,16 +69,17 @@ def test_skill_workspace_snapshot_groups_statuses_and_shadowed(monkeypatch, tmp_
     assert by_id["builtin:ready-skill"]["status"] == "ready"
     assert by_id["builtin:setup-skill"]["status"] == "needs_setup"
     assert by_id["builtin:instruction-skill"]["status"] == "instruction_only"
-    assert by_id["workspace:shadowed-skill"]["source"] == "workspace"
+    assert by_id["user:shadowed-skill"]["source"] == "user"
     shadowed_builtin = next(item for item in items if item["id"] == "builtin:shadowed-skill")
     assert shadowed_builtin["sectionKey"] == "shadowed"
+    assert snapshot.overview["userCount"] == 1
     assert snapshot.overview["shadowedCount"] == 1
     assert snapshot.overview["readyCount"] >= 2
 
 
 def test_skill_workspace_snapshot_filters_by_ready_state(tmp_path: Path) -> None:
     builtin_dir = tmp_path / "builtin"
-    workspace = tmp_path / "workspace"
+    user_dir = tmp_path / "user"
     _write_skill(
         builtin_dir,
         "ready-skill",
@@ -93,7 +94,7 @@ def test_skill_workspace_snapshot_filters_by_ready_state(tmp_path: Path) -> None
     )
 
     snapshot = build_skill_workspace_snapshot(
-        catalog=SkillCatalog(workspace=workspace, builtin_skills_dir=builtin_dir),
+        catalog=SkillCatalog(user_skills_dir=user_dir, builtin_skills_dir=builtin_dir),
         config_data={},
         query="",
         source_filter="ready",

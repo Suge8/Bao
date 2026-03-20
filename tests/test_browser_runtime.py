@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from bao.browser import (
+    BrowserAutomationOptions,
     BrowserAutomationService,
     current_browser_platform_key,
     get_browser_capability_state,
@@ -93,7 +94,7 @@ def test_browser_capability_state_reports_missing_daemon_assets(
 def test_browser_automation_service_can_be_disabled(tmp_path: Path) -> None:
     set_runtime_config_path(tmp_path / "config.jsonc")
     try:
-        service = BrowserAutomationService(workspace=tmp_path, enabled=False)
+        service = BrowserAutomationService(tmp_path, BrowserAutomationOptions(enabled=False))
         state = service.state
     finally:
         set_runtime_config_path(None)
@@ -143,7 +144,7 @@ def test_browser_automation_service_smoke_test_uses_about_blank(
     monkeypatch.setenv("BAO_BROWSER_RUNTIME_ROOT", str(runtime_root))
     set_runtime_config_path(tmp_path / "config.jsonc")
     try:
-        service = BrowserAutomationService(workspace=tmp_path)
+        service = BrowserAutomationService(tmp_path)
         calls: list[tuple[str, list[str]]] = []
 
         async def fake_run(*, action: str, args: list[str] | None = None, **options):

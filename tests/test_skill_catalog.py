@@ -17,18 +17,18 @@ def _write_skill(base: Path, name: str, description: str) -> None:
     )
 
 
-def test_catalog_lists_workspace_before_builtin_and_marks_shadowed(tmp_path: Path) -> None:
+def test_catalog_lists_user_before_builtin_and_marks_shadowed(tmp_path: Path) -> None:
     builtin_dir = tmp_path / "builtin"
-    workspace = tmp_path / "workspace"
+    user_dir = tmp_path / "user"
     _write_skill(builtin_dir, "demo", "Built-in demo")
-    _write_skill(workspace / "skills", "demo", "Workspace demo")
+    _write_skill(user_dir, "demo", "User demo")
     _write_skill(builtin_dir, "other", "Other built-in")
 
-    catalog = SkillCatalog(workspace=workspace, builtin_skills_dir=builtin_dir)
+    catalog = SkillCatalog(user_skills_dir=user_dir, builtin_skills_dir=builtin_dir)
     records = catalog.list_records()
 
     assert [record["id"] for record in records] == [
-        "workspace:demo",
+        "user:demo",
         "builtin:demo",
         "builtin:other",
     ]
@@ -41,22 +41,22 @@ def test_catalog_lists_workspace_before_builtin_and_marks_shadowed(tmp_path: Pat
     assert records[0]["activationRefs"] == ["filesystem"]
 
 
-def test_catalog_create_update_and_delete_workspace_skill(tmp_path: Path) -> None:
+def test_catalog_create_update_and_delete_user_skill(tmp_path: Path) -> None:
     builtin_dir = tmp_path / "builtin"
     builtin_dir.mkdir(parents=True, exist_ok=True)
-    workspace = tmp_path / "workspace"
-    catalog = SkillCatalog(workspace=workspace, builtin_skills_dir=builtin_dir)
+    user_dir = tmp_path / "user"
+    catalog = SkillCatalog(user_skills_dir=user_dir, builtin_skills_dir=builtin_dir)
 
-    created = catalog.create_workspace_skill("Design Ops", "Use for design ops tasks.")
-    assert created["id"] == "workspace:design-ops"
-    assert "Use for design ops tasks." in catalog.read_content("design-ops", "workspace")
+    created = catalog.create_user_skill("Design Ops", "Use for design ops tasks.")
+    assert created["id"] == "user:design-ops"
+    assert "Use for design ops tasks." in catalog.read_content("design-ops", "user")
 
-    updated = catalog.update_workspace_skill(
+    updated = catalog.update_user_skill(
         "design-ops",
         "---\nname: design-ops\ndescription: Updated\n---\n\n# design-ops\n\nUpdated body\n",
     )
     assert updated["description"] == "Updated"
-    assert "Updated body" in catalog.read_content("design-ops", "workspace")
+    assert "Updated body" in catalog.read_content("design-ops", "user")
 
-    catalog.delete_workspace_skill("design-ops")
-    assert not (workspace / "skills" / "design-ops").exists()
+    catalog.delete_user_skill("design-ops")
+    assert not (user_dir / "design-ops").exists()

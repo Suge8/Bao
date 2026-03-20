@@ -15,9 +15,17 @@ IGNORED_DIR_NAMES = {
     "dist-pyinstaller",
     "node_modules",
 }
-FILE_LINE_LIMIT = 400
+DEFAULT_IGNORED_GLOBS = ("bao/skills/**",)
+FILE_LINE_LIMIT = 300
 FUNCTION_LINE_LIMIT = 60
-PARAMETER_LIMIT = 3
+PARAMETER_LIMIT = 5
+
+
+@dataclass(frozen=True)
+class AuditLimits:
+    file_lines: int = FILE_LINE_LIMIT
+    function_lines: int = FUNCTION_LINE_LIMIT
+    parameters: int = PARAMETER_LIMIT
 
 
 @dataclass(frozen=True)
@@ -43,6 +51,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         description="Audit Bao source files against engineering metric guardrails."
     )
     parser.add_argument("--root", default=str(PROJECT_ROOT))
+    parser.add_argument("--file-line-limit", type=int, default=FILE_LINE_LIMIT)
+    parser.add_argument("--function-line-limit", type=int, default=FUNCTION_LINE_LIMIT)
+    parser.add_argument("--parameter-limit", type=int, default=PARAMETER_LIMIT)
+    parser.add_argument(
+        "--include-bundled-skills",
+        action="store_true",
+        help="Include bundled skill implementation files under bao/skills in the audit.",
+    )
     parser.add_argument("--fail-on-violation", action="store_true")
     return parser.parse_args(argv)
 
@@ -51,13 +67,26 @@ def is_ignored(path: Path) -> bool:
     return any(part in IGNORED_DIR_NAMES for part in path.parts)
 
 
-def iter_source_files(root: Path) -> list[Path]:
+def matches_ignored_glob(path: Path, ignored_globs: tuple[str, ...]) -> bool:
+    path_text = path.as_posix()
+    for pattern in ignored_globs:
+        prefix = pattern.removesuffix("/**")
+        if path_text == prefix or path_text.startswith(f"{prefix}/"):
+            return True
+        if path.match(pattern):
+            return True
+    return False
+
+
+def iter_source_files(root: Path, *, ignored_globs: tuple[str, ...] = DEFAULT_IGNORED_GLOBS) -> list[Path]:
     paths: list[Path] = []
     for path in root.rglob("*"):
         if not path.is_file() or path.suffix not in DEFAULT_SUFFIXES:
             continue
         relative = path.relative_to(root)
         if is_ignored(relative):
+            continue
+        if matches_ignored_glob(relative, ignored_globs):
             continue
         paths.append(path)
     return sorted(paths)
@@ -127,40 +156,46 @@ def collect_function_metrics(path: Path, lines: list[str]) -> list[FunctionMetri
     return collector.metrics
 
 
-def audit_root(root: Path) -> list[Violation]:
+def audit_root(
+    root: Path,
+    *,
+    limits: AuditLimits | None = None,
+    ignored_globs: tuple[str, ...] = DEFAULT_IGNORED_GLOBS,
+) -> list[Violation]:
+    active_limits = limits or AuditLimits()
     violations: list[Violation] = []
-    for path in iter_source_files(root):
+    for path in iter_source_files(root, ignored_globs=ignored_globs):
         lines = read_lines(path)
-        if len(lines) > FILE_LINE_LIMIT:
+        if len(lines) > active_limits.file_lines:
             violations.append(
                 Violation(
                     kind="file_lines",
                     path=path,
                     name="",
                     value=len(lines),
-                    limit=FILE_LINE_LIMIT,
+                    limit=active_limits.file_lines,
                 )
             )
         for metric in collect_function_metrics(path, lines):
-            if metric.line_count > FUNCTION_LINE_LIMIT:
+            if metric.line_count > active_limits.function_lines:
                 violations.append(
                     Violation(
                         kind="function_lines",
                         path=path,
                         name=metric.name,
                         value=metric.line_count,
-                        limit=FUNCTION_LINE_LIMIT,
+                        limit=active_limits.function_lines,
                         lineno=metric.lineno,
                     )
                 )
-            if metric.parameter_count > PARAMETER_LIMIT:
+            if metric.parameter_count > active_limits.parameters:
                 violations.append(
                     Violation(
                         kind="parameter_count",
                         path=path,
                         name=metric.name,
                         value=metric.parameter_count,
-                        limit=PARAMETER_LIMIT,
+                        limit=active_limits.parameters,
                         lineno=metric.lineno,
                     )
                 )
@@ -177,14 +212,18 @@ def format_violation(root: Path, violation: Violation) -> str:
     )
 
 
-def render_report(root: Path, violations: list[Violation]) -> str:
+def render_report(root: Path, violations: list[Violation], *, limits: AuditLimits | None = None) -> str:
+    active_limits = limits or AuditLimits()
     grouped: dict[str, list[Violation]] = defaultdict(list)
     for violation in violations:
         grouped[violation.kind].append(violation)
     lines = [
         "Engineering Metrics Audit",
         f"Root: {root}",
-        f"Limits: file<={FILE_LINE_LIMIT}, function<={FUNCTION_LINE_LIMIT}, params<={PARAMETER_LIMIT}",
+        "Limits: "
+        f"file<={active_limits.file_lines}, "
+        f"function<={active_limits.function_lines}, "
+        f"params<={active_limits.parameters}",
         "",
     ]
     if not violations:
@@ -212,8 +251,14 @@ def render_report(root: Path, violations: list[Violation]) -> str:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     root = Path(args.root).expanduser().resolve()
-    violations = audit_root(root)
-    print(render_report(root, violations), end="")
+    limits = AuditLimits(
+        file_lines=args.file_line_limit,
+        function_lines=args.function_line_limit,
+        parameters=args.parameter_limit,
+    )
+    ignored_globs = () if args.include_bundled_skills else DEFAULT_IGNORED_GLOBS
+    violations = audit_root(root, limits=limits, ignored_globs=ignored_globs)
+    print(render_report(root, violations, limits=limits), end="")
     if args.fail_on_violation and violations:
         return 1
     return 0

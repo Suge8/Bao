@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 from bao.agent import shared
+from bao.providers.base import ChatRequest
 
 
 def test_handle_screenshot_marker_reads_safe_temp_file_and_cleans_up(tmp_path: Path) -> None:
@@ -11,10 +12,12 @@ def test_handle_screenshot_marker_reads_safe_temp_file_and_cleans_up(tmp_path: P
     screenshot_path.write_bytes(b"png-bytes")
 
     result, image_b64 = shared.handle_screenshot_marker(
-        "screenshot",
-        f"__SCREENSHOT__:{screenshot_path}",
-        read_error_label="read failed",
-        unsafe_path_label="unsafe path",
+        shared.ScreenshotMarkerRequest(
+            tool_name="screenshot",
+            result=f"__SCREENSHOT__:{screenshot_path}",
+            read_error_label="read failed",
+            unsafe_path_label="unsafe path",
+        )
     )
 
     assert result == "[screenshot captured]"
@@ -47,8 +50,8 @@ def test_call_provider_chat_repairs_messages_and_clears_images() -> None:
         def __init__(self) -> None:
             self.calls = []
 
-        async def chat(self, **kwargs):
-            self.calls.append(kwargs)
+        async def chat(self, request: ChatRequest):
+            self.calls.append(request)
             return {"ok": True}
 
     provider = DummyProvider()
@@ -63,22 +66,26 @@ def test_call_provider_chat_repairs_messages_and_clears_images() -> None:
 
     result = asyncio.run(
         shared.call_provider_chat(
-            provider=provider,
-            messages=messages,
-            tools=[],
-            model="test-model",
-            temperature=0.1,
-            max_tokens=16,
-            reasoning_effort=None,
-            service_tier="priority",
-            source="test",
-            patched_log_label="Patched",
+            shared.ProviderChatRequest(
+                provider=provider,
+                request=ChatRequest(
+                    messages=messages,
+                    tools=[],
+                    model="test-model",
+                    temperature=0.1,
+                    max_tokens=16,
+                    reasoning_effort=None,
+                    service_tier="priority",
+                    source="test",
+                ),
+                patched_log_label="Patched",
+            )
         )
     )
 
     assert result == {"ok": True}
-    assert provider.calls and provider.calls[0]["source"] == "test"
-    assert provider.calls[0]["service_tier"] == "priority"
+    assert provider.calls and provider.calls[0].source == "test"
+    assert provider.calls[0].service_tier == "priority"
     assert "_image" not in messages[0]
     assert len(messages) == 2
     assert messages[1]["role"] == "tool"

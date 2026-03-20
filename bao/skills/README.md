@@ -1,6 +1,6 @@
 # Bao Skills
 
-This directory contains built-in skills that ship with Bao. User skills live in `~/.bao/workspace/skills/` (auto-discovered, highest priority).
+This directory contains built-in skills that ship with Bao. User skills live in `~/.bao/skills/` (auto-discovered, highest priority).
 
 ## Skill Format
 

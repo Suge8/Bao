@@ -6,13 +6,15 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+from bao.agent._loop_tool_setup import ToolContextRequest
 from bao.agent.loop import AgentLoop
-from bao.agent.subagent import SpawnIssue, SpawnResult, SubagentManager
+from bao.agent.subagent import SpawnIssue, SpawnRequest, SpawnResult, SubagentManager
 from bao.agent.tools.spawn import SpawnTool
 from bao.bus.events import OutboundMessage
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider, LLMResponse
 from bao.session.manager import SessionManager
+from tests._provider_request_testkit import request_messages
 
 pytest = importlib.import_module("pytest")
 
@@ -22,25 +24,16 @@ class _DummyManager:
         self.result = result
         self.calls: list[dict[str, Any]] = []
 
-    async def spawn(
-        self,
-        task: str,
-        label: str | None = None,
-        origin_channel: str = "gateway",
-        origin_chat_id: str = "direct",
-        session_key: str | None = None,
-        context_from: str | None = None,
-        child_session_key: str | None = None,
-    ) -> SpawnResult:
+    async def spawn(self, request: SpawnRequest) -> SpawnResult:
         self.calls.append(
             {
-                "task": task,
-                "label": label,
-                "origin_channel": origin_channel,
-                "origin_chat_id": origin_chat_id,
-                "session_key": session_key,
-                "context_from": context_from,
-                "child_session_key": child_session_key,
+                "task": request.task,
+                "label": request.label,
+                "origin_channel": request.origin_channel,
+                "origin_chat_id": request.origin_chat_id,
+                "session_key": request.session_key,
+                "context_from": request.context_from,
+                "child_session_key": request.child_session_key,
             }
         )
         return self.result
@@ -60,17 +53,9 @@ class _NoopProvider(LLMProvider):
     def __init__(self) -> None:
         super().__init__(api_key=None, api_base=None)
 
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        max_tokens: int = 4096,
-        temperature: float = 0.7,
-        on_progress=None,
-        **kwargs: Any,
-    ) -> LLMResponse:
-        del messages, tools, model, max_tokens, temperature, on_progress, kwargs
+    async def chat(self, request: Any, **kwargs: Any) -> LLMResponse:
+        del kwargs
+        _ = request_messages(request)
         return LLMResponse(content="ok", finish_reason="stop")
 
     def get_default_model(self) -> str:
@@ -102,7 +87,7 @@ def test_spawn_tool_notifies_zh_on_success() -> None:
     assert payload["status"] == "spawned"
     assert payload["task"]["task_id"] == "abc123def456"
     assert len(sent) == 1
-    assert sent[0].content == "已委派子代理处理中，完成后我会同步结果。"
+    assert sent[0].content == "已创建子代理任务，正在做启动检查；通过后会继续执行，完成后我会同步结果。"
     assert sent[0].metadata.get("session_key") == "imessage:+86100"
     spawn_meta = sent[0].metadata.get("_subagent_spawn")
     assert isinstance(spawn_meta, dict)
@@ -129,6 +114,17 @@ async def test_spawn_tool_passes_child_session_key() -> None:
     assert manager.calls[0]["child_session_key"] == "subagent:desktop:local::main::child"
 
 
+def test_spawn_tool_schema_explains_child_session_key_usage() -> None:
+    manager = _DummyManager(_spawned_result("abc123def456"))
+    tool = SpawnTool(manager=cast(SubagentManager, cast(object, manager)))
+
+    schema = tool.to_schema()
+    assert "omit child_session_key for a new task" in schema["function"]["description"].lower()
+    child_desc = schema["function"]["parameters"]["properties"]["child_session_key"]["description"].lower()
+    assert "omit it for a new task" in child_desc
+    assert "check_tasks_json" in child_desc
+
+
 def test_spawn_tool_notifies_en_on_success() -> None:
     sent: list[OutboundMessage] = []
 
@@ -146,7 +142,8 @@ def test_spawn_tool_notifies_en_on_success() -> None:
     assert len(sent) == 1
     assert (
         sent[0].content
-        == "I've delegated this to a subagent and will share the result once it's done."
+        == "I've created the subagent task and it is running startup checks. "
+        "If those pass, it will continue and I will share the result when it finishes."
     )
 
 
@@ -251,18 +248,20 @@ def test_loop_set_tool_context_applies_lang_to_spawn_notice(tmp_path: Path) -> N
     setattr(spawn, "_manager", _DummyManager(_spawned_result("f00ba47bad99", label="w")))
 
     loop._set_tool_context(
-        "telegram",
-        "c1",
-        session_key="telegram:c1",
-        lang="zh",
-        metadata={"slack": {"thread_ts": "1710000.999", "channel_type": "im"}},
+        ToolContextRequest(
+            channel="telegram",
+            chat_id="c1",
+            session_key="telegram:c1",
+            lang="zh",
+            metadata={"slack": {"thread_ts": "1710000.999", "channel_type": "im"}},
+        )
     )
     result = asyncio.run(spawn.execute(task="Do work", label="w"))
 
     payload = _parse_payload(result)
     assert payload["task"]["task_id"] == "f00ba47bad99"
     assert len(sent) == 1
-    assert sent[0].content == "已委派子代理处理中，完成后我会同步结果。"
+    assert sent[0].content == "已创建子代理任务，正在做启动检查；通过后会继续执行，完成后我会同步结果。"
     assert sent[0].metadata.get("slack") == {
         "thread_ts": "1710000.999",
         "channel_type": "im",
@@ -293,4 +292,6 @@ def test_build_child_session_notes_keeps_unknown_status(tmp_path: Path) -> None:
 
     notes = loop._build_child_session_notes("telegram:c1")
 
+    assert "omit child_session_key" in notes[0]
+    assert "task.task_id" in notes[0]
     assert any("status=unknown" in line for line in notes)

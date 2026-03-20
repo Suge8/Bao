@@ -53,7 +53,7 @@ def get_media_dir(channel: str | None = None) -> Path:
 
 
 def get_workspace_path(workspace: str | None = None) -> Path:
-    path = Path(workspace).expanduser() if workspace else get_default_data_dir() / "workspace"
+    path = Path(workspace).expanduser() if workspace else get_data_dir() / "workspace"
     return ensure_dir(path)
 
 

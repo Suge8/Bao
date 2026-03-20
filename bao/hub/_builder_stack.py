@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any
 
 from bao.agent.memory import MemoryPolicy
+from bao.bus.events import OutboundMessage
+from bao.delivery import DeliveryResult
 from bao.hub._builder_automation import (
     CronRunContext,
     build_cron_handler,
@@ -193,6 +195,39 @@ def build_hub_stack(
     runtime_cache: dict[str, HubRuntimeBundle] = {}
     automation_cache: dict[str, HubAutomationBundle] = {}
     dispatcher_ref: dict[str, HubDispatcher] = {}
+    channels_ref: dict[str, Any] = {"manager": None}
+
+    async def delivery_sender(msg: OutboundMessage) -> DeliveryResult:
+        channels_manager = channels_ref.get("manager")
+        if channels_manager is None:
+            await bus.publish_outbound(msg)
+            return DeliveryResult.queued_result(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                detail="channel manager not attached",
+            )
+        wait_started = getattr(channels_manager, "wait_started", None)
+        if callable(wait_started):
+            await wait_started()
+        wait_ready = getattr(channels_manager, "wait_ready", None)
+        if callable(wait_ready):
+            await wait_ready(msg.channel)
+        direct_send = getattr(channels_manager, "deliver_outbound", None)
+        if callable(direct_send):
+            result = await direct_send(msg)
+            if isinstance(result, DeliveryResult):
+                return result
+            return DeliveryResult.delivered_result(channel=msg.channel, chat_id=msg.chat_id)
+        send_outbound = getattr(channels_manager, "send_outbound", None)
+        if callable(send_outbound):
+            await send_outbound(msg)
+            return DeliveryResult.delivered_result(channel=msg.channel, chat_id=msg.chat_id)
+        await bus.publish_outbound(msg)
+        return DeliveryResult.queued_result(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            detail="channel manager missing delivery path",
+        )
 
     def load_automation(profile_id: str) -> HubAutomationBundle:
         normalized = str(profile_id or "").strip()
@@ -226,6 +261,7 @@ def build_hub_stack(
                 bus=bus,
                 logger=logger,
                 profile_id=resolved_profile_id,
+                delivery_sender=delivery_sender,
             )
         )
         automation = HubAutomationBundle(
@@ -239,6 +275,7 @@ def build_hub_stack(
                 prompt_root=context.roots.prompt_root,
                 dispatcher=dispatcher,
                 profile_id=resolved_profile_id,
+                delivery_sender=delivery_sender,
             ),
         )
         automation_cache[normalized] = automation
@@ -278,6 +315,7 @@ def build_hub_stack(
             agent=_build_agent(context),
             session_manager=session_manager,
         )
+        runtime.agent.set_delivery_sender(delivery_sender)
         runtime_cache[normalized] = runtime
         if runtime.profile_id and runtime.profile_id != normalized:
             runtime_cache[runtime.profile_id] = runtime
@@ -296,6 +334,7 @@ def build_hub_stack(
     current_runtime = dispatcher.ensure_runtime(current_profile_id)
     current_automation = dispatcher.ensure_automation(current_profile_id)
     channels = ChannelManager(config, bus, on_channel_error=resolved_options.on_channel_error)
+    channels_ref["manager"] = channels
     return HubStack(
         config=config,
         bus=bus,

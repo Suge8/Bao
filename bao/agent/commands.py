@@ -7,6 +7,7 @@ mutable state is passed explicitly via parameters.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Callable
 
@@ -16,6 +17,28 @@ from bao.bus.events import InboundMessage, OutboundMessage
 
 if TYPE_CHECKING:
     from bao.session.manager import Session, SessionManager
+
+
+@dataclass(frozen=True, slots=True)
+class ModelCommandRequest:
+    cmd: str
+    msg: InboundMessage
+    session: Session
+    available_models: list[str]
+    current_model: str
+    sessions: SessionManager
+    apply_fn: Callable[[str], None] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ModelSwitchRequest:
+    idx: int
+    msg: InboundMessage
+    session: Session
+    available_models: list[str]
+    current_model: str
+    sessions: SessionManager
+    apply_fn: Callable[[str], None] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -80,72 +103,62 @@ def create_and_switch(sessions: SessionManager, natural_key: str, name: str) -> 
 # ---------------------------------------------------------------------------
 
 
-def handle_model_command(
-    cmd: str,
-    msg: InboundMessage,
-    session: Session,
-    *,
-    available_models: list[str],
-    current_model: str,
-    sessions: SessionManager,
-    apply_fn: Callable[[str], None] | None = None,
-) -> OutboundMessage:
+def handle_model_command(request: ModelCommandRequest) -> OutboundMessage:
     """Show model list or switch by index."""
-    _, _, arg = cmd.partition(" ")
+    _, _, arg = request.cmd.partition(" ")
     if arg.isdigit():
         return switch_model(
-            int(arg),
-            msg,
-            session,
-            available_models=available_models,
-            current_model=current_model,
-            sessions=sessions,
-            apply_fn=apply_fn,
+            ModelSwitchRequest(
+                idx=int(arg),
+                msg=request.msg,
+                session=request.session,
+                available_models=request.available_models,
+                current_model=request.current_model,
+                sessions=request.sessions,
+                apply_fn=request.apply_fn,
+            )
         )
 
-    if not available_models:
+    if not request.available_models:
         return reply(
-            msg,
-            f"Current model: `{current_model}`\n\nNo alternative models configured. Add `models` list to config.",
+            request.msg,
+            "Current model: "
+            f"`{request.current_model}`\n\n"
+            "No alternative models configured. Add `models` list to config.",
         )
 
-    lines = [f"Current model: `{current_model}`\n"]
+    lines = [f"Current model: `{request.current_model}`\n"]
     lines += [
-        f"  {i}. {m}{' ✓' if m == current_model else ''}" for i, m in enumerate(available_models, 1)
+        f"  {i}. {model}{' ✓' if model == request.current_model else ''}"
+        for i, model in enumerate(request.available_models, 1)
     ]
     lines.append("\nReply with a number to switch.")
 
-    session.metadata["_pending_model_select"] = True
-    sessions.save(session)
-    return reply(msg, "\n".join(lines))
+    request.session.metadata["_pending_model_select"] = True
+    request.sessions.save(request.session)
+    return reply(request.msg, "\n".join(lines))
 
 
-def switch_model(
-    idx: int,
-    msg: InboundMessage,
-    session: Session,
-    *,
-    available_models: list[str],
-    current_model: str,
-    sessions: SessionManager,
-    apply_fn: Callable[[str], None] | None = None,
-) -> OutboundMessage:
+def switch_model(request: ModelSwitchRequest) -> OutboundMessage:
     """Validate and switch model. Call apply_fn(new_model) for mutation."""
-    if idx < 1 or idx > len(available_models):
-        return reply(msg, f"Invalid selection. Choose 1-{len(available_models)}.")
+    if request.idx < 1 or request.idx > len(request.available_models):
+        return reply(
+            request.msg,
+            f"Invalid selection. Choose 1-{len(request.available_models)}.",
+        )
 
-    new_model = available_models[idx - 1]
-    if apply_fn is None:
+    new_model = request.available_models[request.idx - 1]
+    if request.apply_fn is None:
         logger.debug("switch_model called without apply_fn, model not actually changed")
-        return reply(msg, "模型切换失败：缺少 apply_fn 回调。")
+        return reply(request.msg, "模型切换失败：缺少 apply_fn 回调。")
     try:
-        apply_fn(new_model)
+        request.apply_fn(new_model)
     except Exception as e:
         logger.warning("⚠️ Provider 重建失败 / rebuild failed for {}: {}", new_model, e)
-        return reply(msg, f"模型切换失败，仍为 `{current_model}`。错误: {e}")
+        return reply(request.msg, f"模型切换失败，仍为 `{request.current_model}`。错误: {e}")
 
-    sessions.save(session)
-    return reply(msg, f"Model switched to `{new_model}`")
+    request.sessions.save(request.session)
+    return reply(request.msg, f"Model switched to `{new_model}`")
 
 
 # ---------------------------------------------------------------------------

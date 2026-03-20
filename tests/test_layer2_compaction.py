@@ -7,22 +7,15 @@ from typing import Any
 
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider, LLMResponse
+from tests._provider_request_testkit import request_messages
 
 pytest = importlib.import_module("pytest")
 
 
 class DummyProvider(LLMProvider):
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        max_tokens: int = 4096,
-        temperature: float = 0.1,
-        on_progress: Any = None,
-        **kwargs: Any,
-    ) -> LLMResponse:
-        del messages, tools, model, max_tokens, temperature, on_progress, kwargs
+    async def chat(self, request: Any, **kwargs: Any) -> LLMResponse:
+        del kwargs
+        _ = request_messages(request)
         return LLMResponse(content="done", finish_reason="stop")
 
     def get_default_model(self) -> str:
@@ -62,6 +55,7 @@ def _build_messages_with_tool_pairs(n_pairs: int) -> list[dict[str, Any]]:
 
 
 def _make_loop(tmp_path: Path) -> Any:
+    from bao.agent._loop_run_models import RunAgentLoopOptions
     from bao.agent.loop import AgentLoop
 
     loop = AgentLoop(
@@ -72,6 +66,7 @@ def _make_loop(tmp_path: Path) -> Any:
     )
     loop._ctx_mgmt = "auto"
     loop._compact_keep_blocks = 2
+    loop._test_run_options_cls = RunAgentLoopOptions
     return loop
 
 
@@ -239,5 +234,8 @@ async def test_run_agent_loop_triggers_layer2_compaction_when_over_budget(
         *_build_messages_with_tool_pairs(8)[2:],
     ]
 
-    await loop._run_agent_loop(initial, artifact_session_key="gateway:c")
+    await loop._run_agent_loop(
+        initial,
+        options=loop._test_run_options_cls(artifact_session_key="gateway:c"),
+    )
     assert called["hit"] is True

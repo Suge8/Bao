@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import Callable
 from typing import Any
 
@@ -11,8 +10,11 @@ from loguru import logger
 
 from bao.bus.events import OutboundMessage
 from bao.bus.queue import MessageBus
+from bao.channels._manager_coding_meta import transform_coding_meta
+from bao.channels._manager_registry import ChannelRegistryContext, init_channels
 from bao.channels.base import BaseChannel
 from bao.config.schema import Config
+from bao.delivery import DeliveryResult
 
 
 class ChannelManager:
@@ -54,126 +56,14 @@ class ChannelManager:
         self._report_channel_error("unavailable", name.lower(), detail)
 
     def _init_channels(self) -> None:
-        """Initialize channels based on config."""
-
-        # Telegram channel
-        if self.config.channels.telegram.enabled:
-            try:
-                from bao.channels.telegram import TelegramChannel
-
-                groq_cfg = self.config.providers.get("groq")
-                self.channels["telegram"] = TelegramChannel(
-                    self.config.channels.telegram,
-                    self.bus,
-                    groq_api_key=groq_cfg.api_key.get_secret_value() if groq_cfg else "",
-                )
-                logger.debug("Telegram channel enabled")
-            except ImportError as e:
-                self._report_unavailable("Telegram", e)
-
-        # WhatsApp channel
-        if self.config.channels.whatsapp.enabled:
-            try:
-                from bao.channels.whatsapp import WhatsAppChannel
-
-                self.channels["whatsapp"] = WhatsAppChannel(self.config.channels.whatsapp, self.bus)
-                logger.debug("WhatsApp channel enabled")
-            except ImportError as e:
-                self._report_unavailable("WhatsApp", e)
-
-        # Discord channel
-        if self.config.channels.discord.enabled:
-            try:
-                from bao.channels.discord import DiscordChannel
-
-                self.channels["discord"] = DiscordChannel(self.config.channels.discord, self.bus)
-                logger.debug("Discord channel enabled")
-            except ImportError as e:
-                self._report_unavailable("Discord", e)
-
-        # Feishu channel
-        if self.config.channels.feishu.enabled:
-            try:
-                from bao.channels.feishu import FEISHU_AVAILABLE, FeishuChannel
-
-                if FEISHU_AVAILABLE:
-                    self.channels["feishu"] = FeishuChannel(self.config.channels.feishu, self.bus)
-                    logger.debug("Feishu channel enabled")
-                else:
-                    self._report_unavailable("Feishu", "sdk missing")
-            except ImportError as e:
-                self._report_unavailable("Feishu", e)
-
-        # Mochat channel
-        if self.config.channels.mochat.enabled:
-            try:
-                from bao.channels.mochat import MochatChannel
-
-                self.channels["mochat"] = MochatChannel(self.config.channels.mochat, self.bus)
-                logger.debug("Mochat channel enabled")
-            except ImportError as e:
-                self._report_unavailable("Mochat", e)
-
-        # DingTalk channel
-        if self.config.channels.dingtalk.enabled:
-            try:
-                from bao.channels.dingtalk import DINGTALK_AVAILABLE, DingTalkChannel
-
-                if DINGTALK_AVAILABLE:
-                    self.channels["dingtalk"] = DingTalkChannel(
-                        self.config.channels.dingtalk, self.bus
-                    )
-                    logger.debug("DingTalk channel enabled")
-                else:
-                    self._report_unavailable("DingTalk", "sdk missing")
-            except ImportError as e:
-                self._report_unavailable("DingTalk", e)
-
-        # Email channel
-        if self.config.channels.email.enabled:
-            try:
-                from bao.channels.email import EmailChannel
-
-                self.channels["email"] = EmailChannel(self.config.channels.email, self.bus)
-                logger.debug("Email channel enabled")
-            except ImportError as e:
-                self._report_unavailable("Email", e)
-
-        # Slack channel
-        if self.config.channels.slack.enabled:
-            try:
-                from bao.channels.slack import SlackChannel
-
-                self.channels["slack"] = SlackChannel(self.config.channels.slack, self.bus)
-                logger.debug("Slack channel enabled")
-            except ImportError as e:
-                self._report_unavailable("Slack", e)
-
-        # QQ channel
-        if self.config.channels.qq.enabled:
-            try:
-                from bao.channels.qq import QQ_AVAILABLE, QQChannel
-
-                if QQ_AVAILABLE:
-                    self.channels["qq"] = QQChannel(
-                        self.config.channels.qq,
-                        self.bus,
-                    )
-                    logger.debug("QQ channel enabled")
-                else:
-                    self._report_unavailable("QQ", "sdk missing")
-            except ImportError as e:
-                self._report_unavailable("QQ", e)
-
-        # iMessage channel (macOS only)
-        if self.config.channels.imessage.enabled:
-            try:
-                from bao.channels.imessage import IMessageChannel
-
-                self.channels["imessage"] = IMessageChannel(self.config.channels.imessage, self.bus)
-                logger.debug("iMessage channel enabled")
-            except ImportError as e:
-                self._report_unavailable("iMessage", e)
+        init_channels(
+            ChannelRegistryContext(
+                config=self.config,
+                bus=self.bus,
+                channels=self.channels,
+                report_unavailable=self._report_unavailable,
+            )
+        )
 
     async def _start_channel(self, name: str, channel: BaseChannel) -> None:
         """Start a channel and log any exceptions."""
@@ -214,21 +104,42 @@ class ChannelManager:
         await channel.wait_ready()
 
     async def send_outbound(self, msg: OutboundMessage) -> None:
+        await self._deliver_outbound(msg, strict=False)
+
+    async def deliver_outbound(self, msg: OutboundMessage) -> DeliveryResult:
+        result = await self._deliver_outbound(msg, strict=True)
+        assert result is not None
+        return result
+
+    async def _deliver_outbound(
+        self,
+        msg: OutboundMessage,
+        *,
+        strict: bool,
+    ) -> DeliveryResult | None:
         channel = self.channels.get(msg.channel)
         if not channel:
+            if strict:
+                raise RuntimeError(f"unknown channel: {msg.channel}")
             if msg.channel != "desktop":
                 logger.warning("⚠️ 未知通道 / unknown channel: {}", msg.channel)
-            return
+            return None
+        if strict and (not channel.is_running or not channel.is_ready):
+            raise RuntimeError(f"channel not ready: {msg.channel}")
         if msg.metadata.get("_progress"):
             defaults = self.config.agents.defaults
             if not channel.supports_progress:
-                return
+                if strict:
+                    raise RuntimeError(f"channel does not support progress: {msg.channel}")
+                return None
             is_tool_hint = msg.metadata.get("_tool_hint", False)
             allow_tool_hints = defaults.send_tool_hints
             allow_progress = defaults.send_progress
             if is_tool_hint and not allow_tool_hints:
                 if not allow_progress:
-                    return
+                    if strict:
+                        raise RuntimeError(f"tool hints disabled for channel: {msg.channel}")
+                    return None
                 suppressed_meta = dict(msg.metadata)
                 suppressed_meta["_tool_hint_suppressed"] = True
                 msg = OutboundMessage(
@@ -240,9 +151,12 @@ class ChannelManager:
                     metadata=suppressed_meta,
                 )
             if not is_tool_hint and not allow_progress:
-                return
+                if strict:
+                    raise RuntimeError(f"progress disabled for channel: {msg.channel}")
+                return None
         msg = self._transform_coding_meta(msg)
         await channel.send(msg)
+        return DeliveryResult.delivered_result(channel=msg.channel, chat_id=msg.chat_id)
 
     async def stop_all(self) -> None:
         """Stop all channels and the dispatcher."""
@@ -286,78 +200,8 @@ class ChannelManager:
         """Get a channel by name."""
         return self.channels.get(name)
 
-    @staticmethod
-    def _parse_meta_line(content: str, marker: str) -> tuple[dict[str, Any] | None, str]:
-        if marker not in content:
-            return None, content
-        lines = content.splitlines()
-        meta: dict[str, Any] | None = None
-        kept: list[str] = []
-        for line in lines:
-            if line.startswith(marker) and meta is None:
-                raw = line.split("=", 1)[1].strip()
-                try:
-                    parsed = json.loads(raw)
-                    if isinstance(parsed, dict):
-                        meta = parsed
-                        continue
-                except Exception:
-                    pass
-            kept.append(line)
-        cleaned = "\n".join(kept).rstrip("\n")
-        return meta, cleaned
-
-    @staticmethod
-    def _render_coding_status(provider: str, meta: dict[str, Any]) -> str:
-        status = str(meta.get("status") or "unknown")
-        icon = {"success": "✅", "error": "❌", "timeout": "⏱️"}.get(status, "⌨️")
-        attempts = meta.get("attempts")
-        duration_ms = meta.get("duration_ms")
-        session_id = meta.get("session_id")
-        error_type = meta.get("error_type")
-
-        parts = [f"{icon} {provider} status: {status}"]
-        if isinstance(attempts, int):
-            parts.append(f"attempts={attempts}")
-        if isinstance(duration_ms, int):
-            parts.append(f"duration={duration_ms / 1000:.1f}s")
-        if isinstance(session_id, str) and session_id:
-            parts.append(f"session={session_id}")
-        if isinstance(error_type, str) and error_type:
-            parts.append(f"error={error_type}")
-        return " | ".join(parts)
-
     def _transform_coding_meta(self, msg: OutboundMessage) -> OutboundMessage:
-        if msg.metadata.get("_progress"):
-            return msg
-        if not msg.content:
-            return msg
-        for provider, marker, meta_key, status_key in (
-            ("OpenCode", "OPENCODE_META=", "_opencode_meta", "_opencode_status"),
-            ("Codex", "CODEX_META=", "_codex_meta", "_codex_status"),
-            ("Claude Code", "CLAUDECODE_META=", "_claudecode_meta", "_claudecode_status"),
-        ):
-            meta, cleaned = self._parse_meta_line(msg.content, marker)
-            if not meta:
-                continue
-            lines = cleaned.splitlines()
-            if lines and lines[0].strip().lower() == f"{provider} completed successfully.".lower():
-                cleaned = "\n".join(lines[1:]).lstrip("\n")
-            status_line = self._render_coding_status(provider, meta)
-            final_content = status_line if not cleaned else f"{status_line}\n\n{cleaned}"
-            new_meta = dict(msg.metadata)
-            new_meta[meta_key] = meta
-            new_meta[status_key] = str(meta.get("status") or "unknown")
-            return OutboundMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                content=final_content,
-                reply_to=msg.reply_to,
-                media=msg.media,
-                metadata=new_meta,
-            )
-
-        return msg
+        return transform_coding_meta(msg)
 
     def get_status(self) -> dict[str, Any]:
         """Get status of all channels."""

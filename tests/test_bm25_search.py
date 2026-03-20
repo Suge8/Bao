@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from bao.agent.memory import MemoryStore
+from bao.agent.memory import Bm25RankRequest, MemoryStore
 
 # ---------------------------------------------------------------------------
 # _tokenize
@@ -53,10 +53,10 @@ def _make_doc(content: str) -> dict[str, Any]:
 class TestBm25Rank:
     def test_empty_query(self):
         docs = [_make_doc("hello world")]
-        assert MemoryStore._bm25_rank("", docs) == []
+        assert MemoryStore._bm25_rank(Bm25RankRequest(query="", docs=docs)) == []
 
     def test_empty_docs(self):
-        assert MemoryStore._bm25_rank("hello", []) == []
+        assert MemoryStore._bm25_rank(Bm25RankRequest(query="hello", docs=[])) == []
 
     def test_exact_match_ranks_higher(self):
         docs = [
@@ -64,7 +64,7 @@ class TestBm25Rank:
             _make_doc("git rebase merge conflict resolution"),
             _make_doc("python flask deployment production server"),
         ]
-        ranked = MemoryStore._bm25_rank("python flask", docs)
+        ranked = MemoryStore._bm25_rank(Bm25RankRequest(query="python flask", docs=docs))
         contents = [r["content"] for _, r in ranked]
         # Both python+flask docs should rank above git doc
         assert "git rebase" not in contents[0]
@@ -75,13 +75,13 @@ class TestBm25Rank:
             _make_doc("error error error in the code"),
             _make_doc("one error found"),
         ]
-        ranked = MemoryStore._bm25_rank("error", docs)
+        ranked = MemoryStore._bm25_rank(Bm25RankRequest(query="error", docs=docs))
         # Doc with more 'error' occurrences should rank higher
         assert "error error error" in ranked[0][1]["content"]
 
     def test_no_match_returns_empty(self):
         docs = [_make_doc("alpha beta gamma")]
-        assert MemoryStore._bm25_rank("xyz", docs) == []
+        assert MemoryStore._bm25_rank(Bm25RankRequest(query="xyz", docs=docs)) == []
 
     def test_idf_prefers_rare_terms(self):
         """A rare term should contribute more to the score than a common one."""
@@ -90,13 +90,13 @@ class TestBm25Rank:
             _make_doc("the common word and rare_token here"),
             _make_doc("the common word also here"),
         ]
-        ranked = MemoryStore._bm25_rank("rare_token", docs)
+        ranked = MemoryStore._bm25_rank(Bm25RankRequest(query="rare_token", docs=docs))
         assert len(ranked) == 1
         assert "rare_token" in ranked[0][1]["content"]
 
     def test_scores_are_positive(self):
         docs = [_make_doc("test content here")]
-        ranked = MemoryStore._bm25_rank("test", docs)
+        ranked = MemoryStore._bm25_rank(Bm25RankRequest(query="test", docs=docs))
         assert all(score > 0 for score, _ in ranked)
 
     def test_synonym_partial_overlap(self):
@@ -106,23 +106,25 @@ class TestBm25Rank:
             _make_doc("[Task] database migration\n[Lessons] always backup first"),
         ]
         # Query shares 'branch' with doc 0 but not doc 1
-        ranked = MemoryStore._bm25_rank("branch strategy", docs)
+        ranked = MemoryStore._bm25_rank(Bm25RankRequest(query="branch strategy", docs=docs))
         assert len(ranked) == 1
         assert "git branch" in ranked[0][1]["content"]
 
     def test_punctuation_matches_in_bm25(self):
         """BM25 should match 'error' against doc containing 'error.' (punctuation stripped)."""
         docs = [_make_doc("Found an error. Please fix it.")]
-        ranked = MemoryStore._bm25_rank("error", docs)
+        ranked = MemoryStore._bm25_rank(Bm25RankRequest(query="error", docs=docs))
         assert len(ranked) == 1
 
     def test_accepts_precomputed_query_and_doc_tokens(self):
         docs = [_make_doc("python flask deployment"), _make_doc("git rebase workflow")]
         ranked = MemoryStore._bm25_rank(
-            "python flask",
-            docs,
-            query_terms=["python", "flask"],
-            doc_tokens=[["python", "flask", "deployment"], ["git", "rebase", "workflow"]],
+            Bm25RankRequest(
+                query="python flask",
+                docs=docs,
+                query_terms=["python", "flask"],
+                doc_tokens=[["python", "flask", "deployment"], ["git", "rebase", "workflow"]],
+            )
         )
         assert len(ranked) == 1
         assert ranked[0][1]["content"] == "python flask deployment"

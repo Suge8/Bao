@@ -1,15 +1,37 @@
 import importlib
+import json
 import shutil
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
-from bao.agent.tool_result import ToolResultValue, maybe_temp_text_result
+from bao.agent.tool_result import ToolResultValue
+from bao.agent.tools._coding_agent_details import CodingAgentDetailsTool as _CodingAgentDetailsTool
+from bao.agent.tools._coding_agent_health import CodingBackendHealth, format_backend_issue
+from bao.agent.tools._coding_agent_schema import DEFAULT_MODEL_OVERRIDE_DESCRIPTION
 from bao.agent.tools.base import Tool
 
 
 class CodingAgentTool(Tool):
+    _BACKEND_SPECS = (
+        (
+            "opencode",
+            "opencode",
+            "bao.agent.tools.opencode",
+            "OpenCodeTool",
+            "OpenCodeDetailsTool",
+        ),
+        ("codex", "codex", "bao.agent.tools.codex", "CodexTool", "CodexDetailsTool"),
+        (
+            "claudecode",
+            "claude",
+            "bao.agent.tools.claudecode",
+            "ClaudeCodeTool",
+            "ClaudeCodeDetailsTool",
+        ),
+    )
+
     def __init__(self, workspace: Path, allowed_dir: Path | None = None, **kwargs: Any):
         self._workspace = workspace
         self._allowed_dir = allowed_dir
@@ -20,25 +42,7 @@ class CodingAgentTool(Tool):
         self._init_backends()
 
     def _init_backends(self) -> None:
-        backend_specs = [
-            (
-                "opencode",
-                "opencode",
-                "bao.agent.tools.opencode",
-                "OpenCodeTool",
-                "OpenCodeDetailsTool",
-            ),
-            ("codex", "codex", "bao.agent.tools.codex", "CodexTool", "CodexDetailsTool"),
-            (
-                "claudecode",
-                "claude",
-                "bao.agent.tools.claudecode",
-                "ClaudeCodeTool",
-                "ClaudeCodeDetailsTool",
-            ),
-        ]
-
-        for name, binary, module_path, tool_cls_name, details_cls_name in backend_specs:
+        for name, binary, module_path, tool_cls_name, details_cls_name in self._BACKEND_SPECS:
             if not shutil.which(binary):
                 continue
 
@@ -77,7 +81,17 @@ class CodingAgentTool(Tool):
     @property
     def parameters(self) -> dict[str, Any]:
         agents = list(self._backends.keys())
-        props: dict[str, Any] = {
+        props = self._base_parameter_properties(agents)
+        props.update(self._codex_parameter_properties())
+        props.update(self._opencode_parameter_properties())
+        return {
+            "type": "object",
+            "properties": props,
+            "required": ["agent", "prompt"],
+        }
+
+    def _base_parameter_properties(self, agents: list[str]) -> dict[str, Any]:
+        props = {
             "agent": {
                 "type": "string",
                 "enum": agents,
@@ -93,6 +107,13 @@ class CodingAgentTool(Tool):
                 "description": "Task prompt for the coding agent",
                 "minLength": 1,
             },
+        }
+        props.update(self._common_parameter_properties())
+        return props
+
+    @staticmethod
+    def _common_parameter_properties() -> dict[str, Any]:
+        return {
             "project_path": {
                 "type": "string",
                 "description": "Project directory (defaults to workspace)",
@@ -107,7 +128,7 @@ class CodingAgentTool(Tool):
             },
             "model": {
                 "type": "string",
-                "description": "Model name override",
+                "description": DEFAULT_MODEL_OVERRIDE_DESCRIPTION,
             },
             "timeout_seconds": {
                 "type": "integer",
@@ -124,7 +145,7 @@ class CodingAgentTool(Tool):
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 2,
-                "description": "Retry attempts on transient failures",
+                "description": "Reserved compatibility field; hidden automatic retries are disabled",
             },
             "max_output_chars": {
                 "type": "integer",
@@ -138,32 +159,37 @@ class CodingAgentTool(Tool):
             },
         }
 
+    def _codex_parameter_properties(self) -> dict[str, Any]:
         if "codex" in self._backends:
-            props["sandbox"] = {
-                "type": "string",
-                "enum": ["read-only", "workspace-write", "danger-full-access"],
-                "description": "Codex sandbox mode. Ignored unless agent='codex'.",
+            return {
+                "sandbox": {
+                    "type": "string",
+                    "enum": ["read-only", "workspace-write", "danger-full-access"],
+                    "description": "Codex sandbox mode. Ignored unless agent='codex'.",
+                },
+                "full_auto": {
+                    "type": "boolean",
+                    "description": "Codex full-auto mode. Ignored unless agent='codex'.",
+                },
             }
-            props["full_auto"] = {
-                "type": "boolean",
-                "description": "Codex full-auto mode. Ignored unless agent='codex'.",
-            }
+        return {}
 
+    def _opencode_parameter_properties(self) -> dict[str, Any]:
         if "opencode" in self._backends:
-            props["opencode_agent"] = {
-                "type": "string",
-                "description": "OpenCode agent type (e.g. build, plan). Ignored unless agent='opencode'.",
+            return {
+                "opencode_agent": {
+                    "type": "string",
+                    "description": (
+                        "OpenCode agent type (e.g. build, plan). "
+                        "Ignored unless agent='opencode'."
+                    ),
+                },
+                "fork": {
+                    "type": "boolean",
+                    "description": "Fork session when continuing. Ignored unless agent='opencode'.",
+                },
             }
-            props["fork"] = {
-                "type": "boolean",
-                "description": "Fork session when continuing. Ignored unless agent='opencode'.",
-            }
-
-        return {
-            "type": "object",
-            "properties": props,
-            "required": ["agent", "prompt"],
-        }
+        return {}
 
     def set_context(self, channel: str, chat_id: str, session_key: str | None = None) -> None:
         for backend in self._backends.values():
@@ -171,11 +197,36 @@ class CodingAgentTool(Tool):
         for details_tool in self._details_tools.values():
             details_tool.set_context(channel, chat_id, session_key)
 
+    async def collect_backend_health(self, timeout_seconds: int = 20) -> dict[str, CodingBackendHealth]:
+        results: dict[str, CodingBackendHealth] = {}
+        for name in self._backends:
+            results[name] = await self._probe_backend(name, timeout_seconds)
+        return results
+
+    async def _probe_backend(self, name: str, timeout_seconds: int) -> CodingBackendHealth:
+        backend = self._backends[name]
+        probe = getattr(backend, "probe_health", None)
+        if callable(probe):
+            return await probe(timeout_seconds)
+        return CodingBackendHealth(backend=name, ready=True)
+
     async def execute(self, **kwargs: Any) -> ToolResultValue:
         agent_name = kwargs.pop("agent", None)
         if not isinstance(agent_name, str) or agent_name not in self._backends:
             available = ", ".join(self._backends.keys()) or "none"
             return f"Error: agent must be one of: {available}"
+
+        health = await self._probe_backend(agent_name, timeout_seconds=20)
+        if health is not None and not health.ready:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error_type": health.error_type or "backend_unavailable",
+                    "summary": format_backend_issue(health) or f"{agent_name} backend unavailable",
+                    "hints": list(health.hints),
+                },
+                ensure_ascii=False,
+            )
 
         backend = self._backends[agent_name]
 
@@ -197,144 +248,4 @@ class CodingAgentTool(Tool):
         return await backend.execute(**kwargs)
 
 
-class CodingAgentDetailsTool(Tool):
-    def __init__(self, parent: CodingAgentTool):
-        self._parent = parent
-
-    def set_context(self, channel: str, chat_id: str, session_key: str | None = None) -> None:
-        self._parent.set_context(channel, chat_id, session_key=session_key)
-
-    @property
-    def name(self) -> str:
-        return "coding_agent_details"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Fetch cached stdout/stderr from a previous coding_agent run by "
-            "request_id or session_id."
-        )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "request_id": {
-                    "type": "string",
-                    "description": "Request ID from coding_agent output",
-                },
-                "session_id": {
-                    "type": "string",
-                    "description": "Session ID fallback",
-                },
-                "agent": {
-                    "type": "string",
-                    "enum": self._parent.available_backends,
-                    "description": "Optional backend filter to disambiguate session_id lookups",
-                },
-                "max_chars": {
-                    "type": "integer",
-                    "minimum": 200,
-                    "maximum": 50000,
-                    "description": "Max output chars",
-                },
-                "include_stderr": {
-                    "type": "boolean",
-                    "description": "Include stderr content",
-                },
-                "response_format": {
-                    "type": "string",
-                    "enum": ["hybrid", "json", "text"],
-                    "description": "Output format",
-                },
-            },
-            "required": [],
-        }
-
-    @staticmethod
-    def _clip_text(text: str, max_chars: int) -> str:
-        if len(text) <= max_chars:
-            return text
-        return text[:max_chars]
-
-    @classmethod
-    def _render_fallback_record(
-        cls,
-        *,
-        agent_name: str,
-        record: dict[str, Any],
-        max_chars: int,
-        include_stderr: bool,
-    ) -> ToolResultValue:
-        stdout = cls._clip_text(str(record.get("stdout", "")), max_chars)
-        stderr = str(record.get("stderr", ""))
-        parts = [f"[{agent_name}] request_id={record.get('request_id', '?')}"]
-        parts.append(f"Status: {record.get('status', '?')}")
-        if stdout:
-            parts.append(f"Output:\n{stdout}")
-        if include_stderr and stderr:
-            parts.append(f"Stderr:\n{cls._clip_text(stderr, max_chars)}")
-        return maybe_temp_text_result("\n".join(parts), prefix="bao_coding_details_")
-
-    async def execute(self, **kwargs: Any) -> ToolResultValue:
-        request_id = kwargs.get("request_id")
-        session_id = kwargs.get("session_id")
-        agent_filter = kwargs.get("agent")
-
-        if agent_filter is not None and not isinstance(agent_filter, str):
-            return "Error: agent must be a string"
-        if isinstance(agent_filter, str) and agent_filter not in self._parent._backends:
-            available = ", ".join(self._parent._backends.keys()) or "none"
-            return f"Error: agent must be one of: {available}"
-
-        target_agents = (
-            [agent_filter]
-            if isinstance(agent_filter, str)
-            else list(self._parent._detail_caches.keys())
-        )
-        matches: list[tuple[str, Any, Any]] = []
-
-        for agent_name in target_agents:
-            cache = self._parent._detail_caches.get(agent_name)
-            if cache is None:
-                continue
-            backend = self._parent._backends.get(agent_name)
-            if backend is None:
-                continue
-            context_key = backend._context_key.get()
-            record = cache.lookup(
-                context_key=context_key,
-                request_id=request_id,
-                session_id=session_id,
-            )
-            if not record:
-                continue
-            details_tool = self._parent._details_tools.get(agent_name)
-            matches.append((agent_name, record, details_tool))
-
-        if not request_id and session_id and not isinstance(agent_filter, str) and len(matches) > 1:
-            backends = ", ".join(name for name, _, _ in matches)
-            return (
-                "Ambiguous session_id across backends. "
-                f"Matched backends: {backends}. "
-                "Please provide agent to disambiguate."
-            )
-
-        if matches:
-            agent_name, record, details_tool = matches[0]
-            if details_tool is not None:
-                return await details_tool.execute(**kwargs)
-
-            max_chars = kwargs.get("max_chars", 4000)
-            if not isinstance(max_chars, int):
-                max_chars = 4000
-            max_chars = max(200, min(max_chars, 50000))
-            return self._render_fallback_record(
-                agent_name=agent_name,
-                record=record,
-                max_chars=max_chars,
-                include_stderr=bool(kwargs.get("include_stderr")),
-            )
-
-        return "No cached details found for the given request_id/session_id."
+CodingAgentDetailsTool = _CodingAgentDetailsTool

@@ -5,28 +5,27 @@ import json
 from pathlib import Path
 from typing import Any
 
-from bao.agent.subagent import SubagentManager, TaskStatus
+from bao.agent.subagent import (
+    FinalizeFailureRequest,
+    SubagentManager,
+    SubagentManagerOptions,
+    TaskStatus,
+)
 from bao.agent.tools.diagnostics import RuntimeDiagnosticsTool
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider
 from bao.runtime_diagnostics import get_runtime_diagnostics_store
+from bao.runtime_diagnostics_models import RuntimeEventRequest
+from tests._provider_request_testkit import request_messages
 
 
 class _DummyProvider(LLMProvider):
     def __init__(self) -> None:
         super().__init__(api_key=None, api_base=None)
 
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        max_tokens: int = 4096,
-        temperature: float = 0.7,
-        on_progress=None,
-        **kwargs: Any,
-    ) -> Any:
-        del messages, tools, model, max_tokens, temperature, on_progress, kwargs
+    async def chat(self, request: Any, **kwargs: Any) -> Any:
+        del kwargs
+        _ = request_messages(request)
         raise RuntimeError("not used in this test")
 
     def get_default_model(self) -> str:
@@ -39,12 +38,14 @@ def test_runtime_diagnostics_tool_returns_structured_snapshot() -> None:
     store.set_log_file_path("/tmp/bao-desktop.log")
     store.append_log_line("2026-03-07 10:00:00 | INFO | boot")
     store.record_event(
-        source="tool",
-        stage="tool_call",
-        message="Exit code 1",
-        code="exec_exit_code",
-        retryable=True,
-        details={"tool_name": "exec"},
+        RuntimeEventRequest(
+            source="tool",
+            stage="tool_call",
+            message="Exit code 1",
+            code="exec_exit_code",
+            retryable=True,
+            details={"tool_name": "exec"},
+        )
     )
     store.set_tool_observability({"tool_calls_total": 3, "tool_calls_error": 1})
 
@@ -64,18 +65,22 @@ def test_runtime_diagnostics_tool_applies_scope_filters() -> None:
     store = get_runtime_diagnostics_store()
     store.clear()
     store.record_event(
-        source="subagent",
-        stage="failed",
-        message="subagent failed",
-        code="subagent_failed",
-        session_key="task-1",
+        RuntimeEventRequest(
+            source="subagent",
+            stage="failed",
+            message="subagent failed",
+            code="subagent_failed",
+            session_key="task-1",
+        )
     )
     store.record_event(
-        source="agent_loop",
-        stage="dispatch",
-        message="parent failed",
-        code="message_error",
-        session_key="desktop:local",
+        RuntimeEventRequest(
+            source="agent_loop",
+            stage="dispatch",
+            message="parent failed",
+            code="message_error",
+            session_key="desktop:local",
+        )
     )
     store.append_log_line("2026-03-07 10:00:00 | ERROR | parent failed")
     store.set_tool_observability({"tool_calls_total": 9})
@@ -106,11 +111,13 @@ def test_runtime_diagnostics_tool_hides_global_views_for_scoped_parent_query() -
     store = get_runtime_diagnostics_store()
     store.clear()
     store.record_event(
-        source="provider",
-        stage="chat",
-        message="provider failed",
-        code="provider_error",
-        session_key="desktop:local",
+        RuntimeEventRequest(
+            source="provider",
+            stage="chat",
+            message="provider failed",
+            code="provider_error",
+            session_key="desktop:local",
+        )
     )
     store.append_log_line("2026-03-07 10:00:00 | ERROR | provider failed")
     store.set_tool_observability({"tool_calls_total": 4})
@@ -131,9 +138,8 @@ def test_subagent_failure_records_runtime_diagnostic(tmp_path: Path) -> None:
     store.clear()
 
     manager = SubagentManager(
-        provider=_DummyProvider(),
-        workspace=tmp_path,
-        bus=MessageBus(),
+        _DummyProvider(),
+        SubagentManagerOptions(workspace=tmp_path, bus=MessageBus()),
     )
     manager._task_statuses["task-1"] = TaskStatus(
         task_id="task-1",
@@ -144,11 +150,13 @@ def test_subagent_failure_records_runtime_diagnostic(tmp_path: Path) -> None:
 
     asyncio.run(
         manager._finalize_subagent_failure(
-            task_id="task-1",
-            label="demo",
-            task="run demo",
-            origin={"channel": "desktop", "chat_id": "local", "session_key": "desktop:local"},
-            error=RuntimeError("subagent exploded"),
+            FinalizeFailureRequest(
+                task_id="task-1",
+                label="demo",
+                task="run demo",
+                origin={"channel": "desktop", "chat_id": "local", "session_key": "desktop:local"},
+                error=RuntimeError("subagent exploded"),
+            )
         )
     )
 

@@ -1,10 +1,16 @@
 """Codex CLI coding agent tool — thin subclass of BaseCodingAgentTool."""
 
-import json
 import tempfile
 from pathlib import Path
 from typing import Any
 
+from bao.agent.tools._codex_jsonl import (
+    extract_last_message_from_jsonl,
+    extract_session_id_from_jsonl,
+    read_last_output_file,
+)
+from bao.agent.tools._coding_agent_health import CodingBackendHealth
+from bao.agent.tools._coding_agent_schema import build_coding_agent_parameters
 from bao.agent.tools.coding_agent_base import (
     BaseCodingAgentTool,
     BaseCodingDetailsTool,
@@ -18,6 +24,7 @@ _CODEX_MODE_OPTION_SUPPORT: dict[str, frozenset[str]] = {
     "start": frozenset({"model", "sandbox", "full_auto"}),
     "resume": frozenset({"model", "full_auto"}),
 }
+_CODEX_COMMON_FLAGS: tuple[str, ...] = ("--skip-git-repo-check",)
 
 
 class CodexTool(BaseCodingAgentTool):
@@ -65,30 +72,11 @@ class CodexTool(BaseCodingAgentTool):
 
     @property
     def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "prompt": {
-                    "type": "string",
-                    "description": "Task prompt sent to Codex",
-                    "minLength": 1,
-                },
-                "project_path": {
-                    "type": "string",
-                    "description": "Optional project directory (defaults to workspace)",
-                },
-                "session_id": {
-                    "type": "string",
-                    "description": "Optional explicit Codex session id to continue",
-                },
-                "continue_session": {
-                    "type": "boolean",
-                    "description": "Continue previous chat-specific session when available",
-                },
-                "model": {
-                    "type": "string",
-                    "description": "Optional model name",
-                },
+        return build_coding_agent_parameters(
+            prompt_description="Task prompt sent to Codex",
+            session_description="Optional explicit Codex session id to continue",
+            model_description="Optional explicit model override. Omit it to use the Codex CLI default model.",
+            extra_properties={
                 "sandbox": {
                     "type": "string",
                     "enum": ["read-only", "workspace-write", "danger-full-access"],
@@ -98,36 +86,8 @@ class CodexTool(BaseCodingAgentTool):
                     "type": "boolean",
                     "description": "Enable Codex --full-auto for lower-friction automation",
                 },
-                "timeout_seconds": {
-                    "type": "integer",
-                    "minimum": 30,
-                    "maximum": 1800,
-                    "description": "Execution timeout in seconds (default 1800)",
-                },
-                "response_format": {
-                    "type": "string",
-                    "enum": ["hybrid", "json", "text"],
-                    "description": "Return format: hybrid (default), json, or text",
-                },
-                "max_retries": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 2,
-                    "description": "Reserved compatibility field; hidden automatic retries are disabled",
-                },
-                "max_output_chars": {
-                    "type": "integer",
-                    "minimum": 200,
-                    "maximum": 50000,
-                    "description": "Max chars for stdout/stderr in tool output (default 4000)",
-                },
-                "include_details": {
-                    "type": "boolean",
-                    "description": "Include full tool stdout/stderr in output (default false)",
-                },
             },
-            "required": ["prompt"],
-        }
+        )
 
     # -- transient markers override (adds "overloaded") --
 
@@ -173,7 +133,7 @@ class CodexTool(BaseCodingAgentTool):
         output_file = tmp.name
         tmp.close()
         mode = "resume" if resolved_session else "start"
-        cmd = ["codex", "exec"]
+        cmd = ["codex", "exec", *_CODEX_COMMON_FLAGS]
         if mode == "resume":
             cmd.append("resume")
         cmd.extend(["--json", "-o", output_file])
@@ -194,8 +154,8 @@ class CodexTool(BaseCodingAgentTool):
         """On success: file > JSONL > raw. On failure: JSONL > raw > file."""
         output_file = exec_state.get("output_file", "")
         is_failure = exec_state.get("_returncode", 0) != 0
-        file_content = self._read_last_output_file(output_file)
-        jsonl_content = self._extract_last_message_from_jsonl(stdout_text)
+        file_content = read_last_output_file(output_file)
+        jsonl_content = extract_last_message_from_jsonl(stdout_text)
         raw = stdout_text.strip()
         if is_failure:
             return jsonl_content or raw or file_content or "(no output)"
@@ -210,7 +170,7 @@ class CodexTool(BaseCodingAgentTool):
         exec_state: dict[str, Any],
         timeout: int,
     ) -> str | None:
-        parsed = self._extract_session_id_from_jsonl(stdout_text)
+        parsed = extract_session_id_from_jsonl(stdout_text)
         return parsed or resolved_session
 
     def _cleanup(self, exec_state: dict[str, Any]) -> None:
@@ -220,6 +180,8 @@ class CodexTool(BaseCodingAgentTool):
 
     def _error_type_impl(self, stdout_text: str, stderr_text: str) -> str:
         lowered = f"{stdout_text}\n{stderr_text}".lower()
+        if "未配置模型" in lowered or "model" in lowered and "not configured" in lowered:
+            return "model_not_available"
         if "login" in lowered or "auth" in lowered or "api key" in lowered:
             return "auth_not_configured"
         if "permission" in lowered or "approval" in lowered:
@@ -231,6 +193,10 @@ class CodexTool(BaseCodingAgentTool):
     def _build_failure_hints(self, stdout_text: str, stderr_text: str) -> list[str]:
         lowered = f"{stdout_text}\n{stderr_text}".lower()
         hints: list[str] = []
+        if "未配置模型" in lowered or "model" in lowered and "not configured" in lowered:
+            hints.append(
+                "Set a supported Codex model explicitly with the tool `model` parameter or fix ~/.codex/config.toml."
+            )
         if "login" in lowered or "auth" in lowered or "api key" in lowered:
             hints.append(
                 "Run `codex login` (or `codex login --with-api-key`) to configure authentication."
@@ -241,6 +207,50 @@ class CodexTool(BaseCodingAgentTool):
                 "enable full_auto explicitly or adjust Codex config profile."
             )
         return hints
+
+    async def _probe_backend_health(self, timeout_seconds: int) -> CodingBackendHealth:
+        tmp = tempfile.NamedTemporaryFile(prefix="bao_codex_probe_", suffix=".txt", delete=False)
+        output_file = tmp.name
+        tmp.close()
+        cmd = [
+            "codex",
+            "exec",
+            *_CODEX_COMMON_FLAGS,
+            "--sandbox",
+            "read-only",
+            "--json",
+            "-o",
+            output_file,
+            "Reply with OK.",
+        ]
+        try:
+            result = await self._run_command(
+                cmd=cmd,
+                cwd=self.workspace,
+                timeout_seconds=max(5, min(timeout_seconds, 30)),
+            )
+        finally:
+            Path(output_file).unlink(missing_ok=True)
+        stdout_text = result["stdout"]
+        stderr_text = result["stderr"]
+        if result["timed_out"]:
+            return CodingBackendHealth(
+                backend=self.name,
+                ready=False,
+                error_type="timeout",
+                message="Codex backend preflight timed out.",
+            )
+        if result["returncode"] == 0:
+            return CodingBackendHealth(backend=self.name, ready=True)
+        error_type = self._classify_error_type(stdout_text, stderr_text)
+        summary = self._summarize_output(stdout_text, stderr_text, max_chars=240)
+        return CodingBackendHealth(
+            backend=self.name,
+            ready=False,
+            error_type=error_type,
+            message=summary,
+            hints=tuple(self._build_failure_hints(stdout_text, stderr_text)),
+        )
 
     def _build_details_hint(
         self,
@@ -261,101 +271,6 @@ class CodexTool(BaseCodingAgentTool):
             "Detailed output omitted to protect context budget. "
             f"Use coding_agent_details with request_id '{request_id}' to view full stdout/stderr."
         )
-
-    # -- JSONL / output helpers --
-
-    @staticmethod
-    def _read_last_output_file(path: str) -> str:
-        file_path = Path(path)
-        if not file_path.exists():
-            return ""
-        try:
-            return file_path.read_text(encoding="utf-8", errors="replace").strip()
-        except Exception:
-            return ""
-
-    @staticmethod
-    def _extract_json_objects(text: str) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for line in text.splitlines():
-            s = line.strip()
-            if not s:
-                continue
-            try:
-                obj = json.loads(s)
-            except Exception:
-                continue
-            if isinstance(obj, dict):
-                rows.append(obj)
-            elif isinstance(obj, list):
-                rows.extend(x for x in obj if isinstance(x, dict))
-        return rows
-
-    @staticmethod
-    def _extract_session_id_from_jsonl(text: str) -> str | None:
-        rows = CodexTool._extract_json_objects(text)
-        # Prefer thread_id from thread.started event (official Codex schema)
-        for obj in rows:
-            if obj.get("type") == "thread.started":
-                tid = obj.get("thread_id") or obj.get("threadId")
-                if isinstance(tid, str) and tid.strip():
-                    return tid.strip()
-        # Fallback: search all rows for any session/thread id key
-        for obj in rows:
-            sid = CodexTool._find_first_string_by_keys(
-                obj,
-                (
-                    "thread_id",
-                    "threadId",
-                    "session_id",
-                    "sessionId",
-                    "conversation_id",
-                    "conversationId",
-                ),
-            )
-            if sid:
-                return sid
-        return None
-
-    @staticmethod
-    def _extract_last_message_from_jsonl(text: str) -> str | None:
-        rows = CodexTool._extract_json_objects(text)
-        candidates: list[str] = []
-        for obj in rows:
-            msg = CodexTool._find_first_string_by_keys(
-                obj,
-                (
-                    "final_message",
-                    "finalMessage",
-                    "last_message",
-                    "lastMessage",
-                    "message",
-                    "content",
-                    "text",
-                ),
-            )
-            if msg:
-                candidates.append(msg)
-        return candidates[-1] if candidates else None
-
-    @staticmethod
-    def _find_first_string_by_keys(obj: Any, keys: tuple[str, ...]) -> str | None:
-        if isinstance(obj, dict):
-            for key in keys:
-                val = obj.get(key)
-                if isinstance(val, str) and val.strip():
-                    return val.strip()
-            for val in obj.values():
-                hit = CodexTool._find_first_string_by_keys(val, keys)
-                if hit:
-                    return hit
-        elif isinstance(obj, list):
-            for item in obj:
-                hit = CodexTool._find_first_string_by_keys(item, keys)
-                if hit:
-                    return hit
-        return None
-
 
 class CodexDetailsTool(BaseCodingDetailsTool):
     def __init__(self, default_max_chars: int = 12000):

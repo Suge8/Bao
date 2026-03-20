@@ -7,6 +7,7 @@ from loguru import logger
 
 from bao.agent import plan
 from bao.agent.reply_route import TurnContextStore
+from bao.agent.reply_route_models import ReplyRouteInput
 from bao.agent.tools.base import Tool
 from bao.bus.events import OutboundMessage
 from bao.session.manager import SessionManager
@@ -22,9 +23,11 @@ class _PlanToolBase:
         self._publish_outbound = publish_outbound
         self._route = TurnContextStore(
             "plan_route",
-            channel="gateway",
-            chat_id="direct",
-            session_key="gateway:direct",
+            ReplyRouteInput(
+                channel="hub",
+                chat_id="direct",
+                session_key="hub:direct",
+            ),
         )
 
     def set_context(
@@ -36,11 +39,13 @@ class _PlanToolBase:
         reply_metadata: dict[str, Any] | None = None,
     ) -> None:
         self._route.set(
-            channel=channel,
-            chat_id=chat_id,
-            session_key=session_key or f"{channel}:{chat_id}",
-            lang=plan.normalize_language(lang),
-            reply_metadata=reply_metadata,
+            ReplyRouteInput(
+                channel=channel,
+                chat_id=chat_id,
+                session_key=session_key or f"{channel}:{chat_id}",
+                lang=plan.normalize_language(lang),
+                reply_metadata=dict(reply_metadata or {}),
+            ),
         )
 
     def _get_session_key(self) -> str:

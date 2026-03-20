@@ -5,15 +5,22 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Awaitable, Callable
 
 import httpx
 from oauth_cli_kit import get_token as get_codex_token
 
-from bao.providers.base import LLMProvider, LLMResponse, ProviderCapabilitySnapshot, ToolCallRequest
-from bao.providers.openai_provider import (
+from bao.providers._openai_provider_common import (
     _normalize_openai_reasoning_effort,
     _normalize_service_tier,
+)
+from bao.providers.base import (
+    ChatRequest,
+    LLMProvider,
+    LLMResponse,
+    ProviderCapabilitySnapshot,
+    ToolCallRequest,
 )
 from bao.providers.responses_compat import (
     append_responses_tool_call_arguments,
@@ -24,10 +31,19 @@ from bao.providers.responses_compat import (
     start_responses_tool_call,
 )
 from bao.providers.retry import emit_progress
-from bao.providers.runtime import ProviderRuntimeExecutor
+from bao.providers.runtime import ProviderExecutionRequest, ProviderRuntimeExecutor
 
 DEFAULT_CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
 DEFAULT_ORIGINATOR = "Bao"
+
+
+@dataclass(frozen=True)
+class _CodexRequest:
+    url: str
+    headers: dict[str, str]
+    body: dict[str, Any]
+    verify: bool
+    on_progress: Callable[[str], Awaitable[None]] | None = None
 
 
 class OpenAICodexProvider(LLMProvider):
@@ -51,23 +67,11 @@ class OpenAICodexProvider(LLMProvider):
             supports_thinking=True,
         )
 
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        max_tokens: int = 4096,
-        temperature: float = 0.1,
-        on_progress: Callable[[str], Awaitable[None]] | None = None,
-        **kwargs: Any,
-    ) -> LLMResponse:
-        del max_tokens, temperature
-        model = model or self.default_model
-        reasoning_effort = _normalize_openai_reasoning_effort(
-            kwargs.get("reasoning_effort"), allow_off=True
-        )
-        service_tier = _normalize_service_tier(kwargs.get("service_tier"))
-        system_prompt, input_items = convert_messages_to_responses(messages)
+    async def chat(self, request: ChatRequest) -> LLMResponse:
+        model = request.model or self.default_model
+        reasoning_effort = _normalize_openai_reasoning_effort(request.reasoning_effort, allow_off=True)
+        service_tier = _normalize_service_tier(request.service_tier)
+        system_prompt, input_items = convert_messages_to_responses(request.messages)
 
         token = await asyncio.to_thread(get_codex_token)
         account_id = token.account_id or ""
@@ -86,15 +90,15 @@ class OpenAICodexProvider(LLMProvider):
             "input": input_items,
             "text": {"verbosity": "medium"},
             "include": ["reasoning.encrypted_content"],
-            "prompt_cache_key": _prompt_cache_key(messages),
+            "prompt_cache_key": _prompt_cache_key(request.messages),
         }
         if reasoning_effort:
             body["reasoning"] = {"effort": reasoning_effort}
         if service_tier:
             body["service_tier"] = service_tier
 
-        if tools:
-            body["tools"] = convert_tools_to_responses(tools)
+        if request.tools:
+            body["tools"] = convert_tools_to_responses(request.tools)
             body["tool_choice"] = "auto"
             body["parallel_tool_calls"] = True
 
@@ -103,7 +107,13 @@ class OpenAICodexProvider(LLMProvider):
 
         async def _run_once() -> LLMResponse:
             content, tool_calls, finish_reason = await _request_codex(
-                url, headers, body, verify=True, on_progress=on_progress
+                _CodexRequest(
+                    url=url,
+                    headers=headers,
+                    body=body,
+                    verify=True,
+                    on_progress=request.on_progress,
+                )
             )
             return LLMResponse(
                 content=content,
@@ -113,8 +123,10 @@ class OpenAICodexProvider(LLMProvider):
 
         result = await executor.run(
             _run_once,
-            error_prefix="Error calling Codex",
-            progress_error_prefix="Error calling Codex progress callback",
+            ProviderExecutionRequest(
+                error_prefix="Error calling Codex",
+                progress_error_prefix="Error calling Codex progress callback",
+            ),
         )
         return result
 
@@ -140,21 +152,15 @@ def _build_headers(account_id: str, token: str) -> dict[str, str]:
     }
 
 
-async def _request_codex(
-    url: str,
-    headers: dict[str, str],
-    body: dict[str, Any],
-    verify: bool,
-    on_progress: Callable[[str], Awaitable[None]] | None = None,
-) -> tuple[str, list[ToolCallRequest], str]:
-    async with httpx.AsyncClient(timeout=60.0, verify=verify) as client:
-        async with client.stream("POST", url, headers=headers, json=body) as response:
+async def _request_codex(request: _CodexRequest) -> tuple[str, list[ToolCallRequest], str]:
+    async with httpx.AsyncClient(timeout=60.0, verify=request.verify) as client:
+        async with client.stream("POST", request.url, headers=request.headers, json=request.body) as response:
             if response.status_code != 200:
                 text = await response.aread()
                 raise RuntimeError(
                     _friendly_error(response.status_code, text.decode("utf-8", "ignore"))
                 )
-            return await _consume_sse(response, on_progress=on_progress)
+            return await _consume_sse(response, on_progress=request.on_progress)
 
 
 def _prompt_cache_key(messages: list[dict[str, Any]]) -> str:

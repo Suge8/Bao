@@ -1,11 +1,12 @@
 """OpenCode CLI coding agent tool — thin subclass of BaseCodingAgentTool."""
 
 import json
-import re
 import uuid
 from pathlib import Path
 from typing import Any
 
+from bao.agent.tools._coding_agent_schema import build_coding_agent_parameters
+from bao.agent.tools._opencode_agents import resolve_agent_alias
 from bao.agent.tools.coding_agent_base import (
     BaseCodingAgentTool,
     BaseCodingDetailsTool,
@@ -13,9 +14,7 @@ from bao.agent.tools.coding_agent_base import (
 )
 from bao.agent.tools.coding_session_store import CodingSessionStore
 
-# Shared cache between OpenCodeTool and OpenCodeDetailsTool
 _opencode_cache = DetailCache()
-_DISPLAY_NAME_PATTERN = re.compile(r"^(.+?)\s+\(")
 
 
 class OpenCodeTool(BaseCodingAgentTool):
@@ -64,68 +63,24 @@ class OpenCodeTool(BaseCodingAgentTool):
 
     @property
     def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "prompt": {
-                    "type": "string",
-                    "description": "Task prompt sent to OpenCode",
-                    "minLength": 1,
-                },
-                "project_path": {
-                    "type": "string",
-                    "description": "Optional project directory (defaults to workspace)",
-                },
-                "session_id": {
-                    "type": "string",
-                    "description": "Optional explicit OpenCode session ID to continue",
-                },
-                "continue_session": {
-                    "type": "boolean",
-                    "description": "Continue previous chat-specific session when available",
-                },
+        return build_coding_agent_parameters(
+            prompt_description="Task prompt sent to OpenCode",
+            session_description="Optional explicit OpenCode session ID to continue",
+            model_description=(
+                "Optional explicit model override in provider/model format. "
+                "Omit it to use the backend or CLI default model."
+            ),
+            extra_properties={
                 "fork": {
                     "type": "boolean",
                     "description": "Fork when continuing from a session",
-                },
-                "model": {
-                    "type": "string",
-                    "description": "Optional model in provider/model format",
                 },
                 "agent": {
                     "type": "string",
                     "description": "Optional OpenCode agent (for example: build, plan)",
                 },
-                "timeout_seconds": {
-                    "type": "integer",
-                    "minimum": 30,
-                    "maximum": 1800,
-                    "description": "Execution timeout in seconds (default 1800)",
-                },
-                "response_format": {
-                    "type": "string",
-                    "enum": ["hybrid", "json", "text"],
-                    "description": "Return format: hybrid (default), json, or text",
-                },
-                "max_retries": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 2,
-                    "description": "Reserved compatibility field; hidden automatic retries are disabled",
-                },
-                "max_output_chars": {
-                    "type": "integer",
-                    "minimum": 200,
-                    "maximum": 50000,
-                    "description": "Max chars for stdout/stderr in tool output (default 4000)",
-                },
-                "include_details": {
-                    "type": "boolean",
-                    "description": "Include full tool stdout/stderr in output (default false)",
-                },
             },
-            "required": ["prompt"],
-        }
+        )
 
     # -- hook implementations --
 
@@ -137,10 +92,12 @@ class OpenCodeTool(BaseCodingAgentTool):
             return extra_params
 
         prepared = dict(extra_params)
-        prepared["agent"] = await self._resolve_agent_alias(
+        prepared["agent"] = await resolve_agent_alias(
+            cache=self._agent_aliases_by_cwd,
             cwd=cwd,
             agent_name=agent,
             timeout_seconds=min(timeout, 30),
+            run_command=self._run_command,
         )
         return prepared
 
@@ -250,70 +207,6 @@ class OpenCodeTool(BaseCodingAgentTool):
     def _extra_payload_fields(self, extra_params: dict[str, Any]) -> dict[str, Any]:
         agent = extra_params.get("agent")
         return {"agent": agent} if agent else {}
-
-    async def _resolve_agent_alias(
-        self, *, cwd: Path, agent_name: str, timeout_seconds: int
-    ) -> str:
-        trimmed = agent_name.strip()
-        if not trimmed:
-            return agent_name
-
-        aliases = await self._load_agent_aliases(cwd=cwd, timeout_seconds=timeout_seconds)
-        if not aliases:
-            return agent_name
-        return aliases.get(trimmed.casefold(), agent_name)
-
-    async def _load_agent_aliases(self, *, cwd: Path, timeout_seconds: int) -> dict[str, str]:
-        cache_key = str(cwd)
-        cached = self._agent_aliases_by_cwd.get(cache_key)
-        if cached is not None:
-            return cached
-
-        result = await self._run_command(
-            cmd=["opencode", "debug", "config"],
-            cwd=cwd,
-            timeout_seconds=min(timeout_seconds, 30),
-        )
-        if result["timed_out"] or result["returncode"] != 0:
-            self._agent_aliases_by_cwd[cache_key] = {}
-            return {}
-
-        try:
-            payload = json.loads(result["stdout"])
-        except (TypeError, ValueError, json.JSONDecodeError):
-            self._agent_aliases_by_cwd[cache_key] = {}
-            return {}
-
-        agents = payload.get("agent") if isinstance(payload, dict) else None
-        if not isinstance(agents, dict):
-            self._agent_aliases_by_cwd[cache_key] = {}
-            return {}
-
-        aliases: dict[str, str] = {}
-        short_name_counts: dict[str, int] = {}
-        short_name_targets: dict[str, str] = {}
-        for display_name in agents:
-            if not isinstance(display_name, str):
-                continue
-            normalized_display = display_name.strip()
-            if not normalized_display:
-                continue
-            aliases[normalized_display.casefold()] = normalized_display
-            match = _DISPLAY_NAME_PATTERN.match(normalized_display)
-            if not match:
-                continue
-            short_name = match.group(1).strip().casefold()
-            if not short_name:
-                continue
-            short_name_counts[short_name] = short_name_counts.get(short_name, 0) + 1
-            short_name_targets[short_name] = normalized_display
-
-        for short_name, count in short_name_counts.items():
-            if count == 1:
-                aliases[short_name] = short_name_targets[short_name]
-
-        self._agent_aliases_by_cwd[cache_key] = aliases
-        return aliases
 
     def _extra_meta_fields(self, payload: dict[str, Any]) -> dict[str, Any]:
         agent = payload.get("agent")

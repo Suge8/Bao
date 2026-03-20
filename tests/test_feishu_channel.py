@@ -90,7 +90,7 @@ async def test_feishu_group_policy_allows_mentioned_group_message() -> None:
 async def test_feishu_download_audio_always_uses_opus_extension(monkeypatch, tmp_path) -> None:
     channel = FeishuChannel(FeishuConfig(), MessageBus())
     channel._client = object()
-    monkeypatch.setattr("bao.channels.feishu.get_media_path", lambda: tmp_path)
+    monkeypatch.setattr("bao.channels.feishu.get_media_dir", lambda _channel=None: tmp_path)
     channel._download_file_sync = MagicMock(return_value=(b"abc", "clip"))
 
     file_path, content = await channel._download_and_save_media("audio", {"file_key": "file123"})
@@ -112,9 +112,9 @@ async def test_feishu_on_message_handles_media_msg_type() -> None:
         _build_event(msg_type="media", content='{"file_key": "file123"}', chat_type="p2p")
     )
 
-    kwargs = channel._handle_message.await_args.kwargs
-    assert kwargs["media"] == ["/tmp/video.mp4"]
-    assert kwargs["content"] == "[media: video.mp4]"
+    inbound = channel._handle_message.await_args.args[0]
+    assert inbound.media == ["/tmp/video.mp4"]
+    assert inbound.content == "[media: video.mp4]"
 
 
 def test_feishu_run_ws_client_blocking_uses_dedicated_loop(monkeypatch) -> None:

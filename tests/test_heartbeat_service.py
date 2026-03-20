@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from bao.heartbeat._service_models import HeartbeatServiceOptions
 from bao.heartbeat.service import HeartbeatService
 from bao.providers.base import LLMResponse, ToolCallRequest
 
@@ -21,11 +22,13 @@ async def test_start_is_idempotent(tmp_path) -> None:
     provider = DummyProvider([])
 
     service = HeartbeatService(
-        workspace=tmp_path,
-        provider=provider,
-        model="openai/gpt-4o-mini",
-        interval_s=9999,
-        enabled=True,
+        HeartbeatServiceOptions(
+            workspace=tmp_path,
+            provider=provider,
+            model="openai/gpt-4o-mini",
+            interval_s=9999,
+            enabled=True,
+        )
     )
 
     await service.start()
@@ -42,9 +45,11 @@ async def test_start_is_idempotent(tmp_path) -> None:
 async def test_decide_returns_skip_when_no_tool_call(tmp_path) -> None:
     provider = DummyProvider([LLMResponse(content="no tool call", tool_calls=[])])
     service = HeartbeatService(
-        workspace=tmp_path,
-        provider=provider,
-        model="openai/gpt-4o-mini",
+        HeartbeatServiceOptions(
+            workspace=tmp_path,
+            provider=provider,
+            model="openai/gpt-4o-mini",
+        )
     )
 
     action, tasks = await service._decide("heartbeat content")
@@ -76,10 +81,12 @@ async def test_trigger_now_executes_when_decision_is_run(tmp_path) -> None:
         return "done"
 
     service = HeartbeatService(
-        workspace=tmp_path,
-        provider=provider,
-        model="openai/gpt-4o-mini",
-        on_execute=_on_execute,
+        HeartbeatServiceOptions(
+            workspace=tmp_path,
+            provider=provider,
+            model="openai/gpt-4o-mini",
+            on_execute=_on_execute,
+        )
     )
 
     result = await service.trigger_now()
@@ -108,10 +115,12 @@ async def test_trigger_now_returns_none_when_decision_is_skip(tmp_path) -> None:
         return tasks
 
     service = HeartbeatService(
-        workspace=tmp_path,
-        provider=provider,
-        model="openai/gpt-4o-mini",
-        on_execute=_on_execute,
+        HeartbeatServiceOptions(
+            workspace=tmp_path,
+            provider=provider,
+            model="openai/gpt-4o-mini",
+            on_execute=_on_execute,
+        )
     )
 
     assert await service.trigger_now() is None
@@ -121,9 +130,11 @@ async def test_trigger_now_returns_none_when_decision_is_skip(tmp_path) -> None:
 async def test_trigger_now_marks_missing_file_in_status_and_notifies_listeners(tmp_path) -> None:
     provider = DummyProvider([])
     service = HeartbeatService(
-        workspace=tmp_path,
-        provider=provider,
-        model="openai/gpt-4o-mini",
+        HeartbeatServiceOptions(
+            workspace=tmp_path,
+            provider=provider,
+            model="openai/gpt-4o-mini",
+        )
     )
     snapshots: list[dict[str, object]] = []
 
@@ -163,10 +174,12 @@ async def test_trigger_now_records_execute_error_in_status(tmp_path) -> None:
         raise RuntimeError("boom")
 
     service = HeartbeatService(
-        workspace=tmp_path,
-        provider=provider,
-        model="openai/gpt-4o-mini",
-        on_execute=_on_execute,
+        HeartbeatServiceOptions(
+            workspace=tmp_path,
+            provider=provider,
+            model="openai/gpt-4o-mini",
+            on_execute=_on_execute,
+        )
     )
 
     assert await service.trigger_now() is None

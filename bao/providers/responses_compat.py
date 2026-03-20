@@ -10,98 +10,22 @@ import hashlib
 import json
 from typing import Any
 
+from bao.providers._responses_compat_convert import (
+    convert_messages_to_responses as _convert_messages_to_responses,
+)
 from bao.providers.base import ToolCallRequest
 
 
 def convert_messages_to_responses(
     messages: list[dict[str, Any]],
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Convert Chat Completions messages to Responses API ``input`` format.
-
-    Returns ``(system_prompt, input_items)``.
-    """
-    system_prompt = ""
-    input_items: list[dict[str, Any]] = []
-    pending_images: list[str] = []
-
-    for idx, msg in enumerate(messages):
-        role = msg.get("role")
-        content = msg.get("content")
-
-        if role == "system":
-            if isinstance(content, str):
-                system_prompt = content
-            elif isinstance(content, list):
-                parts: list[str] = []
-                for item in content:
-                    if isinstance(item, dict) and isinstance(item.get("text"), str):
-                        parts.append(item["text"])
-                    elif isinstance(item, str):
-                        parts.append(item)
-                system_prompt = "".join(parts).strip()
-            else:
-                system_prompt = ""
-            continue
-
-        # Flush pending screenshot images before non-tool message
-        if role != "tool" and pending_images:
-            input_items.append(_build_pending_image_input(pending_images))
-            pending_images = []
-
-        if role == "user":
-            input_items.append(_convert_user_message(content))
-            continue
-
-        if role == "assistant":
-            if isinstance(content, str) and content:
-                input_items.append(
-                    {
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": content}],
-                        "status": "completed",
-                        "id": f"msg_{idx}",
-                    }
-                )
-            for tool_call in msg.get("tool_calls", []) or []:
-                fn = tool_call.get("function") or {}
-                call_id, item_id = _split_tool_call_id(tool_call.get("id"))
-                call_id = _normalize_call_id(call_id or f"call_{idx}")
-                item_id = item_id or f"fc_{idx}"
-                input_items.append(
-                    {
-                        "type": "function_call",
-                        "id": item_id,
-                        "call_id": call_id,
-                        "name": fn.get("name"),
-                        "arguments": fn.get("arguments") or "{}",
-                    }
-                )
-            continue
-
-        if role == "tool":
-            call_id, _ = _split_tool_call_id(msg.get("tool_call_id"))
-            call_id = _normalize_call_id(call_id)
-            output_text = (
-                content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
-            )
-            input_items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": output_text,
-                }
-            )
-            img_b64 = msg.get("_image")
-            if img_b64:
-                pending_images.append(img_b64)
-            continue
-
-    # Flush any remaining images at end
-    if pending_images:
-        input_items.append(_build_pending_image_input(pending_images))
-
-    return system_prompt, input_items
+    """Convert Chat Completions messages to Responses API ``input`` format."""
+    system_prompt, input_items = _convert_messages_to_responses(
+        messages,
+        normalize_call_id=_normalize_call_id,
+        split_tool_call_id=_split_tool_call_id,
+    )
+    return system_prompt, sanitize_responses_input_items(input_items)
 
 
 def convert_tools_to_responses(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -162,40 +86,6 @@ def parse_responses_json(
     return content, tool_calls, finish_reason, usage
 
 
-def _convert_user_message(content: Any) -> dict[str, Any]:
-    if isinstance(content, str):
-        return {"role": "user", "content": [{"type": "input_text", "text": content}]}
-    if isinstance(content, list):
-        converted: list[dict[str, Any]] = []
-        for item in content:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "text":
-                converted.append({"type": "input_text", "text": item.get("text", "")})
-            elif item.get("type") == "image_url":
-                url = (item.get("image_url") or {}).get("url")
-                if url:
-                    converted.append({"type": "input_image", "image_url": url, "detail": "auto"})
-        if converted:
-            return {"role": "user", "content": converted}
-    return {"role": "user", "content": [{"type": "input_text", "text": ""}]}
-
-
-def _build_pending_image_input(images_b64: list[str]) -> dict[str, Any]:
-    content: list[dict[str, Any]] = [
-        {"type": "input_text", "text": "[screenshot from tool above]"},
-    ]
-    for image_b64 in images_b64:
-        content.append(
-            {
-                "type": "input_image",
-                "image_url": f"data:image/jpeg;base64,{image_b64}",
-                "detail": "auto",
-            }
-        )
-    return {"role": "user", "content": content}
-
-
 def _split_tool_call_id(tool_call_id: Any) -> tuple[str, str | None]:
     if isinstance(tool_call_id, str) and tool_call_id:
         if "|" in tool_call_id:
@@ -210,7 +100,7 @@ def start_responses_tool_call(
 ) -> None:
     if item.get("type") != "function_call":
         return
-    call_id = item.get("call_id")
+    call_id = _normalize_responses_call_id(item.get("call_id"))
     if not call_id:
         return
     tool_call_buffers[call_id] = {
@@ -223,9 +113,10 @@ def start_responses_tool_call(
 def append_responses_tool_call_arguments(
     tool_call_buffers: dict[str, dict[str, Any]], call_id: Any, delta: Any
 ) -> None:
-    if not call_id:
+    normalized_call_id = _normalize_responses_call_id(call_id)
+    if not normalized_call_id:
         return
-    buf = tool_call_buffers.get(str(call_id))
+    buf = tool_call_buffers.get(normalized_call_id)
     if buf is None:
         return
     buf["arguments"] += str(delta or "")
@@ -234,9 +125,10 @@ def append_responses_tool_call_arguments(
 def replace_responses_tool_call_arguments(
     tool_call_buffers: dict[str, dict[str, Any]], call_id: Any, arguments: Any
 ) -> None:
-    if not call_id:
+    normalized_call_id = _normalize_responses_call_id(call_id)
+    if not normalized_call_id:
         return
-    buf = tool_call_buffers.get(str(call_id))
+    buf = tool_call_buffers.get(normalized_call_id)
     if buf is None:
         return
     buf["arguments"] = arguments or ""
@@ -248,7 +140,7 @@ def build_responses_tool_call_request(
 ) -> ToolCallRequest | None:
     if item.get("type") != "function_call":
         return None
-    call_id = item.get("call_id")
+    call_id = _normalize_responses_call_id(item.get("call_id"))
     if not call_id:
         return None
     buf = (tool_call_buffers or {}).get(call_id) or {}
@@ -260,11 +152,32 @@ def build_responses_tool_call_request(
     )
 
 
+def sanitize_responses_input_items(
+    input_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Normalize outgoing Responses input items before the API boundary."""
+    sanitized: list[dict[str, Any]] = []
+    for item in input_items:
+        if not isinstance(item, dict):
+            continue
+        clean = dict(item)
+        item_type = clean.get("type")
+        if item_type in {"function_call", "function_call_output"}:
+            clean["call_id"] = _normalize_responses_call_id(clean.get("call_id"))
+        sanitized.append(clean)
+    return sanitized
+
+
 def build_internal_tool_call_id(tool_call_id: Any, item_id: Any) -> str:
     call_id, _ = _split_tool_call_id(tool_call_id)
     normalized_call_id = _normalize_call_id(call_id)
     normalized_item_id = str(item_id or "fc_0").strip() or "fc_0"
     return f"{normalized_call_id}|{normalized_item_id}"
+
+
+def _normalize_responses_call_id(value: Any) -> str:
+    call_id, _ = _split_tool_call_id(value)
+    return _normalize_call_id(call_id)
 
 
 def _normalize_call_id(call_id: str) -> str:

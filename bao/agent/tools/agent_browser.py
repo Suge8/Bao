@@ -6,6 +6,7 @@ from typing import Any
 from bao.agent.tools.base import Tool
 from bao.browser import (
     SUPPORTED_BROWSER_ACTIONS,
+    BrowserAutomationOptions,
     BrowserAutomationService,
     get_browser_capability_state,
 )
@@ -25,10 +26,12 @@ class AgentBrowserRunner:
         timeout_seconds: int = 120,
     ) -> None:
         self._service = BrowserAutomationService(
-            workspace=workspace,
-            enabled=enabled,
-            allowed_dir=allowed_dir,
-            timeout_seconds=timeout_seconds,
+            workspace,
+            BrowserAutomationOptions(
+                enabled=enabled,
+                allowed_dir=allowed_dir,
+                timeout_seconds=timeout_seconds,
+            ),
         )
 
     @property

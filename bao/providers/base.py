@@ -69,74 +69,97 @@ class ProviderCapabilitySnapshot:
     supports_thinking: bool = False
 
 
-def normalize_tool_calls(message: Any) -> list[ToolCallRequest]:
-    """Extract tool calls from any LLM response format (OpenAI/Legacy/Anthropic)."""
-    tool_calls: list[ToolCallRequest] = []
+@dataclass(frozen=True, slots=True)
+class ChatRequest:
+    messages: list[dict[str, Any]]
+    tools: list[dict[str, Any]] | None = None
+    model: str | None = None
+    max_tokens: int = 4096
+    temperature: float = 0.1
+    on_progress: Callable[[str], Awaitable[None]] | None = None
+    reasoning_effort: str | None = None
+    service_tier: str | None = None
+    source: str = "main"
+    thinking: Any = None
+    thinking_budget: int | None = None
 
-    def _append_tool_call(
-        *,
-        id_: str,
-        name: str,
-        arguments_value: Any,
-    ) -> None:
-        args, raw_arguments, parse_error = parse_args(arguments_value)
-        tool_calls.append(
-            ToolCallRequest(
-                id=id_,
-                name=name,
-                arguments=args,
-                raw_arguments=raw_arguments,
-                argument_parse_error=parse_error,
-            )
-        )
 
-    def _serialize_raw_arguments(value: Any) -> str | None:
-        if isinstance(value, str):
-            return value
-        if value is None:
-            return None
+def _serialize_raw_arguments(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return None
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except Exception:
+        return str(value)
+
+
+def _parse_tool_arguments(value: Any) -> tuple[dict[str, Any], str | None, str | None]:
+    if isinstance(value, dict):
+        return value, None, None
+    raw_arguments = _serialize_raw_arguments(value)
+    if isinstance(value, str):
         try:
-            return json.dumps(value, ensure_ascii=False)
+            parsed = json_repair.loads(value)
         except Exception:
-            return str(value)
-
-    def parse_args(value: Any) -> tuple[dict[str, Any], str | None, str | None]:
-        if isinstance(value, dict):
-            return value, None, None
-        raw_arguments = _serialize_raw_arguments(value)
-        if isinstance(value, str):
-            try:
-                parsed = json_repair.loads(value)
-            except Exception as exc:
-                return {}, raw_arguments, str(exc)
-            if isinstance(parsed, dict):
-                return parsed, raw_arguments, None
             return {}, raw_arguments, "tool arguments must decode to a JSON object"
-        if value is None:
-            return {}, None, None
-        return {}, raw_arguments, "tool arguments must be a JSON object"
+        if isinstance(parsed, dict):
+            return parsed, raw_arguments, None
+        return {}, raw_arguments, "tool arguments must decode to a JSON object"
+    if value is None:
+        return {}, None, None
+    return {}, raw_arguments, "tool arguments must be a JSON object"
 
-    if hasattr(message, "tool_calls") and message.tool_calls:
-        for tc in message.tool_calls:
-            _append_tool_call(id_=tc.id, name=tc.function.name, arguments_value=tc.function.arguments)
-        return tool_calls
 
-    if hasattr(message, "function_call") and message.function_call:
-        fc = message.function_call
-        _append_tool_call(id_="fc_0", name=fc.name, arguments_value=fc.arguments)
-        return tool_calls
+def build_tool_call_request(id_: str, name: str, arguments_value: Any) -> ToolCallRequest:
+    args, raw_arguments, parse_error = _parse_tool_arguments(arguments_value)
+    return ToolCallRequest(
+        id=id_,
+        name=name,
+        arguments=args,
+        raw_arguments=raw_arguments,
+        argument_parse_error=parse_error,
+    )
 
-    content = getattr(message, "content", None)
+
+def _normalize_openai_tool_calls(message: Any) -> list[ToolCallRequest]:
+    return [
+        build_tool_call_request(tc.id, tc.function.name, tc.function.arguments)
+        for tc in message.tool_calls
+    ]
+
+
+def _normalize_legacy_function_call(message: Any) -> list[ToolCallRequest]:
+    fc = message.function_call
+    return [build_tool_call_request("fc_0", fc.name, fc.arguments)]
+
+
+def _normalize_content_blocks(content: Any) -> list[ToolCallRequest]:
+    tool_calls: list[ToolCallRequest] = []
     if content and isinstance(content, list):
         for i, block in enumerate(content):
             if isinstance(block, dict) and block.get("type") == "tool_use":
-                _append_tool_call(
-                    id_=block.get("id", f"tu_{i}"),
-                    name=block.get("name", "unknown"),
-                    arguments_value=block.get("input", {}),
+                tool_calls.append(
+                    build_tool_call_request(
+                        block.get("id", f"tu_{i}"),
+                        block.get("name", "unknown"),
+                        block.get("input", {}),
+                    )
                 )
-
     return tool_calls
+
+
+def normalize_tool_calls(message: Any) -> list[ToolCallRequest]:
+    """Extract tool calls from any LLM response format (OpenAI/Legacy/Anthropic)."""
+    if hasattr(message, "tool_calls") and message.tool_calls:
+        return _normalize_openai_tool_calls(message)
+    if hasattr(message, "function_call") and message.function_call:
+        return _normalize_legacy_function_call(message)
+    return _normalize_content_blocks(getattr(message, "content", None))
+
+
+_build_tool_call_request = build_tool_call_request
 
 
 class LLMProvider(ABC):
@@ -145,16 +168,7 @@ class LLMProvider(ABC):
         self.api_base = api_base
 
     @abstractmethod
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        max_tokens: int = 4096,
-        temperature: float = 0.1,
-        on_progress: Callable[[str], Awaitable[None]] | None = None,
-        **kwargs: Any,
-    ) -> LLMResponse:
+    async def chat(self, request: ChatRequest) -> LLMResponse:
         pass
 
     @abstractmethod

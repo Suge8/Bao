@@ -8,12 +8,12 @@ from typing import Any, Protocol
 
 from loguru import logger
 
-from bao.bus.events import OutboundMessage
+from bao.bus.events import InboundMessage, OutboundMessage
 from bao.bus.queue import MessageBus
 from bao.channels.base import BaseChannel
 from bao.channels.progress_text import ProgressBuffer
+from bao.config.paths import get_media_dir
 from bao.config.schema import WhatsAppConfig
-from bao.utils.helpers import get_media_path
 
 
 class _BridgeWebSocket(Protocol):
@@ -116,7 +116,7 @@ class WhatsAppChannel(BaseChannel):
             if not filename:
                 ext = mimetypes.guess_extension(mimetype) or ""
                 filename = f"wa_{sender_id}_{id(raw):x}{ext}"
-            media_dir = get_media_path()
+            media_dir = get_media_dir("whatsapp")
             path = media_dir / filename.replace("/", "_")
             path.write_bytes(raw)
             logger.debug("Saved WhatsApp media: {}", path)
@@ -127,57 +127,53 @@ class WhatsAppChannel(BaseChannel):
 
     async def _handle_bridge_message(self, raw: str | bytes) -> None:
         """Handle a message from the bridge."""
+        data = self._decode_bridge_payload(raw)
+        if data is None:
+            return
+
+        msg_type = data.get("type")
+        if msg_type == "message":
+            await self._handle_bridge_event_message(data)
+            return
+        if msg_type == "status":
+            self._handle_bridge_status(data)
+            return
+        if msg_type == "qr":
+            logger.info("📱 扫码连接 / scan qr: bridge terminal")
+            return
+        if msg_type == "error":
+            logger.error("❌ 服务异常 / bridge error: {}", data.get("error"))
+
+    @staticmethod
+    def _decode_bridge_payload(raw: str | bytes) -> dict[str, Any] | None:
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8", errors="replace")
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
             logger.debug("Invalid JSON from bridge: {}", raw[:100])
+            return None
+        return data if isinstance(data, dict) else None
+
+    async def _handle_bridge_event_message(self, data: dict[str, Any]) -> None:
+        message_id = str(data.get("id") or "").strip()
+        if message_id and not self._remember_message_id(message_id):
             return
 
-        msg_type = data.get("type")
+        sender = str(data.get("sender", ""))
+        participant = str(data.get("participant", ""))
+        is_group = bool(data.get("isGroup", False))
+        sender_id = self._resolve_sender_id(data)
+        logger.debug("Sender {}", sender)
+        if not self.is_allowed(sender_id):
+            logger.warning("⚠️ 访问拒绝 / access denied: sender={} channel=whatsapp", sender_id)
+            return
 
-        if msg_type == "message":
-            message_id = str(data.get("id") or "").strip()
-            if message_id:
-                if message_id in self._processed_message_ids:
-                    logger.debug("Duplicate WhatsApp message skipped: {}", message_id)
-                    return
-                self._processed_message_ids[message_id] = None
-                while len(self._processed_message_ids) > 1000:
-                    self._processed_message_ids.popitem(last=False)
-
-            pn = data.get("pn", "")
-            sender = data.get("sender", "")
-            participant = data.get("participant", "")
-            content = data.get("content", "")
-            is_group = bool(data.get("isGroup", False))
-
-            if is_group and participant:
-                user_id = participant
-            else:
-                user_id = pn if pn else sender
-            sender_id = user_id.split("@")[0] if "@" in user_id else user_id
-            logger.debug("Sender {}", sender)
-
-            if not self.is_allowed(sender_id):
-                logger.warning(
-                    "⚠️ 访问拒绝 / access denied: sender={} channel=whatsapp",
-                    sender_id,
-                )
-                return
-
-            # Save media from bridge if present
-            media_paths: list[str] = []
-            media_data = data.get("media")
-            if media_data and isinstance(media_data, dict):
-                media_paths = self._save_media(media_data, sender_id)
-
-            # Voice message placeholder
-            if content == "[Voice Message]" and not media_paths:
-                content = "[Voice Message: Transcription not available for WhatsApp yet]"
-
-            await self._handle_message(
+        media_paths = self._resolve_media_paths(data.get("media"), sender_id)
+        content = self._normalize_bridge_content(str(data.get("content", "")), media_paths)
+        await self._handle_message(
+            InboundMessage(
+                channel=self.name,
                 sender_id=sender_id,
                 chat_id=sender,
                 content=content,
@@ -189,20 +185,41 @@ class WhatsAppChannel(BaseChannel):
                     "participant": participant,
                 },
             )
+        )
 
-        elif msg_type == "status":
-            # Connection status update
-            status = data.get("status")
-            logger.info("📡 状态更新 / status update: {}", status)
+    def _remember_message_id(self, message_id: str) -> bool:
+        if message_id in self._processed_message_ids:
+            logger.debug("Duplicate WhatsApp message skipped: {}", message_id)
+            return False
+        self._processed_message_ids[message_id] = None
+        while len(self._processed_message_ids) > 1000:
+            self._processed_message_ids.popitem(last=False)
+        return True
 
-            if status == "connected":
-                self._connected = True
-            elif status == "disconnected":
-                self._connected = False
+    @staticmethod
+    def _resolve_sender_id(data: dict[str, Any]) -> str:
+        sender = str(data.get("sender", ""))
+        participant = str(data.get("participant", ""))
+        is_group = bool(data.get("isGroup", False))
+        pn = str(data.get("pn", ""))
+        user_id = participant if is_group and participant else (pn or sender)
+        return user_id.split("@")[0] if "@" in user_id else user_id
 
-        elif msg_type == "qr":
-            # QR code for authentication
-            logger.info("📱 扫码连接 / scan qr: bridge terminal")
+    def _resolve_media_paths(self, media_data: Any, sender_id: str) -> list[str]:
+        if isinstance(media_data, dict):
+            return self._save_media(media_data, sender_id)
+        return []
 
-        elif msg_type == "error":
-            logger.error("❌ 服务异常 / bridge error: {}", data.get("error"))
+    @staticmethod
+    def _normalize_bridge_content(content: str, media_paths: list[str]) -> str:
+        if content == "[Voice Message]" and not media_paths:
+            return "[Voice Message: Transcription not available for WhatsApp yet]"
+        return content
+
+    def _handle_bridge_status(self, data: dict[str, Any]) -> None:
+        status = data.get("status")
+        logger.info("📡 状态更新 / status update: {}", status)
+        if status == "connected":
+            self._connected = True
+        elif status == "disconnected":
+            self._connected = False

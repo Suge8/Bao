@@ -3,17 +3,19 @@
 Each migration function transforms config data from version N to N+1.
 Functions are pure data transforms — no file IO, no network calls.
 
-Current version: 4
+Current version: 6
   v0 (implicit) → v1: legacy provider keys + tools field renames
   v1 → v2: (reserved for future migrations)
   v2 → v3: add tools.toolExposure defaults
   v3 → v4: move memoryWindow / experienceModel under agents.defaults.memory
+  v4 → v5: rename gateway config block to hub
+  v5 → v6: replace tools.toolExposure.bundles with domains
 """
 
 from collections.abc import Callable
 from typing import Any
 
-CURRENT_VERSION = 4
+CURRENT_VERSION = 6
 
 
 def _migrate_v0_to_v1(data: dict[str, Any]) -> dict[str, Any]:
@@ -67,14 +69,28 @@ def _migrate_v2_to_v3(data: dict[str, Any]) -> dict[str, Any]:
     exposure = tools.get("toolExposure")
     if not isinstance(exposure, dict):
         tools["toolExposure"] = {
-            "mode": "auto",
-            "bundles": ["core", "web", "desktop", "code"],
+            "mode": "off",
+            "domains": [
+                "core",
+                "messaging",
+                "handoff",
+                "web_research",
+                "desktop_automation",
+                "coding_backend",
+            ],
         }
         return data
-    exposure.setdefault("mode", "auto")
-    bundles = exposure.get("bundles")
-    if not isinstance(bundles, list):
-        exposure["bundles"] = ["core", "web", "desktop", "code"]
+    exposure.setdefault("mode", "off")
+    domains = exposure.get("domains")
+    if not isinstance(domains, list):
+        exposure["domains"] = [
+            "core",
+            "messaging",
+            "handoff",
+            "web_research",
+            "desktop_automation",
+            "coding_backend",
+        ]
     return data
 
 
@@ -98,12 +114,75 @@ def _migrate_v3_to_v4(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+def _migrate_v4_to_v5(data: dict[str, Any]) -> dict[str, Any]:
+    hub = data.get("hub")
+    gateway = data.get("gateway")
+    if "hub" not in data and isinstance(gateway, dict):
+        data["hub"] = gateway
+    if isinstance(hub, dict) and "gateway" in data:
+        data.pop("gateway", None)
+    elif "hub" in data:
+        data.pop("gateway", None)
+    return data
+
+
+def _migrate_v5_to_v6(data: dict[str, Any]) -> dict[str, Any]:
+    tools = data.get("tools", {})
+    if not isinstance(tools, dict):
+        return data
+    exposure = tools.get("toolExposure")
+    if not isinstance(exposure, dict):
+        return data
+    raw_domains = exposure.get("domains")
+    if isinstance(raw_domains, list):
+        exposure.pop("bundles", None)
+        return data
+    raw_bundles = exposure.get("bundles")
+    if isinstance(raw_bundles, list):
+        domains: list[str] = []
+        for bundle in raw_bundles:
+            normalized = str(bundle).strip().lower()
+            if normalized == "core":
+                domains.extend(["core", "messaging", "handoff"])
+            elif normalized == "web":
+                domains.append("web_research")
+            elif normalized == "desktop":
+                domains.append("desktop_automation")
+            elif normalized == "code":
+                domains.append("coding_backend")
+        deduped_domains = list(dict.fromkeys(domains))
+        if deduped_domains:
+            exposure["domains"] = deduped_domains
+        else:
+            exposure["domains"] = [
+                "core",
+                "messaging",
+                "handoff",
+                "web_research",
+                "desktop_automation",
+                "coding_backend",
+            ]
+    else:
+        exposure["domains"] = [
+            "core",
+            "messaging",
+            "handoff",
+            "web_research",
+            "desktop_automation",
+            "coding_backend",
+        ]
+    exposure.pop("bundles", None)
+    return data
+
+
 # Ordered migration chain: (from_version, to_version, function)
 _MIGRATIONS: list[tuple[int, int, Callable[[dict[str, Any]], dict[str, Any]]]] = [
     (0, 1, _migrate_v0_to_v1),
     (1, 2, _migrate_v1_to_v2),
     (2, 3, _migrate_v2_to_v3),
     (3, 4, _migrate_v3_to_v4),
+    (4, 5, _migrate_v4_to_v5),
+    (5, 6, _migrate_v5_to_v6),
 ]
 
 

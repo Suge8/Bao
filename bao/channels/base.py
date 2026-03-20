@@ -9,7 +9,7 @@ from loguru import logger
 
 from bao.bus.events import InboundMessage, OutboundMessage
 from bao.bus.queue import MessageBus
-from bao.channels.progress_text import ProgressHandler
+from bao.channels.progress_text import ProgressEvent, ProgressHandler
 
 
 class BaseChannel(ABC):
@@ -138,42 +138,22 @@ class BaseChannel(ABC):
 
         return str(sender_id) in allow_list
 
-    async def _handle_message(
-        self,
-        sender_id: str,
-        chat_id: str,
-        content: str,
-        media: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> None:
+    async def _handle_message(self, msg: InboundMessage) -> None:
         """
         Handle an incoming message from the chat platform.
 
         This method checks permissions and forwards to the bus.
 
         Args:
-            sender_id: The sender's identifier.
-            chat_id: The chat/channel identifier.
-            content: Message text content.
-            media: Optional list of media URLs.
-            metadata: Optional channel-specific metadata.
+            msg: Normalized inbound message.
         """
-        if not self.is_allowed(sender_id):
+        if not self.is_allowed(msg.sender_id):
             logger.warning(
                 "⚠️ 访问拒绝 / access denied: sender={} channel={}",
-                sender_id,
+                msg.sender_id,
                 self.name,
             )
             return
-
-        msg = InboundMessage(
-            channel=self.name,
-            sender_id=str(sender_id),
-            chat_id=str(chat_id),
-            content=content,
-            media=media or [],
-            metadata=metadata or {},
-        )
 
         await self.bus.publish_inbound(msg)
 
@@ -192,6 +172,10 @@ class BaseChannel(ABC):
         await self._ready.wait()
 
     @property
+    def is_ready(self) -> bool:
+        return self._ready.is_set()
+
+    @property
     def supports_progress(self) -> bool:
         return self._progress_handler is not None
 
@@ -200,16 +184,11 @@ class BaseChannel(ABC):
         if handler is None:
             return False
 
-        meta = msg.metadata or {}
-        await handler.handle(
-            msg.chat_id,
-            msg.content or "",
-            is_progress=bool(meta.get("_progress")),
-            is_tool_hint=bool(meta.get("_tool_hint")),
-            clear_only=bool(meta.get("_progress_clear")),
-        )
-        if bool(meta.get("_progress")) and not bool(meta.get("_tool_hint")) and flush_progress:
-            await handler.flush(msg.chat_id, force=False)
+        metadata = msg.metadata if isinstance(msg.metadata, dict) else None
+        event = ProgressEvent.from_metadata(metadata)
+        await handler.handle(msg.chat_id, msg.content or "", event)
+        if event.is_progress and not event.is_tool_hint and flush_progress:
+            await handler.flush(msg.chat_id, force=False, scope=event.scope)
         return True
 
     def _clear_progress(self) -> None:

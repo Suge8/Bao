@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from bao.agent.tool_exposure_eval import (
+    DEFAULT_TOOL_EXPOSURE_CASES_PATH,
     evaluate_tool_exposure_cases,
     load_tool_exposure_cases,
     write_tool_exposure_eval_artifact,
@@ -10,7 +11,7 @@ from bao.agent.tool_exposure_eval import (
 
 
 def test_tool_exposure_eval_runner_writes_expected_schema(tmp_path: Path) -> None:
-    cases_path = Path(__file__).resolve().parents[1] / "docs" / "tool-exposure-cases.json"
+    cases_path = DEFAULT_TOOL_EXPOSURE_CASES_PATH
     payload = evaluate_tool_exposure_cases(
         workspace=tmp_path,
         cases=load_tool_exposure_cases(cases_path),

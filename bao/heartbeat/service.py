@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Coroutine
+from typing import Any, Callable
 
 from loguru import logger
 
-if TYPE_CHECKING:
-    from bao.providers.base import LLMProvider
+from bao.heartbeat._service_models import HeartbeatServiceOptions
+from bao.providers.base import ChatRequest
 
 _HEARTBEAT_TOOL = [
     {
@@ -51,25 +51,15 @@ class HeartbeatService:
     returns the result to deliver.
     """
 
-    def __init__(
-        self,
-        workspace: Path,
-        provider: LLMProvider,
-        model: str,
-        on_execute: Callable[[str], Coroutine[Any, Any, str]] | None = None,
-        on_notify: Callable[[str], Coroutine[Any, Any, None]] | None = None,
-        interval_s: int = 30 * 60,
-        enabled: bool = True,
-        service_tier: str | None = None,
-    ):
-        self.workspace = workspace
-        self.provider = provider
-        self.model = model
-        self.on_execute = on_execute
-        self.on_notify = on_notify
-        self.interval_s = interval_s
-        self.enabled = enabled
-        self.service_tier = service_tier
+    def __init__(self, options: HeartbeatServiceOptions):
+        self.workspace = options.workspace
+        self.provider = options.provider
+        self.model = options.model
+        self.on_execute = options.on_execute
+        self.on_notify = options.on_notify
+        self.interval_s = options.interval_s
+        self.enabled = options.enabled
+        self.service_tier = options.service_tier
         self._running = False
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
@@ -115,22 +105,24 @@ class HeartbeatService:
         Returns (action, tasks) where action is 'skip' or 'run'.
         """
         response = await self.provider.chat(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a heartbeat agent. Call the heartbeat tool to report your decision.",
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        "Review the following HEARTBEAT.md and decide whether there are active tasks.\n\n"
-                        f"{content}"
-                    ),
-                },
-            ],
-            tools=_HEARTBEAT_TOOL,
-            model=self.model,
-            service_tier=self.service_tier,
+            ChatRequest(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a heartbeat agent. Call the heartbeat tool to report your decision.",
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Review the following HEARTBEAT.md and decide whether there are active tasks.\n\n"
+                            f"{content}"
+                        ),
+                    },
+                ],
+                tools=_HEARTBEAT_TOOL,
+                model=self.model,
+                service_tier=self.service_tier,
+            )
         )
 
         if not response.has_tool_calls:

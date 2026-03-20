@@ -2,7 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from bao.agent.context import ContextBuilder
+from bao.agent.context import ContextBuilder, SystemPromptRequest
 from bao.agent.loop import AgentLoop
 from bao.bus.queue import MessageBus
 
@@ -16,7 +16,7 @@ def _make_builder(tmp_path: Path) -> ContextBuilder:
 def test_identity_contract_is_injected_into_system_prompt(tmp_path: Path) -> None:
     builder = _make_builder(tmp_path)
 
-    prompt = builder.build_system_prompt(channel="desktop", chat_id="user")
+    prompt = builder.build_system_prompt(SystemPromptRequest(channel="desktop", chat_id="user"))
 
     assert "## Identity Contract" in prompt
     assert "Canonical identity: You are Bao." in prompt
@@ -31,7 +31,7 @@ def test_identity_contract_is_injected_into_system_prompt(tmp_path: Path) -> Non
 def test_runtime_block_remains_present_with_identity_contract(tmp_path: Path) -> None:
     builder = _make_builder(tmp_path)
 
-    prompt = builder.build_system_prompt(channel="desktop", chat_id="user")
+    prompt = builder.build_system_prompt(SystemPromptRequest(channel="desktop", chat_id="user"))
 
     assert "## Runtime (actual host)" in prompt
     assert "Host:" in prompt
@@ -41,7 +41,7 @@ def test_runtime_block_remains_present_with_identity_contract(tmp_path: Path) ->
 def test_available_now_block_can_be_injected_into_system_prompt(tmp_path: Path) -> None:
     builder = _make_builder(tmp_path)
 
-    prompt = builder.build_system_prompt(channel="desktop", chat_id="user")
+    prompt = builder.build_system_prompt(SystemPromptRequest(channel="desktop", chat_id="user"))
     prompt = builder.apply_available_tools_block(
         prompt,
         ["- web_search: Search the web for fresh information."],
@@ -50,12 +50,14 @@ def test_available_now_block_can_be_injected_into_system_prompt(tmp_path: Path) 
     assert "## Available Now" in prompt
     assert "web_search" in prompt
     assert "current tools as the source of truth" in prompt
+    assert "first use session discovery tools to resolve a target session/ref" in prompt
+    assert "Runtime handles target-side receipt and result routing" in prompt
 
 
 def test_skills_prompt_mentions_workspace_and_builtin_skill_paths(tmp_path: Path) -> None:
     builder = _make_builder(tmp_path)
 
-    prompt = builder.build_system_prompt(channel="desktop", chat_id="user")
+    prompt = builder.build_system_prompt(SystemPromptRequest(channel="desktop", chat_id="user"))
 
     assert "Before any substantive action, check whether the task matches a skill" in prompt
     assert "reading its `SKILL.md` before acting is mandatory" in prompt
@@ -94,7 +96,7 @@ def test_context_builder_defers_memory_store_until_first_memory_access(tmp_path:
         builder = _make_builder(tmp_path)
         assert init_calls == 0
 
-        prompt = builder.build_system_prompt(channel="desktop", chat_id="user")
+        prompt = builder.build_system_prompt(SystemPromptRequest(channel="desktop", chat_id="user"))
         assert "## Identity Contract" in prompt
         assert init_calls == 0
 
@@ -143,7 +145,7 @@ def test_build_system_prompt_reuses_cached_bootstrap_files(tmp_path: Path) -> No
     builder.skills.get_always_skills = lambda: []  # type: ignore[method-assign]
     builder.skills.build_skills_summary = lambda: ""  # type: ignore[method-assign]
 
-    prompt = builder.build_system_prompt(channel="desktop", chat_id="user")
+    prompt = builder.build_system_prompt(SystemPromptRequest(channel="desktop", chat_id="user"))
     assert "# Persona" in prompt
     assert "# Instructions" in prompt
 
@@ -155,12 +157,12 @@ def test_build_system_prompt_reuses_cached_bootstrap_files(tmp_path: Path) -> No
         return original_read_text(self, *args, **kwargs)
 
     with patch.object(Path, "read_text", _fail_bootstrap_reads):
-        cached_prompt = builder.build_system_prompt(channel="desktop", chat_id="user")
+        cached_prompt = builder.build_system_prompt(SystemPromptRequest(channel="desktop", chat_id="user"))
 
     assert cached_prompt == prompt
 
     _ = (tmp_path / "PERSONA.md").write_text("# Persona v2\n", encoding="utf-8")
-    refreshed = builder.build_system_prompt(channel="desktop", chat_id="user")
+    refreshed = builder.build_system_prompt(SystemPromptRequest(channel="desktop", chat_id="user"))
     assert "# Persona v2" in refreshed
 
 
@@ -171,7 +173,7 @@ def test_build_system_prompt_invalidates_bootstrap_cache_when_stat_signature_cha
     builder.skills.get_always_skills = lambda: []  # type: ignore[method-assign]
     builder.skills.build_skills_summary = lambda: ""  # type: ignore[method-assign]
 
-    first = builder.build_system_prompt(channel="desktop", chat_id="user")
+    first = builder.build_system_prompt(SystemPromptRequest(channel="desktop", chat_id="user"))
     assert "# Persona\n" in first
 
     persona_path = tmp_path / "PERSONA.md"
@@ -198,6 +200,6 @@ def test_build_system_prompt_invalidates_bootstrap_cache_when_stat_signature_cha
         patch.object(Path, "stat", _patched_stat),
         patch.object(Path, "read_text", _patched_read_text),
     ):
-        refreshed = builder.build_system_prompt(channel="desktop", chat_id="user")
+        refreshed = builder.build_system_prompt(SystemPromptRequest(channel="desktop", chat_id="user"))
 
     assert "# Persona changed" in refreshed

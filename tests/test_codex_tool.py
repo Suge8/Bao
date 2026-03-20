@@ -10,20 +10,13 @@ from bao.agent.tools.codex import CodexDetailsTool, CodexTool
 from bao.agent.tools.coding_session_store import CodingSessionEvent
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider, LLMResponse
+from tests._provider_request_testkit import request_messages
 
 
 class _DummyProvider(LLMProvider):
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        max_tokens: int = 4096,
-        temperature: float = 0.1,
-        on_progress: Any = None,
-        **kwargs: Any,
-    ) -> LLMResponse:
-        del messages, tools, model, max_tokens, temperature, on_progress, kwargs
+    async def chat(self, request: Any, **kwargs: Any) -> LLMResponse:
+        del kwargs
+        _ = request_messages(request)
         return LLMResponse(content="ok")
 
     def get_default_model(self) -> str:
@@ -92,7 +85,7 @@ def test_codex_tool_parses_session_and_summary_from_jsonl_and_file() -> None:
     assert payload["session_id"] == "sess-cx-1"
     assert payload["summary"] == "final from file"
     assert payload["stdout"] == ""
-    assert calls and calls[0][0:2] == ["codex", "exec"]
+    assert calls and calls[0][0:3] == ["codex", "exec", "--skip-git-repo-check"]
     assert "--full-auto" not in calls[0]
 
 
@@ -139,7 +132,12 @@ def test_codex_tool_continue_uses_context_session() -> None:
                 calls.clear()
                 _run(tool.execute(prompt="second", continue_session=True))
 
-    assert calls and calls[0][0:3] == ["codex", "exec", "resume"]
+    assert calls and calls[0][0:4] == [
+        "codex",
+        "exec",
+        "--skip-git-repo-check",
+        "resume",
+    ]
     assert "sess-cx-a" in calls[0]
     assert store.sessions[("telegram:alice", "codex")] == "sess-cx-a"
 
@@ -163,8 +161,35 @@ def test_codex_tool_resume_ignores_sandbox_flag() -> None:
             with patch.object(CodexTool, "_run_command", staticmethod(_fake_run)):
                 _run(tool.execute(prompt="second", continue_session=True, sandbox="read-only"))
 
-    assert calls and calls[0][0:3] == ["codex", "exec", "resume"]
+    assert calls and calls[0][0:4] == [
+        "codex",
+        "exec",
+        "--skip-git-repo-check",
+        "resume",
+    ]
     assert "-s" not in calls[0]
+
+
+def test_codex_tool_probe_health_reports_model_not_available() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        tool = CodexTool(workspace=Path(d))
+
+        async def _fake_run(cmd: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:
+            del cmd, cwd, timeout_seconds
+            return {
+                "timed_out": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": '{"error":"端点/codex未配置模型gpt-5-mini"}',
+            }
+
+        with patch("bao.agent.tools.coding_agent_base.shutil.which", return_value="/usr/bin/codex"):
+            with patch.object(CodexTool, "_run_command", staticmethod(_fake_run)):
+                health = _run(tool.probe_health())
+
+    assert health.ready is False
+    assert health.error_type == "model_not_available"
+    assert any("supported Codex model" in hint for hint in health.hints)
 
 
 def test_codex_tool_clears_stale_stored_session_without_hidden_retry() -> None:
@@ -193,7 +218,12 @@ def test_codex_tool_clears_stale_stored_session_without_hidden_retry() -> None:
     assert payload["status"] == "error"
     assert payload["error_type"] == "stale_session"
     assert len(calls) == 1
-    assert calls[0][0:3] == ["codex", "exec", "resume"]
+    assert calls[0][0:4] == [
+        "codex",
+        "exec",
+        "--skip-git-repo-check",
+        "resume",
+    ]
     assert "sess-cx-stale" in calls[0]
     assert ("telegram:alice", "codex") not in store.sessions
 

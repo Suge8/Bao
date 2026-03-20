@@ -10,7 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from bao.bus.events import OutboundMessage
+from bao.bus.events import InboundMessage, OutboundMessage
 from bao.bus.queue import MessageBus
 from bao.channels.base import BaseChannel
 from bao.channels.progress_text import ProgressBuffer
@@ -18,6 +18,7 @@ from bao.config.schema import IMessageConfig
 
 CHAT_DB = Path.home() / "Library" / "Messages" / "chat.db"
 APPLE_EPOCH_OFFSET = 978307200
+MessageRow = tuple[int, str, str, str]
 
 
 def permission_target_label(executable: str) -> str:
@@ -158,9 +159,10 @@ class IMessageChannel(BaseChannel):
         rows = await asyncio.to_thread(self._query_new)
         if not rows:
             return
-        rowids = [r[0] for r in rows]
+        normalized_rows = _coalesce_message_rows(rows)
+        rowids = [row[0] for row in normalized_rows]
         attachments = await asyncio.to_thread(self._query_attachments, rowids)
-        for rowid, text, sender, chat_id in rows:
+        for rowid, text, sender, chat_id in normalized_rows:
             self._last_rowid = max(self._last_rowid, rowid)
             media = attachments.get(rowid, [])
             if not text and not media:
@@ -171,13 +173,16 @@ class IMessageChannel(BaseChannel):
                 logger.debug("iMessage media for ROWID {}: {}", rowid, media)
             content = text or ("[attachment]" if media else "")
             await self._handle_message(
-                sender_id=sender,
-                chat_id=chat_id,
-                content=content,
-                media=media or None,
+                InboundMessage(
+                    channel=self.name,
+                    sender_id=sender,
+                    chat_id=chat_id,
+                    content=content,
+                    media=media or [],
+                )
             )
 
-    def _query_new(self) -> list[tuple[int, str, str, str]]:
+    def _query_new(self) -> list[MessageRow]:
         for attempt in range(3):
             try:
                 conn = sqlite3.connect(f"file:{CHAT_DB}?mode=ro", uri=True, timeout=5)
@@ -244,3 +249,19 @@ class IMessageChannel(BaseChannel):
         except Exception as e:
             logger.warning("⚠️ iMessage 附件查询失败 / attachment query failed: {}", e)
             return {}
+
+
+def _coalesce_message_rows(rows: list[MessageRow]) -> list[MessageRow]:
+    by_rowid: dict[int, MessageRow] = {}
+    for rowid, text, sender, chat_id in rows:
+        existing = by_rowid.get(rowid)
+        if existing is None:
+            by_rowid[rowid] = (rowid, text, sender, chat_id)
+            continue
+        by_rowid[rowid] = (
+            rowid,
+            existing[1] or text,
+            existing[2] or sender,
+            existing[3] or chat_id,
+        )
+    return list(by_rowid.values())

@@ -15,7 +15,6 @@ class ToolErrorCategory:
 
     INVALID_PARAMS = "invalid_params"
     TOOL_NOT_FOUND = "tool_not_found"
-    APPROVAL_REQUIRED = "approval_required"
     EXECUTION_ERROR = "execution_error"
     INTERRUPTED = "interrupted"
     TIMEOUT = "timeout"

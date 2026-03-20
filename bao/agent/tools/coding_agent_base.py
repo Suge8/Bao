@@ -1,168 +1,66 @@
 """Shared base for CLI-based coding agent tools (OpenCode, Codex, etc.)."""
 
-import asyncio
-import codecs
-import inspect
-import json
-import os
-import shlex
+from __future__ import annotations
+
 import shutil
-import signal
-import time
-import uuid
 from abc import ABC
-from collections import deque
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any
 
-from loguru import logger
-
-from bao.agent.tool_result import ToolResultValue, maybe_temp_text_result
+from bao.agent.tools._coding_agent_cache import (
+    MIN_TOOL_TIMEOUT_SECONDS as _MIN_TOOL_TIMEOUT_SECONDS,
+)
+from bao.agent.tools._coding_agent_cache import DetailCache
+from bao.agent.tools._coding_agent_details_base import (
+    BaseCodingDetailsTool as _BaseCodingDetailsTool,
+)
+from bao.agent.tools._coding_agent_execute_base import CodingAgentExecuteMixin
+from bao.agent.tools._coding_agent_health import (
+    CodingBackendHealth,
+    get_cached_backend_health,
+    set_cached_backend_health,
+)
+from bao.agent.tools._coding_agent_response_base import CodingAgentResponseMixin
+from bao.agent.tools._coding_agent_session_base import CodingAgentSessionMixin
 from bao.agent.tools.base import Tool
-from bao.agent.tools.coding_session_store import CodingSessionEvent, CodingSessionStore
+from bao.agent.tools.coding_session_store import CodingSessionStore
 
-# ---------------------------------------------------------------------------
-# Detail cache — per-instance, shared between a CodingAgentTool and its
-# companion DetailsTool via the same DetailCache reference.
-# ---------------------------------------------------------------------------
-
-_DETAIL_CACHE_LIMIT = 128
-_DETAIL_CACHE_TEXT_MAX = 120_000
-_MIN_TOOL_TIMEOUT_SECONDS = 30
-_MAX_TOOL_TIMEOUT_SECONDS = 1800
+__all__ = [
+    "BaseCodingAgentTool",
+    "BaseCodingDetailsTool",
+    "DetailCache",
+    "shutil",
+]
 
 
-class _DetailRecord(TypedDict):
-    request_id: str
-    context_key: str
-    session_id: str | None
-    project_path: str
-    status: str
-    command_preview: str
-    stdout: str
-    stderr: str
-    summary: str
-    attempts: int
-    duration_ms: int
-    exit_code: int | None
-    created_at: int
-    cache_truncated: bool
-
-
-class _RunResult(TypedDict):
-    timed_out: bool
-    returncode: int | None
-    stdout: str
-    stderr: str
-
-
-class DetailCache:
-    """LRU detail cache shared between a coding-agent tool and its details tool."""
-
-    def __init__(self, limit: int = _DETAIL_CACHE_LIMIT, text_max: int = _DETAIL_CACHE_TEXT_MAX):
-        self._limit = limit
-        self._text_max = text_max
-        self._cache: dict[str, _DetailRecord] = {}
-        self._order: deque[str] = deque()
-        self._last_by_context: dict[str, str] = {}
-        self._last_by_session: dict[str, str] = {}
-
-    # -- helpers --
-
-    def _trim_text(self, text: str) -> tuple[str, bool]:
-        if len(text) <= self._text_max:
-            return text, False
-        omitted = len(text) - self._text_max
-        return text[: self._text_max] + f"\n... (detail cache truncated {omitted} chars)", True
-
-    # -- public API --
-
-    def store(self, record: _DetailRecord) -> None:
-        rid = record["request_id"]
-        self._cache[rid] = record
-        self._order.append(rid)
-        self._last_by_context[record["context_key"]] = rid
-        if record["session_id"]:
-            self._last_by_session[record["session_id"]] = rid
-
-        while len(self._order) > self._limit:
-            old = self._order.popleft()
-            rec = self._cache.pop(old, None)
-            if not rec:
-                continue
-            if self._last_by_context.get(rec["context_key"]) == old:
-                self._last_by_context.pop(rec["context_key"], None)
-            sid = rec.get("session_id")
-            if sid and self._last_by_session.get(sid) == old:
-                self._last_by_session.pop(sid, None)
-
-    def lookup(
-        self, *, request_id: str | None, session_id: str | None, context_key: str
-    ) -> _DetailRecord | None:
-        if request_id:
-            rec = self._cache.get(request_id)
-            if rec and rec.get("context_key") == context_key:
-                return rec
-            return None
-        if session_id:
-            rid = self._last_by_session.get(session_id)
-            if rid:
-                rec = self._cache.get(rid)
-                if rec and rec.get("context_key") == context_key:
-                    return rec
-            return None
-        latest = self._last_by_context.get(context_key)
-        if latest:
-            return self._cache.get(latest)
-        return None
-
-    def build_detail_record(
-        self,
-        *,
-        request_id: str,
-        context_key: str,
-        session_id: str | None,
-        project_path: str,
-        status: str,
-        command_preview: str,
-        stdout: str,
-        stderr: str,
-        summary: str,
-        attempts: int,
-        duration_ms: int,
-        exit_code: int | None,
-    ) -> None:
-        clipped_stdout, stdout_trunc = self._trim_text(stdout)
-        clipped_stderr, stderr_trunc = self._trim_text(stderr)
-        self.store(
-            {
-                "request_id": request_id,
-                "context_key": context_key,
-                "session_id": session_id,
-                "project_path": project_path,
-                "status": status,
-                "command_preview": command_preview,
-                "stdout": clipped_stdout,
-                "stderr": clipped_stderr,
-                "summary": summary,
-                "attempts": attempts,
-                "duration_ms": duration_ms,
-                "exit_code": exit_code,
-                "created_at": int(time.time()),
-                "cache_truncated": stdout_trunc or stderr_trunc,
-            }
-        )
-
-
-# ---------------------------------------------------------------------------
-# BaseCodingAgentTool — template-method base for CLI coding agents
-# ---------------------------------------------------------------------------
-
-
-class BaseCodingAgentTool(Tool, ABC):
+class BaseCodingAgentTool(
+    CodingAgentExecuteMixin,
+    CodingAgentResponseMixin,
+    CodingAgentSessionMixin,
+    Tool,
+    ABC,
+):
     """Abstract base for tools that wrap an external coding CLI."""
+
+    _TRANSIENT_MARKERS: tuple[str, ...] = (
+        "timeout",
+        "timed out",
+        "temporar",
+        "rate limit",
+        "429",
+        "econnreset",
+        "eai_again",
+    )
+    _STALE_SESSION_MARKERS: tuple[str, ...] = (
+        "no conversation found",
+        "session not found",
+        "unknown session",
+        "invalid session",
+        "could not find session",
+        "no such session",
+    )
 
     def __init__(
         self,
@@ -176,12 +74,14 @@ class BaseCodingAgentTool(Tool, ABC):
         self.workspace: Path = Path(workspace).resolve()
         self.allowed_dir: Path | None = Path(allowed_dir).resolve() if allowed_dir else None
         self.default_timeout_seconds: int = max(
-            _MIN_TOOL_TIMEOUT_SECONDS, int(default_timeout_seconds)
+            _MIN_TOOL_TIMEOUT_SECONDS,
+            int(default_timeout_seconds),
         )
-        self._channel: ContextVar[str] = ContextVar("coding_channel", default="gateway")
+        self._channel: ContextVar[str] = ContextVar("coding_channel", default="hub")
         self._chat_id: ContextVar[str] = ContextVar("coding_chat_id", default="direct")
         self._context_key: ContextVar[str] = ContextVar(
-            "coding_context_key", default="gateway:direct"
+            "coding_context_key",
+            default="hub:direct",
         )
         self.detail_cache: DetailCache = detail_cache or DetailCache()
         self._progress_callback: Callable[[str], Awaitable[None] | None] | None = None
@@ -193,7 +93,8 @@ class BaseCodingAgentTool(Tool, ABC):
         self._context_key.set(session_key or f"{channel}:{chat_id}")
 
     def set_progress_callback(
-        self, callback: Callable[[str], Awaitable[None] | None] | None
+        self,
+        callback: Callable[[str], Awaitable[None] | None] | None,
     ) -> None:
         self._progress_callback = callback
 
@@ -201,31 +102,27 @@ class BaseCodingAgentTool(Tool, ABC):
     def session_backend(self) -> str:
         return self.name
 
-    # -- abstract properties (subclass MUST override) --
-
     @property
     def cli_binary(self) -> str:
-        """CLI executable name, e.g. 'opencode' or 'codex'."""
         raise NotImplementedError
 
     @property
     def _tool_label(self) -> str:
-        """Human-readable label, e.g. 'OpenCode' or 'Codex'."""
         raise NotImplementedError
 
     @property
     def _meta_prefix(self) -> str:
-        """Hybrid-format meta key, e.g. 'OPENCODE_META' or 'CODEX_META'."""
         raise NotImplementedError
 
-    # -- abstract methods (subclass MUST override) --
-
     def _validate_extra_params(self, kwargs: dict[str, Any]) -> str | None:
-        """Validate tool-specific params. Return error string or None."""
         return None
 
     async def _prepare_extra_params(
-        self, *, cwd: Path, timeout: int, extra_params: dict[str, Any]
+        self,
+        *,
+        cwd: Path,
+        timeout: int,
+        extra_params: dict[str, Any],
     ) -> dict[str, Any]:
         del cwd, timeout
         return extra_params
@@ -239,11 +136,9 @@ class BaseCodingAgentTool(Tool, ABC):
         context_key: str,
         extra_params: dict[str, Any],
     ) -> tuple[list[str], dict[str, Any]]:
-        """Build CLI command. Return (cmd_list, exec_state)."""
         raise NotImplementedError
 
     async def _extract_output(self, *, stdout_text: str, exec_state: dict[str, Any]) -> str:
-        """Extract final output from run result. Default: use stdout."""
         return stdout_text.strip() or "(no output)"
 
     async def _resolve_session_after_success(
@@ -255,14 +150,14 @@ class BaseCodingAgentTool(Tool, ABC):
         exec_state: dict[str, Any],
         timeout: int,
     ) -> str | None:
-        """Resolve session id after successful run. Default: return resolved_session."""
+        del stdout_text, cwd, exec_state, timeout
         return resolved_session
 
     def _cleanup(self, exec_state: dict[str, Any]) -> None:
-        """Clean up resources created during execution (e.g. temp files)."""
+        del exec_state
 
     def _error_type_impl(self, stdout_text: str, stderr_text: str) -> str:
-        """Classify error type from output."""
+        del stdout_text, stderr_text
         return "execution_failed"
 
     def _classify_error_type(self, stdout_text: str, stderr_text: str) -> str:
@@ -271,15 +166,15 @@ class BaseCodingAgentTool(Tool, ABC):
         return self._error_type_impl(stdout_text, stderr_text)
 
     def _build_failure_hints(self, stdout_text: str, stderr_text: str) -> list[str]:
-        """Build actionable hints for failure output."""
+        del stdout_text, stderr_text
         return []
 
     def _extra_payload_fields(self, extra_params: dict[str, Any]) -> dict[str, Any]:
-        """Return extra fields to include in payload (e.g. {'agent': ...})."""
+        del extra_params
         return {}
 
     def _extra_meta_fields(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Return extra fields to include in hybrid meta dict."""
+        del payload
         return {}
 
     def _detail_stdout_for_cache(
@@ -292,1075 +187,35 @@ class BaseCodingAgentTool(Tool, ABC):
         del stdout_text, exec_state
         return final_output
 
-    # -- transient failure detection (overridable) --
-
-    _TRANSIENT_MARKERS: tuple[str, ...] = (
-        "timeout",
-        "timed out",
-        "temporar",
-        "rate limit",
-        "429",
-        "econnreset",
-        "eai_again",
-    )
-
     def _is_transient_failure(self, stdout_text: str, stderr_text: str) -> bool:
         lowered = f"{stdout_text}\n{stderr_text}".lower()
-        return any(m in lowered for m in self._TRANSIENT_MARKERS)
-
-    _STALE_SESSION_MARKERS: tuple[str, ...] = (
-        "no conversation found",
-        "session not found",
-        "unknown session",
-        "invalid session",
-        "could not find session",
-        "no such session",
-    )
+        return any(marker in lowered for marker in self._TRANSIENT_MARKERS)
 
     def _is_stale_session_error(self, stdout_text: str, stderr_text: str) -> bool:
         lowered = f"{stdout_text}\n{stderr_text}".lower()
-        return any(m in lowered for m in self._STALE_SESSION_MARKERS)
+        return any(marker in lowered for marker in self._STALE_SESSION_MARKERS)
 
-    async def _resolve_stored_session_id(self, context_key: str) -> str | None:
-        if self._session_store is None:
-            return None
-        try:
-            maybe = await self._session_store.load(
-                context_key=context_key,
-                backend=self.session_backend,
-            )
-        except Exception as exc:
-            logger.debug("{} session lookup failed: {}", self._tool_label, exc)
-            return None
-        return maybe.strip() if isinstance(maybe, str) and maybe.strip() else None
-
-    async def _publish_session_event(
-        self,
-        *,
-        context_key: str,
-        session_id: str | None,
-        action: Literal["active", "cleared"],
-        reason: str | None = None,
-    ) -> None:
-        if self._session_store is None:
-            return
-        event = CodingSessionEvent(
-            backend=self.session_backend,
-            context_key=context_key,
-            session_id=session_id.strip() if isinstance(session_id, str) and session_id.strip() else None,
-            action=action,
-            reason=reason,
-        )
-        try:
-            await self._session_store.publish(event)
-        except Exception as exc:
-            logger.debug("{} session event failed: {}", self._tool_label, exc)
-
-    def _parse_execute_options(
-        self, kwargs: dict[str, Any]
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        prompt = kwargs.get("prompt")
-        if not isinstance(prompt, str):
-            return None, "Error: prompt must be a string"
-        prompt_text = prompt.strip()
-        if not prompt_text:
-            return None, "Error: prompt cannot be empty"
-
-        project_path = kwargs.get("project_path")
-        if project_path is not None and not isinstance(project_path, str):
-            return None, "Error: project_path must be a string"
-
-        session_id = kwargs.get("session_id")
-        if session_id is not None and not isinstance(session_id, str):
-            return None, "Error: session_id must be a string"
-
-        continue_session = kwargs.get("continue_session", True)
-        if not isinstance(continue_session, bool):
-            return None, "Error: continue_session must be a boolean"
-
-        model = kwargs.get("model")
-        if model is not None and not isinstance(model, str):
-            return None, "Error: model must be a string"
-
-        timeout_raw = kwargs.get("timeout_seconds")
-        if timeout_raw is not None and not isinstance(timeout_raw, int):
-            return None, "Error: timeout_seconds must be an integer"
-
-        response_format = kwargs.get("response_format", "hybrid")
-        if response_format not in ("hybrid", "json", "text"):
-            return None, "Error: response_format must be one of: hybrid, json, text"
-
-        max_retries = kwargs.get("max_retries", 1)
-        if not isinstance(max_retries, int):
-            return None, "Error: max_retries must be an integer"
-        max_retries = max(0, min(max_retries, 2))
-
-        max_output_raw = kwargs.get("max_output_chars", 4000)
-        if not isinstance(max_output_raw, int):
-            return None, "Error: max_output_chars must be an integer"
-        max_output_chars = max(200, min(max_output_raw, 50000))
-
-        include_details = kwargs.get("include_details", False)
-        if not isinstance(include_details, bool):
-            return None, "Error: include_details must be a boolean"
-
-        return {
-            "prompt_text": prompt_text,
-            "project_path": project_path,
-            "session_id": session_id,
-            "continue_session": continue_session,
-            "model": model,
-            "timeout_raw": timeout_raw,
-            "response_format": response_format,
-            "max_retries": max_retries,
-            "max_output_chars": max_output_chars,
-            "include_details": include_details,
-            "extra_params": kwargs,
-        }, None
-
-    async def _resolve_session_for_execute(
-        self,
-        *,
-        explicit_session_id: str | None,
-        continue_session: bool,
-        context_key: str,
-    ) -> tuple[str | None, str]:
-        resolved_session = explicit_session_id
-        source = "explicit" if resolved_session else "none"
-        if not resolved_session and continue_session:
-            resolved_session = await self._resolve_stored_session_id(context_key)
-            if resolved_session:
-                source = "stored"
-        return resolved_session, source
-
-    async def _run_command_once(
-        self,
-        *,
-        cmd: list[str],
-        cwd: Path,
-        timeout: int,
-    ) -> tuple[_RunResult, int, int]:
-        start = time.monotonic()
-        attempts = 1
-        try:
-            result = await self._run_command(
-                cmd=cmd,
-                cwd=cwd,
-                timeout_seconds=timeout,
-                on_stdout_line=self._progress_callback,
-            )
-        except TypeError as exc:
-            if "on_stdout_line" not in str(exc):
-                raise
-            result = await self._run_command(
-                cmd=cmd,
-                cwd=cwd,
-                timeout_seconds=timeout,
-            )
-
-        duration_ms = int((time.monotonic() - start) * 1000)
-        return result, attempts, duration_ms
-
-    def _success_response(
-        self,
-        *,
-        final_output: str,
-        stderr_text: str,
-        max_output_chars: int,
-        include_details: bool,
-        request_id: str,
-        context_key: str,
-        active_session: str | None,
-        resolved_session: str | None,
-        model: str | None,
-        timeout: int,
-        cwd: Path,
-        attempts: int,
-        duration_ms: int,
-        command_preview: str,
-        detail_stdout: str,
-        response_format: str,
-        extra_params: dict[str, Any],
-    ) -> str:
-        body = final_output.strip() or "(no output)"
-        if len(body) > max_output_chars:
-            body = body[:max_output_chars] + (
-                f"\n... (truncated, {len(body) - max_output_chars} more chars)"
-            )
-        stderr_clean = stderr_text.strip()
-        summary = self._summarize_output(body, stderr_clean)
-        details_available = bool(body or stderr_clean)
-        details_hint = self._build_details_hint(
-            request_id=request_id,
-            session_id=active_session,
-            include_details=include_details,
-            details_available=details_available,
-        )
-
-        header = f"{self._tool_label} completed successfully."
-        if active_session:
-            header += f"\nSession: {active_session}"
-
-        extras = self._extra_payload_fields(extra_params)
-        payload: dict[str, Any] = {
-            "schema_version": 1,
-            "request_id": request_id,
-            "status": "success",
-            "message": header,
-            "project_path": str(cwd),
-            "timeout_seconds": timeout,
-            "session_id": active_session,
-            "continued": bool(resolved_session),
-            "model": model,
-            **extras,
-            "attempts": attempts,
-            "duration_ms": duration_ms,
-            "exit_code": 0,
-            "stdout": body if include_details else "",
-            "stderr": stderr_clean if include_details else "",
-            "summary": summary,
-            "details_available": details_available,
-            "details_hint": details_hint,
-            "hints": [],
-            "error_type": None,
-            "command_preview": command_preview,
-        }
-        self.detail_cache.build_detail_record(
-            request_id=request_id,
-            context_key=context_key,
-            session_id=active_session,
-            project_path=str(cwd),
-            status="success",
-            command_preview=command_preview,
-            stdout=detail_stdout,
-            stderr=stderr_text,
-            summary=summary,
-            attempts=attempts,
-            duration_ms=duration_ms,
-            exit_code=0,
-        )
-        return self._render_payload(payload, response_format=response_format)
-
-    # -- main execute (template method) --
-
-    async def execute(self, **kwargs: Any) -> ToolResultValue:
-        options, option_error = self._parse_execute_options(kwargs)
-        if option_error:
-            return option_error
-        if options is None:
-            return "Error: invalid options"
-
-        prompt_text = options["prompt_text"]
-        project_path = options["project_path"]
-        session_id = options["session_id"]
-        continue_session = options["continue_session"]
-        model = options["model"]
-        timeout_raw = options["timeout_raw"]
-        response_format = options["response_format"]
-        max_output_chars = options["max_output_chars"]
-        include_details = options["include_details"]
-        extra_params = options["extra_params"]
-
-        # 2. Subclass-specific param validation
-        extra_err = self._validate_extra_params(kwargs)
-        if extra_err:
-            return extra_err
-
-        request_id = uuid.uuid4().hex
-        context_key = self._context_key.get()
-        timeout = max(
-            _MIN_TOOL_TIMEOUT_SECONDS,
-            min(int(timeout_raw or self.default_timeout_seconds), _MAX_TOOL_TIMEOUT_SECONDS),
-        )
-
-        # 3. Binary check
+    async def probe_health(self, timeout_seconds: int = 20) -> CodingBackendHealth:
+        cached = get_cached_backend_health(self.name, str(self.workspace))
+        if cached is not None:
+            return cached
         if not shutil.which(self.cli_binary):
-            return self._error_response(
-                status="error",
-                message=(
-                    f"Error: `{self.cli_binary}` command not found. "
-                    f"Install {self._tool_label} first and ensure it is on PATH."
+            return set_cached_backend_health(
+                self.name,
+                str(self.workspace),
+                CodingBackendHealth(
+                    backend=self.name,
+                    ready=False,
+                    error_type="missing_binary",
+                    message=f"{self.cli_binary} not found on PATH.",
                 ),
-                project_path=str(self.workspace),
-                timeout_seconds=timeout,
-                used_session_id=None,
-                continued=False,
-                model=model,
-                attempts=0,
-                duration_ms=0,
-                exit_code=None,
-                summary=f"{self._tool_label} CLI is not installed or not in PATH.",
-                error_type="missing_binary",
-                request_id=request_id,
-                context_key=context_key,
-                command_preview="",
-                response_format=response_format,
-                extra_params=extra_params,
             )
+        result = await self._probe_backend_health(timeout_seconds=max(5, int(timeout_seconds)))
+        return set_cached_backend_health(self.name, str(self.workspace), result)
 
-        # 4. Resolve project path
-        try:
-            cwd = self._resolve_project_path(project_path)
-        except ValueError as e:
-            return self._error_response(
-                status="error",
-                message=f"Error: {e}",
-                project_path=str(project_path or self.workspace),
-                timeout_seconds=timeout,
-                used_session_id=None,
-                continued=False,
-                model=model,
-                attempts=0,
-                duration_ms=0,
-                exit_code=None,
-                summary=f"Invalid project path: {project_path or self.workspace}",
-                error_type="invalid_project_path",
-                request_id=request_id,
-                context_key=context_key,
-                command_preview="",
-                response_format=response_format,
-                extra_params=extra_params,
-            )
-
-        extra_params = await self._prepare_extra_params(
-            cwd=cwd,
-            timeout=timeout,
-            extra_params=extra_params,
-        )
-
-        resolved_session, session_source = await self._resolve_session_for_execute(
-            explicit_session_id=session_id,
-            continue_session=continue_session,
-            context_key=context_key,
-        )
-
-        # 6. Build command (subclass hook) — inside try/finally so _cleanup
-        #    runs even if _build_command_preview raises after _build_command
-        #    already created resources (e.g. Codex temp file).
-        exec_state: dict[str, Any] = {}
-        try:
-            cmd, exec_state = self._build_command(
-                prompt=prompt_text,
-                resolved_session=resolved_session,
-                model=model,
-                context_key=context_key,
-                extra_params=extra_params,
-            )
-            command_preview = self._build_command_preview(cmd, prompt_text)
-
-            result, attempts, duration_ms = await self._run_command_once(
-                cmd=cmd,
-                cwd=cwd,
-                timeout=timeout,
-            )
-
-            # 8. Timeout
-            if result["timed_out"]:
-                return self._error_response(
-                    status="timeout",
-                    message=(
-                        f"Error: {self._tool_label} timed out after {timeout} seconds. "
-                        f"{self._timeout_error_guidance(timeout)}"
-                    ),
-                    project_path=str(cwd),
-                    timeout_seconds=timeout,
-                    used_session_id=resolved_session,
-                    continued=bool(resolved_session),
-                    model=model,
-                    attempts=attempts,
-                    duration_ms=duration_ms,
-                    exit_code=None,
-                    summary=f"{self._tool_label} timed out after {timeout} seconds.",
-                    error_type="timeout",
-                    request_id=request_id,
-                    context_key=context_key,
-                    command_preview=command_preview,
-                    response_format=response_format,
-                    extra_params=extra_params,
-                    hints=[self._timeout_retry_hint(timeout)],
-                )
-
-            stdout_text = result["stdout"]
-            stderr_text = result["stderr"]
-            return_code = result["returncode"]
-            exec_state["_returncode"] = return_code
-            # 9. Extract output (subclass hook)
-            final_output = await self._extract_output(
-                stdout_text=stdout_text, exec_state=exec_state
-            )
-            detail_stdout = self._detail_stdout_for_cache(
-                final_output=final_output,
-                stdout_text=stdout_text,
-                exec_state=exec_state,
-            )
-
-            # 10. Failure
-            if return_code is None or return_code != 0:
-                # Stored stale sessions are cleared explicitly; callers retry on a fresh turn.
-                stale_session = self._is_stale_session_error(stdout_text, stderr_text)
-                if stale_session and session_source == "stored":
-                    await self._publish_session_event(
-                        context_key=context_key,
-                        session_id=resolved_session,
-                        action="cleared",
-                        reason="stale_session",
-                    )
-                return self._failure_response(
-                    return_code=int(return_code or -1),
-                    final_output=final_output,
-                    stdout_text=stdout_text,
-                    stderr_text=stderr_text,
-                    project_path=str(cwd),
-                    timeout_seconds=timeout,
-                    used_session_id=resolved_session,
-                    continued=bool(resolved_session),
-                    model=model,
-                    attempts=attempts,
-                    duration_ms=duration_ms,
-                    max_output_chars=max_output_chars,
-                    include_details=include_details,
-                    request_id=request_id,
-                    context_key=context_key,
-                    command_preview=command_preview,
-                    response_format=response_format,
-                    extra_params=extra_params,
-                    stdout_for_cache=detail_stdout,
-                    stale_session_cleared=stale_session and session_source == "stored",
-                )
-
-            # 11. Success — resolve session (subclass hook)
-            active_session = await self._resolve_session_after_success(
-                stdout_text=stdout_text,
-                resolved_session=resolved_session,
-                cwd=cwd,
-                exec_state=exec_state,
-                timeout=timeout,
-            )
-            await self._publish_session_event(
-                context_key=context_key,
-                session_id=active_session,
-                action="active",
-            )
-            return self._success_response(
-                final_output=final_output,
-                stderr_text=stderr_text,
-                max_output_chars=max_output_chars,
-                include_details=include_details,
-                request_id=request_id,
-                context_key=context_key,
-                active_session=active_session,
-                resolved_session=resolved_session,
-                model=model,
-                timeout=timeout,
-                cwd=cwd,
-                attempts=attempts,
-                duration_ms=duration_ms,
-                command_preview=command_preview,
-                detail_stdout=detail_stdout,
-                response_format=response_format,
-                extra_params=extra_params,
-            )
-        finally:
-            self._cleanup(exec_state)
-
-    # -- internal helpers --
-
-    def _timeout_error_guidance(self, timeout_seconds: int) -> str:
-        if timeout_seconds < _MAX_TOOL_TIMEOUT_SECONDS:
-            return "Try narrowing the task, or increase timeout_seconds."
-        return (
-            "Try narrowing or splitting the task; timeout_seconds is already at "
-            f"the {_MAX_TOOL_TIMEOUT_SECONDS}-second maximum."
-        )
-
-    def _timeout_retry_hint(self, timeout_seconds: int) -> str:
-        if timeout_seconds < _MAX_TOOL_TIMEOUT_SECONDS:
-            return "Split the task into smaller steps or raise timeout_seconds."
-        return (
-            "Split the task into smaller steps; timeout_seconds is already at "
-            f"the {_MAX_TOOL_TIMEOUT_SECONDS}-second maximum."
-        )
-
-    def _transient_retry_hint(self, timeout_seconds: int) -> str:
-        if timeout_seconds < _MAX_TOOL_TIMEOUT_SECONDS:
-            return "Transient failure detected; retry the same task or increase timeout_seconds."
-        return (
-            "Transient failure detected; retry the same task or split it into smaller steps "
-            f"(timeout_seconds is already at the {_MAX_TOOL_TIMEOUT_SECONDS}-second maximum)."
-        )
-
-    def _error_response(
-        self,
-        *,
-        status: str,
-        message: str,
-        project_path: str,
-        timeout_seconds: int,
-        used_session_id: str | None,
-        continued: bool,
-        model: str | None,
-        attempts: int,
-        duration_ms: int,
-        exit_code: int | None,
-        summary: str,
-        error_type: str,
-        request_id: str,
-        context_key: str,
-        command_preview: str,
-        response_format: str,
-        extra_params: dict[str, Any],
-        hints: list[str] | None = None,
-    ) -> str:
-        extras = self._extra_payload_fields(extra_params)
-        payload: dict[str, Any] = {
-            "schema_version": 1,
-            "request_id": request_id,
-            "status": status,
-            "message": message,
-            "project_path": project_path,
-            "timeout_seconds": timeout_seconds,
-            "session_id": used_session_id,
-            "continued": continued,
-            "model": model,
-            **extras,
-            "attempts": attempts,
-            "duration_ms": duration_ms,
-            "exit_code": exit_code,
-            "stdout": "",
-            "stderr": "",
-            "summary": summary,
-            "details_available": False,
-            "details_hint": None,
-            "hints": hints or [],
-            "error_type": error_type,
-            "command_preview": command_preview,
-        }
-        self.detail_cache.build_detail_record(
-            request_id=request_id,
-            context_key=context_key,
-            session_id=used_session_id,
-            project_path=project_path,
-            status=status,
-            command_preview=command_preview,
-            stdout="",
-            stderr="",
-            summary=summary,
-            attempts=attempts,
-            duration_ms=duration_ms,
-            exit_code=exit_code,
-        )
-        return self._render_payload(payload, response_format=response_format)
-
-    def _failure_response(
-        self,
-        *,
-        return_code: int,
-        final_output: str,
-        stdout_text: str,
-        stderr_text: str,
-        project_path: str,
-        timeout_seconds: int,
-        used_session_id: str | None,
-        continued: bool,
-        model: str | None,
-        attempts: int,
-        duration_ms: int,
-        max_output_chars: int,
-        include_details: bool,
-        request_id: str,
-        context_key: str,
-        command_preview: str,
-        response_format: str,
-        extra_params: dict[str, Any],
-        stdout_for_cache: str,
-        stale_session_cleared: bool = False,
-    ) -> str:
-        out = stdout_text.strip()
-        err = stderr_text.strip()
-        hints = self._build_failure_hints(out, err)
-        error_type = "stale_session" if stale_session_cleared else self._classify_error_type(out, err)
-        if stale_session_cleared:
-            hints.insert(
-                0,
-                f"Stored {self._tool_label} session expired and was cleared. Retry once to start a fresh session.",
-            )
-        if not hints and self._is_transient_failure(out, err):
-            hints.append(self._transient_retry_hint(timeout_seconds))
-        summary = self._summarize_output(final_output, err)
-        details_available = bool(final_output or err)
-        details_hint = self._build_details_hint(
-            request_id=request_id,
-            session_id=used_session_id,
-            include_details=include_details,
-            details_available=details_available,
-        )
-        extras = self._extra_payload_fields(extra_params)
-        payload: dict[str, Any] = {
-            "schema_version": 1,
-            "request_id": request_id,
-            "status": "error",
-            "message": f"Error: {self._tool_label} failed (exit code {return_code}).",
-            "project_path": project_path,
-            "timeout_seconds": timeout_seconds,
-            "session_id": used_session_id,
-            "continued": continued,
-            "model": model,
-            **extras,
-            "attempts": attempts,
-            "duration_ms": duration_ms,
-            "exit_code": return_code,
-            "stdout": final_output[:max_output_chars] if include_details else "",
-            "stderr": err[:max_output_chars] if include_details else "",
-            "summary": summary,
-            "details_available": details_available,
-            "details_hint": details_hint,
-            "hints": hints,
-            "error_type": error_type,
-            "command_preview": command_preview,
-        }
-        self.detail_cache.build_detail_record(
-            request_id=request_id,
-            context_key=context_key,
-            session_id=used_session_id,
-            project_path=project_path,
-            status="error",
-            command_preview=command_preview,
-            stdout=stdout_for_cache,
-            stderr=stderr_text,
-            summary=summary,
-            attempts=attempts,
-            duration_ms=duration_ms,
-            exit_code=return_code,
-        )
-        return self._render_payload(payload, response_format=response_format)
-
-    def _resolve_project_path(self, project_path: str | None) -> Path:
-        try:
-            target = Path(project_path).expanduser().resolve() if project_path else self.workspace
-        except Exception:
-            raise ValueError(f"Invalid project_path: {project_path!r}") from None
-        if not target.exists() or not target.is_dir():
-            raise ValueError(f"project_path does not exist or is not a directory: {target}")
-        if (
-            self.allowed_dir
-            and self.allowed_dir not in target.parents
-            and target != self.allowed_dir
-        ):
-            raise ValueError("project_path is outside the allowed workspace")
-        return target
-
-    @staticmethod
-    def _build_command_preview(cmd: list[str], prompt_text: str) -> str:
-        compact_prompt = prompt_text.strip().replace("\n", " ")
-        if len(compact_prompt) > 160:
-            compact_prompt = compact_prompt[:160] + "..."
-        if not cmd:
-            return ""
-        preview_parts = [shlex.quote(part) for part in cmd[:-1]]
-        preview_parts.append(shlex.quote(compact_prompt))
-        return " ".join(preview_parts)
-
-    @staticmethod
-    async def _run_command(
-        cmd: list[str],
-        cwd: Path,
-        timeout_seconds: int,
-        on_stdout_line: Callable[[str], Awaitable[None] | None] | None = None,
-    ) -> _RunResult:
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(cwd),
-            start_new_session=True,
-        )
-
-        async def _read_stream(
-            stream: asyncio.StreamReader | None,
-            buf: list[str],
-            *,
-            on_line: Callable[[str], Awaitable[None] | None] | None = None,
-        ) -> str:
-            if stream is None:
-                return ""
-            decoder = codecs.getincrementaldecoder("utf-8")("replace")
-            remainder = ""
-            while True:
-                chunk = await stream.read(8192)
-                if not chunk:
-                    tail = decoder.decode(b"", final=True)
-                    if tail:
-                        buf.append(tail)
-                        remainder += tail
-                    if remainder and remainder.strip() and on_line:
-                        await _fire_cb(on_line, remainder.strip())
-                    break
-                text = decoder.decode(chunk)
-                buf.append(text)
-                if on_line is None:
-                    continue
-                parts = (remainder + text).replace("\r\n", "\n").replace("\r", "\n").split("\n")
-                remainder = parts[-1]
-                for part in parts[:-1]:
-                    cleaned = part.strip()
-                    if cleaned:
-                        await _fire_cb(on_line, cleaned)
-            return "".join(buf)
-
-        async def _fire_cb(cb: Callable[[str], Awaitable[None] | None], text: str) -> None:
-            try:
-                maybe = cb(text)
-                if inspect.isawaitable(maybe):
-                    await maybe
-            except Exception as exc:
-                logger.debug("coding tool progress callback failed: {}", exc)
-
-        async def _graceful_kill() -> None:
-            """SIGTERM → 2 s grace → SIGKILL."""
-            if process.returncode is not None:
-                return
-            # Stage 1: SIGTERM
-            try:
-                if hasattr(os, "killpg"):
-                    os.killpg(process.pid, signal.SIGTERM)
-                else:
-                    process.terminate()
-            except ProcessLookupError:
-                return
-            except Exception:
-                pass
-            try:
-                await asyncio.wait_for(process.wait(), timeout=2.0)
-                return
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                pass
-            # Stage 2: SIGKILL
-            if process.returncode is not None:
-                return
-            try:
-                if hasattr(os, "killpg"):
-                    os.killpg(process.pid, signal.SIGKILL)
-                else:
-                    process.kill()
-            except ProcessLookupError:
-                pass
-            except Exception:
-                pass
-            try:
-                await asyncio.wait_for(process.wait(), timeout=3.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                pass
-
-        stdout_buf: list[str] = []
-        stderr_buf: list[str] = []
-        stdout_task: asyncio.Task[str] | None = None
-        stderr_task: asyncio.Task[str] | None = None
-
-        async def _drain_tasks() -> None:
-            pending = [t for t in (stdout_task, stderr_task) if t and not t.done()]
-            if pending:
-                done, still = await asyncio.wait(pending, timeout=0.5)
-                for task in still:
-                    task.cancel()
-            if stdout_task or stderr_task:
-                try:
-                    await asyncio.wait_for(
-                        asyncio.gather(
-                            *(t for t in (stdout_task, stderr_task) if t),
-                            return_exceptions=True,
-                        ),
-                        timeout=2.0,
-                    )
-                except asyncio.TimeoutError:
-                    pass
-
-        try:
-            stdout_task = asyncio.create_task(
-                _read_stream(process.stdout, stdout_buf, on_line=on_stdout_line)
-            )
-            stderr_task = asyncio.create_task(_read_stream(process.stderr, stderr_buf))
-            await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
-            stdout = await stdout_task
-            stderr = await stderr_task
-            return {
-                "timed_out": False,
-                "returncode": int(process.returncode or 0),
-                "stdout": stdout,
-                "stderr": stderr,
-            }
-        except asyncio.TimeoutError:
-            await _graceful_kill()
-            await _drain_tasks()
-            return {
-                "timed_out": True,
-                "returncode": None,
-                "stdout": "".join(stdout_buf),
-                "stderr": "".join(stderr_buf),
-            }
-        except asyncio.CancelledError:
-            await _graceful_kill()
-            await _drain_tasks()
-            raise
-
-    @staticmethod
-    def _summarize_output(stdout_text: str, stderr_text: str, max_chars: int = 1600) -> str:
-        main = BaseCodingAgentTool._trim_for_summary(stdout_text.strip(), max_chars=max_chars)
-        if stderr_text:
-            err = BaseCodingAgentTool._trim_for_summary(stderr_text.strip(), max_chars=500)
-            if main and main != "(no output)":
-                return f"{main}\n\n[stderr]\n{err}"
-            return f"[stderr]\n{err}"
-        return main
-
-    @staticmethod
-    def _trim_for_summary(text: str, max_chars: int) -> str:
-        if not text:
-            return "(no output)"
-        if len(text) <= max_chars:
-            return text
-        half = max_chars // 2
-        head = text[:half].rstrip()
-        tail = text[-half:].lstrip()
-        return f"{head}\n...\n{tail}"
-
-    def _build_details_hint(
-        self,
-        request_id: str,
-        session_id: str | None,
-        include_details: bool,
-        details_available: bool,
-    ) -> str | None:
-        if include_details or not details_available:
-            return None
-        tool_name = self.name
-        details_tool = f"{tool_name}_details"
-        if session_id:
-            return (
-                "Detailed output omitted to protect context budget. "
-                f"Use {details_tool} with request_id '{request_id}', "
-                f"or resume session '{session_id}'."
-            )
-        return (
-            "Detailed output omitted to protect context budget. "
-            f"Use {details_tool} with request_id '{request_id}' to view full stdout/stderr."
-        )
-
-    def _render_payload(self, payload: dict[str, Any], response_format: str) -> str:
-        if response_format == "json":
-            return maybe_temp_text_result(
-                json.dumps(payload, ensure_ascii=False),
-                prefix="bao_coding_details_",
-            )
-
-        if response_format == "text":
-            parts = [payload["message"]]
-            if payload["session_id"]:
-                parts.append(f"Session: {payload['session_id']}")
-            if payload["summary"]:
-                parts.append(f"Summary:\n{payload['summary']}")
-            if payload["stdout"]:
-                parts.append(payload["stdout"])
-            if payload["stderr"]:
-                parts.append(f"STDERR:\n{payload['stderr']}")
-            if payload["details_hint"]:
-                parts.append(f"Details:\n{payload['details_hint']}")
-            if payload["hints"]:
-                parts.append("Hints:\n- " + "\n- ".join(payload["hints"]))
-            return "\n\n".join(parts)
-
-        # hybrid (default)
-        meta: dict[str, Any] = {
-            "schema_version": payload["schema_version"],
-            "request_id": payload["request_id"],
-            "status": payload["status"],
-            "error_type": payload["error_type"],
-            "session_id": payload["session_id"],
-            "continued": payload["continued"],
-            "project_path": payload["project_path"],
-            "timeout_seconds": payload["timeout_seconds"],
-            "duration_ms": payload["duration_ms"],
-            "attempts": payload["attempts"],
-            "exit_code": payload["exit_code"],
-            **self._extra_meta_fields(payload),
-            "model": payload["model"],
-            "command_preview": payload["command_preview"],
-            "details_available": payload["details_available"],
-        }
-        lines = [payload["message"], f"{self._meta_prefix}=" + json.dumps(meta, ensure_ascii=False)]
-        if payload["summary"]:
-            lines.extend(["Summary:", payload["summary"]])
-        if payload["stdout"]:
-            lines.extend(["Output:", payload["stdout"]])
-        if payload["stderr"]:
-            lines.extend(["STDERR:", payload["stderr"]])
-        if payload["details_hint"]:
-            lines.extend(["Details:", payload["details_hint"]])
-        if payload["hints"]:
-            lines.extend(["Hints:", "- " + "\n- ".join(payload["hints"])])
-        return "\n\n".join(lines)
+    async def _probe_backend_health(self, timeout_seconds: int) -> CodingBackendHealth:
+        del timeout_seconds
+        return CodingBackendHealth(backend=self.name, ready=True)
 
 
-# ---------------------------------------------------------------------------
-# BaseCodingDetailsTool — companion details-fetch tool
-# ---------------------------------------------------------------------------
-
-
-class BaseCodingDetailsTool(Tool, ABC):
-    """Abstract base for the *_details companion tool."""
-
-    def __init__(self, *, detail_cache: DetailCache, default_max_chars: int = 12000):
-        self.detail_cache = detail_cache
-        self.default_max_chars = max(200, int(default_max_chars))
-        self._channel: ContextVar[str] = ContextVar("coding_details_channel", default="gateway")
-        self._chat_id: ContextVar[str] = ContextVar("coding_details_chat_id", default="direct")
-        self._context_key: ContextVar[str] = ContextVar(
-            "coding_details_context_key", default="gateway:direct"
-        )
-
-    def set_context(self, channel: str, chat_id: str, session_key: str | None = None) -> None:
-        self._channel.set(channel)
-        self._chat_id.set(chat_id)
-        self._context_key.set(session_key or f"{channel}:{chat_id}")
-
-    # -- abstract properties (subclass MUST override) --
-
-    @property
-    def _tool_label(self) -> str:
-        raise NotImplementedError
-
-    @property
-    def _meta_prefix(self) -> str:
-        """e.g. 'OPENCODE_DETAIL_META' or 'CODEX_DETAIL_META'."""
-        raise NotImplementedError
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "request_id": {
-                    "type": "string",
-                    "description": f"Preferred: request_id from {self._meta_prefix.replace('_DETAIL', '')}",
-                },
-                "session_id": {
-                    "type": "string",
-                    "description": f"Fallback: {self._tool_label} session id",
-                },
-                "max_chars": {
-                    "type": "integer",
-                    "minimum": 200,
-                    "maximum": 50000,
-                    "description": "Max chars for stdout/stderr in response",
-                },
-                "include_stderr": {
-                    "type": "boolean",
-                    "description": "Whether to include stderr content",
-                },
-                "response_format": {
-                    "type": "string",
-                    "enum": ["hybrid", "json", "text"],
-                    "description": "Return format: hybrid (default), json, or text",
-                },
-            },
-            "required": [],
-        }
-
-    @staticmethod
-    def _clip_detail_text(text: str, max_chars: int) -> str:
-        if len(text) <= max_chars:
-            return text
-        omitted = len(text) - max_chars
-        return text[:max_chars] + f"\n... (truncated {omitted} chars)"
-
-    def _build_payload(
-        self,
-        *,
-        record: _DetailRecord,
-        stdout: str,
-        stderr: str,
-    ) -> dict[str, Any]:
-        return {
-            "request_id": record["request_id"],
-            "status": record["status"],
-            "session_id": record["session_id"],
-            "project_path": record["project_path"],
-            "command_preview": record["command_preview"],
-            "summary": record["summary"],
-            "attempts": record["attempts"],
-            "duration_ms": record["duration_ms"],
-            "exit_code": record["exit_code"],
-            "cache_truncated": record["cache_truncated"],
-            "stdout": stdout,
-            "stderr": stderr,
-        }
-
-    def _render_detail_response(
-        self,
-        *,
-        payload: dict[str, Any],
-        response_format: str,
-        prefix: str = "bao_coding_details_",
-    ) -> ToolResultValue:
-        if response_format == "json":
-            return maybe_temp_text_result(
-                json.dumps(payload, ensure_ascii=False),
-                prefix=prefix,
-            )
-
-        title = (
-            f"{self._tool_label} details: request_id={payload['request_id']} "
-            f"status={payload['status']}"
-        )
-        parts: list[str] = [title, "Summary:", str(payload["summary"])]
-        if response_format == "hybrid":
-            parts.insert(1, f"{self._meta_prefix}=" + json.dumps(payload, ensure_ascii=False))
-        stdout = str(payload.get("stdout", ""))
-        stderr = str(payload.get("stderr", ""))
-        if stdout:
-            parts.extend(["Output:", stdout])
-        if stderr:
-            parts.extend(["STDERR:", stderr])
-        return maybe_temp_text_result("\n\n".join(str(part) for part in parts), prefix=prefix)
-
-    async def execute(self, **kwargs: Any) -> ToolResultValue:
-        request_id = kwargs.get("request_id")
-        if request_id is not None and not isinstance(request_id, str):
-            return "Error: request_id must be a string"
-
-        session_id = kwargs.get("session_id")
-        if session_id is not None and not isinstance(session_id, str):
-            return "Error: session_id must be a string"
-
-        max_chars = kwargs.get("max_chars", self.default_max_chars)
-        if not isinstance(max_chars, int):
-            return "Error: max_chars must be an integer"
-        max_chars = max(200, min(max_chars, 50000))
-
-        include_stderr = kwargs.get("include_stderr", True)
-        if not isinstance(include_stderr, bool):
-            return "Error: include_stderr must be a boolean"
-
-        response_format = kwargs.get("response_format", "hybrid")
-        if response_format not in ("hybrid", "json", "text"):
-            return "Error: response_format must be one of: hybrid, json, text"
-
-        context_key = self._context_key.get()
-        record = self.detail_cache.lookup(
-            request_id=request_id, session_id=session_id, context_key=context_key
-        )
-        if not record:
-            return (
-                f"No {self._tool_label} detail record found. Provide request_id/session_id, "
-                f"or run {self.name.replace('_details', '')} first in this chat context."
-            )
-
-        stdout = self._clip_detail_text(record["stdout"], max_chars)
-        stderr = record["stderr"] if include_stderr else ""
-        if stderr:
-            stderr = self._clip_detail_text(stderr, max_chars)
-        payload = self._build_payload(record=record, stdout=stdout, stderr=stderr)
-        return self._render_detail_response(
-            payload=payload,
-            response_format=response_format,
-            prefix="bao_coding_details_",
-        )
+BaseCodingDetailsTool = _BaseCodingDetailsTool

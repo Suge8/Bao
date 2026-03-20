@@ -1,87 +1,81 @@
 """Shell execution tool."""
 
 import asyncio
-import codecs
 import logging
 import os
 import re
-import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from bao.agent.tool_result import (
-    INLINE_TOOL_RESULT_CHARS,
-    ToolResultValue,
-    ToolTextResult,
-    cleanup_result_file,
-    make_file_preview,
+from bao.agent.tool_result import ToolResultValue, ToolTextResult
+from bao.agent.tools._shell_guard import (
+    DEFAULT_DENY_PATTERNS,
+    READ_ONLY_ALLOW_PATTERNS,
+    READ_ONLY_BLOCK_PATTERNS,
+)
+from bao.agent.tools._shell_io import (
+    await_pending_tasks,
+    cleanup_temp_path,
+    compose_result_file,
+    drain_stream_to_file,
+    make_temp_path,
+    read_inline_result,
 )
 from bao.agent.tools.base import Tool
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class ShellRunContext:
+    process: asyncio.subprocess.Process
+    stdout_path: Path
+    stderr_path: Path
+    stdout_task: asyncio.Task[int]
+    stderr_task: asyncio.Task[int]
+
+
+@dataclass(frozen=True, slots=True)
+class ExecToolOptions:
+    timeout: int = 60
+    working_dir: str | None = None
+    deny_patterns: tuple[str, ...] | None = None
+    allow_patterns: tuple[str, ...] | None = None
+    restrict_to_workspace: bool = False
+    path_append: str = ""
+    sandbox_mode: str = "semi-auto"
+
+
 class ExecTool(Tool):
     """Tool to execute shell commands."""
 
-    _CHUNK_BYTES = 65536
+    def __init__(self, options: ExecToolOptions | None = None):
+        resolved_options = options or ExecToolOptions()
+        self.timeout = resolved_options.timeout
+        self.working_dir = resolved_options.working_dir
+        self.path_append = resolved_options.path_append
+        self.sandbox_mode = resolved_options.sandbox_mode
 
-    _READ_ONLY_ALLOW_PATTERNS: list[str] = [
-        r"^\s*(cat|ls|find|grep|head|tail|wc|file|stat|echo|pwd|which|env|printenv|less|more|tree|du|diff|basename|dirname|realpath)\b",
-    ]
-
-    _READ_ONLY_BLOCK_PATTERNS: list[str] = [
-        r"(?:^|[^\\])(>>?|1>|2>|&>)",
-        r"\|\s*tee\b",
-        r"\b(touch|mkdir|cp|mv|install|ln|truncate)\b",
-        r"\b(python|python3|node|ruby|perl|php|lua)\b",
-        r"\b(vi|vim|nano|emacs)\b",
-    ]
-
-    _DEFAULT_DENY_PATTERNS: list[str] = [
-        r"\brm\s+-[rf]{1,2}\b",  # rm -r, rm -rf, rm -fr
-        r"\bdel\s+/[fq]\b",  # del /f, del /q
-        r"\brmdir\s+/s\b",  # rmdir /s
-        r"(?:^|[;&|]\s*)format\b",  # format (as standalone command only)
-        r"\b(mkfs|diskpart)\b",  # disk operations
-        r"\bdd\s+if=",  # dd
-        r">\s*/dev/sd",  # write to disk
-        r"\b(shutdown|reboot|poweroff)\b",  # system power
-        r":\(\)\s*\{.*\};\s*:",  # fork bomb
-    ]
-
-    def __init__(
-        self,
-        timeout: int = 60,
-        working_dir: str | None = None,
-        deny_patterns: list[str] | None = None,
-        allow_patterns: list[str] | None = None,
-        restrict_to_workspace: bool = False,
-        path_append: str = "",
-        sandbox_mode: str = "semi-auto",
-    ):
-        self.timeout = timeout
-        self.working_dir = working_dir
-        self.path_append = path_append
-        self.sandbox_mode = sandbox_mode
-
-        if sandbox_mode == "full-auto":
-            self.deny_patterns: list[str] = []
-            self.allow_patterns: list[str] = []
+        if resolved_options.sandbox_mode == "full-auto":
+            self.deny_patterns = []
+            self.allow_patterns = []
             self.restrict_to_workspace = False
-        elif sandbox_mode == "read-only":
-            self.deny_patterns = deny_patterns or list(self._DEFAULT_DENY_PATTERNS)
-            self.allow_patterns = list(self._READ_ONLY_ALLOW_PATTERNS)
+            return
+
+        self.deny_patterns = list(resolved_options.deny_patterns or DEFAULT_DENY_PATTERNS)
+        if resolved_options.sandbox_mode == "read-only":
+            self.allow_patterns = list(READ_ONLY_ALLOW_PATTERNS)
             self.restrict_to_workspace = True
-        else:
-            if sandbox_mode != "semi-auto":
-                logger.warning(
-                    "⚠️ 沙箱模式未知 / unknown mode: {!r}, falling back to semi-auto",
-                    sandbox_mode,
-                )
-            self.deny_patterns = deny_patterns or list(self._DEFAULT_DENY_PATTERNS)
-            self.allow_patterns = allow_patterns or []
-            self.restrict_to_workspace = restrict_to_workspace
+            return
+
+        if resolved_options.sandbox_mode != "semi-auto":
+            logger.warning(
+                "⚠️ 沙箱模式未知 / unknown mode: {!r}, falling back to semi-auto",
+                resolved_options.sandbox_mode,
+            )
+        self.allow_patterns = list(resolved_options.allow_patterns or ())
+        self.restrict_to_workspace = resolved_options.restrict_to_workspace
 
     @property
     def name(self) -> str:
@@ -116,72 +110,99 @@ class ExecTool(Tool):
         guard_error = self._guard_command(command, cwd)
         if guard_error:
             return guard_error
+        return await self._run_command(command, cwd)
 
-        env = os.environ.copy()
-        if self.path_append.strip():
-            parts = [env.get("PATH", ""), self.path_append.strip()]
-            env["PATH"] = os.pathsep.join(p for p in parts if p)
-
-        process: asyncio.subprocess.Process | None = None
-        stdout_path: Path | None = None
-        stderr_path: Path | None = None
+    async def _run_command(self, command: str, cwd: str) -> ToolResultValue:
         combined_result: ToolTextResult | None = None
-        stdout_task: asyncio.Task[int] | None = None
-        stderr_task: asyncio.Task[int] | None = None
-        try:
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=env,
-            )
-            stdout_path = self._make_temp_path("bao_exec_stdout_")
-            stderr_path = self._make_temp_path("bao_exec_stderr_")
-            stdout_task = asyncio.create_task(self._drain_stream_to_file(process.stdout, stdout_path))
-            stderr_task = asyncio.create_task(self._drain_stream_to_file(process.stderr, stderr_path))
-            try:
-                await asyncio.wait_for(process.wait(), timeout=self.timeout)
-                stdout_chars, stderr_chars = await asyncio.gather(stdout_task, stderr_task)
-            except asyncio.TimeoutError:
-                process.kill()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    pass
-                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-                return f"Error: Command timed out after {self.timeout} seconds"
+        context: ShellRunContext | None = None
 
-            combined_result = await asyncio.to_thread(
-                self._compose_result_file,
-                stdout_path,
-                stderr_path,
-                stdout_chars=stdout_chars,
-                stderr_chars=stderr_chars,
-                return_code=process.returncode or 0,
-            )
-            inline_text = self._read_inline_result(combined_result)
+        try:
+            context = await self._start_process(command, cwd)
+            result = await self._collect_process_result(context)
+            if isinstance(result, str):
+                return result
+            combined_result = result
+            inline_text = read_inline_result(combined_result)
             if inline_text is not None:
                 combined_result = None
                 return inline_text
             return combined_result
 
         except asyncio.CancelledError:
-            if process and process.returncode is None:
-                process.kill()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    pass
-            await self._await_pending_tasks(stdout_task, stderr_task)
+            await self._cancel_process(context)
             raise
         except Exception as e:
-            await self._await_pending_tasks(stdout_task, stderr_task)
+            if context is not None:
+                await await_pending_tasks(context.stdout_task, context.stderr_task)
             return f"Error executing command: {str(e)}"
         finally:
-            if combined_result is None:
-                self._cleanup_temp_path(stdout_path)
-                self._cleanup_temp_path(stderr_path)
+            if combined_result is None and context is not None:
+                cleanup_temp_path(context.stdout_path)
+                cleanup_temp_path(context.stderr_path)
+
+    def _build_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        if self.path_append.strip():
+            parts = [env.get("PATH", ""), self.path_append.strip()]
+            env["PATH"] = os.pathsep.join(p for p in parts if p)
+        return env
+
+    async def _start_process(self, command: str, cwd: str) -> ShellRunContext:
+        process = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=self._build_env(),
+        )
+        stdout_path = make_temp_path("bao_exec_stdout_")
+        stderr_path = make_temp_path("bao_exec_stderr_")
+        return ShellRunContext(
+            process=process,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            stdout_task=asyncio.create_task(drain_stream_to_file(process.stdout, stdout_path)),
+            stderr_task=asyncio.create_task(drain_stream_to_file(process.stderr, stderr_path)),
+        )
+
+    async def _collect_process_result(self, context: ShellRunContext) -> ToolTextResult | str:
+        try:
+            await asyncio.wait_for(context.process.wait(), timeout=self.timeout)
+            stdout_chars, stderr_chars = await asyncio.gather(
+                context.stdout_task,
+                context.stderr_task,
+            )
+        except asyncio.TimeoutError:
+            context.process.kill()
+            try:
+                await asyncio.wait_for(context.process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+            await asyncio.gather(
+                context.stdout_task,
+                context.stderr_task,
+                return_exceptions=True,
+            )
+            return f"Error: Command timed out after {self.timeout} seconds"
+        return await asyncio.to_thread(
+            compose_result_file,
+            context.stdout_path,
+            context.stderr_path,
+            stdout_chars=stdout_chars,
+            stderr_chars=stderr_chars,
+            return_code=context.process.returncode or 0,
+        )
+
+    async def _cancel_process(self, context: ShellRunContext | None) -> None:
+        if context is None:
+            return
+        if context.process.returncode is None:
+            context.process.kill()
+            try:
+                await asyncio.wait_for(context.process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+        await await_pending_tasks(context.stdout_task, context.stderr_task)
 
     def _guard_command(self, command: str, cwd: str) -> str | None:
         """Best-effort safety guard for potentially destructive commands."""
@@ -197,7 +218,7 @@ class ExecTool(Tool):
                 return "Error: Command blocked by safety guard (not in allowlist)"
 
         if self.sandbox_mode == "read-only":
-            for pattern in self._READ_ONLY_BLOCK_PATTERNS:
+            for pattern in READ_ONLY_BLOCK_PATTERNS:
                 if re.search(pattern, lower):
                     return "Error: Command blocked by read-only sandbox"
 
@@ -243,98 +264,3 @@ class ExecTool(Tool):
             seen.add(path)
             deduped.append(path)
         return deduped
-
-    @staticmethod
-    def _make_temp_path(prefix: str) -> Path:
-        fd, raw_path = tempfile.mkstemp(prefix=prefix, suffix=".txt")
-        os.close(fd)
-        return Path(raw_path)
-
-    @staticmethod
-    def _cleanup_temp_path(path: Path | None) -> None:
-        if path is None:
-            return
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-    @staticmethod
-    async def _await_pending_tasks(*tasks: asyncio.Task[int] | None) -> None:
-        pending_tasks = [task for task in tasks if task is not None]
-        if pending_tasks:
-            await asyncio.gather(*pending_tasks, return_exceptions=True)
-
-    @staticmethod
-    def _read_inline_result(result: ToolTextResult) -> str | None:
-        if result.chars > INLINE_TOOL_RESULT_CHARS:
-            return None
-        text = result.path.read_text(encoding="utf-8", errors="replace")
-        cleanup_result_file(result)
-        return text or "(no output)"
-
-    async def _drain_stream_to_file(
-        self,
-        stream: asyncio.StreamReader | None,
-        path: Path,
-    ) -> int:
-        if stream is None:
-            path.write_text("", encoding="utf-8")
-            return 0
-        decoder = codecs.getincrementaldecoder("utf-8")("replace")
-        chars = 0
-        with path.open("w", encoding="utf-8") as handle:
-            while True:
-                chunk = await stream.read(self._CHUNK_BYTES)
-                if not chunk:
-                    break
-                text = decoder.decode(chunk)
-                if not text:
-                    continue
-                handle.write(text)
-                chars += len(text)
-            tail = decoder.decode(b"", final=True)
-            if tail:
-                handle.write(tail)
-                chars += len(tail)
-        return chars
-
-    def _compose_result_file(
-        self,
-        stdout_path: Path,
-        stderr_path: Path,
-        *,
-        stdout_chars: int,
-        stderr_chars: int,
-        return_code: int,
-    ) -> ToolTextResult:
-        result_path = self._make_temp_path("bao_exec_result_")
-        total_chars = 0
-        with result_path.open("w", encoding="utf-8") as out_handle:
-            total_chars += self._copy_text_file(stdout_path, out_handle)
-            if stderr_chars > 0:
-                prefix = "STDERR:\n"
-                out_handle.write(prefix)
-                total_chars += len(prefix)
-                total_chars += self._copy_text_file(stderr_path, out_handle)
-            if return_code != 0:
-                exit_line = f"\nExit code: {return_code}"
-                out_handle.write(exit_line)
-                total_chars += len(exit_line)
-        if total_chars == 0:
-            result_path.write_text("(no output)", encoding="utf-8")
-            total_chars = len("(no output)")
-        excerpt = make_file_preview(result_path, min(2000, total_chars))
-        return ToolTextResult(path=result_path, chars=total_chars, excerpt=excerpt, cleanup=True)
-
-    @staticmethod
-    def _copy_text_file(source_path: Path, out_handle: Any) -> int:
-        chars = 0
-        with source_path.open("r", encoding="utf-8", errors="replace") as in_handle:
-            while True:
-                chunk = in_handle.read(65536)
-                if not chunk:
-                    break
-                out_handle.write(chunk)
-                chars += len(chunk)
-        return chars

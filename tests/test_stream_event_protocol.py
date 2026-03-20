@@ -4,6 +4,7 @@ import importlib
 import time
 from unittest.mock import AsyncMock, MagicMock
 
+from bao.agent._loop_chat_turn import ChatOnceRequest
 from bao.agent.loop import AgentLoop, _ToolObservabilityCounters
 from bao.agent.protocol import StreamEvent, StreamEventType
 from bao.bus.queue import MessageBus
@@ -82,10 +83,9 @@ async def test_chat_once_emits_reset_and_delta_with_event_only(tmp_path):
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    async def fake_chat(*, on_progress=None, **kwargs):
-        del kwargs
-        if on_progress:
-            await on_progress("chunk-event-only")
+    async def fake_chat(request):
+        if request.on_progress:
+            await request.on_progress("chunk-event-only")
         return LLMResponse(content="ok")
 
     provider.chat = AsyncMock(side_effect=fake_chat)
@@ -97,15 +97,17 @@ async def test_chat_once_emits_reset_and_delta_with_event_only(tmp_path):
         events.append((ev.type, ev.text))
 
     await loop._chat_once_with_selected_tools(
-        messages=[{"role": "user", "content": "hello"}],
-        initial_messages=[{"role": "user", "content": "hello"}],
-        iteration=2,
-        on_progress=None,
-        current_task_ref=None,
-        tool_signal_text=None,
-        force_final_response=True,
-        counters=_ToolObservabilityCounters(),
-        on_event=on_event,
+        ChatOnceRequest(
+            messages=[{"role": "user", "content": "hello"}],
+            initial_messages=[{"role": "user", "content": "hello"}],
+            iteration=2,
+            on_progress=None,
+            current_task_ref=None,
+            tool_signal_text=None,
+            force_final_response=True,
+            counters=_ToolObservabilityCounters(),
+            on_event=on_event,
+        )
     )
 
     assert events[0] == (StreamEventType.RESET, None)
@@ -117,10 +119,9 @@ async def test_chat_once_keeps_progress_then_event_order(tmp_path):
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    async def fake_chat(*, on_progress=None, **kwargs):
-        del kwargs
-        if on_progress:
-            await on_progress("chunk-order")
+    async def fake_chat(request):
+        if request.on_progress:
+            await request.on_progress("chunk-order")
         return LLMResponse(content="ok")
 
     provider.chat = AsyncMock(side_effect=fake_chat)
@@ -138,15 +139,17 @@ async def test_chat_once_keeps_progress_then_event_order(tmp_path):
             call_order.append(("event_delta", ev.text))
 
     await loop._chat_once_with_selected_tools(
-        messages=[{"role": "user", "content": "hello"}],
-        initial_messages=[{"role": "user", "content": "hello"}],
-        iteration=2,
-        on_progress=on_progress,
-        current_task_ref=None,
-        tool_signal_text=None,
-        force_final_response=True,
-        counters=_ToolObservabilityCounters(),
-        on_event=on_event,
+        ChatOnceRequest(
+            messages=[{"role": "user", "content": "hello"}],
+            initial_messages=[{"role": "user", "content": "hello"}],
+            iteration=2,
+            on_progress=on_progress,
+            current_task_ref=None,
+            tool_signal_text=None,
+            force_final_response=True,
+            counters=_ToolObservabilityCounters(),
+            on_event=on_event,
+        )
     )
 
     assert call_order == [

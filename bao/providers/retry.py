@@ -5,6 +5,7 @@ import email.utils
 import inspect
 import time
 from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
 from typing import TypeVar
 
 try:
@@ -187,6 +188,14 @@ def should_retry_exception(
     return any(keyword in combined for keyword in retryable_keywords)
 
 
+@dataclass(frozen=True)
+class RetryRunOptions:
+    max_retries: int = DEFAULT_MAX_RETRIES
+    base_delay: float = DEFAULT_BASE_DELAY
+    on_retry: Callable[[BaseException, int, float], Awaitable[None] | None] | None = None
+    should_retry: Callable[[BaseException], bool] = should_retry_exception
+
+
 def compute_retry_delay(
     exc: BaseException,
     attempt: int,
@@ -223,25 +232,22 @@ async def emit_progress_reset(on_progress: Callable[[str], Awaitable[None]] | No
 
 async def run_with_retries(
     operation: Callable[[], Awaitable[_T]],
-    *,
-    max_retries: int = DEFAULT_MAX_RETRIES,
-    base_delay: float = DEFAULT_BASE_DELAY,
-    on_retry: Callable[[BaseException, int, float], Awaitable[None] | None] | None = None,
-    should_retry: Callable[[BaseException], bool] = should_retry_exception,
+    options: RetryRunOptions | None = None,
 ) -> _T:
+    retry_options = options or RetryRunOptions()
     last_exc: BaseException | None = None
-    for attempt in range(max_retries + 1):
+    for attempt in range(retry_options.max_retries + 1):
         try:
             return await operation()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             last_exc = exc
-            if attempt >= max_retries or not should_retry(exc):
+            if attempt >= retry_options.max_retries or not retry_options.should_retry(exc):
                 raise
-            delay = compute_retry_delay(exc, attempt, base_delay=base_delay)
-            if on_retry is not None:
-                result = on_retry(exc, attempt, delay)
+            delay = compute_retry_delay(exc, attempt, base_delay=retry_options.base_delay)
+            if retry_options.on_retry is not None:
+                result = retry_options.on_retry(exc, attempt, delay)
                 if inspect.isawaitable(result):
                     await result
             await asyncio.sleep(delay)

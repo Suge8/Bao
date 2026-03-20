@@ -8,7 +8,7 @@ def test_session_get_history_filters_sourced_system_notifications() -> None:
     s.add_message("user", "hi")
     s.add_message("assistant", "ok")
 
-    s.add_message("user", "gateway started", _source="desktop-system")
+    s.add_message("user", "hub started", _source="desktop-system")
     s.add_message("system", "legacy system notice", _source="desktop-system")
     s.add_message("user", "[System: cron] scheduled", _source="cron")
 

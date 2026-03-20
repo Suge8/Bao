@@ -6,8 +6,8 @@ x-common-config: &common-config
     - ~/.bao:/home/bao/.bao
 
 services:
-  bao-gateway:
-    container_name: bao-gateway
+  bao-hub:
+    container_name: bao-hub
     <<: *common-config
     command: []
     init: true

@@ -3,7 +3,7 @@
 from datetime import datetime
 from pathlib import Path
 
-from bao.config.paths import get_data_dir, get_media_dir
+from bao.config.paths import get_data_dir
 
 
 def ensure_dir(path: Path) -> Path:
@@ -19,10 +19,6 @@ def get_data_path() -> Path:
 
 def get_data_subdir(*parts: str) -> Path:
     return ensure_dir(get_data_path().joinpath(*parts))
-
-
-def get_media_path() -> Path:
-    return get_media_dir()
 
 
 def timestamp() -> str:

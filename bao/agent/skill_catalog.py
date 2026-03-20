@@ -8,6 +8,9 @@ from pathlib import Path
 
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$")
 BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
+USER_SKILLS_DIR = Path.home() / ".bao" / "skills"
+BUILTIN_SKILL_SOURCE = "builtin"
+USER_SKILL_SOURCE = "user"
 
 
 def _as_dict(value: object) -> dict[str, object]:
@@ -90,16 +93,19 @@ def normalize_skill_name(value: str) -> str:
 
 
 class SkillCatalog:
-    def __init__(self, workspace: Path, builtin_skills_dir: Path | None = None) -> None:
-        self.workspace: Path = workspace
-        self.workspace_skills: Path = workspace / "skills"
+    def __init__(
+        self,
+        user_skills_dir: Path | None = None,
+        builtin_skills_dir: Path | None = None,
+    ) -> None:
+        self.user_skills: Path = user_skills_dir or USER_SKILLS_DIR
         self.builtin_skills: Path = builtin_skills_dir or BUILTIN_SKILLS_DIR
 
     def list_records(self) -> list[dict[str, object]]:
-        workspace_records = self._scan_source("workspace")
-        workspace_names = {record.name for record in workspace_records}
-        builtin_records = self._scan_source("builtin", shadowed_names=workspace_names)
-        records = workspace_records + builtin_records
+        user_records = self._scan_source(USER_SKILL_SOURCE)
+        user_names = {record.name for record in user_records}
+        builtin_records = self._scan_source(BUILTIN_SKILL_SOURCE, shadowed_names=user_names)
+        records = user_records + builtin_records
         records.sort(key=self._sort_key)
         return [record.to_dict() for record in records]
 
@@ -109,9 +115,9 @@ class SkillCatalog:
             raise FileNotFoundError(f"Skill not found: {source}:{name}")
         return skill_file.read_text(encoding="utf-8")
 
-    def create_workspace_skill(self, raw_name: str, description: str) -> dict[str, object]:
+    def create_user_skill(self, raw_name: str, description: str) -> dict[str, object]:
         name = normalize_skill_name(raw_name)
-        skill_dir = self.workspace_skills / name
+        skill_dir = self.user_skills / name
         skill_file = skill_dir / "SKILL.md"
         if skill_dir.exists() or skill_file.exists():
             raise ValueError(f"Skill already exists: {name}")
@@ -126,19 +132,19 @@ class SkillCatalog:
             "Add the workflow, references, and usage guidance for this skill here.\n"
         )
         _ = skill_file.write_text(body, encoding="utf-8")
-        return self._record_for(name, "workspace").to_dict()
+        return self._record_for(name, USER_SKILL_SOURCE).to_dict()
 
-    def update_workspace_skill(self, name: str, content: str) -> dict[str, object]:
-        skill_file = self._skill_file(name, "workspace")
+    def update_user_skill(self, name: str, content: str) -> dict[str, object]:
+        skill_file = self._skill_file(name, USER_SKILL_SOURCE)
         if not skill_file.exists():
-            raise FileNotFoundError(f"Workspace skill not found: {name}")
+            raise FileNotFoundError(f"User skill not found: {name}")
         _ = skill_file.write_text(content, encoding="utf-8")
-        return self._record_for(name, "workspace").to_dict()
+        return self._record_for(name, USER_SKILL_SOURCE).to_dict()
 
-    def delete_workspace_skill(self, name: str) -> None:
-        skill_dir = self.workspace_skills / name
+    def delete_user_skill(self, name: str) -> None:
+        skill_dir = self.user_skills / name
         if not skill_dir.exists():
-            raise FileNotFoundError(f"Workspace skill not found: {name}")
+            raise FileNotFoundError(f"User skill not found: {name}")
         shutil.rmtree(skill_dir)
 
     def _scan_source(
@@ -183,8 +189,8 @@ class SkillCatalog:
             always=always,
             shadowed=shadowed,
             emoji=emoji,
-            can_edit=source == "workspace",
-            can_delete=source == "workspace",
+            can_edit=source == USER_SKILL_SOURCE,
+            can_delete=source == USER_SKILL_SOURCE,
             metadata=metadata,
             display_name=_as_str(display_meta.get("name")) or _humanize_name(name),
             display_name_zh=_as_str(display_meta.get("nameZh")) or _humanize_name(name),
@@ -212,9 +218,9 @@ class SkillCatalog:
         return metadata
 
     def _source_dir(self, source: str) -> Path:
-        if source == "workspace":
-            return self.workspace_skills
-        if source == "builtin":
+        if source == USER_SKILL_SOURCE:
+            return self.user_skills
+        if source == BUILTIN_SKILL_SOURCE:
             return self.builtin_skills
         raise ValueError(f"Unsupported skill source: {source}")
 
@@ -288,6 +294,6 @@ class SkillCatalog:
 
     @staticmethod
     def _sort_key(record: SkillRecord) -> tuple[int, int, str]:
-        source_rank = 0 if record.source == "workspace" else 1
+        source_rank = 0 if record.source == USER_SKILL_SOURCE else 1
         availability_rank = 0 if record.available else 1
         return (source_rank, availability_rank, record.name.lower())

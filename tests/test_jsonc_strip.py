@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import json
-from typing import Callable, cast
+from typing import cast
 
-import bao.config.loader as loader
-
-strip_jsonc_comments = cast(Callable[[str], str], getattr(loader, "_strip_jsonc_comments"))
+from bao.config.loader import strip_jsonc_comments
 
 
 def test_strip_basic_line_comment() -> None:

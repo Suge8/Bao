@@ -34,7 +34,7 @@ For one-off tasks or lightweight preferences: prefer the built-in memory/experie
 ## Workspace
 
 Memory and experience are auto-managed. Do not use `read_file`/`write_file`/`edit_file` on memory.
-`HEARTBEAT.md` is a periodic task checklist located at `~/.bao/workspace/HEARTBEAT.md`, checked every 30 minutes.
+`HEARTBEAT.md` is a periodic task checklist stored under the active profile prompt folder, for example `~/.bao/profiles/default/prompt/HEARTBEAT.md`, checked every 30 minutes.
 Store user-personal configuration, preferences, workflow conventions, and helper documents in the `~/.bao/workspace` directory by default.
 
 ## Identity & Preference Persistence

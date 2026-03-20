@@ -19,32 +19,8 @@ from bao.session.state import (
 )
 
 
-def test_split_runtime_metadata_strips_only_running_overlay() -> None:
-    persisted, runtime = split_runtime_metadata(
-        {
-            "title": "main",
-            "session_running": True,
-            "child_status": RUNTIME_STATUS_RUNNING,
-            "active_task_id": "task-1",
-        }
-    )
-
-    assert persisted == {"title": "main"}
-    assert runtime.to_metadata() == {
-        "session_running": True,
-        "child_status": RUNTIME_STATUS_RUNNING,
-        "active_task_id": "task-1",
-    }
-
-    persisted_done, runtime_done = split_runtime_metadata(
-        {"child_status": "completed", "active_task_id": "task-2"}
-    )
-    assert persisted_done == {"child_status": "completed"}
-    assert runtime_done.to_metadata() == {}
-
-
-def test_state_helpers_preserve_routing_and_persisted_groups() -> None:
-    runtime_metadata = {
+def _runtime_metadata_fixture() -> dict[str, object]:
+    return {
         "title": "default",
         "desktop_last_ai_at": "2026-03-14T10:00:00",
         "desktop_last_seen_ai_at": "2026-03-14T09:00:00",
@@ -54,8 +30,12 @@ def test_state_helpers_preserve_routing_and_persisted_groups() -> None:
         "_plan_state": {"goal": "ship"},
         "session_running": True,
     }
-    metadata = nest_flat_persisted_metadata(runtime_metadata)
 
+
+def _assert_persisted_helper_outputs(
+    metadata: dict[str, object],
+    runtime_metadata: dict[str, object],
+) -> None:
     assert desktop_has_unread_ai(metadata) is True
     assert filter_persisted_metadata_updates(runtime_metadata) == {
         "title": "default",
@@ -91,7 +71,8 @@ def test_state_helpers_preserve_routing_and_persisted_groups() -> None:
         },
     }
 
-    snapshot = build_session_snapshot(metadata)
+
+def _assert_session_snapshot(snapshot) -> None:
     assert snapshot.routing.as_snapshot() == {
         "session_kind": "subagent_child",
         "read_only": True,
@@ -107,6 +88,40 @@ def test_state_helpers_preserve_routing_and_persisted_groups() -> None:
         "last_seen_ai_at": "2026-03-14T09:00:00",
         "has_unread_ai": True,
     }
+
+
+def test_split_runtime_metadata_strips_only_running_overlay() -> None:
+    persisted, runtime = split_runtime_metadata(
+        {
+            "title": "main",
+            "session_running": True,
+            "child_status": RUNTIME_STATUS_RUNNING,
+            "active_task_id": "task-1",
+        }
+    )
+
+    assert persisted == {"title": "main"}
+    assert runtime.to_metadata() == {
+        "session_running": True,
+        "child_status": RUNTIME_STATUS_RUNNING,
+        "active_task_id": "task-1",
+    }
+
+    persisted_done, runtime_done = split_runtime_metadata(
+        {"child_status": "completed", "active_task_id": "task-2"}
+    )
+    assert persisted_done == {"child_status": "completed"}
+    assert runtime_done.to_metadata() == {}
+
+
+def test_state_helpers_preserve_routing_and_persisted_groups() -> None:
+    runtime_metadata = _runtime_metadata_fixture()
+    metadata = nest_flat_persisted_metadata(runtime_metadata)
+
+    _assert_persisted_helper_outputs(metadata, runtime_metadata)
+
+    snapshot = build_session_snapshot(metadata)
+    _assert_session_snapshot(snapshot)
     assert flatten_persisted_metadata(metadata)["title"] == "default"
 
 

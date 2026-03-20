@@ -9,6 +9,7 @@ from bao.providers.retry import (
     DEFAULT_BASE_DELAY,
     DEFAULT_MAX_RETRIES,
     ProgressCallbackError,
+    RetryRunOptions,
     StreamInterruptedError,
     run_with_retries,
     safe_error_text,
@@ -38,23 +39,39 @@ class ProviderRetryPolicy:
     base_delay: float = DEFAULT_BASE_DELAY
 
 
+@dataclass(frozen=True)
+class ProviderErrorContext:
+    code: str = "provider_error"
+    fallback_target: str = ""
+
+
+@dataclass(frozen=True)
+class ProviderExecutionRequest:
+    error_prefix: str
+    progress_error_prefix: str
+    retry_policy: ProviderRetryPolicy | None = None
+    on_retry: Callable[[BaseException, int, float], Awaitable[None] | None] | None = None
+    fallback: Callable[[ProviderError], Awaitable[_T]] | None = None
+    should_fallback: Callable[[ProviderError], bool] | None = None
+    error_code: str = "provider_error"
+
+
 def provider_error_from_exception(
     provider_name: str,
     exc: BaseException,
-    *,
-    code: str = "provider_error",
-    fallback_target: str = "",
+    context: ProviderErrorContext | None = None,
 ) -> ProviderError:
     if isinstance(exc, ProviderError):
         return exc
+    error_context = context or ProviderErrorContext()
     status_code = _extract_status_code(exc)
     return ProviderError(
         provider_name=provider_name,
-        code=code,
+        code=error_context.code,
         message=safe_error_text(exc),
         retryable=should_retry_exception(exc),
         status_code=status_code,
-        fallback_target=fallback_target,
+        fallback_target=error_context.fallback_target,
         cause=exc,
     )
 
@@ -87,42 +104,39 @@ class ProviderRuntimeExecutor:
     async def run(
         self,
         operation: Callable[[], Awaitable[_T]],
-        *,
-        retry_policy: ProviderRetryPolicy | None = None,
-        on_retry: Callable[[BaseException, int, float], Awaitable[None] | None] | None = None,
-        error_prefix: str,
-        progress_error_prefix: str,
-        fallback: Callable[[ProviderError], Awaitable[_T]] | None = None,
-        should_fallback: Callable[[ProviderError], bool] | None = None,
-        error_code: str = "provider_error",
+        request: ProviderExecutionRequest,
     ) -> _T | LLMResponse:
         try:
-            if retry_policy is None:
+            if request.retry_policy is None:
                 return await operation()
             return await run_with_retries(
                 operation,
-                max_retries=retry_policy.max_retries,
-                base_delay=retry_policy.base_delay,
-                on_retry=on_retry,
+                RetryRunOptions(
+                    max_retries=request.retry_policy.max_retries,
+                    base_delay=request.retry_policy.base_delay,
+                    on_retry=request.on_retry,
+                ),
             )
         except asyncio.CancelledError:
             raise
         except ProgressCallbackError as exc:
             return progress_callback_error_response(
                 exc,
-                progress_error_prefix=progress_error_prefix,
+                progress_error_prefix=request.progress_error_prefix,
                 partial_content=self._partial_content() if self._partial_content else None,
             )
         except Exception as exc:
             provider_error = provider_error_from_exception(
                 self._provider_name,
                 exc,
-                code=error_code,
+                ProviderErrorContext(code=request.error_code),
             )
-            if fallback is not None and (should_fallback(provider_error) if should_fallback else True):
-                return await fallback(provider_error)
+            if request.fallback is not None and (
+                request.should_fallback(provider_error) if request.should_fallback else True
+            ):
+                return await request.fallback(provider_error)
             return LLMResponse(
-                content=f"{error_prefix}: {provider_error.message}",
+                content=f"{request.error_prefix}: {provider_error.message}",
                 finish_reason="error",
             )
 

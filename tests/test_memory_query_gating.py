@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -11,20 +10,13 @@ from bao.agent.memory import MemoryStore
 from bao.bus.events import InboundMessage
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider, LLMResponse
+from tests._provider_request_testkit import request_messages
 
 
 class _FinalOnlyProvider(LLMProvider):
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        max_tokens: int = 4096,
-        temperature: float = 0.7,
-        on_progress: Callable[[str], Awaitable[None]] | None = None,
-        **kwargs: Any,
-    ) -> LLMResponse:
-        del messages, tools, model, max_tokens, temperature, on_progress, kwargs
+    async def chat(self, request: Any, **kwargs: Any) -> LLMResponse:
+        del kwargs
+        _ = request_messages(request)
         return LLMResponse(content="收到。", finish_reason="stop")
 
     def get_default_model(self) -> str:

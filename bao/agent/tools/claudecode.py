@@ -1,10 +1,11 @@
 """Claude Code CLI coding agent tool — thin subclass of BaseCodingAgentTool."""
 
-import json
 import uuid
 from pathlib import Path
 from typing import Any
 
+from bao.agent.tools._claudecode_json import extract_contract_fields
+from bao.agent.tools._coding_agent_schema import build_coding_agent_parameters
 from bao.agent.tools.coding_agent_base import (
     BaseCodingAgentTool,
     BaseCodingDetailsTool,
@@ -58,60 +59,10 @@ class ClaudeCodeTool(BaseCodingAgentTool):
 
     @property
     def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "prompt": {
-                    "type": "string",
-                    "description": "Task prompt sent to Claude Code",
-                    "minLength": 1,
-                },
-                "project_path": {
-                    "type": "string",
-                    "description": "Optional project directory (defaults to workspace)",
-                },
-                "session_id": {
-                    "type": "string",
-                    "description": "Optional explicit Claude Code session ID to continue",
-                },
-                "continue_session": {
-                    "type": "boolean",
-                    "description": "Continue previous chat-specific session when available",
-                },
-                "model": {
-                    "type": "string",
-                    "description": "Optional model name",
-                },
-                "timeout_seconds": {
-                    "type": "integer",
-                    "minimum": 30,
-                    "maximum": 1800,
-                    "description": "Execution timeout in seconds (default 1800)",
-                },
-                "response_format": {
-                    "type": "string",
-                    "enum": ["hybrid", "json", "text"],
-                    "description": "Return format: hybrid (default), json, or text",
-                },
-                "max_retries": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 2,
-                    "description": "Reserved compatibility field; hidden automatic retries are disabled",
-                },
-                "max_output_chars": {
-                    "type": "integer",
-                    "minimum": 200,
-                    "maximum": 50000,
-                    "description": "Max chars for stdout/stderr in tool output (default 4000)",
-                },
-                "include_details": {
-                    "type": "boolean",
-                    "description": "Include full tool stdout/stderr in output (default false)",
-                },
-            },
-            "required": ["prompt"],
-        }
+        return build_coding_agent_parameters(
+            prompt_description="Task prompt sent to Claude Code",
+            session_description="Optional explicit Claude Code session ID to continue",
+        )
 
     def _build_command(
         self,
@@ -141,7 +92,7 @@ class ClaudeCodeTool(BaseCodingAgentTool):
         raw_stdout = stdout_text.strip()
         if raw_stdout:
             exec_state["raw_stdout"] = raw_stdout
-        parsed_text, parsed_session = self._extract_contract_fields(stdout_text)
+        parsed_text, parsed_session = extract_contract_fields(stdout_text)
         if parsed_session:
             exec_state["session_id_from_output"] = parsed_session
         return parsed_text or raw_stdout or "(no output)"
@@ -218,109 +169,6 @@ class ClaudeCodeTool(BaseCodingAgentTool):
             "Detailed output omitted to protect context budget. "
             f"Use coding_agent_details with request_id '{request_id}' to view full stdout/stderr."
         )
-
-    @staticmethod
-    def _extract_json_objects(text: str) -> list[dict[str, Any]]:
-        s = text.strip()
-        rows: list[dict[str, Any]] = []
-        if not s:
-            return rows
-
-        try:
-            obj = json.loads(s)
-            if isinstance(obj, dict):
-                return [obj]
-            if isinstance(obj, list):
-                return [x for x in obj if isinstance(x, dict)]
-        except Exception:
-            pass
-
-        for line in text.splitlines():
-            t = line.strip()
-            if not t:
-                continue
-            try:
-                obj = json.loads(t)
-            except Exception:
-                continue
-            if isinstance(obj, dict):
-                rows.append(obj)
-            elif isinstance(obj, list):
-                rows.extend(x for x in obj if isinstance(x, dict))
-        return rows
-
-    @staticmethod
-    def _find_first_string_by_keys(obj: Any, keys: tuple[str, ...]) -> str | None:
-        if isinstance(obj, dict):
-            for key in keys:
-                val = obj.get(key)
-                if isinstance(val, str) and val.strip():
-                    return val.strip()
-            for val in obj.values():
-                hit = ClaudeCodeTool._find_first_string_by_keys(val, keys)
-                if hit:
-                    return hit
-        elif isinstance(obj, list):
-            for item in obj:
-                hit = ClaudeCodeTool._find_first_string_by_keys(item, keys)
-                if hit:
-                    return hit
-        return None
-
-    @staticmethod
-    def _extract_contract_fields(text: str) -> tuple[str | None, str | None]:
-        rows = ClaudeCodeTool._extract_json_objects(text)
-        if not rows:
-            return None, None
-
-        primary = rows[-1]
-        session_id = ClaudeCodeTool._extract_session_id(primary)
-        if not session_id:
-            for obj in reversed(rows[:-1]):
-                session_id = ClaudeCodeTool._extract_session_id(obj)
-                if session_id:
-                    break
-
-        result = primary.get("result") if isinstance(primary, dict) else None
-        if isinstance(result, str) and result.strip():
-            return result.strip(), session_id
-        for obj in reversed(rows[:-1]):
-            candidate = obj.get("result") if isinstance(obj, dict) else None
-            if isinstance(candidate, str) and candidate.strip():
-                return candidate.strip(), session_id
-
-        return ClaudeCodeTool._extract_text_fallback(rows), session_id
-
-    @staticmethod
-    def _extract_session_id(obj: dict[str, Any]) -> str | None:
-        direct = obj.get("session_id")
-        if isinstance(direct, str) and direct.strip():
-            return direct.strip()
-        camel = obj.get("sessionId")
-        if isinstance(camel, str) and camel.strip():
-            return camel.strip()
-        return None
-
-    @staticmethod
-    def _extract_text_fallback(rows: list[dict[str, Any]]) -> str | None:
-        candidates: list[str] = []
-        for obj in rows:
-            hit = ClaudeCodeTool._find_first_string_by_keys(
-                obj,
-                (
-                    "message",
-                    "content",
-                    "text",
-                    "output",
-                    "response",
-                    "final_message",
-                    "finalMessage",
-                ),
-            )
-            if hit:
-                candidates.append(hit)
-        return candidates[-1] if candidates else None
-
 
 class ClaudeCodeDetailsTool(BaseCodingDetailsTool):
     def __init__(self, default_max_chars: int = 12000):

@@ -113,38 +113,53 @@ def _normalize_gemini_api_base(api_base: str | None) -> str:
     )
 
 
-def make_provider(config: "Config", model: str | None = None) -> LLMProvider:
-    """Create the appropriate LLM provider based on matched provider config's type field."""
-    model = model or config.agents.defaults.model
-    if not model:
+def _resolve_provider_request(config: "Config", model: str | None) -> tuple[str, object, str]:
+    selected_model = model or config.agents.defaults.model
+    if not selected_model:
         raise ValueError(
             "未配置模型。请在 config.jsonc 中设置 agents.defaults.model\n"
             "No model configured. Set agents.defaults.model in config.jsonc"
         )
-    provider_config = config.get_provider(model)
-    provider_name = config.get_provider_name(model)
+    provider_config = config.get_provider(selected_model)
+    provider_name = config.get_provider_name(selected_model) or ""
     if not provider_config:
         raise ValueError(
-            f"未找到模型 '{model}' 对应的 Provider 或缺少 API Key\n"
-            f"No provider with API key found for model '{model}'"
+            f"未找到模型 '{selected_model}' 对应的 Provider 或缺少 API Key\n"
+            f"No provider with API key found for model '{selected_model}'"
         )
+    return selected_model, provider_config, provider_name
+
+
+def _validate_provider_type(provider_type: str) -> None:
+    if provider_type in _VALID_PROVIDER_TYPES:
+        return
+    raise ValueError(
+        f"Provider type '{provider_type}' 无效，是否拼写错误？\n"
+        f"有效值 Valid values: {', '.join(sorted(_VALID_PROVIDER_TYPES))}"
+    )
+
+
+def _require_api_key(model: str, provider_config: object) -> str:
+    api_key = provider_config.api_key.get_secret_value()
+    if api_key:
+        return api_key
+    raise ValueError(
+        f"未找到模型 '{model}' 对应的 Provider 或缺少 API Key\n"
+        f"No provider with API key found for model '{model}'"
+    )
+
+
+def make_provider(config: "Config", model: str | None = None) -> LLMProvider:
+    """Create the appropriate LLM provider based on matched provider config's type field."""
+    model, provider_config, provider_name = _resolve_provider_request(config, model)
     provider_type = provider_config.type
-    if provider_type not in _VALID_PROVIDER_TYPES:
-        raise ValueError(
-            f"Provider type '{provider_type}' 无效，是否拼写错误？\n"
-            f"有效值 Valid values: {', '.join(sorted(_VALID_PROVIDER_TYPES))}"
-        )
+    _validate_provider_type(provider_type)
     if provider_type == "openai_codex":
         from bao.providers.openai_codex_provider import OpenAICodexProvider
 
         return OpenAICodexProvider(default_model=model)
 
-    api_key = provider_config.api_key.get_secret_value()
-    if not api_key:
-        raise ValueError(
-            f"未找到模型 '{model}' 对应的 Provider 或缺少 API Key\n"
-            f"No provider with API key found for model '{model}'"
-        )
+    api_key = _require_api_key(model, provider_config)
 
     if provider_type == "anthropic":
         from bao.providers.anthropic_provider import AnthropicProvider
@@ -163,7 +178,7 @@ def make_provider(config: "Config", model: str | None = None) -> LLMProvider:
             base_url=_normalize_gemini_api_base(provider_config.api_base),
         )
     # openai
-    from bao.providers.openai_provider import OpenAICompatibleProvider
+    from bao.providers.openai_provider import OpenAICompatibleProvider, OpenAIProviderOptions
     from bao.providers.registry import get_default_api_base
 
     provider_name = provider_name or "openai"
@@ -175,8 +190,10 @@ def make_provider(config: "Config", model: str | None = None) -> LLMProvider:
     return OpenAICompatibleProvider(
         api_key=api_key,
         api_base=api_base,
-        default_model=model,
-        extra_headers=provider_config.extra_headers,
-        provider_name=provider_name,
-        model_prefix=model.split("/", 1)[0] if "/" in model else None,
+        options=OpenAIProviderOptions(
+            default_model=model,
+            extra_headers=provider_config.extra_headers,
+            provider_name=provider_name,
+            model_prefix=model.split("/", 1)[0] if "/" in model else None,
+        ),
     )

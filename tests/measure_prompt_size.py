@@ -26,6 +26,83 @@ def _extract_tool_name(tool_def: dict[str, Any]) -> str:
     return str(tool_def.get("name") or "")
 
 
+class _MeasureProvider:
+    async def chat(self, *_args: Any, **_kwargs: Any):
+        from bao.providers.base import LLMResponse
+
+        return LLMResponse(content="ok")
+
+    def get_default_model(self) -> str:
+        return "openai/gpt-4o"
+
+
+def _print_mapping(title: str, values: dict[str, Any]) -> None:
+    print(f"\n--- {title} ---")
+    for key, value in values.items():
+        print(f"  {key}: {value}")
+
+
+def _print_skills_summary(summary: str) -> None:
+    print("\n--- Skills Summary ---")
+    if not summary:
+        print("  [EMPTY] No skills found")
+        return
+    lines = summary.strip().split("\n")
+    print(f"  Total chars: {len(summary)}")
+    print(f"  Est tokens: {_estimate_tokens(len(summary))}")
+    print(f"  Total lines: {len(lines)}")
+    print("  Sample (first 3 lines):")
+    for line in lines[:3]:
+        print(f"    {line}")
+    print("    ...")
+
+
+def _print_prompt_breakdown(breakdown: dict[str, Any]) -> None:
+    print("\n--- Full System Prompt Breakdown ---")
+    print(f"  total_chars: {breakdown['total_chars']}")
+    print(f"  total_est_tokens: {breakdown['total_est_tokens']}")
+    print(f"  always_skill_count: {breakdown['always_skill_count']}")
+    for section, chars in breakdown["sections"].items():
+        print(f"  {section}: {chars} chars (~{_estimate_tokens(chars)} tokens)")
+    print(f"  joiner_and_headers_overhead: {breakdown['joiner_and_headers_overhead']} chars")
+
+
+def _print_summary_footer(report: dict[str, Any]) -> None:
+    summary = report["summary"]
+    coding = report["coding"]
+    runtime_tools = report["runtime_tools"]
+    mem = report["mem"]
+    full_prompt = report["full_prompt"]
+    mcp_state = report["mcp_state"]
+    print("\n" + "=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
+    print(
+        f"  Skills summary:      {len(summary):>5} chars (~{_estimate_tokens(len(summary))} tokens)"
+    )
+    print(
+        "  Coding tools:        "
+        f"{coding.get('total_unified', 0):>5} chars "
+        f"(was ~{coding.get('estimated_old_total', 0)})"
+    )
+    print(
+        "  Runtime tool schema: "
+        f"{runtime_tools['schema_chars']:>5} chars "
+        f"({runtime_tools['tool_count']} tools)"
+    )
+    print(
+        "  Memory (bounded):    "
+        f"{mem.get('bounded_chars', 0):>5} chars "
+        f"(unbounded: {mem.get('unbounded_chars', 0)})"
+    )
+    print(
+        "  Full system prompt:  "
+        f"{full_prompt['total_chars']:>5} chars "
+        f"(~{full_prompt['total_est_tokens']} tokens)"
+    )
+    print(f"  MCP servers configured: {mcp_state.get('mcp_server_count', 0)}")
+
+
 def measure_skills_summary() -> str:
     from bao.agent.skills import SkillsLoader
 
@@ -89,30 +166,12 @@ def measure_memory_budget() -> dict[str, Any]:
 def measure_registered_tool_schemas() -> dict[str, Any]:
     from bao.agent.loop import AgentLoop
     from bao.bus.queue import MessageBus
-    from bao.providers.base import LLMProvider, LLMResponse
     from bao.session.manager import SessionManager
-
-    class _DummyProvider(LLMProvider):
-        async def chat(
-            self,
-            messages: list[dict[str, Any]],
-            tools: list[dict[str, Any]] | None = None,
-            model: str | None = None,
-            max_tokens: int = 4096,
-            temperature: float = 0.1,
-            on_progress=None,
-            **kwargs: Any,
-        ) -> LLMResponse:
-            del messages, tools, model, max_tokens, temperature, on_progress, kwargs
-            return LLMResponse(content="ok")
-
-        def get_default_model(self) -> str:
-            return "openai/gpt-4o"
 
     workspace = _get_workspace()
     loop = AgentLoop(
         bus=MessageBus(),
-        provider=_DummyProvider(),
+        provider=_MeasureProvider(),
         workspace=workspace,
         model="openai/gpt-4o",
         config=None,
@@ -130,7 +189,7 @@ def measure_registered_tool_schemas() -> dict[str, Any]:
 
 
 def measure_mcp_config_state() -> dict[str, Any]:
-    from bao.config.loader import _strip_jsonc_comments
+    from bao.config.loader import strip_jsonc_comments
 
     config_path = Path.home() / ".bao" / "config.jsonc"
     if not config_path.exists():
@@ -138,7 +197,7 @@ def measure_mcp_config_state() -> dict[str, Any]:
 
     text = config_path.read_text(encoding="utf-8")
     try:
-        cleaned = _strip_jsonc_comments(text)
+        cleaned = strip_jsonc_comments(text)
         data = json.loads(cleaned)
     except Exception as e:
         return {
@@ -160,16 +219,16 @@ def measure_mcp_config_state() -> dict[str, Any]:
 
 
 def measure_system_prompt_breakdown() -> dict[str, Any]:
-    from bao.agent.context import ContextBuilder
+    from bao.agent.context import ContextBuilder, SystemPromptRequest
 
     builder = ContextBuilder(_get_workspace())
-    identity = builder._get_identity(model=None, channel="telegram", chat_id="test")
+    identity = builder._get_identity(request=SystemPromptRequest(model=None, channel="telegram", chat_id="test"))
     bootstrap = builder._load_bootstrap_files()
     always_skills = builder.skills.get_always_skills()
     active_skills = builder.skills.load_skills_for_context(always_skills) if always_skills else ""
     summary = builder.skills.build_skills_summary()
     response_format = builder.get_channel_format_hint("telegram") or ""
-    total_prompt = builder.build_system_prompt(channel="telegram", chat_id="test")
+    total_prompt = builder.build_system_prompt(SystemPromptRequest(channel="telegram", chat_id="test"))
 
     sections = {
         "identity_runtime_workspace": len(identity),
@@ -189,10 +248,10 @@ def measure_system_prompt_breakdown() -> dict[str, Any]:
 
 
 def measure_full_system_prompt() -> dict[str, Any]:
-    from bao.agent.context import ContextBuilder
+    from bao.agent.context import ContextBuilder, SystemPromptRequest
 
     prompt = ContextBuilder(_get_workspace()).build_system_prompt(
-        channel="telegram", chat_id="test"
+        SystemPromptRequest(channel="telegram", chat_id="test")
     )
     return {
         "total_chars": len(prompt),
@@ -205,83 +264,36 @@ def main() -> None:
     print("BAO PROMPT/SCHEMA SIZE MEASUREMENT")
     print("=" * 60)
 
-    print("\n--- Skills Summary ---")
     summary = measure_skills_summary()
-    if summary:
-        lines = summary.strip().split("\n")
-        print(f"  Total chars: {len(summary)}")
-        print(f"  Est tokens: {_estimate_tokens(len(summary))}")
-        print(f"  Total lines: {len(lines)}")
-        print("  Sample (first 3 lines):")
-        for line in lines[:3]:
-            print(f"    {line}")
-        print("    ...")
-    else:
-        print("  [EMPTY] No skills found")
+    _print_skills_summary(summary)
 
-    print("\n--- Coding Tool Schema (6→2 optimization) ---")
     coding = measure_coding_tool_schemas()
-    for k, v in coding.items():
-        print(f"  {k}: {v}")
+    _print_mapping("Coding Tool Schema (6→2 optimization)", coding)
 
-    print("\n--- Runtime Tool Schema Payload ---")
     runtime_tools = measure_registered_tool_schemas()
-    print(f"  Tool count: {runtime_tools['tool_count']}")
-    print(f"  Schema chars: {runtime_tools['schema_chars']}")
-    print(f"  Est tokens: {runtime_tools['schema_est_tokens']}")
-    print(f"  Tool names: {runtime_tools['tool_names']}")
+    _print_mapping("Runtime Tool Schema Payload", runtime_tools)
 
-    print("\n--- MCP Config State ---")
     mcp_state = measure_mcp_config_state()
-    for k, v in mcp_state.items():
-        print(f"  {k}: {v}")
+    _print_mapping("MCP Config State", mcp_state)
 
-    print("\n--- Memory Budget ---")
     mem = measure_memory_budget()
-    for k, v in mem.items():
-        print(f"  {k}: {v}")
+    _print_mapping("Memory Budget", mem)
 
-    print("\n--- Full System Prompt ---")
     full_prompt = measure_full_system_prompt()
-    print(f"  Total chars: {full_prompt['total_chars']}")
-    print(f"  Est tokens: {full_prompt['total_est_tokens']}")
+    _print_mapping("Full System Prompt", full_prompt)
 
-    print("\n--- Full System Prompt Breakdown ---")
     breakdown = measure_system_prompt_breakdown()
-    print(f"  total_chars: {breakdown['total_chars']}")
-    print(f"  total_est_tokens: {breakdown['total_est_tokens']}")
-    print(f"  always_skill_count: {breakdown['always_skill_count']}")
-    for section, chars in breakdown["sections"].items():
-        print(f"  {section}: {chars} chars (~{_estimate_tokens(chars)} tokens)")
-    print(f"  joiner_and_headers_overhead: {breakdown['joiner_and_headers_overhead']} chars")
-
-    print("\n" + "=" * 60)
-    print("SUMMARY")
-    print("=" * 60)
-    print(
-        f"  Skills summary:      {len(summary):>5} chars (~{_estimate_tokens(len(summary))} tokens)"
+    _print_prompt_breakdown(breakdown)
+    _print_summary_footer(
+        {
+            "summary": summary,
+            "coding": coding,
+            "runtime_tools": runtime_tools,
+            "mem": mem,
+            "full_prompt": full_prompt,
+            "mcp_state": mcp_state,
+        }
     )
-    print(
-        "  Coding tools:        "
-        f"{coding.get('total_unified', 0):>5} chars "
-        f"(was ~{coding.get('estimated_old_total', 0)})"
-    )
-    print(
-        "  Runtime tool schema: "
-        f"{runtime_tools['schema_chars']:>5} chars "
-        f"({runtime_tools['tool_count']} tools)"
-    )
-    print(
-        "  Memory (bounded):    "
-        f"{mem.get('bounded_chars', 0):>5} chars "
-        f"(unbounded: {mem.get('unbounded_chars', 0)})"
-    )
-    print(
-        "  Full system prompt:  "
-        f"{full_prompt['total_chars']:>5} chars "
-        f"(~{full_prompt['total_est_tokens']} tokens)"
-    )
-    print(f"  MCP servers configured: {mcp_state.get('mcp_server_count', 0)}")
 
 
 if __name__ == "__main__":

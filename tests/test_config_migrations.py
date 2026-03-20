@@ -13,8 +13,39 @@ def test_migrate_v2_adds_tool_exposure_defaults() -> None:
     }
     migrated, _ = migrate_config(data)
     assert migrated["config_version"] == CURRENT_VERSION
-    assert migrated["tools"]["toolExposure"]["mode"] == "auto"
-    assert migrated["tools"]["toolExposure"]["bundles"] == ["core", "web", "desktop", "code"]
+    assert migrated["tools"]["toolExposure"]["mode"] == "off"
+    assert migrated["tools"]["toolExposure"]["domains"] == [
+        "core",
+        "messaging",
+        "handoff",
+        "web_research",
+        "desktop_automation",
+        "coding_backend",
+    ]
+
+
+def test_migrate_v5_maps_legacy_bundles_to_domains() -> None:
+    data = {
+        "config_version": 5,
+        "tools": {
+            "toolExposure": {
+                "mode": "auto",
+                "bundles": ["core", "web", "code"],
+            }
+        },
+    }
+
+    migrated, _ = migrate_config(data)
+
+    assert migrated["config_version"] == CURRENT_VERSION
+    assert migrated["tools"]["toolExposure"]["domains"] == [
+        "core",
+        "messaging",
+        "handoff",
+        "web_research",
+        "coding_backend",
+    ]
+    assert "bundles" not in migrated["tools"]["toolExposure"]
 
 
 def test_migrate_v0_handles_non_dict_web_config() -> None:

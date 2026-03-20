@@ -8,6 +8,7 @@ from bao.agent.loop import AgentLoop
 from bao.bus.events import InboundMessage
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from tests._provider_request_testkit import request_messages
 
 
 class _ToolBoundaryProvider(LLMProvider):
@@ -15,17 +16,9 @@ class _ToolBoundaryProvider(LLMProvider):
         super().__init__(api_key=None, api_base=None)
         self._calls = 0
 
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        max_tokens: int = 4096,
-        temperature: float = 0.7,
-        on_progress=None,
-        **kwargs: Any,
-    ) -> LLMResponse:
-        del messages, tools, model, max_tokens, temperature, on_progress, kwargs
+    async def chat(self, request: Any, **kwargs: Any) -> LLMResponse:
+        del kwargs
+        _ = request_messages(request)
         if self._calls == 0:
             self._calls += 1
             return LLMResponse(
@@ -55,7 +48,7 @@ def test_process_message_persists_visible_pre_tool_turn_but_hides_it_from_prompt
     loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, max_iterations=4)
     loop._tool_exposure_mode = "off"
 
-    async def _fake_execute(name: str, params: dict[str, Any]) -> str:
+    async def _fake_execute(name: str, params: dict[str, Any], **_kwargs: Any) -> str:
         del name, params
         return "tool ok"
 

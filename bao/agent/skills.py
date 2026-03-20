@@ -6,7 +6,7 @@ import re
 import shutil
 from pathlib import Path
 
-from bao.agent.skill_catalog import SkillCatalog
+from bao.agent.skill_catalog import USER_SKILLS_DIR, SkillCatalog
 
 # Default builtin skills directory (relative to this file)
 BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
@@ -20,11 +20,19 @@ class SkillsLoader:
     specific tools or perform certain tasks.
     """
 
-    def __init__(self, workspace: Path, builtin_skills_dir: Path | None = None):
+    def __init__(
+        self,
+        workspace: Path,
+        builtin_skills_dir: Path | None = None,
+        user_skills_dir: Path | None = None,
+    ):
         self.workspace = workspace
-        self.workspace_skills = workspace / "skills"
+        self.user_skills = user_skills_dir or USER_SKILLS_DIR
         self.builtin_skills = builtin_skills_dir or BUILTIN_SKILLS_DIR
-        self._catalog = SkillCatalog(workspace=workspace, builtin_skills_dir=self.builtin_skills)
+        self._catalog = SkillCatalog(
+            user_skills_dir=self.user_skills,
+            builtin_skills_dir=self.builtin_skills,
+        )
         self._skill_content_cache: dict[Path, tuple[tuple[int, int, int], str]] = {}
 
     def list_skills(self, filter_unavailable: bool = True) -> list[dict[str, str]]:
@@ -59,16 +67,15 @@ class SkillsLoader:
         Returns:
             Skill content or None if not found.
         """
-        # Check workspace first
-        workspace_skill = self.workspace_skills / name / "SKILL.md"
-        if workspace_skill.exists():
-            return self._read_skill_file(workspace_skill)
+        # Check user skills first
+        user_skill = self.user_skills / name / "SKILL.md"
+        if user_skill.exists():
+            return self._read_skill_file(user_skill)
 
         # Check built-in
-        if self.builtin_skills:
-            builtin_skill = self.builtin_skills / name / "SKILL.md"
-            if builtin_skill.exists():
-                return self._read_skill_file(builtin_skill)
+        builtin_skill = self.builtin_skills / name / "SKILL.md"
+        if builtin_skill.exists():
+            return self._read_skill_file(builtin_skill)
 
         return None
 

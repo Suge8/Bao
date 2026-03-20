@@ -4,7 +4,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from bao.cli.commands import run_gateway
+from typer.testing import CliRunner
+
+from bao.cli.commands import app, run_hub
 from bao.config.loader import load_config
 from bao.config.paths import (
     get_bridge_install_dir,
@@ -43,9 +45,27 @@ def test_default_runtime_dirs_follow_home(monkeypatch, tmp_path: Path) -> None:
     assert get_media_dir() == tmp_path / ".bao" / "media"
 
 
+def test_cli_default_invocation_runs_gateway(monkeypatch) -> None:
+    captured: list[object] = []
+
+    monkeypatch.setattr("bao.cli.commands.run_hub", lambda *, options=None, **kwargs: captured.append(options))
+
+    result = CliRunner().invoke(app, [])
+
+    assert result.exit_code == 0
+    assert captured
+    options = captured[0]
+    assert options is not None
+    assert options.port is None
+    assert options.workspace is None
+    assert options.config_path is None
+    assert options.verbose is False
+    assert "Bao v" not in result.stdout
+
+
 def test_run_gateway_uses_config_port_when_cli_omits(monkeypatch) -> None:
     config = MagicMock()
-    config.gateway.port = 19999
+    config.hub.port = 19999
     config.workspace_path = Path("/tmp/workspace")
 
     fake_stack = SimpleNamespace(
@@ -71,17 +91,17 @@ def test_run_gateway_uses_config_port_when_cli_omits(monkeypatch) -> None:
 
     with (
         patch("bao.config.loader.load_config", return_value=config),
-        patch("bao.gateway.builder.build_gateway_stack", return_value=fake_stack),
-        patch("bao.gateway.builder.send_startup_greeting", return_value=MagicMock()),
+        patch("bao.hub.builder.build_hub_stack", return_value=fake_stack),
+        patch("bao.hub.builder.send_startup_greeting", return_value=MagicMock()),
     ):
-        run_gateway(port=None, verbose=False)
+        run_hub(port=None, verbose=False)
 
     assert startup_ports == [19999]
 
 
 def test_run_gateway_workspace_override_wins(monkeypatch) -> None:
     config = MagicMock()
-    config.gateway.port = 18790
+    config.hub.port = 18790
     config.agents.defaults.workspace = "~/.bao/workspace"
     config.workspace_path = Path("/tmp/original")
 
@@ -104,9 +124,9 @@ def test_run_gateway_workspace_override_wins(monkeypatch) -> None:
 
     with (
         patch("bao.config.loader.load_config", return_value=config),
-        patch("bao.gateway.builder.build_gateway_stack", return_value=fake_stack),
-        patch("bao.gateway.builder.send_startup_greeting", return_value=MagicMock()),
+        patch("bao.hub.builder.build_hub_stack", return_value=fake_stack),
+        patch("bao.hub.builder.send_startup_greeting", return_value=MagicMock()),
     ):
-        run_gateway(port=12345, verbose=False, workspace="~/custom-workspace")
+        run_hub(port=12345, verbose=False, workspace="~/custom-workspace")
 
     assert config.agents.defaults.workspace == "~/custom-workspace"

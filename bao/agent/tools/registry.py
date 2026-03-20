@@ -7,8 +7,14 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from bao.agent.tool_approval import evaluate_tool_approval
 from bao.agent.tool_result import ToolExecutionOutput, ToolExecutionResult
+from bao.agent.tools._registry_execute import (
+    ToolExecutionRequest,
+    execution_error_result,
+    invalid_params_result,
+    prepare_tool_execution,
+    tool_not_found_result,
+)
 from bao.agent.tools.base import Tool
 
 _SLIM_SCHEMA_TOOL_THRESHOLD = 8
@@ -23,9 +29,6 @@ class ToolMetadata:
     keyword_aliases: tuple[str, ...] = ()
     auto_callable: bool = True
     summary: str = ""
-    approval_scope: str = ""
-    risk_level: str = "low"
-    side_effects: tuple[str, ...] = ()
 
 
 class ToolRegistry:
@@ -51,17 +54,7 @@ class ToolRegistry:
     @classmethod
     def _default_metadata(cls, tool: Tool) -> ToolMetadata:
         summary = tool.description.strip()
-        return ToolMetadata(
-            bundle="core",
-            short_hint=summary,
-            aliases=(),
-            keyword_aliases=(),
-            auto_callable=True,
-            summary=summary,
-            approval_scope="",
-            risk_level="low",
-            side_effects=(),
-        )
+        return ToolMetadata(short_hint=summary, summary=summary)
 
     @classmethod
     def _coerce_metadata(cls, tool: Tool, metadata: ToolMetadata | None) -> ToolMetadata:
@@ -74,7 +67,6 @@ class ToolRegistry:
         summary = metadata.summary.strip() or short_hint or base.summary
         aliases = cls._normalize_terms(*metadata.aliases)
         keyword_aliases = cls._normalize_terms(*metadata.keyword_aliases)
-        side_effects = cls._normalize_terms(*metadata.side_effects)
         return ToolMetadata(
             bundle=bundle,
             short_hint=short_hint,
@@ -82,9 +74,6 @@ class ToolRegistry:
             keyword_aliases=keyword_aliases,
             auto_callable=bool(metadata.auto_callable),
             summary=summary,
-            approval_scope=metadata.approval_scope.strip().lower(),
-            risk_level=(metadata.risk_level or "low").strip().lower() or "low",
-            side_effects=side_effects,
         )
 
     def register(self, tool: Tool, *, metadata: ToolMetadata | None = None) -> None:
@@ -130,36 +119,8 @@ class ToolRegistry:
         self._schema_cache.pop((name, False), None)
         self._schema_cache.pop((name, True), None)
 
-    @staticmethod
-    def _error_result(
-        *,
-        code: str,
-        message: str,
-        value: str,
-    ) -> ToolExecutionResult:
-        return ToolExecutionResult.error(code=code, message=message, value=value)
-
-    @staticmethod
-    def _format_invalid_params(
-        name: str,
-        detail: str,
-        *,
-        raw_arguments: str | None = None,
-    ) -> str:
-        raw_suffix = ""
-        if isinstance(raw_arguments, str) and raw_arguments.strip():
-            raw_preview = raw_arguments.strip()
-            if len(raw_preview) > 200:
-                raw_preview = raw_preview[:200] + "..."
-            raw_suffix = f" Raw arguments: {raw_preview}"
-        return (
-            f"Error: Invalid parameters for tool '{name}': {detail}.{raw_suffix}"
-            "\n\n[Analyze the error above and try a different approach.]"
-        )
-
-    @staticmethod
-    def _format_approval_required(name: str, detail: str) -> str:
-        return f"{detail}\n\n[Do not retry {name} until the user explicitly approves it.]"
+    def _available_tools_text(self) -> str:
+        return ", ".join(sorted(self._tools.keys())) or "none"
 
     def _schema_for_tool(self, tool: Tool, *, slim: bool) -> dict[str, Any]:
         cache_key = (tool.name, slim)
@@ -224,62 +185,33 @@ class ToolRegistry:
         *,
         raw_arguments: str | None = None,
         argument_parse_error: str | None = None,
-        approval_context: dict[str, Any] | None = None,
     ) -> ToolExecutionOutput:
         """Execute a tool by name, returning result or error string."""
-        tool = self._tools.get(name)
+        request = ToolExecutionRequest(
+            name=name,
+            params=params,
+            raw_arguments=raw_arguments,
+            argument_parse_error=argument_parse_error,
+        )
+        tool = self._tools.get(request.name)
         if not tool:
-            available = ", ".join(sorted(self._tools.keys())) or "none"
-            return self._error_result(
-                code="tool_not_found",
-                message="Tool not found",
-                value=f"Error: Tool '{name}' not found. Available tools: {available}.\n\n[Analyze the error above and try a different approach.]",
-            )
+            return tool_not_found_result(request, available_tools_text=self._available_tools_text())
 
-        if argument_parse_error:
-            return self._error_result(
-                code="invalid_params",
-                message="Invalid tool parameters",
-                value=self._format_invalid_params(
-                    name,
-                    f"failed to parse tool arguments ({argument_parse_error})",
-                    raw_arguments=raw_arguments,
-                ),
+        if request.argument_parse_error:
+            return invalid_params_result(
+                request,
+                detail=f"failed to parse tool arguments ({request.argument_parse_error})",
             )
 
         try:
-            params = tool.cast_params(params)
-            errors = tool.validate_params(params)
-            if errors:
-                return self._error_result(
-                    code="invalid_params",
-                    message="Invalid tool parameters",
-                    value=f"Error: Invalid parameters for tool '{name}': {'; '.join(errors)}\n\n[Analyze the error above and try a different approach.]",
-                )
-            if approval_context is not None:
-                metadata = self._metadata.get(name)
-                decision = evaluate_tool_approval(
-                    tool_name=name,
-                    user_text=approval_context.get("user_text", ""),
-                    approval_scope=metadata.approval_scope if metadata else "",
-                    risk_level=metadata.risk_level if metadata else "low",
-                    side_effects=metadata.side_effects if metadata else (),
-                )
-                if not decision.allowed:
-                    return self._error_result(
-                        code="approval_required",
-                        message="Tool requires explicit user approval",
-                        value=self._format_approval_required(name, decision.reason),
-                    )
-            return await tool.execute(**params)
+            prepared = prepare_tool_execution(request, tool=tool)
+            if isinstance(prepared, ToolExecutionResult):
+                return prepared
+            return await tool.execute(**prepared)
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            return self._error_result(
-                code="execution_error",
-                message=f"Error executing {name}: {str(e)}",
-                value=f"Error executing {name}: {str(e)}\n\n[Analyze the error above and try a different approach.]",
-            )
+            return execution_error_result(request, error=e)
 
     @property
     def tool_names(self) -> list[str]:

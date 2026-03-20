@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from bao.providers.base import ToolCallRequest, normalize_tool_calls
+from bao.providers.base import ToolCallRequest, build_tool_call_request, normalize_tool_calls
 
 
 def test_tool_call_request_serializes_openai_shape() -> None:
@@ -80,3 +80,11 @@ def test_normalize_tool_calls_rejects_non_object_arguments() -> None:
     assert len(tool_calls) == 1
     assert tool_calls[0].arguments == {}
     assert tool_calls[0].argument_parse_error == "tool arguments must decode to a JSON object"
+
+
+def test_build_tool_call_request_records_non_dict_arguments() -> None:
+    tool_call = build_tool_call_request("call_2", "search_web", '["bao"]')
+
+    assert tool_call.arguments == {}
+    assert tool_call.raw_arguments == '["bao"]'
+    assert tool_call.argument_parse_error == "tool arguments must decode to a JSON object"

@@ -11,6 +11,8 @@ from typing import Any, Callable, Iterable
 
 from loguru import logger
 
+from bao.runtime_diagnostics_models import RuntimeEventRequest
+
 _MAX_EVENT_COUNT = 48
 _MAX_LOG_LINE_COUNT = 600
 
@@ -71,28 +73,17 @@ class RuntimeDiagnosticsStore:
             self._recent_log_lines.append(cleaned)
         self._notify_listeners()
 
-    def record_event(
-        self,
-        *,
-        source: str,
-        stage: str,
-        message: str,
-        level: str = "error",
-        code: str = "",
-        retryable: bool | None = None,
-        session_key: str = "",
-        details: dict[str, Any] | None = None,
-    ) -> None:
+    def record_event(self, request: RuntimeEventRequest) -> None:
         event = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "level": (level or "info").lower(),
-            "source": _sanitize_text(source, max_len=80),
-            "stage": _sanitize_text(stage, max_len=80),
-            "code": _sanitize_text(code, max_len=80),
-            "message": _sanitize_text(message, max_len=240),
-            "retryable": retryable,
-            "session_key": _sanitize_text(session_key, max_len=120),
-            "details": _sanitize_value(details or {}, max_len=200),
+            "level": (request.level or "info").lower(),
+            "source": _sanitize_text(request.source, max_len=80),
+            "stage": _sanitize_text(request.stage, max_len=80),
+            "code": _sanitize_text(request.code, max_len=80),
+            "message": _sanitize_text(request.message, max_len=240),
+            "retryable": request.retryable,
+            "session_key": _sanitize_text(request.session_key, max_len=120),
+            "details": _sanitize_value(request.details, max_len=200),
         }
         with self._lock:
             self._recent_events.appendleft(event)
@@ -154,7 +145,6 @@ class RuntimeDiagnosticsStore:
                 "recent_log_lines": list(self._recent_log_lines)[-log_limit:] if log_limit else [],
                 "tool_observability": dict(self._tool_observability),
                 "event_count": len(recent_events),
-                "log_line_count": len(self._recent_log_lines),
             }
 
     def _notify_listeners(self) -> None:
@@ -218,13 +208,15 @@ def report_startup_failure(
 ) -> None:
     store = get_runtime_diagnostics_store()
     store.record_event(
-        source="desktop_startup",
-        stage="startup",
-        message=message,
-        level="error",
-        code=code,
-        retryable=False,
-        details=details,
+        RuntimeEventRequest(
+            source="desktop_startup",
+            stage="startup",
+            message=message,
+            level="error",
+            code=code,
+            retryable=False,
+            details=dict(details or {}),
+        )
     )
     logger.error(message)
 
@@ -260,13 +252,15 @@ def configure_desktop_logging(log_file_path: str | Path | None = None) -> Path:
     )
     if fallback_reason:
         store.record_event(
-            source="desktop_startup",
-            stage="logging",
-            message=fallback_reason,
-            level="warning",
-            code="desktop_log_fallback",
-            retryable=False,
-            details={"log_file_path": str(target)},
+            RuntimeEventRequest(
+                source="desktop_startup",
+                stage="logging",
+                message=fallback_reason,
+                level="warning",
+                code="desktop_log_fallback",
+                retryable=False,
+                details={"log_file_path": str(target)},
+            )
         )
         logger.warning("{}", fallback_reason)
     return target

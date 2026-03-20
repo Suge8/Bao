@@ -4,6 +4,18 @@ from bao.agent.tool_result import ToolExecutionResult
 _ERROR_KEYWORDS = ("error:", "traceback", "failed", "exception", "permission denied")
 
 
+def test_send_to_session_structured_delivery_failure_is_error() -> None:
+    result = ToolExecutionResult.error(
+        code="delivery_failed",
+        message="Error sending to session: target handoff failed",
+        value=(
+            "Error sending to session: target handoff failed\n\n"
+            "[Do not claim success. Explain the send failure and ask for a corrected target when needed.]"
+        ),
+    )
+    assert shared.has_tool_error("send_to_session", result, _ERROR_KEYWORDS)
+
+
 def test_web_search_ignores_content_keywords() -> None:
     assert not shared.has_tool_error(
         "web_search",
@@ -115,9 +127,25 @@ def test_coding_agent_detects_returncode_nonzero() -> None:
 
 
 def test_tool_trace_contains_ok_and_error_substrings() -> None:
-    ok_entry = shared.build_tool_trace_entry(1, "exec", "cmd", False, "ok result")
+    ok_entry = shared.build_tool_trace_entry(
+        shared.ToolTraceEntryRequest(
+            trace_idx=1,
+            tool_name="exec",
+            args_preview="cmd",
+            has_error=False,
+            result="ok result",
+        )
+    )
     assert "\u2192 ok" in ok_entry
-    err_entry = shared.build_tool_trace_entry(2, "exec", "cmd", True, "err")
+    err_entry = shared.build_tool_trace_entry(
+        shared.ToolTraceEntryRequest(
+            trace_idx=2,
+            tool_name="exec",
+            args_preview="cmd",
+            has_error=True,
+            result="err",
+        )
+    )
     assert "\u2192 ERROR" in err_entry
 
 
@@ -159,21 +187,3 @@ def test_parse_tool_error_invalid_params() -> None:
     assert info is not None
     assert info.is_error is True
     assert info.category == "invalid_params"
-
-
-def test_parse_tool_error_structured_approval_required() -> None:
-    from bao.agent.shared import parse_tool_error
-
-    info = parse_tool_error(
-        "notify",
-        ToolExecutionResult.error(
-            code="approval_required",
-            message="Tool requires explicit user approval",
-            value="Blocked tool 'notify'",
-        ),
-        _ERROR_KEYWORDS,
-    )
-
-    assert info is not None
-    assert info.is_error is True
-    assert info.category == "approval_required"

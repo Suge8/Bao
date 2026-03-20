@@ -9,6 +9,7 @@ from bao.agent import shared
 from bao.agent.loop import AgentLoop
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider, LLMResponse
+from tests._provider_request_testkit import request_messages
 
 
 def test_patch_dangling_tool_results_is_idempotent() -> None:
@@ -55,18 +56,9 @@ class _CaptureProvider(LLMProvider):
         super().__init__(api_key=None, api_base=None)
         self.last_messages: list[dict[str, Any]] = []
 
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        max_tokens: int = 4096,
-        temperature: float = 0.7,
-        on_progress=None,
-        **kwargs: Any,
-    ) -> LLMResponse:
-        del tools, model, max_tokens, temperature, on_progress, kwargs
-        self.last_messages = copy.deepcopy(messages)
+    async def chat(self, request: Any, **kwargs: Any) -> LLMResponse:
+        del kwargs
+        self.last_messages = copy.deepcopy(request_messages(request))
         return LLMResponse(content="ok", finish_reason="stop")
 
     def get_default_model(self) -> str:

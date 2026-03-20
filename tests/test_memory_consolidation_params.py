@@ -7,6 +7,7 @@ import pytest
 
 from bao.agent.loop import AgentLoop
 from bao.bus.queue import MessageBus
+from bao.providers.base import ChatRequest
 
 
 @pytest.mark.asyncio
@@ -42,8 +43,9 @@ async def test_memory_consolidation_inherits_generation_parameters(tmp_path) -> 
 
     await loop._consolidate_memory(session, archive_all=True)
 
-    kwargs = provider.chat.await_args.kwargs
-    assert kwargs["temperature"] == 0.25
-    assert kwargs["max_tokens"] == 321
-    assert kwargs["reasoning_effort"] == "low"
-    assert kwargs["service_tier"] == "priority"
+    request = provider.chat.await_args.args[0]
+    assert isinstance(request, ChatRequest)
+    assert request.temperature == 0.25
+    assert request.max_tokens == 321
+    assert request.reasoning_effort == "low"
+    assert request.service_tier == "priority"

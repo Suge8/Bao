@@ -4,6 +4,8 @@ import types
 
 import pytest
 
+from bao.providers.base import ChatRequest
+
 
 class _FakeStream:
     def __init__(self, *, captured: dict[str, object]):
@@ -50,11 +52,13 @@ async def test_reasoning_effort_off_disables_thinking() -> None:
     provider._client = _FakeAnthropicClient(captured=captured)  # type: ignore[attr-defined]
 
     resp = await provider.chat(
-        messages=[{"role": "user", "content": "ping"}],
-        model="anthropic/claude-sonnet-4-20250514",
-        max_tokens=8,
-        temperature=0,
-        reasoning_effort="off",
+        ChatRequest(
+            messages=[{"role": "user", "content": "ping"}],
+            model="anthropic/claude-sonnet-4-20250514",
+            max_tokens=8,
+            temperature=0,
+            reasoning_effort="off",
+        )
     )
 
     assert resp.finish_reason == "stop"
@@ -78,11 +82,13 @@ async def test_reasoning_effort_low_enables_thinking_budget() -> None:
     provider._client = _FakeAnthropicClient(captured=captured)  # type: ignore[attr-defined]
 
     await provider.chat(
-        messages=[{"role": "user", "content": "ping"}],
-        model="anthropic/claude-sonnet-4-20250514",
-        max_tokens=8,
-        temperature=0,
-        reasoning_effort="low",
+        ChatRequest(
+            messages=[{"role": "user", "content": "ping"}],
+            model="anthropic/claude-sonnet-4-20250514",
+            max_tokens=8,
+            temperature=0,
+            reasoning_effort="low",
+        )
     )
 
     assert captured.get("thinking") == {"type": "adaptive", "budget_tokens": 2048}

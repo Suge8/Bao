@@ -8,6 +8,7 @@ launched via asyncio.create_task in AgentLoop._maybe_learn_experience.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
@@ -19,20 +20,24 @@ if TYPE_CHECKING:
 UtilityLLMFn = Callable[[str, str], Awaitable[dict[str, Any] | None]]
 
 
-async def summarize_experience(
-    memory: MemoryStore,
-    llm_fn: UtilityLLMFn,
-    user_request: str,
-    final_response: str,
-    tools_used: list[str],
-    tool_trace: list[str],
-    total_errors: int = 0,
-    reasoning_snippets: list[str] | None = None,
-) -> None:
-    """Extract reusable lessons from a completed task."""
-    tools_str = ", ".join(dict.fromkeys(tools_used))
-    trace_str = " → ".join(tool_trace) if tool_trace else "none"
-    reasoning_str = " | ".join(reasoning_snippets[:5]) if reasoning_snippets else "none"
+@dataclass(frozen=True)
+class ExperienceSummaryRequest:
+    memory: MemoryStore
+    llm_fn: UtilityLLMFn
+    user_request: str
+    final_response: str
+    tools_used: list[str]
+    tool_trace: list[str]
+    total_errors: int = 0
+    reasoning_snippets: list[str] | None = None
+
+
+def _build_experience_summary_prompt(request: ExperienceSummaryRequest) -> tuple[str, str]:
+    tools_str = ", ".join(dict.fromkeys(request.tools_used))
+    trace_str = " → ".join(request.tool_trace) if request.tool_trace else "none"
+    reasoning_str = (
+        " | ".join(request.reasoning_snippets[:5]) if request.reasoning_snippets else "none"
+    )
     prompt = f"""Analyze this completed task and extract reusable lessons. Return a JSON object with exactly six keys:
 
 1. "task": One-sentence description of what the user asked for (max 80 chars)
@@ -45,7 +50,7 @@ async def summarize_experience(
 If the task was trivial (simple greeting, factual Q&A, no real problem-solving), return {{"skip": true}}.
 
 ## User Request
-{user_request[:500]}
+{request.user_request[:500]}
 
 ## Tools Used
 {tools_str}
@@ -57,40 +62,60 @@ If the task was trivial (simple greeting, factual Q&A, no real problem-solving),
 {reasoning_str[:600]}
 
 ## Final Response (truncated)
-{final_response[:800]}
+{request.final_response[:800]}
 
 Respond with ONLY valid JSON, no markdown fences."""
+    return prompt, reasoning_str
+
+
+async def _persist_experience_summary(
+    request: ExperienceSummaryRequest,
+    result: dict[str, Any],
+    reasoning_trace: str,
+) -> None:
+    task = result.get("task", "")
+    lessons = result.get("lessons", "")
+    if not (task and lessons):
+        return
+    outcome = result.get("outcome", "unknown")
+    quality = max(1, min(5, int(result.get("quality", 3))))
+    category = result.get("category", "general")
+    keywords = result.get("keywords", "")
+    await asyncio.to_thread(
+        request.memory.append_experience,
+        task,
+        outcome,
+        lessons,
+        quality=quality,
+        category=category,
+        keywords=keywords,
+        reasoning_trace=reasoning_trace,
+    )
+    logger.info(
+        "📝 提取经验 / extracting experience: {} [{}] q={} cat={}",
+        task[:60],
+        outcome,
+        quality,
+        category,
+    )
+    if outcome == "failed":
+        await asyncio.to_thread(request.memory.deprecate_similar, task)
+    elif request.total_errors == 0:
+        await asyncio.to_thread(request.memory.record_reuse, task, True)
+
+
+async def summarize_experience(request: ExperienceSummaryRequest) -> None:
+    """Extract reusable lessons from a completed task."""
+    prompt, reasoning_str = _build_experience_summary_prompt(request)
 
     try:
-        result = await llm_fn(
+        result = await request.llm_fn(
             "You are an experience extraction agent. Respond only with valid JSON.", prompt
         )
         if not result or result.get("skip"):
             return
-        task, lessons = result.get("task", ""), result.get("lessons", "")
-        if task and lessons:
-            outcome = result.get("outcome", "unknown")
-            quality = max(1, min(5, int(result.get("quality", 3))))
-            category = result.get("category", "general")
-            keywords = result.get("keywords", "")
-            reasoning_trace = reasoning_str[:300] if reasoning_snippets else ""
-            await asyncio.to_thread(
-                memory.append_experience,
-                task,
-                outcome,
-                lessons,
-                quality=quality,
-                category=category,
-                keywords=keywords,
-                reasoning_trace=reasoning_trace,
-            )
-            logger.info(
-                "📝 提取经验 / extracting experience: {} [{}] q={} cat={}", task[:60], outcome, quality, category
-            )
-            if outcome == "failed":
-                await asyncio.to_thread(memory.deprecate_similar, task)
-            elif total_errors == 0:
-                await asyncio.to_thread(memory.record_reuse, task, True)
+        reasoning_trace = reasoning_str[:300] if request.reasoning_snippets else ""
+        await _persist_experience_summary(request, result, reasoning_trace)
     except Exception as e:
         logger.debug("Experience extraction skipped: {}", e)
 

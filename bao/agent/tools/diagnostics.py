@@ -1,10 +1,22 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any, Iterable
 
 from bao.agent.tools.base import Tool
 from bao.runtime_diagnostics import RuntimeDiagnosticsStore, get_runtime_diagnostics_store
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticsPayloadRequest:
+    event_count: int
+    log_file_path: str
+    recent_events: list[dict[str, Any]]
+    tool_observability: dict[str, Any]
+    recent_log_lines: list[str]
+    include_logs: bool
+    include_tool_observability: bool
 
 
 class RuntimeDiagnosticsTool(Tool):
@@ -75,13 +87,17 @@ class RuntimeDiagnosticsTool(Tool):
         allowed_sources, blocked = self._resolve_sources(requested_source)
         if blocked:
             return self._render_payload(
-                event_count=0,
-                log_file_path=self._store.snapshot(max_events=0, max_log_lines=0)["log_file_path"],
-                recent_events=[],
-                tool_observability={},
-                recent_log_lines=[],
-                include_logs=include_logs,
-                include_tool_observability=False,
+                DiagnosticsPayloadRequest(
+                    event_count=0,
+                    log_file_path=str(
+                        self._store.snapshot(max_events=0, max_log_lines=0)["log_file_path"]
+                    ),
+                    recent_events=[],
+                    tool_observability={},
+                    recent_log_lines=[],
+                    include_logs=include_logs,
+                    include_tool_observability=False,
+                )
             )
 
         effective_session_key = self._pinned_session_key or requested_session_key
@@ -95,13 +111,15 @@ class RuntimeDiagnosticsTool(Tool):
             allowed_session_keys=allowed_session_keys,
         )
         return self._render_payload(
-            event_count=int(snapshot["event_count"]),
-            log_file_path=str(snapshot["log_file_path"]),
-            recent_events=list(snapshot["recent_events"]),
-            tool_observability=dict(snapshot["tool_observability"]),
-            recent_log_lines=list(snapshot["recent_log_lines"]),
-            include_logs=include_logs and not scoped_read,
-            include_tool_observability=not scoped_read,
+            DiagnosticsPayloadRequest(
+                event_count=int(snapshot["event_count"]),
+                log_file_path=str(snapshot["log_file_path"]),
+                recent_events=list(snapshot["recent_events"]),
+                tool_observability=dict(snapshot["tool_observability"]),
+                recent_log_lines=list(snapshot["recent_log_lines"]),
+                include_logs=include_logs and not scoped_read,
+                include_tool_observability=not scoped_read,
+            )
         )
 
     def _resolve_sources(self, requested_source: str) -> tuple[list[str], bool]:
@@ -113,24 +131,14 @@ class RuntimeDiagnosticsTool(Tool):
             return [requested_source], False
         return [], True
 
-    def _render_payload(
-        self,
-        *,
-        event_count: int,
-        log_file_path: str,
-        recent_events: list[dict[str, Any]],
-        tool_observability: dict[str, Any],
-        recent_log_lines: list[str],
-        include_logs: bool,
-        include_tool_observability: bool,
-    ) -> str:
+    def _render_payload(self, request: DiagnosticsPayloadRequest) -> str:
         payload: dict[str, Any] = {
-            "log_file_path": log_file_path,
-            "event_count": event_count,
-            "recent_events": recent_events,
+            "log_file_path": request.log_file_path,
+            "event_count": request.event_count,
+            "recent_events": request.recent_events,
         }
-        if self._allow_tool_observability and include_tool_observability:
-            payload["tool_observability"] = tool_observability
-        if include_logs and self._allow_logs:
-            payload["recent_log_lines"] = recent_log_lines
+        if self._allow_tool_observability and request.include_tool_observability:
+            payload["tool_observability"] = request.tool_observability
+        if request.include_logs and self._allow_logs:
+            payload["recent_log_lines"] = request.recent_log_lines
         return json.dumps(payload, ensure_ascii=False, indent=2)

@@ -5,26 +5,20 @@ import json
 from pathlib import Path
 from typing import Any
 
+from bao.agent._loop_run_models import RunAgentLoopOptions
 from bao.agent.loop import AgentLoop
 from bao.bus.queue import MessageBus
 from bao.providers.base import LLMProvider, LLMResponse
+from tests._provider_request_testkit import request_messages
 
 
 class ArtifactProvider(LLMProvider):
     def __init__(self) -> None:
         super().__init__(api_key=None, api_base=None)
 
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        max_tokens: int = 4096,
-        temperature: float = 0.7,
-        on_progress=None,
-        **kwargs: Any,
-    ) -> LLMResponse:
-        del messages, tools, model, max_tokens, temperature, on_progress, kwargs
+    async def chat(self, request: Any, **kwargs: Any) -> LLMResponse:
+        del kwargs
+        _ = request_messages(request)
         return LLMResponse(content="done", finish_reason="stop")
 
     def get_default_model(self) -> str:
@@ -47,7 +41,7 @@ def test_run_agent_loop_archives_run_artifact(tmp_path: Path) -> None:
                 {"role": "system", "content": "test"},
                 {"role": "user", "content": "hello"},
             ],
-            artifact_session_key="desktop:local",
+            options=RunAgentLoopOptions(artifact_session_key="desktop:local"),
         )
     )
 

@@ -8,6 +8,7 @@ from bao.browser import SUPPORTED_BROWSER_ACTIONS, current_browser_platform_key
 from bao.bus.queue import MessageBus
 from bao.config.paths import set_runtime_config_path
 from bao.providers.base import LLMProvider, LLMResponse
+from tests._provider_request_testkit import request_messages
 from tests.browser_runtime_fixture import write_fake_browser_runtime
 
 
@@ -15,17 +16,9 @@ class _DummyProvider(LLMProvider):
     def __init__(self) -> None:
         super().__init__(api_key=None, api_base=None)
 
-    async def chat(
-        self,
-        messages,
-        tools=None,
-        model=None,
-        max_tokens=4096,
-        temperature=0.7,
-        on_progress=None,
-        **kwargs,
-    ):
-        del messages, tools, model, max_tokens, temperature, on_progress, kwargs
+    async def chat(self, request, **kwargs):
+        del kwargs
+        _ = request_messages(request)
         return LLMResponse(content="ok", finish_reason="stop")
 
     def get_default_model(self) -> str:

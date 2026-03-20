@@ -12,6 +12,8 @@ from ._directory_models import (
     decode_transcript_cursor,
     encode_transcript_cursor,
 )
+from ._session_directory_read_plane import SessionDirectoryReadPlane
+from ._session_directory_updater import get_session_directory_runtime
 
 _DISPLAY_MESSAGE_KEYS = (
     "tool_calls",
@@ -36,6 +38,11 @@ class HubDirectory:
 
     def __init__(self, session_manager: Any) -> None:
         self._session_manager = session_manager
+        self._session_directory_runtime = get_session_directory_runtime(session_manager)
+        self._read_plane = SessionDirectoryReadPlane(
+            session_manager=session_manager,
+            runtime=self._session_directory_runtime,
+        )
 
     @property
     def workspace(self) -> Path | None:
@@ -58,6 +65,49 @@ class HubDirectory:
         backfill = getattr(self._session_manager, "backfill_display_tail_rows", None)
         if callable(backfill):
             backfill(keys, limit)
+
+    def observe_origin(self, key: str, origin: Any) -> None:
+        self._session_directory_runtime.updater.observe_origin(key, origin)
+
+    def get_session_directory_record(self, key: str) -> dict[str, Any] | None:
+        record = self._session_directory_runtime.store.get_record(key)
+        return None if record is None else record.as_snapshot()
+
+    def list_recent_sessions(
+        self,
+        *,
+        limit: int | None = None,
+        channel: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._read_plane.list_recent_sessions(limit=limit, channel=channel)
+
+    def lookup_sessions(
+        self,
+        *,
+        query: str,
+        limit: int | None = None,
+        channel: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._read_plane.lookup_sessions(query=query, limit=limit, channel=channel)
+
+    def get_default_session(
+        self,
+        *,
+        channel: str | None = None,
+        scope: str | None = None,
+        session_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._read_plane.get_default_session(
+            channel=channel,
+            scope=scope,
+            session_key=session_key,
+        )
+
+    def resolve_session_ref(self, *, session_ref: str) -> dict[str, Any]:
+        return self._read_plane.resolve_session_ref(session_ref=session_ref)
+
+    def resolve_delivery_target(self, *, session_ref: str) -> dict[str, Any]:
+        return self._read_plane.resolve_delivery_target(session_ref=session_ref)
 
     @staticmethod
     def _copy_rows(raw: object) -> list[dict[str, Any]]:

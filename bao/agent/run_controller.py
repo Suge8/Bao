@@ -24,35 +24,39 @@ class RunLoopState:
     last_state_text: str | None = None
 
 
-async def apply_pre_iteration_checks(
-    *,
-    messages: list[dict[str, Any]],
-    initial_messages: list[dict[str, Any]],
-    user_request: str,
-    artifact_store: ArtifactStore | None,
-    state: RunLoopState,
-    tool_trace: list[str],
-    reasoning_snippets: list[str],
-    failed_directions: list[str],
-    sufficiency_trace: list[str],
-    ctx_mgmt: str,
-    compact_bytes: int,
-    compress_state: Callable[[list[str], list[str], list[str], str | None], Awaitable[str | None]],
-    check_sufficiency: Callable[[str, list[str], str | None], Awaitable[bool]],
-    compact_messages: Callable[..., list[dict[str, Any]]],
-    is_interrupted: Callable[[], bool] | None = None,
-) -> list[dict[str, Any]]:
-    if is_interrupted is not None and is_interrupted():
+@dataclass
+class PreIterationCheckRequest:
+    messages: list[dict[str, Any]]
+    initial_messages: list[dict[str, Any]]
+    user_request: str
+    artifact_store: ArtifactStore | None
+    state: RunLoopState
+    tool_trace: list[str]
+    reasoning_snippets: list[str]
+    failed_directions: list[str]
+    sufficiency_trace: list[str]
+    ctx_mgmt: str
+    compact_bytes: int
+    compress_state: Callable[[list[str], list[str], list[str], str | None], Awaitable[str | None]]
+    check_sufficiency: Callable[[str, list[str], str | None], Awaitable[bool]]
+    compact_messages: Callable[..., list[dict[str, Any]]]
+    is_interrupted: Callable[[], bool] | None = None
+
+
+async def apply_pre_iteration_checks(request: PreIterationCheckRequest) -> list[dict[str, Any]]:
+    state = request.state
+    messages = request.messages
+    if request.is_interrupted is not None and request.is_interrupted():
         state.interrupted = True
         return messages
 
-    tool_steps = len(tool_trace)
+    tool_steps = len(request.tool_trace)
     steps_since_attempt = tool_steps - state.last_state_attempt_at
     if tool_steps >= 5 and steps_since_attempt >= 5:
-        compressed_state = await compress_state(
-            tool_trace,
-            reasoning_snippets,
-            failed_directions,
+        compressed_state = await request.compress_state(
+            request.tool_trace,
+            request.reasoning_snippets,
+            request.failed_directions,
             state.last_state_text,
         )
         state.last_state_attempt_at = tool_steps
@@ -68,14 +72,18 @@ async def apply_pre_iteration_checks(
                 }
             )
             state.last_state_text = compressed_state
-            tool_trace.clear()
-            reasoning_snippets.clear()
-            failed_directions.clear()
+            request.tool_trace.clear()
+            request.reasoning_snippets.clear()
+            request.failed_directions.clear()
             state.consecutive_errors = 0
             state.last_state_attempt_at = 0
 
     if state.total_tool_steps_for_sufficiency >= state.next_sufficiency_at:
-        if await check_sufficiency(user_request, sufficiency_trace, state.last_state_text):
+        if await request.check_sufficiency(
+            request.user_request,
+            request.sufficiency_trace,
+            state.last_state_text,
+        ):
             messages.append(
                 {
                     "role": "user",
@@ -86,19 +94,27 @@ async def apply_pre_iteration_checks(
         while state.next_sufficiency_at <= state.total_tool_steps_for_sufficiency:
             state.next_sufficiency_at += 4
 
-    if ctx_mgmt in ("auto", "aggressive"):
-        try:
-            approx_bytes = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
-        except Exception:
-            approx_bytes = 0
-        if approx_bytes >= compact_bytes:
-            messages = compact_messages(
-                messages=messages,
-                initial_messages=initial_messages,
-                last_state_text=state.last_state_text,
-                artifact_store=artifact_store,
-            )
-    return messages
+    return _maybe_compact_messages(request, messages)
+
+
+def _maybe_compact_messages(
+    request: PreIterationCheckRequest,
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if request.ctx_mgmt not in ("auto", "aggressive"):
+        return messages
+    try:
+        approx_bytes = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
+    except Exception:
+        approx_bytes = 0
+    if approx_bytes < request.compact_bytes:
+        return messages
+    return request.compact_messages(
+        messages=messages,
+        initial_messages=request.initial_messages,
+        last_state_text=request.state.last_state_text,
+        artifact_store=request.artifact_store,
+    )
 
 
 def build_error_feedback(consecutive_errors: int, failed_directions: list[str]) -> str | None:

@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from bao.agent.tool_exposure_eval import (
+    DEFAULT_TOOL_EXPOSURE_CASES_PATH,
     evaluate_tool_exposure_cases,
     load_tool_exposure_cases,
     write_tool_exposure_eval_artifact,
@@ -15,7 +16,7 @@ def main() -> int:
     parser.add_argument(
         "--cases",
         type=Path,
-        default=Path("docs/tool-exposure-cases.json"),
+        default=DEFAULT_TOOL_EXPOSURE_CASES_PATH,
         help="Path to the eval cases JSON file.",
     )
     parser.add_argument(

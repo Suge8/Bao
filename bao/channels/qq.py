@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from bao.bus.events import OutboundMessage
+from bao.bus.events import InboundMessage, OutboundMessage
 from bao.bus.queue import MessageBus
 from bao.channels.base import BaseChannel
 from bao.channels.progress_text import ProgressBuffer
@@ -137,10 +137,13 @@ class QQChannel(BaseChannel):
                 return
 
             await self._handle_message(
-                sender_id=user_id,
-                chat_id=user_id,
-                content=content,
-                metadata={"message_id": data.id},
+                InboundMessage(
+                    channel=self.name,
+                    sender_id=user_id,
+                    chat_id=user_id,
+                    content=content,
+                    metadata={"message_id": data.id},
+                )
             )
         except Exception as e:
             logger.error("❌ 处理失败 / message error: {}", e)

@@ -47,7 +47,7 @@ class ControlEvent:
     payload: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     session_key: str = ""
-    origin_channel: str = "gateway"
+    origin_channel: str = "hub"
     origin_chat_id: str = "direct"
     source: str = "system"
     schema_version: int = 1

@@ -4,6 +4,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
+from bao.agent.reply_route_models import ReplyRouteInput
+
 
 def _clean_str(value: object, *, lower: bool = False) -> str:
     if not isinstance(value, str):
@@ -49,80 +51,38 @@ class ReplyRoute:
     reply_metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def create(
-        cls,
-        *,
-        channel: str = "",
-        chat_id: str = "",
-        session_key: str | None = None,
-        lang: str = "en",
-        message_id: str | int | None = None,
-        reply_metadata: dict[str, Any] | None = None,
-    ) -> "ReplyRoute":
-        normalized_channel = _clean_str(channel, lower=True)
-        normalized_chat_id = _clean_str(chat_id)
-        normalized_message_id = _clean_optional_id(message_id)
+    def create(cls, request: ReplyRouteInput) -> "ReplyRoute":
+        normalized_channel = _clean_str(request.channel, lower=True)
+        normalized_chat_id = _clean_str(request.chat_id)
+        normalized_message_id = _clean_optional_id(request.message_id)
         normalized_session_key = (
-            _clean_str(session_key)
+            _clean_str(request.session_key)
             or (
                 f"{normalized_channel}:{normalized_chat_id}"
                 if normalized_channel and normalized_chat_id
                 else ""
             )
         )
-        normalized_lang = _clean_str(lang, lower=True) or "en"
+        normalized_lang = _clean_str(request.lang, lower=True) or "en"
         return cls(
             channel=normalized_channel,
             chat_id=normalized_chat_id,
             session_key=normalized_session_key,
             lang=normalized_lang,
             message_id=normalized_message_id,
-            reply_metadata=normalize_reply_metadata(reply_metadata),
+            reply_metadata=normalize_reply_metadata(request.reply_metadata),
         )
 
 
 class TurnContextStore:
-    def __init__(
-        self,
-        key: str,
-        *,
-        channel: str = "",
-        chat_id: str = "",
-        session_key: str | None = None,
-        lang: str = "en",
-        message_id: str | int | None = None,
-    ) -> None:
+    def __init__(self, key: str, default_route: ReplyRouteInput | None = None) -> None:
         self._route_ctx: ContextVar[ReplyRoute] = ContextVar(
             key,
-            default=ReplyRoute.create(
-                channel=channel,
-                chat_id=chat_id,
-                session_key=session_key,
-                lang=lang,
-                message_id=message_id,
-            ),
+            default=ReplyRoute.create(default_route or ReplyRouteInput()),
         )
 
-    def set(
-        self,
-        *,
-        channel: str,
-        chat_id: str,
-        session_key: str | None = None,
-        lang: str = "en",
-        message_id: str | int | None = None,
-        reply_metadata: dict[str, Any] | None = None,
-    ) -> None:
-        self._route_ctx.set(
-            ReplyRoute.create(
-                channel=channel,
-                chat_id=chat_id,
-                session_key=session_key,
-                lang=lang,
-                message_id=message_id,
-                reply_metadata=reply_metadata,
-            )
-        )
+    def set(self, route: ReplyRouteInput) -> None:
+        self._route_ctx.set(ReplyRoute.create(route))
 
     def get(self) -> ReplyRoute:
         return self._route_ctx.get()

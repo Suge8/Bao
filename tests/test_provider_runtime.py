@@ -7,7 +7,11 @@ import pytest
 from bao.providers.base import LLMResponse
 from bao.providers.openai_provider import OpenAICompatibleProvider
 from bao.providers.retry import StreamInterruptedError
-from bao.providers.runtime import ProviderRuntimeExecutor, provider_error_from_exception
+from bao.providers.runtime import (
+    ProviderExecutionRequest,
+    ProviderRuntimeExecutor,
+    provider_error_from_exception,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -46,8 +50,10 @@ async def test_provider_runtime_executor_maps_stream_interrupt_to_interrupted_re
 
     result = await executor.run(
         _run,
-        error_prefix="Error calling Gemini",
-        progress_error_prefix="Error calling Gemini progress callback",
+        ProviderExecutionRequest(
+            error_prefix="Error calling Gemini",
+            progress_error_prefix="Error calling Gemini progress callback",
+        ),
     )
 
     assert isinstance(result, LLMResponse)

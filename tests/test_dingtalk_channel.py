@@ -8,8 +8,67 @@ from unittest.mock import AsyncMock
 import pytest
 
 from bao.bus.queue import MessageBus
+from bao.channels._dingtalk_inbound import _DingTalkInboundPayload
+from bao.channels._dingtalk_types import DingTalkSendRequest
 from bao.channels.dingtalk import DingTalkChannel
 from bao.config.schema import DingTalkConfig
+
+
+class _AckMessage:
+    STATUS_OK = 0
+
+
+class _CallbackHandler:
+    pass
+
+
+class _Credential:
+    def __init__(self, *_args, **_kwargs) -> None:
+        pass
+
+
+class _DingTalkStreamClient:
+    def __init__(self, _credential, registered: dict[str, object]) -> None:
+        self._registered = registered
+
+    def register_callback_handler(self, topic, handler) -> None:
+        self._registered["topic"] = topic
+        self._registered["handler"] = handler
+
+    async def start(self) -> None:
+        return None
+
+
+class _ChatbotMessage:
+    TOPIC = "chatbot"
+
+    @staticmethod
+    def from_dict(raw):
+        return SimpleNamespace(
+            text=SimpleNamespace(content=(raw.get("text") or {}).get("content", "")),
+            sender_staff_id=raw.get("senderStaffId"),
+            sender_id=raw.get("senderId"),
+            sender_nick=raw.get("senderNick"),
+        )
+
+
+def _install_dingtalk_stream_stub(monkeypatch, registered: dict[str, object]) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "dingtalk_stream",
+        SimpleNamespace(
+            AckMessage=_AckMessage,
+            CallbackHandler=_CallbackHandler,
+            Credential=_Credential,
+            DingTalkStreamClient=lambda credential: _DingTalkStreamClient(credential, registered),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "dingtalk_stream.chatbot",
+        SimpleNamespace(ChatbotMessage=_ChatbotMessage),
+    )
+    monkeypatch.setattr("bao.channels.dingtalk.DINGTALK_AVAILABLE", True)
 
 
 def test_guess_upload_type_by_extension() -> None:
@@ -64,10 +123,12 @@ async def test_send_media_ref_keeps_image_url_payload_shape() -> None:
 
     assert ok is True
     channel._send_batch_message.assert_awaited_once_with(
-        "tok",
-        "u1",
-        "sampleImageMsg",
-        {"photoURL": "https://example.com/a.jpg"},
+        DingTalkSendRequest(
+            token="tok",
+            chat_id="u1",
+            msg_key="sampleImageMsg",
+            msg_param={"photoURL": "https://example.com/a.jpg"},
+        )
     )
 
 
@@ -82,10 +143,12 @@ async def test_send_media_ref_uploaded_image_uses_sample_file_payload() -> None:
 
     assert ok is True
     channel._send_batch_message.assert_awaited_once_with(
-        "tok",
-        "u1",
-        "sampleFile",
-        {"mediaId": "mid_123", "fileName": "pic.jpeg", "fileType": "jpg"},
+        DingTalkSendRequest(
+            token="tok",
+            chat_id="u1",
+            msg_key="sampleFile",
+            msg_param={"mediaId": "mid_123", "fileName": "pic.jpeg", "fileType": "jpg"},
+        )
     )
 
 
@@ -102,7 +165,14 @@ async def test_send_batch_message_routes_group_chat_to_group_endpoint() -> None:
         )
     )
 
-    ok = await channel._send_batch_message("tok", "group:cid_1", "sampleMarkdown", {"text": "hi"})
+    ok = await channel._send_batch_message(
+        DingTalkSendRequest(
+            token="tok",
+            chat_id="group:cid_1",
+            msg_key="sampleMarkdown",
+            msg_param={"text": "hi"},
+        )
+    )
 
     assert ok is True
     kwargs = channel._http.post.await_args.kwargs
@@ -116,73 +186,26 @@ async def test_on_message_routes_group_reply_back_to_group_chat_id() -> None:
     channel._handle_message = AsyncMock()
 
     await channel._on_message(
-        "hello",
-        "user_1",
-        "Alice",
-        conversation_type="2",
-        conversation_id="cid_1",
+        _DingTalkInboundPayload(
+            content="hello",
+            sender_id="user_1",
+            sender_name="Alice",
+            conversation_type="2",
+            conversation_id="cid_1",
+        )
     )
 
-    kwargs = channel._handle_message.await_args.kwargs
-    assert kwargs["sender_id"] == "user_1"
-    assert kwargs["chat_id"] == "group:cid_1"
-    assert kwargs["metadata"]["conversation_type"] == "2"
-    assert kwargs["metadata"]["conversation_id"] == "cid_1"
+    inbound = channel._handle_message.await_args.args[0]
+    assert inbound.sender_id == "user_1"
+    assert inbound.chat_id == "group:cid_1"
+    assert inbound.metadata["conversation_type"] == "2"
+    assert inbound.metadata["conversation_id"] == "cid_1"
 
 
 @pytest.mark.asyncio
 async def test_start_handler_uses_voice_recognition_when_text_is_empty(monkeypatch) -> None:
     registered: dict[str, object] = {}
-
-    class _AckMessage:
-        STATUS_OK = 0
-
-    class _CallbackHandler:
-        pass
-
-    class _Credential:
-        def __init__(self, *_args, **_kwargs) -> None:
-            pass
-
-    class _DingTalkStreamClient:
-        def __init__(self, _credential) -> None:
-            self.registered_handler = None
-
-        def register_callback_handler(self, topic, handler) -> None:
-            registered["topic"] = topic
-            registered["handler"] = handler
-
-        async def start(self) -> None:
-            return None
-
-    class _ChatbotMessage:
-        TOPIC = "chatbot"
-
-        @staticmethod
-        def from_dict(raw):
-            return SimpleNamespace(
-                text=SimpleNamespace(content=(raw.get("text") or {}).get("content", "")),
-                sender_staff_id=raw.get("senderStaffId"),
-                sender_id=raw.get("senderId"),
-                sender_nick=raw.get("senderNick"),
-            )
-
-    monkeypatch.setitem(
-        sys.modules,
-        "dingtalk_stream",
-        SimpleNamespace(
-            AckMessage=_AckMessage,
-            CallbackHandler=_CallbackHandler,
-            Credential=_Credential,
-            DingTalkStreamClient=_DingTalkStreamClient,
-        ),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "dingtalk_stream.chatbot",
-        SimpleNamespace(ChatbotMessage=_ChatbotMessage),
-    )
-    monkeypatch.setattr("bao.channels.dingtalk.DINGTALK_AVAILABLE", True)
+    _install_dingtalk_stream_stub(monkeypatch, registered)
 
     channel = DingTalkChannel(
         DingTalkConfig(client_id="robot", client_secret="secret"),
@@ -209,4 +232,12 @@ async def test_start_handler_uses_voice_recognition_when_text_is_empty(monkeypat
 
     assert ack == (_AckMessage.STATUS_OK, "OK")
     await asyncio.sleep(0)
-    channel._on_message.assert_awaited_once_with("voice text", "user_1", "Alice", "2", "cid_1")
+    channel._on_message.assert_awaited_once_with(
+        _DingTalkInboundPayload(
+            content="voice text",
+            sender_id="user_1",
+            sender_name="Alice",
+            conversation_type="2",
+            conversation_id="cid_1",
+        )
+    )
